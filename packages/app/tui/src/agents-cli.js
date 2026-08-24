@@ -26,19 +26,17 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-    PgSessionCatalog,
     PilotSwarmManagementClient,
     createSessionBlobStore,
     FilesystemArtifactStore,
     validateAgentPackageDir,
     stageAgentPackageDir,
-    publishAgentPackageDir,
-    deleteAgentPackageEverywhere,
-    readAgentPackageTarGz,
-    fetchAgentPackageTarGz,
+    listBundledAgentNames,
+    loadAgentFiles,
     AgentPackageValidationError,
 } from "pilotswarm-sdk";
 import { bootstrapApiAuth } from "./auth/cli.js";
+import { getPluginDirsFromEnv } from "./plugin-config.js";
 
 /** The server's inline-upload envelope (node-sdk-transport uploadAgentPackage). */
 const UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
@@ -60,6 +58,7 @@ function parseArgs(argv) {
         else if (arg === "--schema") flags.schema = argv[++i];
         else if (arg === "--api-url") flags.apiUrl = argv[++i];
         else if (arg === "--semver") flags.semver = argv[++i];
+        else if (arg === "--output" || arg === "-o") flags.output = argv[++i];
         else if (arg === "--help" || arg === "-h") flags.help = true;
         else positional.push(arg);
     }
@@ -78,6 +77,7 @@ Usage:
   pilotswarm agents enable <name> | disable <name>
   pilotswarm agents tree <name> [--semver <v>] [--json]
   pilotswarm agents cat <name> <file> [--semver <v>]
+    pilotswarm agents download <name> [--semver <v>] [--output <file>]
   pilotswarm agents rm <name> --yes
 
 Connection (web API — the default):
@@ -90,7 +90,10 @@ Connection (direct store — break-glass; no authn/authz):
 
 Scope:
   --user (default)  only you see the package's agents
-  --shared          every user can create sessions from them`;
+    --shared          every user can create sessions from them
+
+For show/pin/promote/demote/enable/disable/tree/cat/download/rm, --user or
+--shared selects which same-named package copy to target.`;
 
 /**
  * Web unless direct is explicitly asked for. `--store` always wins; otherwise
@@ -116,18 +119,20 @@ async function makeWebContext({ apiUrl }) {
 }
 
 async function makeDirectContext({ store }, flags) {
-    const catalog = await PgSessionCatalog.create(store, flags.schema || process.env.PILOTSWARM_CMS_SCHEMA || undefined);
+    const sessionStateDir = process.env.SESSION_STATE_DIR
+        || path.join(os.homedir(), ".copilot", "session-state");
+    const artifactStore = createSessionBlobStore(process.env, { sessionStateDir })
+        ?? new FilesystemArtifactStore(path.join(path.dirname(sessionStateDir), "artifacts"));
+    const client = new PilotSwarmManagementClient({
+        store,
+        cmsSchema: flags.schema || process.env.PILOTSWARM_CMS_SCHEMA || undefined,
+        artifactStore,
+    });
     try {
-        await catalog.initialize();
-        const sessionStateDir = process.env.SESSION_STATE_DIR
-            || path.join(os.homedir(), ".copilot", "session-state");
-        const artifactStore = createSessionBlobStore(process.env, { sessionStateDir })
-            ?? new FilesystemArtifactStore(path.join(path.dirname(sessionStateDir), "artifacts"));
-        return { mode: "direct", catalog, artifactStore, close: () => catalog.close() };
+        await client.start();
+        return { mode: "direct", client, close: () => client.stop() };
     } catch (error) {
-        // Close the pool on init failure or the CLI hangs on idle pg clients
-        // instead of exiting non-zero.
-        await catalog.close().catch(() => {});
+        await client.stop().catch(() => {});
         throw error;
     }
 }
@@ -221,6 +226,28 @@ function asDay(value) {
     return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
 }
 
+export function reservedAgentNamesForCli() {
+    const names = new Set(listBundledAgentNames());
+    for (const pluginDir of getPluginDirsFromEnv()) {
+        for (const agent of loadAgentFiles(pluginDir)) {
+            if (agent?.name) names.add(agent.name);
+            if (agent?.id) names.add(agent.id);
+        }
+    }
+    return [...names];
+}
+
+export function packageFileForCli(file) {
+    if (file?.encoding === "base64" || file?.binary === true) {
+        return { binary: true, size: file?.size ?? 0, text: "" };
+    }
+    return {
+        binary: false,
+        size: file?.size ?? 0,
+        text: typeof file === "string" ? file : (file?.content ?? file?.text ?? ""),
+    };
+}
+
 export async function runAgentsCommand(argv) {
     const { flags, positional } = parseArgs(argv);
     const [command, ...rest] = positional;
@@ -257,6 +284,7 @@ export async function runAgentsCommand(argv) {
     const actor = null;            // direct store mode = operator = admin
     const isAdmin = true;
     const createdBy = `${os.userInfo().username}@cli`;
+    const selector = flags.scope ? { scope: flags.scope } : null;
     try {
         switch (command) {
             case "push": {
@@ -267,18 +295,16 @@ export async function runAgentsCommand(argv) {
                 let outcome;
                 try {
                     if (web) {
-                        outcome = await ctx.client.ops.uploadAgentPackage({
-                            files: await buildUploadPayload(resolvedDir),
-                            scope,
-                        });
+                        outcome = await ctx.client.uploadAgentPackage(
+                            await buildUploadPayload(resolvedDir), scope, actor, isAdmin,
+                        );
                     } else {
-                        outcome = await publishAgentPackageDir(ctx, {
-                            dir: resolvedDir,
-                            scope,
-                            owner: actor,
-                            createdBy,
-                            isAdmin,
-                        });
+                        outcome = await ctx.client.publishAgentPackageDirectory(
+                            resolvedDir, scope, actor, isAdmin, {
+                                createdBy,
+                                reservedAgentNames: reservedAgentNamesForCli(),
+                            },
+                        );
                     }
                 } catch (error) {
                     if (error instanceof AgentPackageValidationError) {
@@ -299,9 +325,7 @@ export async function runAgentsCommand(argv) {
                 return 0;
             }
             case "list": {
-                const packages = web
-                    ? await ctx.client.ops.listAgentPackages()
-                    : await ctx.catalog.listAgentPackages(actor, isAdmin);
+                const packages = await ctx.client.listAgentPackages(actor, isAdmin);
                 if (flags.json) { console.log(JSON.stringify(packages, null, 2)); return 0; }
                 if (packages.length === 0) { console.log("no agent packages registered"); return 0; }
                 for (const pkg of packages) console.log(formatPackageLine(pkg));
@@ -310,9 +334,7 @@ export async function runAgentsCommand(argv) {
             case "show": {
                 const name = rest[0];
                 if (!name) { console.error("usage: pilotswarm agents show <name>"); return 1; }
-                const detail = web
-                    ? await ctx.client.ops.getAgentPackage({ name })
-                    : await ctx.catalog.getAgentPackage(name, actor, isAdmin);
+                const detail = await ctx.client.getAgentPackage(name, actor, isAdmin, selector);
                 if (!detail) { console.error(`package "${name}" not found`); return 1; }
                 if (flags.json) { console.log(JSON.stringify(detail, null, 2)); return 0; }
                 console.log(`${detail.name} · ${detail.scope} · ${detail.enabled ? "enabled" : "disabled"}`);
@@ -331,8 +353,7 @@ export async function runAgentsCommand(argv) {
                 let semver = rest[1];
                 if (name?.includes("@")) [name, semver] = name.split("@");
                 if (!name || !semver) { console.error("usage: pilotswarm agents pin <name>@<semver>"); return 1; }
-                if (web) await ctx.client.ops.pinAgentPackageVersion({ name, semver });
-                else await ctx.catalog.pinAgentPackageVersion(name, semver, actor, isAdmin);
+                await ctx.client.pinAgentPackageVersion(name, semver, actor, isAdmin, selector);
                 console.log(`✓ ${name} active version pinned to ${semver} — fleet converges on the next epoch poll`);
                 return 0;
             }
@@ -341,8 +362,7 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error(`usage: pilotswarm agents ${command} <name>`); return 1; }
                 const scope = command === "promote" ? "shared" : "user";
-                if (web) await ctx.client.ops.setAgentPackageScope({ name, scope });
-                else await ctx.catalog.setAgentPackageScope(name, scope, actor, isAdmin);
+                await ctx.client.setAgentPackageScope(name, scope, actor, isAdmin, selector);
                 console.log(`✓ ${name} is now ${scope}${scope === "shared" ? " — visible to every user" : " — visible only to its owner"} (running agents unaffected)`);
                 return 0;
             }
@@ -351,17 +371,14 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 if (!name) { console.error(`usage: pilotswarm agents ${command} <name>`); return 1; }
                 const enabled = command === "enable";
-                if (web) await ctx.client.ops.setAgentPackageEnabled({ name, enabled });
-                else await ctx.catalog.setAgentPackageEnabled(name, enabled, actor, isAdmin);
+                await ctx.client.setAgentPackageEnabled(name, enabled, actor, isAdmin, selector);
                 console.log(`✓ ${name} ${enabled ? "enabled" : "disabled"} fleet-wide — workers converge on the next epoch poll`);
                 return 0;
             }
             case "tree": {
                 const name = rest[0];
                 if (!name) { console.error("usage: pilotswarm agents tree <name> [--semver <v>]"); return 1; }
-                const tree = web
-                    ? await ctx.client.ops.getAgentPackageTree({ name, semver: flags.semver })
-                    : await directTree(ctx, name, flags.semver, actor, isAdmin);
+                const tree = await ctx.client.getAgentPackageTree(name, flags.semver ?? null, actor, isAdmin, selector);
                 if (flags.json) { console.log(JSON.stringify(tree, null, 2)); return 0; }
                 const entries = Array.isArray(tree) ? tree : (tree?.files ?? tree?.entries ?? []);
                 if (entries.length === 0) { console.log("(empty package)"); return 0; }
@@ -376,13 +393,20 @@ export async function runAgentsCommand(argv) {
                 const name = rest[0];
                 const filePath = rest[1];
                 if (!name || !filePath) { console.error("usage: pilotswarm agents cat <name> <file> [--semver <v>]"); return 1; }
-                const file = web
-                    ? await ctx.client.ops.getAgentPackageFile({ name, semver: flags.semver, filePath })
-                    : await directFile(ctx, name, flags.semver, filePath, actor, isAdmin);
+                const file = await ctx.client.getAgentPackageFile(name, flags.semver ?? null, filePath, actor, isAdmin, selector);
                 if (flags.json) { console.log(JSON.stringify(file, null, 2)); return 0; }
-                if (file?.binary) { console.error(`${filePath} is binary (${file.size ?? "?"} bytes)`); return 1; }
-                const text = typeof file === "string" ? file : (file?.content ?? file?.text ?? "");
-                process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+                const formatted = packageFileForCli(file);
+                if (formatted.binary) { console.error(`${filePath} is binary (${formatted.size || "?"} bytes)`); return 1; }
+                process.stdout.write(formatted.text.endsWith("\n") ? formatted.text : `${formatted.text}\n`);
+                return 0;
+            }
+            case "download": {
+                const name = rest[0];
+                if (!name) { console.error("usage: pilotswarm agents download <name> [--semver <v>] [--output <file>]"); return 1; }
+                const pkg = await ctx.client.downloadAgentPackage(name, flags.semver ?? null, actor, isAdmin, selector);
+                const output = path.resolve(flags.output || pkg.filename || `${name}.tgz`);
+                fs.writeFileSync(output, Buffer.from(pkg.body));
+                console.log(`✓ ${name}@${pkg.semver} downloaded to ${output} (sha ${pkg.sha256.slice(0, 12)})`);
                 return 0;
             }
             case "rm": {
@@ -392,8 +416,7 @@ export async function runAgentsCommand(argv) {
                     console.error(`refusing to delete "${name}" without --yes (removes every version and its artifacts; live sessions using its agents will fail resolution on their next turn)`);
                     return 1;
                 }
-                if (web) await ctx.client.ops.deleteAgentPackage({ name });
-                else await deleteAgentPackageEverywhere(ctx, name, actor, isAdmin);
+                await ctx.client.deleteAgentPackage(name, actor, isAdmin, selector);
                 console.log(`✓ ${name} deleted (registry rows and artifacts)`);
                 return 0;
             }
@@ -407,36 +430,15 @@ export async function runAgentsCommand(argv) {
     }
 }
 
-/** Direct-mode tree/cat read the tarball the same way the portal ops do. */
-async function loadDirectPackageEntries(ctx, name, semver, actor, isAdmin) {
-    const detail = await ctx.catalog.getAgentPackage(name, actor, isAdmin);
-    if (!detail) throw Object.assign(new Error(`package "${name}" not found`), { code: "NOT_FOUND" });
-    const version = semver
-        ? detail.versions.find((v) => v.semver === semver)
-        : detail.versions.find((v) => v.versionId === detail.activeVersionId) ?? detail.versions[0];
-    if (!version) {
-        throw Object.assign(new Error(`package "${name}" has no ${semver ? `version ${semver}` : "versions"}`), { code: "NOT_FOUND" });
-    }
-    const targz = await fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256);
-    return readAgentPackageTarGz(targz);
-}
-
-// readAgentPackageTarGz yields { name, body } — NOT { path, body }. Reading
-// `entry.path` silently produced undefined for every entry, so `tree` printed
-// a column of "undefined" and `cat` could never match a file.
 export async function directTree(ctx, name, semver, actor, isAdmin) {
-    const entries = await loadDirectPackageEntries(ctx, name, semver, actor, isAdmin);
-    return entries.map((entry) => ({ path: entry.name, size: entry.body.length }));
+    const tree = await ctx.client.getAgentPackageTree(name, semver ?? null, actor, isAdmin);
+    return tree?.files ?? tree ?? [];
 }
 
 export async function directFile(ctx, name, semver, filePath, actor, isAdmin) {
-    const entries = await loadDirectPackageEntries(ctx, name, semver, actor, isAdmin);
-    const entry = entries.find((e) => e.name === filePath);
-    if (!entry) throw Object.assign(new Error(`${filePath} not found in ${name}`), { code: "NOT_FOUND" });
-    // A NUL byte in the first block is the usual binary tell — it is also what
-    // makes grep silently treat a source file as unsearchable.
-    if (entry.body.subarray(0, 4096).includes(0)) {
-        return { binary: true, size: entry.body.length };
-    }
-    return { content: entry.body.toString("utf8"), size: entry.body.length };
+    const file = await ctx.client.getAgentPackageFile(name, semver ?? null, filePath, actor, isAdmin);
+    const formatted = packageFileForCli(file);
+    return formatted.binary
+        ? { binary: true, size: formatted.size }
+        : { content: formatted.text, size: formatted.size };
 }

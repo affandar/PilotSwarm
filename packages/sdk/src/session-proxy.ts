@@ -3,13 +3,14 @@ import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
+import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -689,7 +690,7 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[] },
         ) {
             return ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
@@ -723,6 +724,17 @@ export function createSessionProxy(
                         : {}),
                     ...(turnMeta?.transcriptEpoch ? { transcriptEpoch: turnMeta.transcriptEpoch } : {}),
                     ...(turnMeta?.epochStart ? { epochStart: true } : {}),
+                    // Prompts the budget gate refused on earlier attempts. The
+                    // orchestration sends them, the worker-side fold replays
+                    // them — and this spread is the wire between the two. It
+                    // was missing on first ship: both ends were built and the
+                    // field died HERE, so the replay never executed and
+                    // delivery was whatever the rebuilt history happened to
+                    // make the model say. The same three-place wiring class
+                    // as the regen-tool gap.
+                    ...(turnMeta?.stashedPrompts && turnMeta.stashedPrompts.length > 0
+                        ? { stashedPrompts: turnMeta.stashedPrompts }
+                        : {}),
                 },
                 affinityKey,
             );
@@ -946,8 +958,8 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("updateCmsState", payload);
         },
         /** Persist this session's model metadata in CMS. */
-        updateSessionModel(sessionId: string, model: string, reasoningEffort?: string | null) {
-            return ctx.scheduleActivity("updateSessionModel", { sessionId, model, reasoningEffort });
+        updateSessionModel(sessionId: string, model: string, reasoningEffort?: string | null, contextTier?: string | null, source?: string | null) {
+            return ctx.scheduleActivity("updateSessionModel", { sessionId, model, reasoningEffort, contextTier, source });
         },
         /** Get the worker's authoritative session policy + allowed agent names. */
         getWorkerSessionPolicy() {
@@ -1093,6 +1105,7 @@ export function registerActivities(
         // churn). This line makes the executed input's truth visible.
         activityCtx.traceInfo(`[runTurn] session=${input.sessionId} attachments=${Array.isArray(input.attachments) ? input.attachments.length : "absent"}`);
 
+        const modelSummary = await sessionManager.getModelSummary(input.sessionId);
         const turnTelemetry = {
             tokensInput: 0,
             tokensOutput: 0,
@@ -1101,7 +1114,7 @@ export function registerActivities(
             toolCalls: 0,
             toolErrors: 0,
             toolNames: new Set<string>(),
-            modelSummary: sessionManager.getModelSummary(),
+            modelSummary,
             // The model that actually served this turn, observed from the SDK's
             // own events. `input.config.model` is only set when the session
             // pinned a model explicitly; a session running on the deployment
@@ -1131,18 +1144,42 @@ export function registerActivities(
         const MAX_SUB_AGENTS = 50;
         const MAX_NESTING_LEVEL = 2;
         let fallbackAgentIdentity: string | undefined;
+        let catalogSessionRow: any = null;
         // Self-heal older persisted system sessions created before agentIdentity
         // was forwarded through worker bootstrap/orchestration input.
-        if (!input.config.agentIdentity && catalog) {
-            const row = await cmsRetryBestEffort(
-                `runTurn.getSession agentId-fallback session=${input.sessionId}`,
+        if (catalog) {
+            catalogSessionRow = await cmsRetryBestEffort(
+                `runTurn.getSession authoritative-config session=${input.sessionId}`,
                 () => catalog!.getSession(input.sessionId),
                 (msg) => activityCtx.traceInfo(msg),
             );
-            fallbackAgentIdentity = row?.agentId ?? undefined;
+            if (!input.config.agentIdentity) {
+                fallbackAgentIdentity = catalogSessionRow?.agentId ?? undefined;
+            }
         }
 
         const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        if (catalogSessionRow?.model) {
+            const staleConfiguredModel = String(input.config.model || "").trim();
+            if (staleConfiguredModel && staleConfiguredModel !== catalogSessionRow.model) {
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent model-mismatch session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.model_mismatch",
+                        data: {
+                            catalogModel: catalogSessionRow.model,
+                            configuredModel: staleConfiguredModel,
+                            action: "catalog_model_adopted",
+                            message: "Runtime session config disagreed with the session catalog model; the catalog is authoritative and its exact model was adopted before provider admission.",
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+            runConfig.model = catalogSessionRow.model;
+            runConfig.reasoningEffort = catalogSessionRow.reasoningEffort ?? undefined;
+            runConfig.contextTier = catalogSessionRow.contextTier ?? undefined;
+        }
         // Derive the app-assigned crawler role authoritatively from the bound
         // agent definition EVERY turn.
         // It is a property of the agent, resolved from static worker config, so
@@ -1275,9 +1312,131 @@ export function registerActivities(
             }
         }
 
+        // ── the provider budget gate ─────────────────────────────────
+        //
+        // Before anything expensive: before a Copilot session is created or
+        // warmed, before a prompt is hydrated, and above all before the
+        // model is called. A paused turn must cost nothing.
+        //
+        // It runs HERE, in the activity, rather than in the orchestration,
+        // because activity bodies are not replay-frozen — the check itself
+        // needs no orchestration version. What it returns is the ordinary
+        // `wait` TurnResult, so the orchestration's existing machinery does
+        // the rest: a durable timer, a waiting status, a wait_started event,
+        // and a resume that re-enters this same gate.
+        //
+        // FAIL CLOSED. Provider identity is both authorization and billing;
+        // a turn that cannot prove which credential it may use must not call
+        // a model through a cached/default binding.
+        // What the gate ADMITTED — the provider that pays, and the model
+        // reference it was admitted under. Both are settled against later;
+        // neither is re-derived, because the observed model name the SDK
+        // reports back is a bare name ("gpt-5.4") and a limit scoped to one
+        // model matches the qualified reference ("azure-prod:gpt-5.4"). A
+        // per-model limit would never match its own turns.
+        const admittedProvider = { name: null as string | null, modelRef: null as string | null };
+        let admissionModel: string | null = null;
+        if (runConfig.model) {
+            await sessionManager.refreshModelProviders();
+            try {
+                admissionModel = sessionManager.normalizeModelRef(runConfig.model) ?? null;
+            } catch {
+                await sessionManager.refreshModelProviders();
+                try {
+                    admissionModel = sessionManager.normalizeModelRef(runConfig.model) ?? null;
+                } catch (err: any) {
+                    // The ref names a provider the runtime registry has never
+                    // heard of — exactly what a deleted provider looks like.
+                    // Throwing here dies BEFORE the admission gate, whose
+                    // no_provider verdict owns this case (the honest wait,
+                    // pause_state, the paused listing, wake on re-create).
+                    // Hand the gate the raw reference and let it rule.
+                    activityCtx.traceInfo(
+                        `[runTurn] model ref did not resolve (${err?.message ?? err}); deferring to the admission gate`,
+                    );
+                    admissionModel = runConfig.model;
+                }
+            }
+        }
+        if (catalog?.providers) {
+            try {
+                const admission = await catalog.providers.checkTurn(input.sessionId, admissionModel);
+                admittedProvider.name = admission.providerName;
+                admittedProvider.modelRef = admission.modelQualified;
+                if (!runConfig.model && admission.modelQualified) {
+                    runConfig.model = admission.modelQualified;
+                }
+                if (!catalogSessionRow?.model && admission.modelQualified) {
+                    catalogSessionRow = await cmsRetryCritical(
+                        `runTurn.getSession stamped-model session=${input.sessionId}`,
+                        () => catalog!.getSession(input.sessionId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                    runConfig.model = catalogSessionRow?.model ?? admission.modelQualified;
+                    runConfig.reasoningEffort = catalogSessionRow?.reasoningEffort ?? undefined;
+                    runConfig.contextTier = catalogSessionRow?.contextTier ?? undefined;
+                }
+                (runConfig as ManagedSessionConfig).admittedModel = admission.modelQualified ?? undefined;
+                const wait = admissionToWait(admission, input.sessionId, Date.now());
+                if (wait) {
+                    activityCtx.traceInfo(
+                        `[runTurn] provider budget paused ${input.sessionId}: ${wait.reason}`,
+                    );
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent budget-paused session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.budget_paused",
+                            data: {
+                                kind: admission.pause?.kind ?? "limit",
+                                provider: admission.pause?.provider ?? null,
+                                resetsAtUtc: admission.pause?.resetsAtUtc ?? null,
+                                content: wait.reason,
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                    return wait as TurnResult;
+                }
+            } catch (err: any) {
+                activityCtx.traceInfo(
+                    `[runTurn] provider admission failed (fail-closed): ${err?.message ?? err}`,
+                );
+                return {
+                    type: "error",
+                    message: `Provider admission could not verify this turn: ${err?.message ?? err}`,
+                } as TurnResult;
+            }
+        }
+
         const executeTurnBody = async (): Promise<TurnResult> => {
         let session: any = null;
         let effectivePrompt = input.prompt;
+        // Prompts the budget gate refused on earlier attempts. Each was
+        // durably recorded as a user.message WHEN IT WAS STASHED, so they are
+        // folded into what the model sees but never re-recorded here — the
+        // write below records input.prompt alone. When the only "new" prompt
+        // is the internal wake nudge, the stash IS the message: the nudge
+        // says "the user did not send a new message", which would be false
+        // sitting under their words.
+        {
+            const stashed = Array.isArray((input as any).stashedPrompts)
+                ? ((input as any).stashedPrompts as unknown[])
+                    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+                : [];
+            if (stashed.length > 0) {
+                // A bootstrap turn carries no new user words by definition —
+                // the wake nudge arrives as one, because its [SYSTEM:] body
+                // is extracted into system context and the prompt substituted
+                // with the internal continuation marker.
+                const isWakeNudge = input.bootstrap === true
+                    || input.prompt === PROVIDER_BUDGET_WAKE_PROMPT;
+                effectivePrompt = isWakeNudge
+                    ? stashed.join("\n\n")
+                    : `${stashed.join("\n\n")}\n\n${input.prompt}`;
+                activityCtx.traceInfo(
+                    `[runTurn] replaying ${stashed.length} prompt(s) the budget gate had refused`);
+            }
+        }
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -1771,7 +1930,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }
 
                     const sdkClient = await getInlineClient();
-                    const normalizedModel = sessionManager.normalizeModelRef(args.model);
+                    const normalizedModel = args.model
+                        ? await sessionManager.normalizeModelRefForSession(
+                            input.sessionId, args.model, { requireQualified: true },
+                        )
+                        : undefined;
 
                     // No parentSessionId and nestingLevel 0 — that IS what
                     // makes this a root. The sub-agent preamble that
@@ -1984,7 +2147,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     childConfig.systemMessage = subAgentPreamble + (parentSystemMsg ? "\n\n" + parentSystemMsg : "");
 
                     const sdkClient = await getInlineClient();
-                    const normalizedModel = sessionManager.normalizeModelRef(childConfig.model);
+                    const normalizedModel = childConfig.model
+                        ? await sessionManager.normalizeModelRefForSession(
+                            input.sessionId,
+                            childConfig.model,
+                            { requireQualified: Boolean(agentModel) },
+                        )
+                        : undefined;
                     if (normalizedModel) childConfig.model = normalizedModel;
 
                     const childSession = await sdkClient.createSession({
@@ -2070,7 +2239,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const requestedModel = String(args.model || "").trim();
                     if (!requestedModel) return "[SYSTEM: set_session_model failed: model is required.]";
                     if (!storeUrl) return "[SYSTEM: set_session_model failed: no storeUrl is configured.]";
-                    const resolved = sessionManager.resolveModelSwitchConfig(
+                    const resolved = await sessionManager.resolveModelSwitchConfigForSession(
+                        input.sessionId,
                         requestedModel,
                         "reasoning_effort" in args ? args.reasoning_effort ?? null : undefined,
                     );
@@ -3090,7 +3260,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 return await targetSession.runTurn(prompt, {
                     onEvent,
-                    modelSummary: sessionManager.getModelSummary(),
+                    modelSummary,
                     bootstrap: input.bootstrap,
                     requiredTool: input.requiredTool,
                     cycleOrigin: input.cycleOrigin,
@@ -3342,6 +3512,45 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+
+                // ── settle the provider budget ───────────────────────
+                //
+                // Separate from the metrics writeback above on purpose: this
+                // is the ACCOUNTING write, and it must be exactly once. Its
+                // idempotence lives in the ledger's (session, turn) primary
+                // key, so an activity retry that re-runs this whole block
+                // charges nothing twice.
+                //
+                // It is settled against the provider ADMITTED at the top of
+                // this turn, never re-resolved here: if a provider was
+                // deleted while the model was working, the tokens were still
+                // spent on the credential that was admitted, and that is what
+                // the ledger should say.
+                if (catalog?.providers) {
+                    await cmsRetryBestEffort(
+                        `runTurn.postTurn settleTurn session=${input.sessionId}`,
+                        async () => {
+                            const facts = await catalog!.providers!.sessionChargeFacts(input.sessionId);
+                            await catalog!.providers!.settleTurn({
+                                sessionId: input.sessionId,
+                                turnIndex: input.turnIndex ?? 0,
+                                providerName: admittedProvider.name,
+                                modelQualified: admittedProvider.modelRef
+                                    ?? runConfig.model ?? input.config.model ?? null,
+                                ownerUserId: facts.ownerUserId,
+                                chargeClass: admittedProvider.name
+                                    ? (facts.isSystem ? "system" : "user")
+                                    : "unattributed",
+                                agentId: runConfig.agentIdentity ?? fallbackAgentIdentity ?? null,
+                                tokensInput: turnTelemetry.tokensInput,
+                                tokensOutput: turnTelemetry.tokensOutput,
+                                tokensCacheRead: turnTelemetry.tokensCacheRead,
+                                tokensCacheWrite: turnTelemetry.tokensCacheWrite,
+                            });
+                        },
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
             }
 
             return result;
@@ -4430,7 +4639,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
         runtime.registerActivity("updateSessionModel", async (
             activityCtx: any,
-            input: { sessionId: string; model: string; reasoningEffort?: string | null },
+            input: { sessionId: string; model: string; reasoningEffort?: string | null; contextTier?: string | null; source?: string | null },
         ): Promise<void> => {
             activityCtx.traceInfo(`[updateSessionModel] session=${input.sessionId} model=${input.model}`);
             await cmsRetryCritical(
@@ -4438,6 +4647,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 () => catalog.updateSession(input.sessionId, {
                     model: input.model,
                     reasoningEffort: input.reasoningEffort ?? null,
+                    contextTier: input.contextTier ?? null,
+                    modelResolutionSource: input.source ?? "model_switch",
                 }),
                 (msg) => activityCtx.traceInfo(msg),
             );

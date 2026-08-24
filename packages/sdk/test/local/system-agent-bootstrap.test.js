@@ -1,9 +1,10 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
     buildSystemAgentBootstrapPayload,
     PilotSwarmWorker,
     resolveWorkerTurnTimeoutMs,
 } from "../../src/worker.ts";
+import { startSystemAgents } from "../../src/system-agents.ts";
 import { DEFAULT_TURN_TIMEOUT_MS } from "../../src/managed-session.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
@@ -47,5 +48,74 @@ describe("System agent bootstrap payload", () => {
         assertEqual(resolveWorkerTurnTimeoutMs(900_000, "1200000"), 900_000, "explicit worker option should win");
         assertEqual(resolveWorkerTurnTimeoutMs(undefined, "0"), 0, "deployment env should support disabling the cap");
         assertEqual(resolveWorkerTurnTimeoutMs(undefined, "invalid"), DEFAULT_TURN_TIMEOUT_MS, "invalid env should use the SDK default");
+    });
+
+    it("repairs a pending CMS row whose orchestration start previously failed", async () => {
+        const row = {
+            sessionId: "session-pending",
+            model: "old:gpt",
+            reasoningEffort: "low",
+            contextTier: "default",
+            state: "pending",
+            orchestrationId: null,
+        };
+        const starts = [];
+        const updates = [];
+        const results = await startSystemAgents({
+            catalog: {
+                getSession: async () => row,
+                createSession: async () => { throw new Error("must not recreate pending row"); },
+                updateSession: async (_sessionId, update) => {
+                    updates.push(update);
+                    Object.assign(row, update);
+                },
+            },
+            duroxideClient: {
+                startOrchestrationVersioned: async (...args) => starts.push(args),
+            },
+            agents: [{ id: "pending", name: "pending", system: true, prompt: "pending" }],
+            defaultModel: "new:gpt",
+            defaultReasoningEffort: "high",
+            defaultContextTier: "long_context",
+            modelResolutionSource: "system_default",
+            dehydrateThreshold: 30,
+        });
+        expect(starts).toHaveLength(1);
+        expect(row.model).toBe("new:gpt");
+        expect(row.reasoningEffort).toBe("high");
+        expect(row.contextTier).toBe("long_context");
+        expect(row.modelResolutionSource).toBe("system_default");
+        expect(updates.some((update) => update.orchestrationId === starts[0][0])).toBe(true);
+        expect(results[0].status).toBe("started");
+    });
+
+    it("repairs CMS when retry finds the orchestration already exists", async () => {
+        const row = {
+            sessionId: "session-pending",
+            model: "team:gpt",
+            state: "pending",
+            orchestrationId: null,
+        };
+        const updates = [];
+        const results = await startSystemAgents({
+            catalog: {
+                getSession: async () => row,
+                createSession: async () => { throw new Error("must not recreate pending row"); },
+                updateSession: async (_sessionId, update) => {
+                    updates.push(update);
+                    Object.assign(row, update);
+                },
+            },
+            duroxideClient: {
+                startOrchestrationVersioned: async () => { throw new Error("already exists"); },
+            },
+            agents: [{ id: "pending", name: "pending", system: true, prompt: "pending" }],
+            defaultModel: "team:gpt",
+            dehydrateThreshold: 30,
+        });
+        expect(row.orchestrationId).toBeTruthy();
+        expect(row.state).toBe("running");
+        expect(updates).toHaveLength(3); // target tuple, title, repaired orchestration state
+        expect(results[0].status).toBe("raced");
     });
 });

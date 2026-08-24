@@ -55,6 +55,9 @@ export type {
     RestartSystemSessionOptions,
     RestartSystemSessionResult,
     SystemSessionRestartDisposition,
+    ModelDefaultInput,
+    SystemModelDefaultInput,
+    ResolvedModelDefault,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
@@ -177,10 +180,15 @@ export { createFactTools } from "./facts-tools.js";
 export { createGraphTools } from "./graph-tools.js";
 // Inspect tools (read_agent_events, etc.)
 export { createInspectTools } from "./inspect-tools.js";
+export { createProviderTools, holdsProviderTools, PROVIDER_TOOL_NAMES } from "./provider-tools.js";
+export { ProviderStore, ProviderError } from "./provider-store.js";
+export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes } from "./provider-catalog.js";
 // Resource Manager Agent tools
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
-export { loadModelProviders, ModelProviderRegistry } from "./model-providers.js";
+export { loadModelProviders, loadModelProviderTypes, ModelProviderRegistry } from "./model-providers.js";
+export { resolveRuntimeModelSelection, firstRuntimeModel } from "./provider-catalog.js";
+export type { RuntimeModelSelection, RuntimeModelResolutionSource } from "./provider-catalog.js";
 // A BYOK reasoning effort rides on the provider baseUrl as a path prefix —
 // exported so the proxy that strips it (grimfanda
 // deploy/openai-compat-proxy.mjs) has one place to read the contract from.

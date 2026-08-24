@@ -10,6 +10,7 @@
 
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
+import { ProviderStore } from "./provider-store.js";
 import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -117,6 +118,8 @@ export interface SessionRow {
     lastRegeneratedAt: number | null;
     model: string | null;
     reasoningEffort: string | null;
+    contextTier: string | null;
+    modelResolutionSource: string | null;
     createdAt: Date;
     updatedAt: Date;
     lastActiveAt: Date | null;
@@ -232,6 +235,8 @@ export interface SessionRowUpdates {
     state?: string;
     model?: string | null;
     reasoningEffort?: string | null;
+    contextTier?: string | null;
+    modelResolutionSource?: string | null;
     lastActiveAt?: Date;
     currentIteration?: number;
     lastError?: string | null;
@@ -926,6 +931,13 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    /**
+     * Provider budgets (migrations 0049-0051). Optional, like every other
+     * late feature here, so a duck-typed test double need not implement it.
+     * See provider-store.ts.
+     */
+    readonly providers?: ProviderStore;
+
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
     getSessionCanvases?(sessionId: string): Promise<Array<{ slot: number; name: string; latestRev: number; sizeBytes: number | null; updatedAt: string }>>;
@@ -1055,6 +1067,8 @@ export interface SessionCatalog {
     createSession(sessionId: string, opts?: {
         model?: string;
         reasoningEffort?: string;
+        contextTier?: string | null;
+        modelResolutionSource?: string;
         parentSessionId?: string;
         isSystem?: boolean;
         agentId?: string;
@@ -1469,10 +1483,22 @@ export class PgSessionCatalog implements SessionCatalog {
     private pool: any;
     private initialized = false;
     private sql: ReturnType<typeof sqlForSchema>;
+    private _providers: ProviderStore;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
         this.sql = sqlForSchema(schema);
+        this._providers = new ProviderStore(pool, schema);
+    }
+
+    /**
+     * Provider budgets — see provider-store.ts. Kept behind one accessor
+     * rather than spread across this class: the whole feature talks to the
+     * `cms_provider_*` procs and nothing else, so it reads better as its own
+     * surface than as thirty more methods here.
+     */
+    get providers(): ProviderStore {
+        return this._providers;
     }
 
     static readonly DEFAULT_POOL_MAX = 3;
@@ -1522,6 +1548,8 @@ export class PgSessionCatalog implements SessionCatalog {
     async createSession(sessionId: string, opts?: {
         model?: string;
         reasoningEffort?: string;
+        contextTier?: string | null;
+        modelResolutionSource?: string;
         parentSessionId?: string;
         isSystem?: boolean;
         agentId?: string;
@@ -1541,9 +1569,18 @@ export class PgSessionCatalog implements SessionCatalog {
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
+        const providerModel = opts?.model ?? null;
+        const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
+            && await this.supportsProviderSessionModelValidation();
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
+            if (validateProviderModel) {
+                await client.query(
+                    `SELECT "${this.sql.schema}".cms_provider_assert_session_model($1,$2,$3,$4)`,
+                    [providerModel, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
+                );
+            }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {
                 await client.query(
@@ -1568,6 +1605,15 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
                     [sessionId, opts.serviceKind, opts.serviceOf ?? null],
+                );
+            }
+
+            if (Object.prototype.hasOwnProperty.call(opts ?? {}, "contextTier") || opts?.modelResolutionSource) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions
+                        SET context_tier = $2, model_resolution_source = $3
+                      WHERE session_id = $1`,
+                    [sessionId, opts?.contextTier ?? null, opts?.modelResolutionSource ?? null],
                 );
             }
 
@@ -1636,6 +1682,19 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     private _visibilityCreateSupported: boolean | null = null;
+    private _providerSessionModelValidationSupported: boolean | null = null;
+
+    private async supportsProviderSessionModelValidation(): Promise<boolean> {
+        if (this._providerSessionModelValidationSupported !== null) {
+            return this._providerSessionModelValidationSupported;
+        }
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`"${this.sql.schema}".cms_provider_assert_session_model(text,text,text,boolean)`],
+        );
+        this._providerSessionModelValidationSupported = Boolean(rows[0]?.supported);
+        return this._providerSessionModelValidationSupported;
+    }
 
     /** Whether the DB has migration 0029's 10-arg cms_create_session overload. Cached per catalog instance. */
     private async supportsVisibilityCreate(): Promise<boolean> {
@@ -1656,6 +1715,8 @@ export class PgSessionCatalog implements SessionCatalog {
         if (updates.state !== undefined) jsonUpdates.state = updates.state;
         if (updates.model !== undefined) jsonUpdates.model = updates.model;
         if (updates.reasoningEffort !== undefined) jsonUpdates.reasoningEffort = updates.reasoningEffort;
+        if (updates.contextTier !== undefined) jsonUpdates.contextTier = updates.contextTier;
+        if (updates.modelResolutionSource !== undefined) jsonUpdates.modelResolutionSource = updates.modelResolutionSource;
         if (updates.lastActiveAt !== undefined) jsonUpdates.lastActiveAt = updates.lastActiveAt ? updates.lastActiveAt.toISOString() : null;
         if (updates.currentIteration !== undefined) jsonUpdates.currentIteration = updates.currentIteration;
         if (updates.lastError !== undefined) jsonUpdates.lastError = updates.lastError;
@@ -1711,7 +1772,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of
+            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -1728,7 +1789,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of
+            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -1751,7 +1812,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of
+            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -1778,7 +1839,8 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
+                    s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
@@ -3391,6 +3453,8 @@ function rowToSessionRow(row: any): SessionRow {
             : null,
         model: row.model ?? null,
         reasoningEffort: row.reasoning_effort ?? null,
+        contextTier: row.context_tier ?? null,
+        modelResolutionSource: row.model_resolution_source ?? null,
         createdAt: new Date(row.created_at),
         updatedAt: new Date(row.updated_at),
         lastActiveAt: row.last_active_at ? new Date(row.last_active_at) : null,

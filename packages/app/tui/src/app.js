@@ -291,15 +291,39 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         }
 
         // ── Admin Console keybindings ─────────────────────────
-        // The Admin Console replaces the workspace, so its input
-        // handling must run before the modal/normal path. The GHCP key
-        // editor overlay (`adminGhcpKey.editing`) acts like a modal:
-        // route every printable / navigation key into the cursor-aware
-        // controller mutators, and only Esc / Enter exit composition.
+        // The Admin Console replaces the workspace, so its input handling
+        // runs before the modal/normal path. Provider creation is a shared
+        // two-step name/credential wizard; the credential field is masked
+        // and ui-core clears it before awaiting the create call.
         const adminState = controller.getState().admin;
         const adminVisible = Boolean(adminState?.visible);
+        const adminProviderCreating = Boolean(adminState?.modelProviders?.create?.editing);
         const adminEditing = Boolean(adminState?.ghcpKey?.editing);
         const adminSaving = Boolean(adminState?.ghcpKey?.saving);
+        if (adminProviderCreating) {
+            const create = adminState.modelProviders.create;
+            if (key.escape) {
+                controller.cancelAdminProviderCreate();
+                return;
+            }
+            if (create.saving) return;
+            if (key.tab && create.stage === "name") {
+                controller.cycleAdminProviderCreateType();
+                return;
+            }
+            if (key.return) {
+                if (create.stage === "credential") controller.saveAdminProviderCreate().catch(() => {});
+                else controller.advanceAdminProviderCreate();
+                return;
+            }
+            if (key.leftArrow) { controller.moveAdminProviderCreateCursor(-1); return; }
+            if (key.rightArrow) { controller.moveAdminProviderCreateCursor(1); return; }
+            if (key.home) { controller.moveAdminProviderCreateCursorToBoundary("start"); return; }
+            if (key.end) { controller.moveAdminProviderCreateCursorToBoundary("end"); return; }
+            if (key.backspace || key.delete) { controller.deleteAdminProviderCreateChar(); return; }
+            if (!key.ctrl && !key.meta && input) controller.insertAdminProviderCreateText(input);
+            return;
+        }
         if (adminEditing) {
             // Block all input while saving so we don't enqueue mutations
             // against a stale draft. Esc still cancels in case the
@@ -325,18 +349,37 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (adminVisible) {
-            const adminSection = ["packages", "workers"].includes(adminState?.section) ? adminState.section : "ghcp";
+            const adminSection = ["providers", "packages", "workers"].includes(adminState?.section)
+                ? adminState.section
+                : "providers";
+            if (modal?.type === "confirm") {
+                if (key.escape || input === "n") {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (key.return || input === "y") {
+                    controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                    return;
+                }
+                return;
+            }
             if (key.escape) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_ADMIN_CONSOLE).catch(() => {});
                 return;
             }
-            // Settings-tree section toggles (Agents ⟷ GitHub Keys ⟷ Workers).
+            // Settings-tree section toggles (Model Providers ⟷ Agents ⟷ Workers).
             if (plainShortcut && input === "a" && adminSection !== "packages") {
                 controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_PACKAGES).catch(() => {});
                 return;
             }
-            if (plainShortcut && input === "g" && adminSection !== "ghcp") {
-                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_GHCP).catch(() => {});
+            if (plainShortcut && input === "m") {
+                controller.setAdminSection("providers");
+                controller.setAdminModelProviderPage("mine");
+                return;
+            }
+            if (plainShortcut && input === "M" && adminState?.profile?.isAdmin) {
+                controller.setAdminSection("providers");
+                controller.setAdminModelProviderPage("shared");
                 return;
             }
             if (plainShortcut && input === "w" && adminSection !== "workers"
@@ -347,6 +390,73 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             if (adminSection === "workers") {
                 if (plainShortcut && input === "r") {
                     controller.handleCommand(UI_COMMANDS.ADMIN_WORKERS_REFRESH).catch(() => {});
+                    return;
+                }
+                return;
+            }
+            if (adminSection === "providers") {
+                const selection = adminState.modelProviders?.selection || {};
+                const providerPage = adminState.modelProviders?.page === "shared" ? "shared" : "mine";
+                if (key.tab && providerPage === "shared") {
+                    controller.setAdminModelProviderSelection({
+                        focus: selection.focus === "agents" ? "providers" : "agents",
+                    });
+                    return;
+                }
+                if (plainShortcut && (input === "j" || key.downArrow)) {
+                    controller.stepAdminModelProviderSelection(1);
+                    return;
+                }
+                if (plainShortcut && (input === "k" || key.upArrow)) {
+                    controller.stepAdminModelProviderSelection(-1);
+                    return;
+                }
+                if (plainShortcut && input === "e" && providerPage === "mine") {
+                    controller.beginAdminCreateGithubProvider();
+                    return;
+                }
+                if (plainShortcut && input === "E" && providerPage === "shared" && adminState?.profile?.isAdmin) {
+                    controller.beginAdminCreateProvider({ shared: true });
+                    return;
+                }
+                if (plainShortcut && input === "d") {
+                    controller.requestDeleteSelectedAdminProvider();
+                    return;
+                }
+                if (plainShortcut && input === "r") {
+                    controller.refreshAdminModelProviders().catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "u" && providerPage === "mine") {
+                    controller.cycleAdminModelDefault("user").catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "l" && providerPage === "shared" && adminState?.profile?.isAdmin) {
+                    controller.cycleAdminModelDefault("cluster").catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "s" && providerPage === "shared" && adminState?.profile?.isAdmin) {
+                    controller.cycleAdminModelDefault("system").catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "C" && adminState?.profile?.isAdmin) {
+                    controller.cycleAdminModelDefault("system", { restartDisposition: "complete" }).catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "T" && adminState?.profile?.isAdmin) {
+                    controller.cycleAdminModelDefault("system", { restartDisposition: "terminate" }).catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "H" && adminState?.profile?.isAdmin) {
+                    controller.cycleAdminModelDefault("system", { restartDisposition: "hard_delete" }).catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "t" && providerPage === "mine" && adminState?.profile?.isAdmin) {
+                    controller.toggleSelectedAdminProviderSystemUse().catch(() => {});
+                    return;
+                }
+                if (plainShortcut && input === "o" && providerPage === "shared" && adminState?.profile?.isAdmin) {
+                    controller.cycleSelectedAdminSystemAgentOverride().catch(() => {});
                     return;
                 }
                 return;
@@ -364,14 +474,6 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_REFRESH).catch(() => {});
                     return;
                 }
-                return;
-            }
-            if (plainShortcut && input === "e") {
-                controller.handleCommand(UI_COMMANDS.ADMIN_BEGIN_EDIT_GHCP_KEY).catch(() => {});
-                return;
-            }
-            if (plainShortcut && input === "c" && adminState?.profile?.githubCopilotKeySet) {
-                controller.handleCommand(UI_COMMANDS.ADMIN_CLEAR_GHCP_KEY).catch(() => {});
                 return;
             }
             if (plainShortcut && input === "r") {

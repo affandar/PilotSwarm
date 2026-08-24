@@ -18,6 +18,9 @@ import { getPublicAuthContext } from "../auth/authz/engine.js";
 
 const ERROR_STATUS_BY_CODE = {
     INVALID_REQUEST: 400,
+    MODEL_AMBIGUOUS: 400,
+    MODEL_UNRESOLVED: 400,
+    REGENERATE_UNSUPPORTED: 409,
     // Artifact upload validation: declared content type contradicts the
     // sniffed bytes, or the body exceeds the artifact size caps.
     ARTIFACT_CONTENT_TYPE_MISMATCH: 400,
@@ -67,6 +70,9 @@ function sendError(res, error, fallbackStatus) {
     // message because it is actionable and non-sensitive.
     const message = status >= 500 ? "Internal server error" : (error?.message || String(error));
     const envelope = { ok: false, error: { code, message } };
+    if (status < 500 && Array.isArray(error?.candidates)) {
+        envelope.error.candidates = error.candidates;
+    }
     // Structured validation detail (agent-package uploads): per-rule codes +
     // messages the dialog renders verbatim. 4xx-only, never on faults.
     if (status < 500 && Array.isArray(error?.validation?.errors)) {
@@ -170,6 +176,33 @@ export function createApiRouter({ runtime, requireAuth }) {
             res.send(artifact.body);
         } catch (error) {
             sendError(res, error, error?.code === "FORBIDDEN" ? 403 : 404);
+        }
+    });
+
+    router.get("/agent-packages/:name/download", async (req, res) => {
+        try {
+            const selector = {
+                ...(req.query.scope ? { scope: String(req.query.scope) } : {}),
+                ...(req.query.ownerProvider && req.query.ownerSubject ? {
+                    owner: {
+                        provider: String(req.query.ownerProvider),
+                        subject: String(req.query.ownerSubject),
+                    },
+                } : {}),
+            };
+            const pkg = await runtime.downloadAgentPackageBinary(
+                req.params.name,
+                req.query.semver ? String(req.query.semver) : null,
+                req.auth,
+                selector,
+            );
+            res.setHeader("content-type", pkg.contentType || "application/gzip");
+            res.setHeader("content-disposition", `attachment; filename="${pkg.filename}"`);
+            res.setHeader("x-pilotswarm-package-version", pkg.semver);
+            res.setHeader("x-pilotswarm-package-sha256", pkg.sha256);
+            res.send(Buffer.from(pkg.body));
+        } catch (error) {
+            sendError(res, error);
         }
     });
 

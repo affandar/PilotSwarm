@@ -63,7 +63,10 @@ Model/provider guidance:
 
 - `.model_providers.example.json` is the checked-in shareable template.
 - The real `.model_providers.json` should stay local and gitignored because it may contain user-specific endpoint URLs even when keys remain env-backed.
-- Provider keys belong in `.env`, `.env.remote`, or Kubernetes secrets, not inside the model catalog.
+- New model catalogs contain provider types/models only. Provision runtime
+  provider credentials from `.env`, `.env.remote`, or Kubernetes secrets
+  through the management API, then set ordinary/system defaults explicitly.
+  Env references inside catalogs are legacy bootstrap compatibility only.
 - For AKS deployments, keep the live Kubernetes secret exactly in sync with local `.env.remote` for worker-facing vars: not more, not less. If a key is present locally, it should be present in AKS; if it is absent locally, it should be absent in AKS.
 - Removing a provider key from AKS only changes selectors after the secret is refreshed and the workers restart.
 - For Kubernetes secret creation, prefer `kubectl create secret generic ... --from-env-file=.env.remote` when values contain semicolons or other shell-significant characters, especially `AZURE_STORAGE_CONNECTION_STRING`.

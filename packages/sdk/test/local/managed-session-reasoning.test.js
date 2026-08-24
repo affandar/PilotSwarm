@@ -74,4 +74,19 @@ describe("managed session reasoning snapshots", () => {
             .toContain("Checking hydration and replay state.");
         expect(events.some((event) => event.eventType === "assistant.reasoning_delta")).toBe(true);
     });
+
+    it("requires a rebind when the resolved provider fingerprint changes", () => {
+        const managed = new ManagedSession("provider-rotation", new FakeCopilotSession(), {
+            model: "team:gpt",
+            providerFingerprint: "old",
+        });
+        expect(managed.requiresModelRebind({
+            model: "team:gpt",
+            providerFingerprint: "new",
+        })).toBe(true);
+        expect(managed.requiresModelRebind({
+            model: "team:gpt",
+            providerFingerprint: "old",
+        })).toBe(false);
+    });
 });

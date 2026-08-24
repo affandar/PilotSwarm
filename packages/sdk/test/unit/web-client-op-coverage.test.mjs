@@ -111,3 +111,12 @@ test("the ergonomic layer still rides the same wire with its own signatures", as
 
     assert.deepEqual(calls, [{ name: "renameSession", params: { sessionId: "s2", title: "New Title" } }]);
 });
+
+test("package scope selector never overwrites the Web target scope", async () => {
+    const { client, calls } = clientWithFakeApi();
+    await client.setAgentPackageScope("pkg", "shared", null, false, { scope: "user" });
+    assert.deepEqual(calls, [{
+        name: "setAgentPackageScope",
+        params: { name: "pkg", scope: "shared" },
+    }]);
+});

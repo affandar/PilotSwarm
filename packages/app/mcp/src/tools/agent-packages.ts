@@ -16,7 +16,7 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 export function registerAgentPackageTools(server: McpServer, ctx: ServerContext) {
     const web = ctx.web;
     if (!web || ctx.agentMgmt === "off") return;
-    const ops = web.ops;
+    const owner = null;
 
     server.registerTool(
         "list_agent_packages",
@@ -29,7 +29,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: {},
         },
         withToolErrors(async () => {
-            const packages = await ops.listAgentPackages();
+            const packages = await ctx.mgmt.listAgentPackages(owner, ctx.admin);
             return jsonResult({ count: Array.isArray(packages) ? packages.length : 0, packages });
         }),
     );
@@ -48,11 +48,18 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
         },
         withToolErrors(async ({ name, include_tree, semver, scope }) => {
             const sel = scope ? { scope } : {};
-            const detail = await ops.getAgentPackage({ name, ...sel });
+            const detail = await ctx.mgmt.getAgentPackage(name, owner, ctx.admin, sel);
             if (!detail) return errorResult(`package "${name}" not found or not visible to you`, { name });
-            const result: Record<string, unknown> = { package: detail };
+            const query = new URLSearchParams();
+            if (semver) query.set("semver", semver);
+            if (scope) query.set("scope", scope);
+            const suffix = query.toString() ? `?${query}` : "";
+            const result: Record<string, unknown> = {
+                package: detail,
+                download_url: `/api/v1/agent-packages/${encodeURIComponent(name)}/download${suffix}`,
+            };
             if (include_tree) {
-                result.tree = await ops.getAgentPackageTree({ name, ...(semver ? { semver } : {}), ...sel });
+                result.tree = await ctx.mgmt.getAgentPackageTree(name, semver ?? null, owner, ctx.admin, sel);
             }
             return jsonResult(result);
         }),
@@ -71,7 +78,9 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, file_path, semver, scope }) => {
-            const file = await ops.getAgentPackageFile({ name, filePath: file_path, ...(semver ? { semver } : {}), ...(scope ? { scope } : {}) });
+            const file = await ctx.mgmt.getAgentPackageFile(
+                name, semver ?? null, file_path, owner, ctx.admin, scope ? { scope } : null,
+            );
             return jsonResult(file);
         }),
     );
@@ -97,10 +106,10 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ files, scope }) => {
-            const outcome = await ops.uploadAgentPackage({
-                files: files.map((f: { path: string; content_base64: string }) => ({ path: f.path, contentBase64: f.content_base64 })),
-                scope: scope ?? "user",
-            });
+            const outcome = await ctx.mgmt.uploadAgentPackage(
+                files.map((f: { path: string; content_base64: string }) => ({ path: f.path, contentBase64: f.content_base64 })),
+                scope ?? "user", owner, ctx.admin,
+            );
             return jsonResult(outcome);
         }),
     );
@@ -116,7 +125,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, scope }) => {
-            await ops.setAgentPackageScope({ name, scope });
+            await ctx.mgmt.setAgentPackageScope(name, scope, owner, ctx.admin);
             return jsonResult({ ok: true, name, scope });
         }),
     );
@@ -133,10 +142,18 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
                 name: z.string().min(1),
                 semver: z.string().optional().describe("Source version (default: the source copy's active version)"),
                 target_scope: z.enum(["shared", "user"]).describe("Destination scope; the source is the same-named package in the other scope"),
+                owner_provider: z.string().optional().describe("Admin only: provider of another user's source copy"),
+                owner_subject: z.string().optional().describe("Admin only: subject of another user's source copy"),
             },
         },
-        withToolErrors(async ({ name, semver, target_scope }) => {
-            const outcome = await ops.republishAgentPackageVersion({ name, ...(semver ? { semver } : {}), targetScope: target_scope });
+        withToolErrors(async ({ name, semver, target_scope, owner_provider, owner_subject }) => {
+            const outcome = await ctx.mgmt.republishAgentPackageVersion(
+                name, semver ?? null, target_scope, owner, ctx.admin, {
+                    selector: owner_provider && owner_subject
+                        ? { owner: { provider: owner_provider, subject: owner_subject } }
+                        : null,
+                },
+            );
             return jsonResult(outcome);
         }),
     );
@@ -153,7 +170,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, semver, scope }) => {
-            await ops.pinAgentPackageVersion({ name, semver, ...(scope ? { scope } : {}) });
+            await ctx.mgmt.pinAgentPackageVersion(name, semver, owner, ctx.admin, scope ? { scope } : null);
             return jsonResult({ ok: true, name, active: semver, ...(scope ? { scope } : {}) });
         }),
     );
@@ -170,7 +187,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, enabled, scope }) => {
-            await ops.setAgentPackageEnabled({ name, enabled, ...(scope ? { scope } : {}) });
+            await ctx.mgmt.setAgentPackageEnabled(name, enabled, owner, ctx.admin, scope ? { scope } : null);
             return jsonResult({ ok: true, name, enabled, ...(scope ? { scope } : {}) });
         }),
     );
@@ -187,7 +204,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             },
         },
         withToolErrors(async ({ name, scope }) => {
-            await ops.deleteAgentPackage({ name, ...(scope ? { scope } : {}) });
+            await ctx.mgmt.deleteAgentPackage(name, owner, ctx.admin, scope ? { scope } : null);
             return jsonResult({ ok: true, deleted: name, ...(scope ? { scope } : {}) });
         }),
     );

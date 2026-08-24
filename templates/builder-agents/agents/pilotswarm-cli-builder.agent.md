@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.4.0
 name: pilotswarm-cli-builder
 description: "Use when building a plugin-driven CLI/TUI app on top of PilotSwarm. Scaffolds plugin.json branding, agents, skills, worker modules, and CLI run instructions."
 ---
@@ -18,11 +18,15 @@ Your job is to create or update application code in the user's repository, not t
 - create `plugin/plugin.json` with TUI branding when appropriate
 - create `agents/*.agent.md`, `skills/*/SKILL.md`, and optional `session-policy.json`
 - build `.env.example` and a gitignored `.env` by copying/adapting the PilotSwarm repo's example env shape when the user wants runnable scaffolding
-- build `.model_providers.example.json` and a gitignored `.model_providers.json` by copying/adapting the PilotSwarm repo's example model-catalog shape when the user wants runnable scaffolding
+- build type-only `.model_providers.example.json` and `.model_providers.json`
+  catalogs when the user wants custom model metadata, then provision runtime
+  providers/defaults through Admin or management APIs
 - create or update worker-side tool registration modules
 - wire local development commands, checked-in scripts, and README guidance
 - add a local database cleanup script for local-first scaffolds that also cleans local artifact files and session state
-- treat `.model_providers.example.json` as the checked-in catalog template when the app needs a custom model catalog, and keep the real `.model_providers.json` local/gitignored with actual endpoint details outside source control
+- keep catalogs free of credentials and `defaultModel`; runtime provider
+  instances own credentials, ordinary defaults use `setModelDefault`, and
+  system defaults use `setSystemModelDefault`
 - ensure generated scripts include a shebang, are made executable, and that executable bits are verified
 - use the DevOps sample and public docs as the canonical reference shape
 - assume app `default.agent.md` files are app-wide overlays layered under PilotSwarm's embedded framework base
@@ -52,8 +56,10 @@ The shipped TUI has two modes:
   (`pilotswarm auth login|status|logout --api-url <url>`; `--device-code` for
   headless hosts).
 
-Scaffold `.env` accordingly: `DATABASE_URL` and `GITHUB_TOKEN` belong to the
-local/worker side; remote attach instructions should carry only the portal
+Scaffold `.env` accordingly: `DATABASE_URL` belongs to the local/worker side;
+`GITHUB_TOKEN` is an optional bootstrap credential, not the long-term provider
+configuration. Runtime shared/personal providers are created in Admin Console
+or through management APIs. Remote attach instructions carry only the portal
 URL. Reference: `https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md`
 
 ## Constraints
@@ -81,7 +87,8 @@ Before writing files, gather enough information to drive the scaffold.
 Required questions:
 
 1. Should the app allow generic sessions, or should users mainly work through named agents and a restrictive session policy?
-2. What should be used for `GITHUB_TOKEN` in `.env`?
+2. Should local startup use a bootstrap `GITHUB_TOKEN`, or will an operator
+  create the first runtime provider through Admin Console/management API?
 3. What should be used for `DATABASE_URL` in `.env`?
 4. What local database name should the scaffold use for local development? If the user does not care, default it explicitly to the workspace name.
 5. If the user did not name agents, what workflows should the app support so you can derive the initial agent set?

@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.5.0
+version: 1.7.0
 name: pilotswarm-sdk-builder
 description: "Use when building an SDK-first application or service on top of PilotSwarm. Scaffolds the client/worker split, layered plugin structure, tools, and tests."
 ---
@@ -17,8 +17,12 @@ Your job is to create or update the user's application code, plugin files, and w
 - scaffold SDK app structure around a clean client/worker split
 - create plugin files for prompts, skills, MCP config, and optional session policy
 - build `.env.example` and a gitignored `.env` by copying/adapting the PilotSwarm repo's example env shape when the user wants runnable scaffolding
-- build `.model_providers.example.json` and a gitignored `.model_providers.json` by copying/adapting the PilotSwarm repo's example model-catalog shape when the user wants runnable scaffolding
-- treat `.model_providers.example.json` as the checked-in catalog template when the app needs a custom model catalog, and keep the real `.model_providers.json` local/gitignored with actual endpoint details outside source control
+- build type-only `.model_providers.example.json` and `.model_providers.json`
+  catalogs when the user wants custom model metadata
+- provision runtime provider credentials through `PilotSwarmManagementClient`
+  or Admin Console; use `setModelDefault` for ordinary sessions and
+  `setSystemModelDefault` for system machinery, never catalog credentials or
+  `defaultModel`
 - register worker-side tool handlers correctly and reference them via `toolNames`
 - add tests and runnable local examples when practical
 - generate a local cleanup script that resets database schemas, session state, session store archives, and local artifact files
@@ -90,7 +94,10 @@ Before writing files, gather enough information to drive the scaffold.
 Required questions:
 
 1. Should the app allow generic sessions, or should users mainly work through named agents and a restrictive session policy?
-2. Which secrets or connection values should be placed in `.env` now? `GITHUB_TOKEN` and `DATABASE_URL` are worker-side; client processes targeting a shared deployment need only the portal URL (`apiUrl`).
+2. Which worker-side connection values should be placed in `.env` now?
+  `DATABASE_URL` is required; `GITHUB_TOKEN` is optional bootstrap
+  compatibility because runtime provider credentials belong in CMS. Client
+  processes targeting a shared deployment need only the portal URL (`apiUrl`).
 3. If the user did not name agents, what workflows should the app support so you can derive the initial agent set?
 4. Which deployment topology should the scaffold target?
 	- local-first with Docker Postgres only

@@ -47,11 +47,12 @@ async function makeTransport(env) {
     delete process.env.AZURE_STORAGE_CONNECTION_STRING;
     delete process.env.AZURE_STORAGE_ACCOUNT_URL;
     const transport = new NodeSdkTransport({ store: env.store, mode: "remote" });
+    await transport.mgmt.start();
     return transport;
 }
 
 async function closeTransport(transport) {
-    if (transport._agentPkgCatalog) await transport._agentPkgCatalog.close();
+    await transport.mgmt.stop();
 }
 
 describe("agent-package portal ops", () => {
@@ -102,6 +103,12 @@ describe("agent-package portal ops", () => {
             assertEqual(file.encoding, "utf8");
             assert(file.content.includes("You are the portal fixture."), "preview returns file content");
             assertEqual(file.truncated, false);
+
+            const download = await transport.downloadAgentPackage("portal-kit", null, ALICE, false);
+            assertEqual(download.semver, "1.0.0");
+            assertEqual(download.contentType, "application/gzip");
+            assert(download.body.length > 0, "full package tarball bytes are returned");
+            assertEqual(download.sha256, outcome.sha256, "download identifies the verified package content");
 
             let missing = null;
             try {
@@ -250,6 +257,46 @@ describe("agent-package portal ops", () => {
             assert(reserved.validation.errors.some((e) => e.code === "reserved_agent_name"),
                 "fuzzy sweeper spelling must be rejected");
         } finally {
+            await closeTransport(transport);
+        }
+    });
+
+    it("admin republish preserves an explicit source owner selector", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const transport = await makeTransport(env);
+        const name = "admin-republish";
+        try {
+            await transport.uploadAgentPackage(
+                fixtureFiles({ name, version: "1.0.0", agentName: "admin-republish-agent" }),
+                "user", BOB, false,
+            );
+            await transport.uploadAgentPackage(
+                fixtureFiles({ name, version: "1.0.0", agentName: "admin-republish-agent" }),
+                "user", ALICE, false,
+            );
+            let ambiguousDelete = null;
+            try {
+                await transport.deleteAgentPackage(name, null, true);
+            } catch (error) { ambiguousDelete = error; }
+            assertEqual(ambiguousDelete?.code, "CONFLICT", "admin bare-name ambiguity is a typed conflict");
+            assert(String(ambiguousDelete?.message).includes("name an owner or scope"),
+                "ambiguity explains how to select a copy");
+            const outcome = await transport.republishAgentPackageVersion(
+                name, "1.0.0", "shared", ALICE, true,
+                { selector: { owner: BOB } },
+            );
+            assertEqual(outcome.status, "published");
+            const shared = await transport.getAgentPackage(name, ALICE, true, { scope: "shared" });
+            assert(shared, "admin republished Bob's selected user copy to shared");
+            assertEqual(shared.versions[0].semver, "1.0.0");
+            assert(String(shared.versions[0].createdBy).includes("republish of user"),
+                "republish provenance names the source scope");
+            assert(String(shared.versions[0].createdBy).includes("alice@test"),
+                "republish provenance names the acting admin");
+        } finally {
+            await transport.deleteAgentPackage(name, BOB, true, { scope: "user", owner: BOB }).catch(() => {});
+            await transport.deleteAgentPackage(name, ALICE, true, { scope: "user", owner: ALICE }).catch(() => {});
+            await transport.deleteAgentPackage(name, ALICE, true, { scope: "shared" }).catch(() => {});
             await closeTransport(transport);
         }
     });

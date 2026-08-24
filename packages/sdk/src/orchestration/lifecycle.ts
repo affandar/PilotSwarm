@@ -459,6 +459,9 @@ export function buildContinueInput(
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
+        // A queued-while-blocked prompt must survive the epoch boundary too,
+        // or continue-as-new becomes one more way to destroy it.
+        ...(state.budgetStash && state.budgetStash.length > 0 ? { budgetStash: state.budgetStash } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
@@ -577,13 +580,19 @@ export function* handleCommand(
             runtime.state.config = {
                 ...runtime.state.config,
                 model: newModel,
-                ...(hasEffort ? { reasoningEffort: (newEffort ?? undefined) as typeof runtime.state.config.reasoningEffort } : {}),
-                ...(hasContextTier ? { contextTier: (newContextTier ?? undefined) as typeof runtime.state.config.contextTier } : {}),
+                ...(hasEffort ? { reasoningEffort: newEffort as typeof runtime.state.config.reasoningEffort } : {}),
+                ...(hasContextTier ? { contextTier: newContextTier as typeof runtime.state.config.contextTier } : {}),
             };
             const newModelLabel = newEffort ? `${newModel}:${newEffort}` : newModel;
             runtime.state.runtimeModelNotice = `Runtime model for this turn is ${newModelLabel}. If asked what model you are using, answer this value.`;
             yield* captureModelSwitchInterruptedTimer(runtime, newModelLabel);
-            yield runtime.manager.updateSessionModel(runtime.input.sessionId, newModel, newEffort);
+            yield runtime.manager.updateSessionModel(
+                runtime.input.sessionId,
+                newModel,
+                newEffort,
+                newContextTier,
+                String(cmdMsg.args?.source ?? "user"),
+            );
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.model_changed",
                 data: { oldModel, newModel, oldReasoningEffort: oldEffort, newReasoningEffort: newEffort, oldContextTier, newContextTier, source: cmdMsg.args?.source ?? "user" },

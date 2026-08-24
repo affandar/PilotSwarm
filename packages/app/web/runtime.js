@@ -148,6 +148,27 @@ function principalLabel(authContext) {
     return p?.email || p?.displayName || p?.subject || "";
 }
 
+// A ProviderStore refusal arrives as a ProviderError carrying one of these
+// codes. Stamping `status` is how authz.js already hands the API router a
+// decision (see forbiddenError/notFoundError); without it a policy refusal
+// would fall through to the 500 branch and lose its message.
+const PROVIDER_ERROR_STATUS = {
+    PROVIDER_NOT_FOUND: 404,
+    PROVIDER_FORBIDDEN: 403,
+    PROVIDER_CONFLICT: 409,
+    PROVIDER_INVALID: 400,
+    // "…is selected by a default or system-agent override; clear that
+    // routing first" — a refusal whose message is the whole value. Without
+    // a status it falls to the 500 branch, which scrubs the message.
+    PROVIDER_IN_USE: 409,
+};
+
+/** `?names=a,b` off the wire, or an array from the legacy /api/rpc caller. */
+function providerNames(raw) {
+    const list = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+    return list.map((name) => String(name || "").trim()).filter(Boolean);
+}
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
@@ -578,6 +599,7 @@ export class PortalRuntime {
             modelsByProvider: typeof this.transport.getModelsByProvider === "function"
                 ? this.transport.getModelsByProvider()
                 : [],
+            modelsByProviderKind: "provider_type",
             creatableAgents: typeof this.transport.listCreatableAgents === "function"
                 // Viewer-less bootstrap: baked + shared-scope only (null
                 // principal, non-admin) so no user-scope package ever rides
@@ -873,7 +895,45 @@ export class PortalRuntime {
             case "deleteAgentPackage":
                 return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin, packageSelectorParams(safeParams));
             case "republishAgentPackageVersion":
-                return this.transport.republishAgentPackageVersion(safeParams.name, safeParams.semver ?? null, safeParams.targetScope, owner, isAdmin);
+                return this.transport.republishAgentPackageVersion(
+                    safeParams.name, safeParams.semver ?? null, safeParams.targetScope,
+                    owner, isAdmin, {
+                        selector: packageSelectorParams(safeParams),
+                        createdBy: principalLabel(authContext),
+                    },
+                );
+
+            // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──
+            // One family, one handler. `owner` is the authenticated
+            // principal and `isAdmin` the resolved role — both server-side,
+            // never off the wire.
+            case "listProviders":
+            case "getProviderStatus":
+            case "getProviderUsageGrid":
+            case "createProvider":
+            case "createMyProvider":
+            case "deleteProvider":
+            case "deleteMyProvider":
+            case "clearProviderRoutingDependencies":
+            case "setProviderLimit":
+            case "removeProviderLimit":
+            case "setProviderAllowance":
+            case "setProviderHold":
+            case "getDefaults":
+            case "getModelDefaults":
+            case "setModelDefault":
+            case "setProviderSystemUse":
+            case "getLegacyProviderMigrationStatus":
+            case "adoptLegacySystemGitHubCopilotKey":
+            case "setSystemModelDefault":
+            case "setSystemSessionModel":
+            case "clearSystemSessionModel":
+            case "setClusterDefault":
+            case "setMyDefault":
+            case "getProviderUsage":
+            case "listPausedSessions":
+                return this._callProvider(method, safeParams, { principal: owner, isAdmin });
+
             case "sendMessage": {
                 // Canvas actions are CREATOR-only — not shared writers, not
                 // admins. The canvas mutates: two viewers can be looking at
@@ -1037,7 +1097,7 @@ export class PortalRuntime {
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":
-                return this.transport.listModels();
+                return this.transport.listModels({ principal: owner, isAdmin });
             case "listArtifacts":
                 return this.transport.listArtifacts(safeParams.sessionId);
             case "getArtifactMetadata":
@@ -1095,6 +1155,156 @@ export class PortalRuntime {
     }
 
     /**
+     * The provider-budget operations
+     * (docs/proposals/providers-and-budgets-surface.md).
+     *
+     * Nothing here asks whether the viewer may do the thing. The
+     * `cms_provider_*` procedures decide that — an admin and a plain user
+     * call the same operation and the database gives them different answers
+     * — so this method only reshapes the wire params and turns the refusal
+     * code into an HTTP status.
+     *
+     * The management client is reached directly rather than through a
+     * transport wrapper, like the other viewer-carrying calls above
+     * (listSessionsPage, getSession, placeSessionsInGroup): a wrapper would
+     * stamp the transport's own current user over the request's viewer.
+     */
+    async _callProvider(method, params, viewer) {
+        const mgmt = this.transport.mgmt;
+        try {
+            switch (method) {
+                case "listProviders":
+                    return await mgmt.listProviders(viewer);
+                case "getProviderStatus":
+                    return await mgmt.getProviderStatus(viewer, providerNames(params.names));
+                // The table's one read. The viewer is stamped here, from the
+                // authenticated request — the wire carries no user id, so no
+                // caller can ask for somebody else's "your usage" column.
+                case "getProviderUsageGrid":
+                    return await mgmt.getProviderUsageGrid(viewer);
+                case "createProvider":
+                    return await mgmt.createProvider(viewer, {
+                        name: params.name,
+                        type: params.type,
+                        credentials: params.credentials,
+                        baseUrl: params.baseUrl,
+                    });
+                case "createMyProvider":
+                    return await mgmt.createMyProvider(viewer, {
+                        name: params.name,
+                        type: params.type,
+                        credentials: params.credentials,
+                        baseUrl: params.baseUrl,
+                    });
+                case "deleteProvider":
+                    return await mgmt.deleteProvider(viewer, params.name);
+                case "deleteMyProvider":
+                    return await mgmt.deleteMyProvider(viewer, params.name);
+                case "clearProviderRoutingDependencies":
+                    return await mgmt.clearProviderRoutingDependencies(viewer, params.name);
+                case "setProviderLimit":
+                    return await mgmt.setProviderLimit(viewer, {
+                        provider: params.name,
+                        period: params.period,
+                        model: params.model ?? null,
+                        tokens: params.tokens,
+                    });
+                case "removeProviderLimit":
+                    return await mgmt.removeProviderLimit(viewer, {
+                        provider: params.name,
+                        period: params.period,
+                        model: params.model ?? null,
+                    });
+                case "setProviderAllowance":
+                    return await mgmt.setProviderAllowance(viewer, { provider: params.name, pct: params.pct });
+                case "setProviderHold":
+                    return await mgmt.setProviderHold(viewer, {
+                        provider: params.name,
+                        untilUtc: params.untilUtc ?? null,
+                        release: params.release === true,
+                    });
+                case "getDefaults":
+                    return await mgmt.getDefaults(viewer);
+                case "getModelDefaults":
+                    return await mgmt.getModelDefaults(viewer);
+                case "setModelDefault":
+                    return await mgmt.setModelDefault(viewer, {
+                        scope: params.scope,
+                        provider: params.provider ?? null,
+                        model: params.model ?? null,
+                        reasoningEffort: params.reasoningEffort ?? null,
+                        contextTier: params.contextTier ?? null,
+                    });
+                case "setProviderSystemUse":
+                    return await mgmt.setProviderSystemUse(viewer, {
+                        provider: params.name,
+                        enabled: params.enabled === true,
+                    });
+                case "getLegacyProviderMigrationStatus":
+                    return await mgmt.getLegacyProviderMigrationStatus(viewer);
+                case "adoptLegacySystemGitHubCopilotKey":
+                    return await mgmt.adoptLegacySystemGitHubCopilotKey(viewer, {
+                        name: params.name,
+                    });
+                case "setSystemModelDefault":
+                    return await mgmt.setSystemModelDefault(viewer, {
+                        provider: params.provider ?? null,
+                        model: params.model ?? null,
+                        reasoningEffort: params.reasoningEffort ?? null,
+                        contextTier: params.contextTier ?? null,
+                        restartExisting: params.restartExisting || false,
+                    });
+                case "setSystemSessionModel":
+                    return await mgmt.setSystemSessionModel(viewer, {
+                        agentId: params.agentId,
+                        provider: params.provider,
+                        model: params.model,
+                        reasoningEffort: params.reasoningEffort ?? null,
+                        contextTier: params.contextTier ?? null,
+                    });
+                case "clearSystemSessionModel":
+                    return await mgmt.clearSystemSessionModel(viewer, params.agentId);
+                case "setClusterDefault":
+                    return await mgmt.setClusterDefault(viewer, {
+                        provider: params.provider ?? null,
+                        model: params.model ?? null,
+                        reasoning: params.reasoning ?? null,
+                        context: params.context ?? null,
+                    });
+                case "setMyDefault":
+                    return await mgmt.setMyDefault(viewer, {
+                        provider: params.provider ?? null,
+                        model: params.model ?? null,
+                        reasoning: params.reasoning ?? null,
+                        context: params.context ?? null,
+                    });
+                case "getProviderUsage":
+                    return await mgmt.getProviderUsage(viewer, {
+                        days: params.days,
+                        // Resolved from the authenticated caller, not from the
+                        // wire: a boolean cannot name somebody else.
+                        mine: params.mine === true || params.mine === "true",
+                        ownerUserId: params.ownerUserId ?? null,
+                        provider: params.provider ?? null,
+                        model: params.model ?? null,
+                        sessionId: params.sessionId ?? null,
+                        chargeClass: params.chargeClass ?? null,
+                        dimension: params.dimension ?? null,
+                        limit: params.limit,
+                    });
+                case "listPausedSessions":
+                    return await mgmt.listPausedSessions(viewer);
+                default:
+                    throw new Error(`Unsupported portal RPC method: ${method}`);
+            }
+        } catch (error) {
+            const status = PROVIDER_ERROR_STATUS[error?.code];
+            if (status) error.status = status;
+            throw error;
+        }
+    }
+
+    /**
      * Server-stamped message sender: identity from the validated auth
      * context, relation from the access snapshot. Never trusts
      * client-supplied identity fields; `origin` is client-declared display
@@ -1143,6 +1353,14 @@ export class PortalRuntime {
             source: "agent",
             body: Buffer.from(content, "utf8"),
         };
+    }
+
+    async downloadAgentPackageBinary(name, semver, authContext = null, selector = null) {
+        await this.start();
+        const owner = normalizeSessionOwner(authContext);
+        const role = authContext?.authorization?.role;
+        const isAdmin = role === "admin" || role === "anonymous";
+        return this.transport.downloadAgentPackage(name, semver ?? null, owner, isAdmin, selector);
     }
 
     /** session:read gate for the bespoke (non-dispatched) artifact routes. */

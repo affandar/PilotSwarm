@@ -17,15 +17,8 @@ import {
     ATTACHMENT_MAX_BYTES,
     ATTACHMENTS_MAX_COUNT,
     ATTACHMENTS_MAX_TOTAL_BYTES,
-    PgSessionCatalog,
-    publishAgentPackageDir,
-    publishPackedAgentPackage,
-    deleteAgentPackageEverywhere,
-    fetchAgentPackageTarGz,
-    readAgentPackageTarGz,
     listBundledAgentNames,
     normalizeAgentName,
-    AgentPackageValidationError,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -542,6 +535,7 @@ export class NodeSdkTransport {
             }
             : {};
         this.client = null;
+        this.artifactStore = createArtifactStore();
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
@@ -550,8 +544,8 @@ export class NodeSdkTransport {
             ...this.enhancedFacts,
             pluginDirs: this.pluginDirs,
             blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
+            artifactStore: this.artifactStore,
         });
-        this.artifactStore = createArtifactStore();
         this.sessionHandles = new Map();
         this.workers = [];
         this.sessionPolicy = null;
@@ -619,10 +613,7 @@ export class NodeSdkTransport {
             this.client ? this.client.stop() : Promise.resolve(),
             this.mgmt.stop(),
             stopEmbeddedWorkers(this.workers),
-            this._agentPkgCatalog ? this._agentPkgCatalog.close() : Promise.resolve(),
         ]);
-        this._agentPkgCatalog = null;
-        this._agentPkgCatalogPromise = null;
         this.client = null;
     }
 
@@ -664,13 +655,8 @@ export class NodeSdkTransport {
 
     /** Registry package agents as creatable-agent entries, viewer-scoped. */
     async _listRegistryCreatableAgents(viewer, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return [];
         try {
-            const packages = await ctx.catalog.listAgentPackages(
-                viewer ? { provider: viewer.provider, subject: viewer.subject } : null,
-                Boolean(isAdmin),
-            );
+            const packages = await this.mgmt.listAgentPackages(viewer, Boolean(isAdmin));
             // Ownership is decided HERE, where the viewer's identity is known.
             // An ADMIN sees every user's user-scoped packages, so "scope is
             // user" does not mean "mine" — grouping on scope alone filed other
@@ -748,116 +734,19 @@ export class NodeSdkTransport {
         return match.name;
     }
 
-    /**
-     * Lazy direct-store registry context; null in pure web/client setups AND
-     * on init failure. A failed init is NEVER cached — the portal boots
-     * alongside 8 workers all polling the migration advisory lock, and one
-     * transient contention loss must not permanently reduce the catalog to
-     * baked agents (observed live: a cached rejection made every later
-     * listCreatableAgents union silently registry-less until pod restart).
-     */
-    async _agentPackagesContext() {
-        if (!this.store || !this.artifactStore) return null;
-        if (this._agentPkgCatalog) {
-            return { catalog: this._agentPkgCatalog, artifactStore: this.artifactStore };
-        }
-        try {
-            this._agentPkgCatalogPromise ??= (async () => {
-                const catalog = await PgSessionCatalog.create(this.store, process.env.PILOTSWARM_CMS_SCHEMA || undefined, {
-                    ...(this.useManagedIdentity !== undefined ? { useManagedIdentity: this.useManagedIdentity } : {}),
-                    ...(this.aadDbUser ? { aadUser: this.aadDbUser } : {}),
-                });
-                await catalog.initialize();
-                this._agentPkgCatalog = catalog;
-                return catalog;
-            })();
-            await this._agentPkgCatalogPromise;
-        } catch (err) {
-            this._agentPkgCatalogPromise = null;
-            console.warn(`[transport] agent-package registry init failed (will retry on next call): ${err?.message || err}`);
-            return null;
-        }
-        return { catalog: this._agentPkgCatalog, artifactStore: this.artifactStore };
-    }
-
-    _requirePrincipal(owner, isAdmin) {
-        // Shape-checked, not just truthy: the portal runtime always passes a
-        // real principal here, but a caller that skips the owner/isAdmin args
-        // (direct-mode TUI) must fail closed with this clear error — never
-        // flow a garbage object into the registry as an identity.
-        if (owner && typeof owner.provider === "string" && typeof owner.subject === "string") {
-            return { provider: owner.provider, subject: owner.subject };
-        }
-        if (isAdmin) return null;   // anonymous deployments: admin-equivalent
-        const err = new Error("agent-package operations require an authenticated principal");
-        err.code = "FORBIDDEN";
-        throw err;
-    }
-
-    _createdByLabel(owner) {
-        return owner?.email || owner?.displayName || (owner ? `${owner.provider}:${owner.subject}` : "system");
-    }
-
-    /**
-     * The registry raises typed failures as MESSAGE PREFIXES
-     * (AGENT_PACKAGE_FORBIDDEN: …). Attach the matching error.code so the
-     * router maps them to 403/404/409 instead of a generic 500 — without
-     * this, "you don't own this package" reaches the browser as
-     * "Internal server error".
-     */
-    async _mapAgentPackageErrors(run) {
-        try {
-            return await run();
-        } catch (error) {
-            const message = String(error?.message || "");
-            if (!error?.code) {
-                if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*FORBIDDEN/.test(message)) error.code = "FORBIDDEN";
-                else if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*NOT_FOUND/.test(message)) error.code = "NOT_FOUND";
-                else if (/AGENT_PACKAGE_(?:SEMVER_CONFLICT|SCOPE_MISMATCH)/.test(message)) error.code = "CONFLICT";
-                else if (/AGENT_PACKAGE_BAD_SCOPE/.test(message)) error.code = "INVALID_REQUEST";
-            }
-            throw error;
-        }
-    }
-
     // ── Agent packages: registry CRUD (portal ops surface) ──────
 
-    async listAgentPackages(owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return [];
-        return ctx.catalog.listAgentPackages(this._requirePrincipal(owner, isAdmin), Boolean(isAdmin));
-    }
-
-    /**
-     * Normalize wire selector params ({scope, ownerProvider, ownerSubject})
-     * into the catalog's AgentPackageSelector — which same-named copy an op
-     * means. Authorization is NOT decided here: the registry procs re-check
-     * ownership against the RESOLVED row, so a non-admin naming someone
-     * else's copy still gets FORBIDDEN/invisible from the database.
-     */
-    _packageSelector(selector, isAdmin = false) {
-        if (!selector || typeof selector !== "object") return null;
-        const scope = selector.scope === "shared" || selector.scope === "user" ? selector.scope : null;
-        const provider = typeof selector.ownerProvider === "string" && selector.ownerProvider.trim() ? selector.ownerProvider.trim() : null;
-        const subject = typeof selector.ownerSubject === "string" && selector.ownerSubject.trim() ? selector.ownerSubject.trim() : null;
-        // The owner override targets ANOTHER user's copy, which only an admin
-        // may do. For a non-admin it is dropped, NOT honored-then-denied:
-        // resolving a foreign package and letting the proc answer FORBIDDEN vs
-        // NOT_FOUND would be an existence oracle. Dropped, a non-admin's
-        // selector falls back to own-then-shared resolution, which can only
-        // ever reach their own or shared packages.
-        const owner = isAdmin && provider && subject ? { provider, subject } : null;
-        if (!scope && !owner) return null;
-        return {
-            ...(scope ? { scope } : {}),
-            ...(owner ? { owner } : {}),
-        };
+    async listAgentPackages(owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.listAgentPackages(owner, Boolean(isAdmin));
     }
 
     async getAgentPackage(name, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return null;
-        return ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin)));
+        if (arguments.length <= 2) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.getAgentPackage(name, owner, Boolean(isAdmin), selector);
     }
 
 
@@ -865,68 +754,47 @@ export class NodeSdkTransport {
 
 
     async listAgentWorkerState() {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return [];
-        return ctx.catalog.listAgentWorkerState();
+        return this.mgmt.listAgentWorkerState();
     }
 
     async listWorkers() {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) return [];
-        return ctx.catalog.listWorkers();
+        return this.mgmt.listWorkers();
     }
 
     async setAgentPackageScope(name, scope, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const targetScope = scope === "shared" ? "shared" : "user";
-        const ownerOverride = this._packageSelector(selector, Boolean(isAdmin))?.owner ?? null;
-        // The SOURCE copy is implied by the direction, but the two directions
-        // need different selectors — and passing an explicit scope selector
-        // DISABLES the SQL admin/NULL-owner fallback (it fires only when the
-        // selector scope is NULL), so name-only is used wherever it resolves
-        // correctly:
-        //   demote (target user): must move the globally-unique SHARED copy,
-        //     so select scope 'shared' explicitly — the shared row is unique,
-        //     no owner fallback is needed to find it.
-        //   promote (target shared): ordinary own-copy-then-shared resolution
-        //     already lands on the caller's own USER copy, and keeping the
-        //     selector NULL preserves the admin/NULL-owner fallback for
-        //     packages minted without an owner. An admin acting on ANOTHER
-        //     user's copy passes that owner explicitly.
-        let sourceSelector = null;
-        if (targetScope === "user") {
-            sourceSelector = { scope: "shared", ...(ownerOverride ? { owner: ownerOverride } : {}) };
-        } else if (ownerOverride) {
-            sourceSelector = { scope: "user", owner: ownerOverride };
+        if (arguments.length <= 3) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
         }
-        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageScope(name, targetScope,
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), sourceSelector));
-        return { ok: true };
+        return this.mgmt.setAgentPackageScope(name, scope, owner, Boolean(isAdmin), selector);
     }
 
     async setAgentPackageEnabled(name, enabled, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => ctx.catalog.setAgentPackageEnabled(name, Boolean(enabled),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
-        return { ok: true };
+        if (arguments.length <= 3) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.setAgentPackageEnabled(name, enabled, owner, Boolean(isAdmin), selector);
     }
 
     async pinAgentPackageVersion(name, semver, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => ctx.catalog.pinAgentPackageVersion(name, String(semver || ""),
-            this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
-        return { ok: true };
+        if (arguments.length <= 3) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.pinAgentPackageVersion(name, semver, owner, Boolean(isAdmin), selector);
     }
 
     async deleteAgentPackage(name, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        await this._mapAgentPackageErrors(() => deleteAgentPackageEverywhere(ctx, name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin))));
-        this._agentPkgTarCache?.clear?.();
-        return { ok: true };
+        if (arguments.length <= 2) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.deleteAgentPackage(name, owner, Boolean(isAdmin), selector);
     }
 
     /**
@@ -936,88 +804,29 @@ export class NodeSdkTransport {
      * promote MOVES a row and refuses when the shared name already exists;
      * this adds a version to it instead.
      */
-    async republishAgentPackageVersion(name, semver, targetScope, owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const principal = this._requirePrincipal(owner, isAdmin);
-        const target = targetScope === "shared" ? "shared" : "user";
-        const sourceScope = target === "shared" ? "user" : "shared";
-        return await this._mapAgentPackageErrors(async () => {
-            const detail = await ctx.catalog.getAgentPackage(name, principal, Boolean(isAdmin), { scope: sourceScope });
-            if (!detail) {
-                const err = new Error(`AGENT_PACKAGE_NOT_FOUND: no ${sourceScope}-scope package named "${name}" to republish from`);
-                throw err;
-            }
-            const wanted = String(semver || "").trim();
-            const version = wanted
-                ? detail.versions.find((v) => v.semver === wanted)
-                : detail.versions.find((v) => v.versionId === detail.activeVersionId) ?? detail.versions[0];
-            if (!version) {
-                throw new Error(`AGENT_PACKAGE_VERSION_NOT_FOUND: ${name}@${wanted || "(active)"} is not a published ${sourceScope} version`);
-            }
-            const targz = await fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256);
-            const outcome = await publishPackedAgentPackage(ctx, {
-                manifest: version.manifest,
-                targz,
-                sha256: version.sha256,
-                scope: target,
-                owner: principal,
-                createdBy: `${this._createdByLabel(owner)} (republish of ${sourceScope} ${name}@${version.semver})`,
-                isAdmin: Boolean(isAdmin),
-            });
-            const { manifest: _m, ...summary } = outcome;
-            return summary;
+    async republishAgentPackageVersion(name, semver, targetScope, owner, isAdmin, opts = {}) {
+        if (arguments.length <= 4) {
+            opts = { selector: owner ?? null };
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.republishAgentPackageVersion(name, semver, targetScope, owner, Boolean(isAdmin), {
+            createdBy: opts.createdBy || owner?.email || owner?.displayName
+                || (owner?.provider && owner?.subject ? `${owner.provider}:${owner.subject}` : "system"),
+            selector: opts.selector ?? null,
         });
     }
 
     /** Inline-files upload → the one publish pipeline. ≤ 2 MB decoded. */
     async uploadAgentPackage(files, scope, owner, isAdmin) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const principal = this._requirePrincipal(owner, isAdmin);
-        if (!Array.isArray(files) || files.length === 0) {
-            throw new Error("upload requires files: [{ path, contentBase64 }]");
+        if (arguments.length <= 2) {
+            owner = this.currentUser;
+            isAdmin = true;
         }
-        if (files.length > 2000) throw new Error("upload exceeds 2000 files");
-        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-upload-"));
-        try {
-            let total = 0;
-            for (const file of files) {
-                const rel = String(file?.path || "");
-                if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.split("/").some((p) => p === "..")) {
-                    throw new Error(`upload file path is not a safe relative path: ${rel}`);
-                }
-                const bytes = Buffer.from(String(file?.contentBase64 || ""), "base64");
-                total += bytes.length;
-                if (total > 2 * 1024 * 1024) throw new Error("upload exceeds the 2 MB envelope — use a repo/url source or the CLI for larger packages");
-                const target = path.resolve(tmp, rel);
-                if (target !== tmp && !target.startsWith(tmp + path.sep)) {
-                    throw new Error(`upload file path escapes the package root: ${rel}`);
-                }
-                fs.mkdirSync(path.dirname(target), { recursive: true });
-                fs.writeFileSync(target, bytes);
-            }
-            const outcome = await this._mapAgentPackageErrors(() => publishAgentPackageDir(ctx, {
-                dir: tmp,
-                scope: scope === "shared" ? "shared" : "user",
-                owner: principal,
-                createdBy: this._createdByLabel(owner),
-                isAdmin: Boolean(isAdmin),
-                validate: { reservedAgentNames: this._reservedAgentNames() },
-            }));
-            const { manifest: _m, ...summary } = outcome;
-            return summary;
-        } catch (err) {
-            if (err instanceof AgentPackageValidationError) {
-                const wrapped = new Error(err.message);
-                wrapped.code = "VALIDATION_FAILED";
-                wrapped.validation = err.validation;
-                throw wrapped;
-            }
-            throw err;
-        } finally {
-            fs.rmSync(tmp, { recursive: true, force: true });
-        }
+        return this.mgmt.uploadAgentPackage(files, scope, owner, Boolean(isAdmin), {
+            createdBy: owner?.email || owner?.displayName || undefined,
+            reservedAgentNames: this._reservedAgentNames(),
+        });
     }
 
     _reservedAgentNames() {
@@ -1036,76 +845,31 @@ export class NodeSdkTransport {
         return this._reservedNamesCache;
     }
 
-    // ── Agent packages: workspace viewer (tree + file preview) ──
-
-    async _agentPackageEntries(name, semver, owner, isAdmin, selector = null) {
-        const ctx = await this._agentPackagesContext();
-        if (!ctx) throw new Error("agent packages are not available on this deployment");
-        const detail = await ctx.catalog.getAgentPackage(name, this._requirePrincipal(owner, isAdmin), Boolean(isAdmin), this._packageSelector(selector, Boolean(isAdmin)));
-        if (!detail) throw Object.assign(new Error(`package "${name}" not found`), { code: "NOT_FOUND" });
-        const version = semver
-            ? detail.versions.find((v) => v.semver === semver)
-            : detail.versions.find((v) => v.versionId === detail.activeVersionId) ?? detail.versions[0];
-        if (!version) throw Object.assign(new Error(`package "${name}" has no ${semver ? `version ${semver}` : "versions"}`), { code: "NOT_FOUND" });
-        const cacheKey = `${name}@${version.semver}.${version.sha256.slice(0, 12)}`;
-        this._agentPkgTarCache ??= new Map();
-        let entries = this._agentPkgTarCache.get(cacheKey);
-        if (!entries) {
-            const targz = await this._mapAgentPackageErrors(
-                () => fetchAgentPackageTarGz(ctx.artifactStore, version.artifactFilename, version.sha256),
-            );
-            entries = readAgentPackageTarGz(targz);
-            this._agentPkgTarCache.set(cacheKey, entries);
-            // Bound by BYTES (the real resource), not just entry count.
-            const bytesOf = (list) => list.reduce((sum, e) => sum + e.body.length, 0);
-            let totalBytes = 0;
-            for (const cached of this._agentPkgTarCache.values()) totalBytes += bytesOf(cached);
-            while ((totalBytes > 64 * 1024 * 1024 || this._agentPkgTarCache.size > 6)
-                   && this._agentPkgTarCache.size > 1) {
-                const oldest = this._agentPkgTarCache.keys().next().value;
-                totalBytes -= bytesOf(this._agentPkgTarCache.get(oldest));
-                this._agentPkgTarCache.delete(oldest);
-            }
-        }
-        return { entries, version };
-    }
-
     async getAgentPackageTree(name, semver, owner, isAdmin, selector = null) {
-        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin, selector);
-        const dirs = new Set();
-        const files = [];
-        for (const entry of entries) {
-            files.push({ path: entry.name, size: entry.body.length });
-            const parts = entry.name.split("/");
-            for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+        if (arguments.length <= 3) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
         }
-        files.sort((a, b) => (a.path < b.path ? -1 : 1));
-        return {
-            name,
-            semver: version.semver,
-            sha256: version.sha256,
-            dirs: [...dirs].sort(),
-            files,
-        };
+        return this.mgmt.getAgentPackageTree(name, semver, owner, Boolean(isAdmin), selector);
     }
 
     async getAgentPackageFile(name, semver, filePath, owner, isAdmin, selector = null) {
-        const { entries, version } = await this._agentPackageEntries(name, semver, owner, isAdmin, selector);
-        const rel = String(filePath || "");
-        const entry = entries.find((candidate) => candidate.name === rel);
-        if (!entry) throw Object.assign(new Error(`"${rel}" is not in ${name}@${version.semver}`), { code: "NOT_FOUND" });
-        const MAX_PREVIEW = 256 * 1024;
-        const body = entry.body.subarray(0, MAX_PREVIEW);
-        const isBinary = body.includes(0);
-        return {
-            name,
-            semver: version.semver,
-            path: rel,
-            size: entry.body.length,
-            truncated: entry.body.length > MAX_PREVIEW,
-            encoding: isBinary ? "base64" : "utf8",
-            content: isBinary ? body.toString("base64") : body.toString("utf8"),
-        };
+        if (arguments.length <= 4) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.getAgentPackageFile(name, semver, filePath, owner, Boolean(isAdmin), selector);
+    }
+
+    async downloadAgentPackage(name, semver, owner, isAdmin, selector = null) {
+        if (arguments.length <= 3) {
+            selector = owner ?? null;
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.downloadAgentPackage(name, semver, owner, Boolean(isAdmin), selector);
     }
 
     getWorkerCount() {
@@ -1525,40 +1289,16 @@ export class NodeSdkTransport {
     }
 
     async assertSessionModelCreatable({ model, owner } = {}) {
-        const effectiveModel = model || this.mgmt.getDefaultModel();
-        if (!effectiveModel || typeof this.mgmt.getModelCredentialStatus !== "function") return effectiveModel;
-
-        const credentialStatus = this.mgmt.getModelCredentialStatus(effectiveModel);
-        if (credentialStatus.providerType !== "github") return effectiveModel;
-        if (credentialStatus.credentialAvailable) return effectiveModel;
-
-        const principal = owner ? normalizeUserPrincipal(owner) : resolveUserPrincipalFor(this, null);
-        const profile = principal
-            ? await this.mgmt.getUserProfile(principal).catch(() => null)
-            : null;
-        if (profile?.githubCopilotKeySet === true) return effectiveModel;
-
-        // The caller never picked this Copilot model — it came from the
-        // catalog default. Fall back to the first non-Copilot model instead
-        // of failing a session the user has no key for.
-        if (!model && typeof this.mgmt.listModels === "function") {
-            const fallback = (this.mgmt.listModels() || [])
-                .find((entry) => entry?.providerType !== "github" && entry?.qualifiedName);
-            if (fallback) return fallback.qualifiedName;
-        }
-
-        throw Object.assign(
-            new Error(
-                "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker or configure your per-user GitHub Copilot key in Admin before using GitHub Copilot models.",
-            ),
-            { code: "GHCP_KEY_MISSING", status: 400 },
-        );
+        // Compatibility method retained for callers/tests. It deliberately
+        // does not resolve, default, or substitute a model: PilotSwarmClient
+        // is the trusted authority that joins provider scope, credentials and
+        // defaults, then stamps the exact model before orchestration starts.
+        return model || null;
     }
 
     async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility } = {}) {
-        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSession({
-            ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),
             ...(owner ? { owner } : {}),
@@ -1566,7 +1306,13 @@ export class NodeSdkTransport {
             ...(visibility ? { visibility } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
-        return { sessionId: session.sessionId, model: effectiveModel, reasoningEffort: reasoningEffort || undefined, contextTier: contextTier || undefined };
+        const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
+        return {
+            sessionId: session.sessionId,
+            model: created?.model || null,
+            reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
+            contextTier: created?.contextTier || contextTier || undefined,
+        };
     }
 
     async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility } = {}) {
@@ -1575,9 +1321,8 @@ export class NodeSdkTransport {
         // CANONICAL catalog name (the client's allowlist and the CMS row use
         // exact names; only the worker resolver is fuzzy).
         const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
-        const effectiveModel = await this.assertSessionModelCreatable({ model, owner });
         const session = await this.client.createSessionForAgent(canonicalName, {
-            ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),
             ...(title ? { title } : {}),
@@ -1589,10 +1334,11 @@ export class NodeSdkTransport {
             ...(visibility ? { visibility } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
+        const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
         return {
             sessionId: session.sessionId,
-            model: effectiveModel,
-            reasoningEffort: reasoningEffort || undefined,
+            model: created?.model || null,
+            reasoningEffort: created?.reasoningEffort || reasoningEffort || undefined,
             agentName,
         };
     }
@@ -1747,8 +1493,65 @@ export class NodeSdkTransport {
         await this.mgmt.deleteSessionGroup(groupId);
     }
 
-    async listModels() {
-        return this.mgmt.listModels();
+    async listModels(viewer = undefined) {
+        const hasExplicitViewer = viewer && typeof viewer === "object"
+            && Object.prototype.hasOwnProperty.call(viewer, "principal");
+        const resolvedViewer = hasExplicitViewer ? viewer : await this._modelProviderViewer();
+        return await this.mgmt.listRuntimeModels(resolvedViewer);
+    }
+
+    async _modelProviderViewer() {
+        const principal = resolveUserPrincipalFor(this, null);
+        const profile = await this.mgmt.getUserProfile(principal).catch(() => null);
+        return { principal, isAdmin: Boolean(profile?.isAdmin) };
+    }
+
+    async listProviders() {
+        return this.mgmt.listProviders(await this._modelProviderViewer());
+    }
+
+    async getModelDefaults() {
+        return this.mgmt.getModelDefaults(await this._modelProviderViewer());
+    }
+
+    async createProvider(input) {
+        return this.mgmt.createProvider(await this._modelProviderViewer(), input || {});
+    }
+
+    async createMyProvider(input) {
+        return this.mgmt.createMyProvider(await this._modelProviderViewer(), input || {});
+    }
+
+    async deleteProvider(name) {
+        return this.mgmt.deleteProvider(await this._modelProviderViewer(), name);
+    }
+
+    async deleteMyProvider(name) {
+        return this.mgmt.deleteMyProvider(await this._modelProviderViewer(), name);
+    }
+
+    async clearProviderRoutingDependencies(name) {
+        return this.mgmt.clearProviderRoutingDependencies(await this._modelProviderViewer(), name);
+    }
+
+    async setModelDefault(input) {
+        return this.mgmt.setModelDefault(await this._modelProviderViewer(), input || {});
+    }
+
+    async setProviderSystemUse(input) {
+        return this.mgmt.setProviderSystemUse(await this._modelProviderViewer(), input || {});
+    }
+
+    async setSystemModelDefault(input) {
+        return this.mgmt.setSystemModelDefault(await this._modelProviderViewer(), input || {});
+    }
+
+    async setSystemSessionModel(input) {
+        return this.mgmt.setSystemSessionModel(await this._modelProviderViewer(), input || {});
+    }
+
+    async clearSystemSessionModel(agentId) {
+        return this.mgmt.clearSystemSessionModel(await this._modelProviderViewer(), agentId);
     }
 
     async listArtifacts(sessionId) {

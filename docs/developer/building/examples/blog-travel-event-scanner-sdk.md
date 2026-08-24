@@ -86,7 +86,9 @@ EVENTBRITE_TOKEN=your_eventbrite_token
 
 ### Model Providers
 
-Create `model_providers.json` in the project root. The worker loads this automatically to resolve `provider:model` strings.
+Create a credential-free `model_providers.json` type catalog in the project
+root, then create the named runtime provider/default through Admin Console or
+the management API.
 
 ```json
 {
@@ -94,7 +96,6 @@ Create `model_providers.json` in the project root. The worker loads this automat
     {
       "id": "github-copilot",
       "type": "github",
-      "githubToken": "env:GITHUB_TOKEN",
       "models": [
         {
           "name": "claude-sonnet-4.6",
@@ -108,8 +109,7 @@ Create `model_providers.json` in the project root. The worker loads this automat
         }
       ]
     }
-  ],
-  "defaultModel": "github-copilot:claude-sonnet-4.6"
+  ]
 }
 ```
 

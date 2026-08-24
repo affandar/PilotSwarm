@@ -31,6 +31,27 @@ import { ident } from "./sql-util.js";
 import { withDbRetry } from "./db-retry.js";
 import { buildLexicalQuery, namespacePrefix, fuseWeighted, type Candidate } from "./query-builder.js";
 
+const DURABLE_NODE_COLLISION_MAX_ATTEMPTS = 8;
+
+/** @internal — pg_durable uses a global 8-hex node PK, so random collisions are retryable. */
+export async function startDurableWorkflow(
+    exec: { query(sql: string, params?: unknown[]): Promise<{ rows: any[] }> },
+    sql: string,
+    params: unknown[],
+): Promise<string> {
+    for (let attempt = 1; attempt <= DURABLE_NODE_COLLISION_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const { rows } = await exec.query(sql, params);
+            return String(rows[0]?.iid ?? "");
+        } catch (error: any) {
+            const nodeCollision = error?.code === "23505"
+                && (error?.constraint === "nodes_pkey" || /nodes_pkey/.test(String(error?.message ?? "")));
+            if (!nodeCollision || attempt === DURABLE_NODE_COLLISION_MAX_ATTEMPTS) throw error;
+        }
+    }
+    throw new Error("unreachable durable workflow start state");
+}
+
 function computeScopeKey(key: string, shared: boolean, sessionId?: string | null): string {
     if (shared) return `shared:${key}`;
     if (!sessionId) throw new Error("Session-scoped facts require a sessionId.");
@@ -624,14 +645,21 @@ export class HorizonDBFactStore implements EnhancedFactStore {
         await exec.query(`SELECT df.setvar($1, $2)`, [this.varName("batch"), String(batch)]);
         const labels = this.embedderLabels;
         await this.cancelRunningLabel(this.legacyEmbedderLabel, "superseded by two-loop embedder", exec);
-        await exec.query(
-            `SELECT df.start(${this.s}.embedder_workflow($1, $2, $3), $4, NULL) AS iid`,
-            ["batch", intervalSeconds, batch, labels.batch],
-        );
-        await exec.query(
-            `SELECT df.start(${this.s}.embedder_workflow($1, $2, $3), $4, NULL) AS iid`,
-            ["retry", intervalSeconds, 1, labels.retry],
-        );
+        const startSql = `SELECT df.start(${this.s}.embedder_workflow($1, $2, $3), $4, NULL) AS iid`;
+        const batchInstanceId = await startDurableWorkflow(
+            exec, startSql, ["batch", intervalSeconds, batch, labels.batch]);
+        try {
+            await startDurableWorkflow(
+                exec, startSql, ["retry", intervalSeconds, 1, labels.retry]);
+        } catch (error) {
+            if (batchInstanceId) {
+                await exec.query(
+                    `SELECT df.cancel($1, $2)`,
+                    [batchInstanceId, "retry loop failed to start"],
+                ).catch(() => {});
+            }
+            throw error;
+        }
         return this.embedderStatus(exec);
     }
 

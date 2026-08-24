@@ -350,10 +350,12 @@ sequenceDiagram
 | `isCopilotConnectionClosedError` and `retryCount ≤ COPILOT_CONNECTION_CLOSED_MAX_RETRIES (3)` | dehydrate, scheduleTimer 15s, CAN with `retryCount++` |
 | `isCopilotConnectionClosedError` and retries exhausted | record `session.lossy_handoff` event, dehydrate with handoff message, CAN with `rehydrationMessage` and `retryCount = 0` |
 | any other error and `retryCount < MAX_RETRIES (3)` | dehydrate, scheduleTimer `15 * 2^(retryCount-1)` seconds, CAN with `retryCount++` |
-| any other error and retries exhausted | publishStatus error with `retriesExhausted: true`, **return** (waits for next user input) |
+| any other error and retries exhausted | persist the final CMS failure, publishStatus error with `retriesExhausted: true`, **return** (waits for next user input) |
 
 The same classifier handles both `runTurn` throws and `TurnResult` of type
-`error` — phase tag distinguishes them in emitted events.
+`error` — phase tag distinguishes them in emitted events. Returned errors count
+toward the same retry budget as thrown errors; returned authentication failures
+stop immediately with the fix-your-key guidance rather than entering retry.
 
 ### handleTurnResult
 

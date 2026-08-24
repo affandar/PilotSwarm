@@ -1,3 +1,5 @@
+- 2026-08-23: Default agent prompt advanced to 1.17.0 for reusable canvas-app guidance. Removed future-only canvas KV/catalog claims and retained only shipped artifact manifests, creator-only response contracts, and transient `update_canvas` data/patch behavior. Expected behavior: agents never call nonexistent `kv.*`, `canvas_kv`, `find_canvas_app`, or `publish_canvas_app`; reusable apps are saved/reloaded through artifacts. Validated by canvas contract/UI suites; not model-specific.
+
 # PilotSwarm Agent Tuning Log
 
 This version-controlled log records prompt behavior changes that affect shipped

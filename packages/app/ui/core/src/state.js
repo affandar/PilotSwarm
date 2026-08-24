@@ -239,6 +239,56 @@ export function normalizeStoredActiveSessionId(value) {
     return id ? id : null;
 }
 
+/**
+ * Why a session is waiting on a budget. Four reasons, four remedies: a limit
+ * needs raising, an allowance needs widening, a hold needs releasing, and a
+ * missing provider needs creating (or the session switching model).
+ */
+export const BUDGET_PAUSE_KINDS = Object.freeze(["limit", "allowance", "hold", "no_provider"]);
+
+/**
+ * A session's `pauseState` record, or null when it is not paused.
+ *
+ * Lives here rather than in the selectors because the REDUCER stamps the
+ * debounced row status from it and the selectors colour the row from it, and
+ * the two must agree — see computeRawSessionVisualStatus.
+ *
+ * An unrecognized `kind` reads as no pause at all. A newer server that
+ * invents a fifth reason must not make an older portal draw a mark it has no
+ * words for.
+ */
+export function normalizeSessionPause(session) {
+    const pause = session?.pauseState;
+    if (!pause || typeof pause !== "object") return null;
+    const kind = String(pause.kind || "");
+    if (!BUDGET_PAUSE_KINDS.includes(kind)) return null;
+    const text = (value) => {
+        const trimmed = String(value ?? "").trim();
+        return trimmed ? trimmed : null;
+    };
+    const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
+    return {
+        kind,
+        provider: text(pause.provider),
+        period: ["day", "week", "month"].includes(String(pause.period)) ? String(pause.period) : null,
+        modelQualified: text(pause.modelQualified),
+        limitTokens: num(pause.limitTokens),
+        usedTokens: num(pause.usedTokens),
+        ceilingTokens: num(pause.ceilingTokens),
+        yourUsedTokens: num(pause.yourUsedTokens),
+        // Null for a hold with no end, and for a provider that is simply
+        // absent — both wait until a person does something.
+        resetsAtUtc: text(pause.resetsAtUtc),
+    };
+}
+
+/** The three period columns the provider table draws, left to right. */
+export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
+
+/** Supported usage-history windows; the daily quota line remains today's. */
+export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
+export const BUDGET_SERIES_DAYS = 14;
+
 export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
@@ -266,6 +316,11 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         },
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
+            // The Providers & Budgets surface (the coin button in the header).
+            // It REPLACES the workspace under the header — the same slot the
+            // admin console takes — so the two close each other. Never
+            // persisted: it is a place you go, not a layout you keep.
+            budgetOpen: false,
             inspectorTab: INSPECTOR_TABS[0],
             /** Node Map selection: short node label, scopes the Activity pane. */
             nodeMapSelectedNode: null,
@@ -458,6 +513,88 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             userStats: null,
             fetchedAt: 0,
         },
+        // Providers & Budgets — one table, and what it needs to draw itself.
+        // The table's numbers come from ONE read (getProviderUsageGrid); the
+        // paused list is a second read, kept because a stopped session says
+        // why on the session row too, not only on this screen. See
+        // docs/proposals/providers-and-budgets-meters.md.
+        budget: {
+            // A first load, with nothing on screen yet.
+            loading: false,
+            // A re-read WITH numbers already on screen. Separate from
+            // `loading` so a refresh does not blank the table someone is
+            // reading mid-sentence.
+            refreshing: false,
+            // Set by a successful load and never cleared by a failure.
+            // Without it an empty `grid` is ambiguous: "this namespace has no
+            // providers" and "we never found out" would look the same, and
+            // only one of them is safe to act on.
+            loaded: false,
+            // The message the SERVER wrote. It is written for a person and
+            // names the remedy, so it is passed through, never replaced.
+            error: null,
+            fetchedAt: 0,
+            // getProviderUsageGrid, verbatim and in render order: shared
+            // providers first, then the viewer's own, each immediately
+            // followed by its model rows. Never re-sorted.
+            grid: [],
+            // The "show overall usage" tick. Off = your usage against your
+            // share; on = everyone's usage against the limit. The two pairs
+            // of numbers are never mixed, so which one is on screen is a
+            // fact the table has to carry.
+            overall: false,
+            // Usage history window for both user and system reports.
+            rangeDays: BUDGET_SERIES_DAYS,
+            // The provider whose model rows are expanded and whose chart is
+            // drawn. Null means nothing is selected — this screen shows no
+            // provider until one is picked.
+            selectedProvider: null,
+            // Which row under that provider: '*' is the provider itself, and
+            // a qualified model reference is one of its per-model limits. The
+            // chart follows this, so standing on a model row shows that
+            // model's days alone.
+            selectedScope: "*",
+            // A name that was asked for and is not in the table. Set when a
+            // load drops the selection, because that is the case where
+            // somebody arrived here BY that name — from a session stopped on
+            // a provider that no longer exists — and clearing the selection
+            // silently would leave them with nothing to read and nothing to do.
+            missingProvider: null,
+            // The selected provider's day-by-day usage, read separately so a
+            // failed chart never blanks the table above it.
+            series: {
+                provider: null,
+                scope: "*",
+                rangeDays: BUDGET_SERIES_DAYS,
+                days: [],
+                loading: false,
+                loaded: false,
+                error: null,
+                fetchedAt: 0,
+            },
+            // Admin-only machinery spend for the selected provider. Kept
+            // separate from `series`: system turns are metered but exempt
+            // from user limits, so they must never borrow the quota line.
+            systemUsage: {
+                provider: null,
+                scope: "*",
+                rangeDays: BUDGET_SERIES_DAYS,
+                totals: null,
+                days: [],
+                breakdown: [],
+                loading: false,
+                loaded: false,
+                error: null,
+                fetchedAt: 0,
+            },
+            /** listPausedSessions: sessions waiting, each with its reason. */
+            paused: [],
+            // That list's OWN failure. Separate from `error`, which is the
+            // table's: one flag for both meant a failed waiting-list read
+            // marked freshly-read numbers as stale, and left the actually
+            // stale waiting line unmarked.
+            pausedError: null,
+        },
         admin: {
             // Whether the Admin Console is taking over the workspace and
             // hiding the session/chat panes. Persisted only in-memory.
@@ -498,9 +635,32 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 changedAt: null,
                 error: null,
             },
-            // Which settings-tree node is active: "ghcp" (GitHub Keys) or
-            // "packages" (Agents). The tree replaces the old flat panel.
-            section: "ghcp",
+            modelProviders: {
+                loading: false,
+                error: null,
+                page: "mine",
+                providers: [],
+                models: [],
+                defaults: null,
+                fetchedAt: 0,
+                mutation: { pending: null, error: null },
+                selection: { focus: "providers", providerName: null, agentId: null },
+                create: {
+                    editing: false,
+                    stage: "name",
+                    name: "",
+                    typeId: "",
+                    shared: false,
+                    draft: "",
+                    cursorIndex: 0,
+                    saving: false,
+                    error: null,
+                },
+            },
+            // Which settings-tree node is active. The provider/default page
+            // replaces the legacy GitHub-key editor in new UI; the legacy
+            // state remains available for rollback compatibility only.
+            section: "providers",
             // Agent packages (docs/proposals/agent-packages.md) — registry
             // list, selected package detail, and the workspace viewer.
             packages: {

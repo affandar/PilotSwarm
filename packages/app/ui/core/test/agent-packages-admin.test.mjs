@@ -397,7 +397,8 @@ test("admin settings tree groups packages by scope with badges and counts", () =
 
     const view = selectAdminConsole(store.getState());
     const tree = view.settingsTree;
-    assert.deepEqual(tree.filter((r) => r.kind === "section").map((r) => r.label), ["GitHub Keys", "Agents"]);
+    assert.deepEqual(tree.filter((r) => r.kind === "section").map((r) => r.label), ["Model Providers", "Agents"]);
+    assert.deepEqual(tree.filter((r) => r.kind === "subsection").map((r) => r.label), ["My Providers"]);
     const shared = tree.find((r) => r.id === "group:shared");
     const user = tree.find((r) => r.id === "group:user");
     const others = tree.find((r) => r.id === "group:others");

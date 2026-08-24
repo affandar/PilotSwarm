@@ -12,6 +12,15 @@ function toIso(value: unknown): unknown {
     return value instanceof Date ? value.toISOString() : value;
 }
 
+function packageSelectorParams(selector?: any, options: { scopeless?: boolean } = {}): Record<string, unknown> {
+    if (!selector || typeof selector !== "object") return {};
+    return {
+        ...(!options.scopeless && selector.scope ? { scope: selector.scope } : {}),
+        ...(selector.owner?.provider ? { ownerProvider: selector.owner.provider } : {}),
+        ...(selector.owner?.subject ? { ownerSubject: selector.owner.subject } : {}),
+    };
+}
+
 /**
  * PilotSwarmManagementClient in web mode: the management surface over the
  * Web API. Constructed via `new PilotSwarmManagementClient({ apiUrl, … })`.
@@ -286,7 +295,7 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionFootprint", { sessionId });
     }
 
-    async regenerateSession(sessionId: string, options: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; model?: string; force?: boolean } = {}): Promise<any> {
+    async regenerateSession(sessionId: string, options: { handoff?: string; instructions?: string; distillMode?: "llm" | "deterministic"; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string; model?: string; force?: boolean } = {}): Promise<any> {
         return this._api.call("regenerateSession", { sessionId, options });
     }
 
@@ -366,6 +375,82 @@ export class WebPilotSwarmManagementClient {
 
     async getSystemGitHubCopilotKeyStatus(): Promise<any> {
         return this._api.call("getSystemGitHubCopilotKeyStatus");
+    }
+
+    // ── Agent packages / worker registry ──────────────────────────────
+
+    async listAgentPackages(_owner: any, _isAdmin: boolean): Promise<any[]> {
+        return this.ops.listAgentPackages();
+    }
+
+    async getAgentPackage(name: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.getAgentPackage({ name, ...packageSelectorParams(selector) });
+    }
+
+    async listAgentWorkerState(): Promise<any[]> {
+        return this.ops.listAgentWorkerState();
+    }
+
+    async listWorkers(): Promise<any[]> {
+        return this.ops.listWorkers();
+    }
+
+    async setAgentPackageScope(name: string, scope: "shared" | "user", _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.setAgentPackageScope({ name, scope, ...packageSelectorParams(selector, { scopeless: true }) });
+    }
+
+    async setAgentPackageEnabled(name: string, enabled: boolean, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.setAgentPackageEnabled({ name, enabled, ...packageSelectorParams(selector) });
+    }
+
+    async pinAgentPackageVersion(name: string, semver: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.pinAgentPackageVersion({ name, semver, ...packageSelectorParams(selector) });
+    }
+
+    async deleteAgentPackage(name: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.deleteAgentPackage({ name, ...packageSelectorParams(selector) });
+    }
+
+    publishAgentPackageDirectory(): never {
+        throw webModeUnsupported("publishAgentPackageDirectory", "build an inline upload envelope before calling uploadAgentPackage in web mode");
+    }
+
+    async uploadAgentPackage(files: Array<{ path: string; contentBase64: string }>, scope: "shared" | "user"): Promise<any> {
+        return this.ops.uploadAgentPackage({ files, scope });
+    }
+
+    async getAgentPackageTree(name: string, semver: string | null, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.getAgentPackageTree({ name, ...(semver ? { semver } : {}), ...packageSelectorParams(selector) });
+    }
+
+    async getAgentPackageFile(name: string, semver: string | null, filePath: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        return this.ops.getAgentPackageFile({ name, filePath, ...(semver ? { semver } : {}), ...packageSelectorParams(selector) });
+    }
+
+    async downloadAgentPackage(name: string, semver: string | null, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
+        const response = await this._api.downloadAgentPackageResponse(name, {
+            ...(semver ? { semver } : {}),
+            ...packageSelectorParams(selector),
+        });
+        const disposition = response.headers.get("content-disposition") || "";
+        const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || `${name}.tgz`;
+        return {
+            name,
+            semver: response.headers.get("x-pilotswarm-package-version") || semver || "",
+            sha256: response.headers.get("x-pilotswarm-package-sha256") || "",
+            filename,
+            contentType: response.headers.get("content-type") || "application/gzip",
+            body: new Uint8Array(await response.arrayBuffer()),
+        };
+    }
+
+    async republishAgentPackageVersion(name: string, semver: string | null, targetScope: "shared" | "user", _owner?: any, _isAdmin?: boolean, opts: { selector?: any } = {}): Promise<any> {
+        return this.ops.republishAgentPackageVersion({
+            name,
+            ...(semver ? { semver } : {}),
+            targetScope,
+            ...packageSelectorParams(opts.selector),
+        });
     }
 
     // ── Models (async in web mode — always `await`) ─────────────────────
@@ -600,6 +685,126 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listAuthzAudit({ limit: opts?.limit, sessionId: opts?.sessionId ?? undefined });
     }
 
+    // ── Provider budgets ────────────────────────────────────────────────
+    //
+    // The viewer argument the direct client takes is ignored here, like the
+    // user-profile methods above: the server derives the caller from the
+    // request's auth context, and a viewer off the wire would be a claim
+    // about identity the client got to make.
+
+    async listProviders(_viewer?: unknown): Promise<any> {
+        return this.ops.listProviders();
+    }
+
+    async getProviderStatus(_viewer: unknown, names?: string[] | null): Promise<any> {
+        return this.ops.getProviderStatus({ names: names?.length ? names.join(",") : undefined });
+    }
+
+    async getProviderUsageGrid(_viewer?: unknown): Promise<any> {
+        return this.ops.getProviderUsageGrid();
+    }
+
+    async createProvider(_viewer: unknown, input: { name: string; type: string; credentials?: Record<string, unknown> | null; baseUrl?: string | null }): Promise<any> {
+        return this.ops.createProvider({ name: input.name, type: input.type, credentials: input.credentials, baseUrl: input.baseUrl });
+    }
+
+    async createMyProvider(_viewer: unknown, input: { name: string; type: string; credentials?: Record<string, unknown> | null; baseUrl?: string | null }): Promise<any> {
+        return this.ops.createMyProvider({ name: input.name, type: input.type, credentials: input.credentials, baseUrl: input.baseUrl });
+    }
+
+    async deleteProvider(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.deleteProvider({ name });
+    }
+
+    async deleteMyProvider(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.deleteMyProvider({ name });
+    }
+
+    async clearProviderRoutingDependencies(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.clearProviderRoutingDependencies({ name });
+    }
+
+    async setProviderLimit(_viewer: unknown, input: { provider: string; period: string; model?: string | null; tokens: number }): Promise<any> {
+        return this.ops.setProviderLimit({ name: input.provider, period: input.period, model: input.model, tokens: input.tokens });
+    }
+
+    async removeProviderLimit(_viewer: unknown, input: { provider: string; period: string; model?: string | null }): Promise<any> {
+        return this.ops.removeProviderLimit({ name: input.provider, period: input.period, model: input.model ?? undefined });
+    }
+
+    async setProviderAllowance(_viewer: unknown, input: { provider: string; pct: number }): Promise<any> {
+        return this.ops.setProviderAllowance({ name: input.provider, pct: input.pct });
+    }
+
+    async setProviderHold(_viewer: unknown, input: { provider: string; untilUtc?: string | null; release?: boolean }): Promise<any> {
+        return this.ops.setProviderHold({ name: input.provider, untilUtc: input.untilUtc, release: input.release });
+    }
+
+    async getDefaults(_viewer?: unknown): Promise<any> {
+        return this.ops.getDefaults();
+    }
+
+    async getModelDefaults(_viewer?: unknown): Promise<any> {
+        return this.ops.getModelDefaults();
+    }
+
+    async listRuntimeModels(_viewer?: unknown): Promise<any> {
+        return this.ops.listModels();
+    }
+
+    async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
+        return this.ops.setModelDefault(input);
+    }
+
+    async setProviderSystemUse(_viewer: unknown, input: { provider: string; enabled: boolean }): Promise<any> {
+        return this.ops.setProviderSystemUse({ name: input.provider, enabled: input.enabled });
+    }
+
+    async getLegacyProviderMigrationStatus(_viewer: unknown): Promise<any> {
+        return this.ops.getLegacyProviderMigrationStatus();
+    }
+
+    async adoptLegacySystemGitHubCopilotKey(_viewer: unknown, input: { name: string }): Promise<any> {
+        return this.ops.adoptLegacySystemGitHubCopilotKey({ name: input.name });
+    }
+
+    async setSystemModelDefault(_viewer: unknown, input: { provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null; restartExisting?: false | { disposition: string } }): Promise<any> {
+        return this.ops.setSystemModelDefault(input);
+    }
+
+    async setSystemSessionModel(_viewer: unknown, input: { agentId: string; provider: string; model: string; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
+        return this.ops.setSystemSessionModel(input);
+    }
+
+    async clearSystemSessionModel(_viewer: unknown, agentId: string): Promise<any> {
+        return this.ops.clearSystemSessionModel({ agentId });
+    }
+
+    async setClusterDefault(_viewer: unknown, tuple: { provider: string | null; model: string | null; reasoning?: string | null; context?: string | null }): Promise<any> {
+        return this.ops.setClusterDefault({ provider: tuple?.provider, model: tuple?.model, reasoning: tuple?.reasoning, context: tuple?.context });
+    }
+
+    async setMyDefault(_viewer: unknown, tuple: { provider: string | null; model: string | null; reasoning?: string | null; context?: string | null } | null): Promise<any> {
+        return this.ops.setMyDefault({ provider: tuple?.provider ?? null, model: tuple?.model ?? null, reasoning: tuple?.reasoning ?? null, context: tuple?.context ?? null });
+    }
+
+    async getProviderUsage(_viewer: unknown, query: Record<string, any> = {}): Promise<any> {
+        return this.ops.getProviderUsage({
+            days: query.days ?? undefined,
+            ownerUserId: query.ownerUserId ?? undefined,
+            provider: query.provider ?? undefined,
+            model: query.model ?? undefined,
+            sessionId: query.sessionId ?? undefined,
+            chargeClass: query.chargeClass ?? undefined,
+            dimension: query.dimension ?? undefined,
+            limit: query.limit ?? undefined,
+        });
+    }
+
+    async listPausedSessions(_viewer?: unknown): Promise<any> {
+        return this.ops.listPausedSessions();
+    }
+
     // ── Direct-only plumbing: explicit, typed refusals ──────────────────
     //
     // No route exists (or can exist) for these; a caller reaching them in
@@ -690,8 +895,10 @@ export type _WebSatisfiesManagementSurface = AssertExtends<
  * a typed WEB_MODE_UNSUPPORTED error) on both classes, no casts.
  *
  * The KnownDivergences appear with union returns (`X | Promise<X>`): sync in
- * direct mode, async over HTTP — `await` the result and both modes are
- * correct. Everything else carries the direct client's exact signature.
+ * direct mode, async over HTTP. `listModels` is also semantically distinct:
+ * direct returns provider-type templates (`catalogKind=provider_type`), while
+ * Web returns viewer-scoped runtime instances (`catalogKind=runtime_provider`).
+ * Direct callers use `listRuntimeModels(viewer)` for runtime parity.
  *
  * The assertions below make both halves of the claim compile-checked.
  */

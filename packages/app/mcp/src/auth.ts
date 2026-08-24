@@ -81,13 +81,16 @@ export async function createApiTokenProvider(apiUrl: string): Promise<(() => Pro
     if (!authConfig?.enabled || authConfig?.provider === "none") {
         return null;
     }
-    if (authConfig.provider !== "entra") {
-        throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
-    }
 
+    // A static bearer is provider-agnostic: it must win before the provider
+    // gate, or the binary cannot target dev-auth deployments at all.
     const staticToken = String(process.env.PILOTSWARM_API_TOKEN || "").trim();
     if (staticToken) {
         return async () => staticToken;
+    }
+
+    if (authConfig.provider !== "entra") {
+        throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
     }
 
     const client = authConfig.client;

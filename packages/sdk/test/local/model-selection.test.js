@@ -99,12 +99,8 @@ async function testCreateSessionWithModel(env) {
             assertNotNull(row, "CMS row exists");
             console.log(`  CMS model: "${row.model}"`);
             assertNotNull(row.model, "model recorded in CMS");
-            // Model may be normalized to include provider prefix
-            assertEqual(
-                row.model.includes(TEST_GPT_MODEL),
-                true,
-                `model contains ${TEST_GPT_MODEL} (got: ${row.model})`,
-            );
+            const expected = worker.modelProviders?.normalize(TEST_GPT_MODEL) ?? TEST_GPT_MODEL;
+            assertEqual(row.model, expected, "explicit model is qualified before orchestration starts");
         } finally {
             await catalog.close();
         }
@@ -763,6 +759,24 @@ async function testDefaultModelRecorded(env) {
         // No explicit model — should use the worker's default
         const session = await client.createSession();
         assertNotNull(session, "session created");
+
+        const catalog = await createCatalog(env);
+        try {
+            const row = await catalog.getSession(session.sessionId);
+            assertEqual(
+                row?.model,
+                worker.modelProviders?.defaultModel,
+                "default model is qualified and stored before the first turn",
+            );
+            const events = await catalog.getSessionEvents(session.sessionId);
+            assertEqual(
+                events.some((event) => event.eventType === "session.model_resolved"),
+                true,
+                "model resolution source is recorded before orchestration",
+            );
+        } finally {
+            await catalog.close();
+        }
 
         console.log("  Sending prompt with default model...");
         const response = await session.sendAndWait("Say hello", TIMEOUT);

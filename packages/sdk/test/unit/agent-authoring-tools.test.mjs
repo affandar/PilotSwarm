@@ -15,6 +15,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import {
     createAgentManagerTools,
@@ -43,12 +45,13 @@ function fakeArtifacts() {
     };
 }
 
-function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER } = {}) {
+function toolsWith({ artifacts = fakeArtifacts(), catalog = {}, viewer = VIEWER, reservedAgentNames } = {}) {
     const list = createAgentManagerTools({
         catalog,
         artifactStore: artifacts,
         sessionId: SESSION,
         resolveViewer: async () => viewer,
+        ...(reservedAgentNames ? { reservedAgentNames } : {}),
     });
     return { artifacts, byName: new Map(list.map((t) => [t.name, t])) };
 }
@@ -182,7 +185,7 @@ test("publish refuses a staged path that escapes the package root", async () => 
     await byName.get("stage_agent_package_edit").handler({
         package: "p",
         files: {
-            "plugin.json": "{}",
+            "plugin.json": JSON.stringify({ name: "p", version: "1.0.0", description: "fixture" }),
             [CHANGELOG_PATH]: "## 1.0.0\n- x",
             "../../escape.md": "pwned",
         },
@@ -191,6 +194,37 @@ test("publish refuses a staged path that escapes the package root", async () => 
         package: "p", semver: "1.0.0", approved_by: "alice",
     });
     assert.match(out.error, /escapes the package root/);
+});
+
+test("publish refuses when plugin.json version differs from the requested semver", async () => {
+    const { byName } = toolsWith();
+    await byName.get("stage_agent_package_edit").handler({
+        package: "p",
+        files: {
+            "plugin.json": JSON.stringify({ name: "p", version: "1.0.0", description: "fixture" }),
+            [CHANGELOG_PATH]: "## 1.1.0\n- next",
+        },
+    });
+    const out = await byName.get("publish_agent_package").handler({
+        package: "p", semver: "1.1.0", approved_by: "alice",
+    });
+    assert.match(out.error, /plugin\.json version 1\.0\.0 does not match requested 1\.1\.0/);
+});
+
+test("publish refuses an agent name reserved by the deployment", async () => {
+    const { byName } = toolsWith({ reservedAgentNames: ["sweeper"] });
+    await byName.get("stage_agent_package_edit").handler({
+        package: "p",
+        files: {
+            "plugin.json": JSON.stringify({ name: "p", version: "1.0.0", description: "fixture" }),
+            "agents/sweeper.agent.md": "---\nname: sweeper\ndescription: collision\nschemaVersion: 1\nversion: 1.0.0\n---\n\nCollision body.\n",
+            [CHANGELOG_PATH]: "## 1.0.0\n- initial",
+        },
+    });
+    const out = await byName.get("publish_agent_package").handler({
+        package: "p", semver: "1.0.0", approved_by: "alice",
+    });
+    assert.match(out.error, /reserved/i);
 });
 
 // ── Propose: the approval surface ─────────────────────────────────
@@ -396,6 +430,16 @@ test("create_agent_session is part of the manager bundle", () => {
     for (const field of ["agent_name", "prompt", "title", "model", "reasoning_effort", "test_of", "key"]) {
         assert.ok(tool.parameters.properties[field], `missing parameter: ${field}`);
     }
+});
+
+test("Agent Manager asks which provider when a bare model is ambiguous", () => {
+    const prompt = readFileSync(fileURLToPath(new URL(
+        "../../../../agent-packages/agent-manager/agents/agent-manager.agent.md",
+        import.meta.url,
+    )), "utf8");
+    assert.match(prompt, /call `list_available_models` before creating[\s\S]*the session/);
+    assert.match(prompt, /ask the user which provider to use and stop/);
+    assert.match(prompt, /Never choose by list order, cluster default, or cost/);
 });
 
 test("the unwired stub refuses instead of claiming success", async () => {

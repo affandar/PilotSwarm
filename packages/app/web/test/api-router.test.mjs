@@ -4,6 +4,7 @@ import http from "node:http";
 import express from "express";
 import { OPERATIONS } from "pilotswarm-sdk/api";
 import { createApiRouter } from "../api/router.js";
+import { createJsonRpcError } from "../server.js";
 
 function createHarness({ callImpl, role = "user" } = {}) {
     const calls = [];
@@ -93,7 +94,7 @@ test("path, query, and body params are collected with declared types", async () 
 
 test("runtime errors map to the structured envelope with sensible statuses", async () => {
     const { baseUrl, close } = await createHarness({
-        callImpl: (name) => {
+        callImpl: (name, params) => {
             if (name === "getSession") {
                 throw Object.assign(new Error("nope"), { code: "PORTAL_AUTH_REQUIRED" });
             }
@@ -102,6 +103,24 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
             }
             if (name === "setSessionModel") {
                 throw new Error("Unknown model: gpt-9-nonexistent");
+            }
+            if (name === "createSession") {
+                if (params?.model === "missing") {
+                    throw Object.assign(new Error('No usable provider serves model "missing".'), {
+                        code: "MODEL_UNRESOLVED",
+                    });
+                }
+                throw Object.assign(new Error(
+                    'Model "sonnet5" is ambiguous. Use one of: team:sonnet5, mine:sonnet5.',
+                ), {
+                    code: "MODEL_AMBIGUOUS",
+                    candidates: ["team:sonnet5", "mine:sonnet5"],
+                });
+            }
+            if (name === "regenerateSession") {
+                throw Object.assign(new Error("System sessions are excluded from regeneration"), {
+                    code: "REGENERATE_UNSUPPORTED",
+                });
             }
             throw new Error("kaboom");
         },
@@ -124,6 +143,34 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
         assert.equal(unknownModel.status, 400, "unknown model maps to 400");
         assert.match((await unknownModel.json()).error.message, /Unknown model/, "message preserved");
 
+        const ambiguous = await fetch(`${baseUrl}/api/v1/sessions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: "sonnet5" }),
+        });
+        assert.equal(ambiguous.status, 400, "ambiguous model maps to 400");
+        assert.deepEqual((await ambiguous.json()).error, {
+            code: "MODEL_AMBIGUOUS",
+            message: 'Model "sonnet5" is ambiguous. Use one of: team:sonnet5, mine:sonnet5.',
+            candidates: ["team:sonnet5", "mine:sonnet5"],
+        });
+
+        const unresolved = await fetch(`${baseUrl}/api/v1/sessions`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: "missing" }),
+        });
+        assert.equal(unresolved.status, 400, "unresolved model maps to 400");
+        assert.match((await unresolved.json()).error.message, /No usable provider/);
+
+        const regen = await fetch(`${baseUrl}/api/v1/management/sessions/s1/regenerate`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ options: {} }),
+        });
+        assert.equal(regen.status, 409, "unsupported regeneration maps to 409");
+        assert.match((await regen.json()).error.message, /excluded from regeneration/);
+
         const boom = await fetch(`${baseUrl}/api/v1/models`);
         assert.equal(boom.status, 500);
         assert.equal((await boom.json()).error.code, "INTERNAL_ERROR");
@@ -133,6 +180,23 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
     } finally {
         await close();
     }
+});
+
+test("legacy RPC errors preserve client codes and redact unexpected faults", () => {
+    const forbidden = createJsonRpcError(Object.assign(new Error("not yours"), { code: "FORBIDDEN" }));
+    assert.equal(forbidden.status, 403);
+    assert.deepEqual(forbidden.body.error, { code: "FORBIDDEN", message: "not yours" });
+
+    const validation = createJsonRpcError(Object.assign(new Error("bad package"), {
+        code: "VALIDATION_FAILED",
+        validation: { errors: [{ code: "bad", message: "bad" }] },
+    }));
+    assert.equal(validation.status, 400);
+    assert.deepEqual(validation.body.error.validation.errors, [{ code: "bad", message: "bad" }]);
+
+    const fault = createJsonRpcError(new Error("connect ECONNREFUSED 10.0.0.7:5432 user=admin"));
+    assert.equal(fault.status, 500);
+    assert.deepEqual(fault.body.error, { code: "INTERNAL_ERROR", message: "Internal server error" });
 });
 
 test("traversal-shaped id path params are rejected before dispatch", async () => {

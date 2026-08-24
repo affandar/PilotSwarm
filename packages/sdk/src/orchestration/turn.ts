@@ -1,4 +1,5 @@
 import type { MessageSender } from "../message-sender.js";
+import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
@@ -232,6 +233,16 @@ function* handleGenericRetry(
             error: `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`,
             retriesExhausted: true,
         });
+        // The status plane above is transient — the next park wiped it, so
+        // the session settled idle with NO error and a silently lost prompt
+        // (2026-08-24 campaign). Persist the failure on the session row;
+        // the next successful turn's writeback clears it.
+        // (New yield — part of the 1.0.69 schedule, first shipped there.)
+        yield runtime.manager.updateCmsState(
+            runtime.input.sessionId,
+            "error",
+            `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`,
+        );
         state.retryCount = 0;
         return;
     }
@@ -382,6 +393,12 @@ export function* processPrompt(
             ...(cycleOrigin ? { cycleOrigin } : {}),
             retryCount: state.retryCount,
             ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
+            // Prompts the gate refused earlier, already durably recorded as
+            // user.message at stash time. The activity folds them in front of
+            // the model prompt and does NOT re-record them.
+            ...(state.budgetStash && state.budgetStash.length > 0
+                ? { stashedPrompts: state.budgetStash.map((s) => s.prompt) }
+                : {}),
             ...(sender ? { sender } : {}),
             ...(attachments && attachments.length > 0 ? { attachments } : {}),
             // Store-wins (1.0.59): send only the turnKey. expectedVersion is
@@ -487,9 +504,16 @@ export function* processPrompt(
         return;
     }
     state.config.turnSystemPrompt = undefined;
-    state.retryCount = 0;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    // Reset the retry counter only when the turn actually succeeded. This
+    // blanket-reset used to run for EVERY returned result — including
+    // {type:"error"} — so a failure the activity returned (rather than
+    // threw) could never count past "retry 1/3": each cycle wiped the
+    // carried count, continued-as-new, and started over. An invalid
+    // credential looped an execution every ~18 seconds for ever
+    // (2026-08-24, found live by the regression workflow).
+    if ((result as any)?.type !== "error") state.retryCount = 0;
     // Lifecycle protocol: adopt the version the activity committed. The
     // returned value is authoritative even when it disagrees with the
     // expectation (self-healing after a store restore). state.snapshotVersion
@@ -529,7 +553,14 @@ export function* processPrompt(
         } as TurnResult;
     }
 
-    state.iteration++;
+    // A gate-refused turn never ran: no model call, no Copilot state, no
+    // charge. Burning a turn index for it made the NEXT turn ask for
+    // resumable state at an index that never existed — the worker threw
+    // SESSION_STATE_MISSING, and the runtime then wrote a lossy_handoff
+    // blaming "a worker restart" that never happened. Deterministic on any
+    // session whose first turn was refused.
+    const budgetRefused = result.type === "wait" && (result as any).budget === true;
+    if (!budgetRefused) state.iteration++;
     yield* maybeSummarize(runtime);
     yield* refreshTrackedSubAgents(runtime);
 
@@ -659,6 +690,22 @@ function* handleTurnStopped(
 
 function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
+
+    // A PROVIDER BUDGET pause is never re-armed. Every other wait is the
+    // agent's own: it asked to sleep for N seconds, a message arrived, and
+    // the remaining time is still owed. A budget pause owes nothing — it
+    // exists only while the budget blocks, and the turn that just ran
+    // re-asked the gate on its way in. Re-arming it here is what put a
+    // just-released session back to sleep for the rest of its window, so
+    // that the raise which woke it appeared to do nothing.
+    //
+    // THIS is the 1.0.69 schedule change: for a budget wait the yields below
+    // (utcNow, and possibly releaseAffinity) do not happen at all. 1.0.68 is
+    // frozen beside this file because of it.
+    if (state.interruptedWaitTimer?.budget) {
+        ctx.traceInfo(`[orch] dropping interrupted budget wait — the gate decides afresh each turn`);
+        state.interruptedWaitTimer = null;
+    }
 
     if (state.interruptedWaitTimer && state.interruptedWaitTimer.remainingSec > 0) {
         const saved = state.interruptedWaitTimer;
@@ -857,6 +904,62 @@ function coerceChildQuestionToWait(
     return result;
 }
 
+
+/**
+ * Keep a prompt the budget gate refused, so the wake can replay it.
+ *
+ * Skips prompts that are nobody's words: the wake nudge, internal [SYSTEM:]
+ * traffic, and anything already stashed (the same prompt comes back through
+ * here on every refused retry).
+ */
+function* stashBudgetRefusedPrompt(
+    runtime: DurableSessionRuntime,
+    sourcePrompt: string,
+    clientMessageIds?: string[],
+): Generator<any, void, any> {
+    const { state } = runtime;
+    const prompt = typeof sourcePrompt === "string" ? sourcePrompt.trim() : "";
+    if (!prompt) return;
+    if (/^\[SYSTEM:/i.test(prompt)) return;
+    if (prompt === PROVIDER_BUDGET_WAKE_PROMPT) return;
+    // The wake nudge never reaches here verbatim: its [SYSTEM:] body is
+    // extracted into system context and the turn runs on the substituted
+    // internal prompt. That substitute is machinery, not anybody's words —
+    // stashing it painted "Internal orchestration wake-up." into transcripts
+    // as a queued USER message (caught by the resume tests).
+    if (prompt === INTERNAL_SYSTEM_TURN_PROMPT) return;
+
+    const ids = Array.isArray(clientMessageIds)
+        ? clientMessageIds.filter((id) => typeof id === "string" && id)
+        : [];
+    const key = ids.length > 0 ? ids.join(",") : prompt;
+    const stash = state.budgetStash ?? [];
+    const already = stash.some((entry) => {
+        const entryIds = entry.clientMessageIds ?? [];
+        const entryKey = entryIds.length > 0 ? entryIds.join(",") : entry.prompt;
+        return entryKey === key;
+    });
+    if (already) return;
+
+    // The durable record, with the ids the outbox acks by — this is what
+    // turns the optimistic ✓ into a true one and shows the message in the
+    // transcript while the session is still paused.
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "user.message",
+        data: {
+            content: prompt,
+            ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+            // Marked, so a reader of the raw events can tell a message that
+            // ran from one waiting for the budget to clear.
+            budgetQueued: true,
+        },
+    }]);
+    stash.push({ prompt, ...(ids.length > 0 ? { clientMessageIds: ids } : {}) });
+    state.budgetStash = stash;
+    runtime.ctx.traceInfo(
+        `[orch] stashed prompt refused by the budget gate (${stash.length} waiting)`);
+}
+
 function* synthesizeWaitInterruptReplyIfNeeded(
     runtime: DurableSessionRuntime,
     result: TurnResult,
@@ -891,7 +994,20 @@ export function* handleTurnResult(
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
-    result = yield* synthesizeWaitInterruptReplyIfNeeded(runtime, result);
+    const budgetRefusal = result.type === "wait" && (result as any).budget === true;
+    // "I'm here. Resuming the timer." is for a turn that RAN and said
+    // nothing. A gate refusal is a turn that never ran — fabricating an
+    // assistant reply for it put words in the transcript that answered a
+    // message which was not there.
+    if (!budgetRefusal) {
+        result = yield* synthesizeWaitInterruptReplyIfNeeded(runtime, result);
+    }
+    // Any result other than a gate refusal means the turn actually reached
+    // the model, and the activity folded the stashed prompts into it. They
+    // are delivered; holding them longer would replay them twice.
+    if (!budgetRefusal && state.budgetStash) {
+        state.budgetStash = null;
+    }
 
     switch (result.type) {
         case "completed": {
@@ -979,6 +1095,20 @@ export function* handleTurnResult(
             state.interruptedWaitTimer = null;
             ensureTaskContext(runtime, sourcePrompt);
 
+            // ── a gate refusal must not destroy the prompt that asked ──
+            //
+            // The transcript write for a prompt lives INSIDE the turn, so a
+            // prompt whose turn the gate refuses was consumed from the queue
+            // and then simply lost: no user.message, no replay, no trace.
+            // The person saw a ✓ and their words went nowhere — including
+            // the very FIRST message of a session blocked at creation.
+            //
+            // So: record it durably NOW (the ✓ becomes true), stash it, and
+            // let it ride into every retry until a turn actually runs.
+            if (budgetRefusal) {
+                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds);
+            }
+
             if (options.parentSessionId) {
                 const notifyContent = result.content
                     ? result.content.slice(0, 2000)
@@ -1050,6 +1180,7 @@ export function* handleTurnResult(
                 reason: result.reason,
                 type: "wait",
                 content: result.content,
+                budget: result.budget === true,
             };
             return;
         }
@@ -1149,6 +1280,15 @@ export function* handleTurnResult(
                 publishStatus(runtime, "failed", { error: fatalError, fatal: true });
                 yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", fatalError);
                 throw new Error(fatalError);
+            }
+
+            // The throw path short-circuits auth failures to an honest
+            // "fix your key" stop; a 401 the activity RETURNED took the
+            // generic retry loop instead. Same failure, same answer.
+            if (isAuthFailureError(result.message)) {
+                ctx.traceInfo(`[orch] turn returned auth error; not retrying: ${result.message}`);
+                yield* projectAuthFailure(runtime, result.message);
+                return;
             }
 
             state.retryCount++;

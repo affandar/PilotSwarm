@@ -404,10 +404,11 @@ drop the bootstrap admin password from Key Vault and the
 SecretProviderClass once their deploy path is on duroxide-node ≥ 0.1.25
 (pilotswarm-sdk ≥ 0.1.30).
 
-## Model providers (LLM catalog)
+## Model provider types and runtime instances
 
-The worker reads `model_providers.json` at startup to discover which
-LLM endpoints + models are available. In the bicep-deploy path the
+The worker reads `model_providers.json` at startup as the provider TYPE/model
+catalog. Runtime instances carry credentials and defaults in CMS. In the
+bicep-deploy path the
 canonical catalog lives at
 [`deploy/gitops/worker/base/model_providers.json`](../gitops/worker/base/model_providers.json)
 and is mounted into the pod via a kustomize-generated ConfigMap
@@ -415,9 +416,13 @@ and is mounted into the pod via a kustomize-generated ConfigMap
 `PS_MODEL_PROVIDERS_PATH` is set on the deployment so the runtime picks
 it up.
 
-> **Legacy `scripts/deploy-aks.sh` is unaffected.** It still bakes
+> **Legacy compatibility:** `scripts/deploy-aks.sh` still bakes
 > `deploy/config/model_providers.ghcp.json` into the Docker image and
-> reads it from `/app/.model_providers.json`.
+> reads it from `/app/.model_providers.json`. That catalog still carries env
+> credential/default references so existing stamps bootstrap once. New stamp
+> orchestration should provision provider instances and call
+> `setModelDefault` / `setSystemModelDefault` after the management API is ready,
+> then move to a type-only catalog.
 
 ### Built-in providers
 

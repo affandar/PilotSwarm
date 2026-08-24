@@ -4,6 +4,24 @@ import { WebPilotSwarmSession } from "../../src/web/web-client.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("PilotSwarmClient wait status handling", () => {
+    it("syncs response cursors before fire-and-forget send", async () => {
+        const calls = [];
+        const fake = {
+            _syncTurnCursors: async (orchestrationId) => calls.push(["sync", orchestrationId]),
+            _ensureOrchestrationAndSend: async (sessionId, prompt) => {
+                calls.push(["enqueue", sessionId, prompt]);
+                return `session-${sessionId}`;
+            },
+        };
+
+        const orchestrationId = await PilotSwarmClient.prototype._startTurn.call(fake, "fresh", "next");
+        assertEqual(orchestrationId, "session-fresh", "returns the new orchestration id");
+        assertEqual(JSON.stringify(calls), JSON.stringify([
+            ["sync", "session-fresh"],
+            ["enqueue", "fresh", "next"],
+        ]), "cursor snapshot happens before enqueue");
+    });
+
     it("raises a durable latest-response error instead of waiting for timeout", async () => {
         const client = new PilotSwarmClient({});
         client.duroxideClient = {

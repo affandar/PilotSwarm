@@ -189,8 +189,8 @@ export const OPERATIONS = [
     { name: "deleteGraphNamespace", access: "fleet:admin", method: "DELETE", path: "/graph/namespaces/:namespace", params: { namespace: path("namespace") }, admin: true, summary: "Delete a graph namespace and its data. [admin]" },
 
     // ── Models / agents / policy ────────────────────────────────────────
-    { name: "listModels", access: "authed", method: "GET", path: "/models", summary: "All available models." },
-    { name: "getModelsByProvider", access: "authed", method: "GET", path: "/models/by-provider", summary: "Models grouped by provider." },
+    { name: "listModels", access: "authed", method: "GET", path: "/models", summary: "Viewer-usable runtime provider instances (`catalogKind=runtime_provider`). Direct PilotSwarmManagementClient.listModels() is the provider-type template catalog (`catalogKind=provider_type`); use listRuntimeModels(viewer) for direct parity." },
+    { name: "getModelsByProvider", access: "authed", method: "GET", path: "/models/by-provider", summary: "Model templates grouped by provider type (catalogKind=provider_type); use listModels for viewer-usable runtime provider instances." },
     { name: "getDefaultModel", access: "authed", method: "GET", path: "/models/default", summary: "The deployment default model." },
     { name: "listCreatableAgents", access: "authed", method: "GET", path: "/agents", summary: "Agents sessions can be created for." },
     { name: "getSessionCreationPolicy", access: "authed", method: "GET", path: "/session-creation-policy", summary: "Session creation policy." },
@@ -217,7 +217,7 @@ export const OPERATIONS = [
     { name: "setAgentPackageEnabled", access: "authed", method: "PUT", path: "/agent-packages/:name/enabled", params: { name: path("name"), enabled: body(), scope: body(), ownerProvider: body(), ownerSubject: body() }, summary: "Enable/disable a package fleet-wide. Creator or admin. `scope` picks which same-named copy." },
     { name: "pinAgentPackageVersion", access: "authed", method: "PUT", path: "/agent-packages/:name/active", params: { name: path("name"), semver: body(), scope: body(), ownerProvider: body(), ownerSubject: body() }, summary: "Pin the active version (rollback). Creator or admin; fleet converges on the next epoch poll. `scope` picks which same-named copy." },
     { name: "deleteAgentPackage", access: "authed", method: "DELETE", path: "/agent-packages/:name", params: { name: path("name"), scope: query("string"), ownerProvider: query("string"), ownerSubject: query("string") }, summary: "Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn. `scope` picks which same-named copy." },
-    { name: "republishAgentPackageVersion", access: "authed", method: "POST", path: "/agent-packages/:name/republish", params: { name: path("name"), semver: body(), targetScope: body() }, summary: "Publish an existing version's exact bytes into the same-named package in another scope (user↔shared). THE update path for an already-published shared package — promote can only move a row to an unused name. Creator or admin." },
+    { name: "republishAgentPackageVersion", access: "authed", method: "POST", path: "/agent-packages/:name/republish", params: { name: path("name"), semver: body(), targetScope: body(), ownerProvider: body(), ownerSubject: body() }, summary: "Publish an existing version's exact bytes into the same-named package in another scope (user↔shared). THE update path for an already-published shared package — promote can only move a row to an unused name. Creator or admin." },
 
     // ── Current user profile ────────────────────────────────────────────
     { name: "getCurrentUserProfile", access: "authed", method: "GET", path: "/me/profile", summary: "Profile of the authenticated principal." },
@@ -225,6 +225,40 @@ export const OPERATIONS = [
     { name: "setCurrentUserGitHubCopilotKey", access: "authed", method: "PUT", path: "/me/github-copilot-key", params: { key: body() }, summary: "Set (or clear with null) the per-user GitHub Copilot key." },
     { name: "setSystemGitHubCopilotKey", access: "fleet:admin", method: "PUT", path: "/admin/system-github-copilot-key", params: { key: body() }, admin: true, summary: "Set (or clear with null) the System user's GitHub Copilot key, used by ownerless system sessions. [admin]" },
     { name: "getSystemGitHubCopilotKeyStatus", access: "fleet:admin", method: "GET", path: "/admin/system-github-copilot-key", admin: true, summary: "Whether a System GitHub Copilot key is configured and who last changed it. [admin]" },
+
+    // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────
+    // A session runs provider:model and that provider is charged. Every
+    // operation carries the caller down to the cms_provider_* procedures,
+    // which decide what the caller may do; the admin rows are marked
+    // fleet:admin so the door matches the answer the database would give.
+    { name: "listProviders", access: "authed", method: "GET", path: "/providers", summary: "Providers the caller can use: every shared one plus their own. Admins also see other people's, marked usableByMe:false." },
+    { name: "getProviderStatus", access: "authed", method: "GET", path: "/providers/status", params: { names: query("string") }, summary: "Limits, usage against them, reset times, and the caller's own ceiling where an allowance applies. `names` is a comma-separated list; omit it for all of them." },
+    // One read, one table. A meter runs whether or not anybody capped the
+    // period, so an uncapped day still reports what was spent on it — which
+    // is the fact `getProviderStatus` cannot carry, because it lists limits.
+    { name: "getProviderUsageGrid", access: "authed", method: "GET", path: "/providers/usage-grid", summary: "Every provider in the caller's namespace, each followed by its model-scoped limits, with used and quota figures for day, week and month — the caller's own and everyone's. A period with no limit reports its usage against an unlimited quota." },
+    { name: "createProvider", access: "fleet:admin", method: "POST", path: "/management/providers", params: { name: body(), type: body(), credentials: body(), baseUrl: body() }, summary: "Create a shared provider — one anyone may spend from. [admin]" },
+    { name: "deleteProvider", access: "fleet:admin", method: "DELETE", path: "/management/providers/:name", params: { name: path("name") }, summary: "Remove a shared provider. Returns how many sessions are now waiting on the name. [admin]" },
+    { name: "createMyProvider", access: "authed", method: "POST", path: "/me/providers", params: { name: body(), type: body(), credentials: body(), baseUrl: body() }, summary: "Create a provider of your own, on your own credentials. Nobody else sees it." },
+    { name: "deleteMyProvider", access: "authed", method: "DELETE", path: "/me/providers/:name", params: { name: path("name") }, summary: "Remove one of your own providers. Returns how many sessions are now waiting on the name." },
+    { name: "clearProviderRoutingDependencies", access: "authed", method: "POST", path: "/providers/:name/clear-routing", params: { name: path("name") }, summary: "Explicitly clear defaults and system-agent overrides that reference a provider. Shared providers require admin." },
+    { name: "setProviderLimit", access: "authed", method: "PUT", path: "/providers/:name/limit", params: { name: path("name"), period: body(), model: body(), tokens: body() }, summary: "Save one limit (day | week | month, all models or one). The same combination replaces what was there. Admin on a shared provider, owner on a personal one." },
+    { name: "removeProviderLimit", access: "authed", method: "DELETE", path: "/providers/:name/limit", params: { name: path("name"), period: query("string"), model: query("string") }, summary: "Drop one limit. Returns whether there was one." },
+    { name: "setProviderAllowance", access: "fleet:admin", method: "PUT", path: "/management/providers/:name/allowance", params: { name: path("name"), pct: body() }, summary: "The share of each limit one person may use, 1..100. 100 means no per-person ceiling. Shared providers only. [admin]" },
+    { name: "setProviderHold", access: "fleet:admin", method: "PUT", path: "/management/providers/:name/hold", params: { name: path("name"), untilUtc: body(), release: body() }, summary: "Pause new turns against a provider. Neither untilUtc nor release = a hold with no end. [admin]" },
+    { name: "getDefaults", access: "authed", method: "GET", path: "/defaults", summary: "Compatibility view of configured cluster, user and system model tuples." },
+    { name: "getModelDefaults", access: "authed", method: "GET", path: "/model-defaults", summary: "Configured and effective user, cluster and system defaults plus per-system-agent overrides." },
+    { name: "setModelDefault", access: "authed", method: "PUT", path: "/model-defaults", params: { scope: body(), provider: body(), model: body(), reasoningEffort: body(), contextTier: body() }, summary: "Set or clear the user or cluster ordinary-session default. Cluster scope requires admin." },
+    { name: "setProviderSystemUse", access: "fleet:admin", method: "PUT", path: "/management/providers/:name/system-use", params: { name: path("name"), enabled: body() }, summary: "Allow or refuse system-session use of the calling admin's personal provider. [admin]" },
+    { name: "getLegacyProviderMigrationStatus", access: "fleet:admin", method: "GET", path: "/management/providers/legacy-key-migration", summary: "Aggregate legacy GHCP migration status; never returns credentials. [admin]" },
+    { name: "adoptLegacySystemGitHubCopilotKey", access: "fleet:admin", method: "POST", path: "/management/providers/adopt-system-github-key", params: { name: body() }, summary: "Adopt the legacy synthetic System GHCP key into the calling admin's private, system-enabled provider. [admin]" },
+    { name: "setSystemModelDefault", access: "fleet:admin", method: "PUT", path: "/management/system-model-default", params: { provider: body(), model: body(), reasoningEffort: body(), contextTier: body(), restartExisting: body() }, summary: "Set or clear the system-session default and optionally restart inheriting sessions. [admin]" },
+    { name: "setSystemSessionModel", access: "fleet:admin", method: "PUT", path: "/management/system-sessions/:agentId/model", params: { agentId: path("agentId"), provider: body(), model: body(), reasoningEffort: body(), contextTier: body() }, summary: "Set one persistent system-agent model override. [admin]" },
+    { name: "clearSystemSessionModel", access: "fleet:admin", method: "DELETE", path: "/management/system-sessions/:agentId/model", params: { agentId: path("agentId") }, summary: "Clear one persistent system-agent model override. [admin]" },
+    { name: "setClusterDefault", access: "fleet:admin", method: "PUT", path: "/management/defaults", params: { provider: body(), model: body(), reasoning: body(), context: body() }, summary: "Deprecated alias for setModelDefault(scope=cluster). [admin]" },
+    { name: "setMyDefault", access: "authed", method: "PUT", path: "/me/default", params: { provider: body(), model: body(), reasoning: body(), context: body() }, summary: "The caller's prefill for new sessions. A null provider clears it." },
+    { name: "getProviderUsage", access: "authed", method: "GET", path: "/providers/usage", params: { days: query("number"), mine: query("boolean"), ownerUserId: query("number"), provider: query("string"), model: query("string"), sessionId: query("string"), chargeClass: query("string"), dimension: query("string"), limit: query("number") }, summary: "Where the tokens went: { totals, daily[], breakdown[] } over one filter set. dimension: session | user | provider | model | agent. Non-admins see only their own rows. `mine` narrows to the caller's own spend, resolved server-side — it carries no id, so it cannot name anybody else." },
+    { name: "listPausedSessions", access: "authed", method: "GET", path: "/providers/paused", summary: "Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own." },
 
     // ── System ──────────────────────────────────────────────────────────
     { name: "getLogConfig", access: "authed", method: "GET", path: "/system/log-config", summary: "Log tail availability." },
@@ -298,10 +332,11 @@ export function artifactDownloadPath(sessionId, filename) {
 }
 
 export class ApiError extends Error {
-    constructor(message, { code = "INTERNAL_ERROR", status = 500 } = {}) {
+    constructor(message, { code = "INTERNAL_ERROR", status = 500, candidates = undefined } = {}) {
         super(message);
         this.name = "ApiError";
         this.code = code;
         this.status = status;
+        if (Array.isArray(candidates)) this.candidates = candidates;
     }
 }

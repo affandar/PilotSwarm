@@ -44,13 +44,15 @@ Allowlist mode — only `investigator`, `deployer`, `reporter`, and `builder` ca
 ## Prerequisites
 
 - PostgreSQL running locally (or `DATABASE_URL` pointing to one)
-- `GITHUB_TOKEN` with Copilot access
+- A runtime model provider with Copilot/BYOK access. For the first local boot,
+  `GITHUB_TOKEN` can be used as a bootstrap credential.
 - PilotSwarm installed (`npm install` from repo root)
 
 Create a `.env` file in the repo root:
 
 ```bash
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
+# Optional bootstrap compatibility for first startup
 GITHUB_TOKEN=your-token-here
 ```
 
@@ -72,6 +74,11 @@ Or use the helper script:
 ```
 
 The TUI title and startup splash are loaded automatically from the plugin metadata.
+
+After first startup, open **Admin Console → Model Providers** and create a
+shared or personal provider instance, then set the user/cluster/system defaults
+needed by the sample. The checked-in model catalog is type-only; credentials,
+budgets, allowances, and holds are runtime CMS state.
 
 This launches the full TUI with:
 - Agent picker showing Investigator, Deployer, Reporter, and Builder when you press `n`

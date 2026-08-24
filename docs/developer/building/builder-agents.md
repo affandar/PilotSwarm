@@ -86,8 +86,12 @@ Builder templates should assume:
 - npm packages are consumed as `pilotswarm-sdk` and `pilotswarm` (the app package)
 - PilotSwarm's built-in framework and management plugins are embedded in those packages
 - app `default.agent.md` files are overlays layered under the embedded PilotSwarm framework base
-- if an app needs a custom model catalog, check in `.model_providers.example.json`, create a local gitignored `.model_providers.json` from it, and keep provider keys in `.env` / `.env.remote`
-- builder templates should scaffold both `.env.example` and `.model_providers.example.json` from PilotSwarm's own example-file shape, then create local `.env` / `.model_providers.json` copies and add those real files to `.gitignore`
+- if an app needs a custom model catalog, check in a credential-free
+  `.model_providers.example.json` provider-type template and create a local
+  gitignored `.model_providers.json` from it
+- builder templates should create runtime shared/personal providers, defaults,
+  and budgets through Admin Console or management APIs; `.env` may carry a
+  bootstrap key for local startup, but the catalog must not carry live keys
 - optional SDK-bundled named agents are hidden by default and should be exposed through `session-policy.json.creation.bundledAgents`, for example `"bundledAgents": ["generic-crawler"]`; templates should teach that policy opt-in instead of copying bundled agent files unless the app needs custom behavior
 - every generated app `.agent.md` should include `schemaVersion: 1` and a `version` string; new agents should default to `version: 1.0.0`, and edits to existing agents should bump the version string according to the app's versioning style
 - generated recurring agents should use `cron(seconds=N, reason="...")` for fixed intervals and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules; do not build wall-clock jobs with wake-and-check polling loops

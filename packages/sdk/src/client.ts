@@ -29,6 +29,8 @@ import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
+import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
+import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -64,6 +66,7 @@ export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
     private _factStore: FactStore | null = null;
+    private _modelProviderTypes: ModelProviderRegistry | null = null;
     private duroxideClient: any = null;
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
     /** parentSessionId for sub-agent sessions. */
@@ -152,33 +155,50 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
-        if (config) {
+        const resolved = await this._resolveCreationModel(config ?? {}, false);
+        const resolvedConfig = {
+            ...(config ?? {}),
+            ...(resolved ? {
+                model: resolved.model,
+                reasoningEffort: resolved.reasoning as ManagedSessionConfig["reasoningEffort"],
+                contextTier: resolved.context as ManagedSessionConfig["contextTier"],
+            } : {}),
+        };
+        if (config || resolved) {
             const fullConfig: ManagedSessionConfig = {
-                model: config.model,
-                reasoningEffort: config.reasoningEffort,
-                contextTier: config.contextTier,
-                systemMessage: config.systemMessage,
-                boundAgentName: config.boundAgentName,
-                promptLayering: config.promptLayering,
-                childContract: config.childContract,
-                tools: config.tools,
-                workingDirectory: config.workingDirectory,
-                hooks: config.hooks,
-                waitThreshold: config.waitThreshold ?? this.config.waitThreshold,
-                toolNames: config.toolNames,
+                model: resolvedConfig.model,
+                reasoningEffort: resolvedConfig.reasoningEffort,
+                contextTier: resolvedConfig.contextTier,
+                systemMessage: resolvedConfig.systemMessage,
+                boundAgentName: resolvedConfig.boundAgentName,
+                promptLayering: resolvedConfig.promptLayering,
+                childContract: resolvedConfig.childContract,
+                tools: resolvedConfig.tools,
+                workingDirectory: resolvedConfig.workingDirectory,
+                hooks: resolvedConfig.hooks,
+                waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
+                toolNames: resolvedConfig.toolNames,
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
 
         // CMS: write session record (state=pending, no orchestration yet)
         await this._catalog.createSession(sessionId, {
-            model: config?.model,
-            reasoningEffort: config?.reasoningEffort,
+            model: resolvedConfig.model,
+            reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
+            contextTier: resolvedConfig.contextTier ?? undefined,
+            modelResolutionSource: resolved?.source,
             parentSessionId: config?.parentSessionId,
             owner: config?.owner ?? null,
             groupId: config?.groupId ?? null,
             visibility: config?.visibility ?? null,
         });
+        if (resolved) {
+            await this._catalog.recordEvents(sessionId, [{
+                eventType: "session.model_resolved",
+                data: { model: resolved.model, source: resolved.source },
+            }]).catch(() => {});
+        }
 
         // Track parentSessionId for sub-agent orchestration input
         if (config?.parentSessionId) {
@@ -287,10 +307,13 @@ export class PilotSwarmClient {
         }
 
         const sessionId = crypto.randomUUID();
+        const resolved = await this._resolveCreationModel(config, true);
+        if (!resolved) throw new Error("No system-eligible model provider is available.");
         this.systemSessions.add(sessionId);
         const fullConfig: ManagedSessionConfig = {
-            model: config.model,
-            reasoningEffort: config.reasoningEffort,
+            model: resolved.model,
+            reasoningEffort: (resolved.reasoning ?? undefined) as ManagedSessionConfig["reasoningEffort"],
+            contextTier: (resolved.context ?? undefined) as ManagedSessionConfig["contextTier"],
             systemMessage: config.systemMessage,
             toolNames: config.toolNames,
         };
@@ -298,10 +321,16 @@ export class PilotSwarmClient {
 
         // CMS: create with is_system = true
         await this._catalog.createSession(sessionId, {
-            model: config.model,
-            reasoningEffort: config.reasoningEffort,
+            model: resolved.model,
+            reasoningEffort: resolved.reasoning ?? undefined,
+            contextTier: resolved.context ?? undefined,
+            modelResolutionSource: resolved.source,
             isSystem: true,
         });
+        await this._catalog.recordEvents(sessionId, [{
+            eventType: "session.model_resolved",
+            data: { model: resolved.model, source: resolved.source },
+        }]).catch(() => {});
 
         // Set a fixed title immediately
         if (config.title) {
@@ -515,6 +544,7 @@ export class PilotSwarmClient {
         trace("[client] CMS initialize start...");
         await this._catalog.initialize();
         trace("[client] CMS initialize done");
+        this._modelProviderTypes = loadModelProviderTypes(this.config.modelProvidersPath);
 
         trace("[client] facts create start...");
         this._factStore = await runtimeStorageProvider.createFactStore(storage.runtime);
@@ -523,6 +553,38 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    private async _resolveCreationModel(
+        config: Pick<ManagedSessionConfig, "model" | "reasoningEffort" | "contextTier"> & { owner?: SessionOwnerInfo | null },
+        system: boolean,
+    ): Promise<RuntimeModelSelection | null> {
+        const store = this._catalog?.providers;
+        if (!store) return null;
+        if (!this._modelProviderTypes) {
+            throw new Error("No provider type catalog is available; refusing to create an unstamped session.");
+        }
+        const actor = system ? null : await store.lookupUserId(config.owner ?? null);
+        const [defaults, credentials] = await Promise.all([
+            store.getDefaults(actor),
+            store.allCredentials(),
+        ]);
+        const override = system ? [] : [
+            { tuple: defaults.mine, source: "user_default" as const },
+            { tuple: defaults.cluster, source: "cluster_default" as const },
+        ];
+        const systemDefaults = system
+            ? [{ tuple: defaults.system, source: "system_default" as const }]
+            : override;
+        return resolveRuntimeModelSelection(this._modelProviderTypes, credentials, {
+            requestedModel: config.model,
+            requestedReasoning: config.reasoningEffort,
+            requestedContext: config.contextTier,
+            defaults: systemDefaults,
+            eligible: system
+                ? (provider) => provider.class === "shared" || provider.systemUseEnabled === true
+                : (provider) => provider.class === "shared" || (actor !== null && provider.ownerUserId === actor),
+        });
     }
 
     async stop(): Promise<void> {
@@ -719,6 +781,9 @@ export class PilotSwarmClient {
         prompt: string,
         opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
+        // Match sendAndWait(): snapshot the durable response cursor before
+        // enqueue so a following wait() cannot consume the prior turn.
+        await this._syncTurnCursors(`session-${sessionId}`);
         return this._ensureOrchestrationAndSend(sessionId, prompt, opts);
     }
 

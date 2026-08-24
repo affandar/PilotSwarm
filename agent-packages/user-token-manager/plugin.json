@@ -1,0 +1,9 @@
+{
+  "name": "user-token-manager",
+  "version": "1.0.0",
+  "title": "My Token Manager",
+  "description": "Your own budget assistant — what you have spent, what is left, and the providers you brought yourself.",
+  "agents": [
+    "agents/user-token-manager.agent.md"
+  ]
+}

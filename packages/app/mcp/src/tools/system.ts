@@ -54,7 +54,7 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                         let registry: Record<string, unknown> | undefined;
                         if (ctx.admin) {
                             try {
-                                const rows: any[] = (await ctx.web.ops.listWorkers()) ?? [];
+                                const rows: any[] = (await ctx.mgmt.listWorkers()) ?? [];
                                 const liveCutoff = Date.now() - 90_000;
                                 const live = rows.filter((r) => new Date(r?.updatedAt ?? 0).getTime() >= liveCutoff);
                                 const byPhase: Record<string, number> = {};
@@ -108,7 +108,7 @@ export function registerSystemTools(server: McpServer, ctx: ServerContext) {
                 },
             },
             withToolErrors(async ({ pool, live_only }) => {
-                let rows: any[] = ((await ctx.web.ops.listWorkers()) ?? []) as any[];
+                let rows: any[] = ((await ctx.mgmt.listWorkers()) ?? []) as any[];
                 if (pool) rows = rows.filter((r) => r.pool === pool);
                 if (live_only) {
                     const cutoff = Date.now() - 90_000;

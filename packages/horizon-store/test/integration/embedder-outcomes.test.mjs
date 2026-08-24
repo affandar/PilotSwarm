@@ -13,6 +13,7 @@ import {
 describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) + live semantic/hybrid", () => {
     let store, schema, graph, pool;
     const all = aclOf(null, [], true);
+    const ROTATED_MODEL = `${REAL_EMBED_MODEL}-v2`;
 
     const CORPUS = [
         { key: "live/jsonb", text: "jsonb subscripting assignment semantics in PostgreSQL" },
@@ -113,21 +114,25 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
     }, 180_000);
 
     it("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
-        const ROTATED = `${REAL_EMBED_MODEL}-v2`; // same deployment (URL routes it); new model STAMP
-        await store.configureEmbedder(realEmbedding({ model: ROTATED }));
+        await store.configureEmbedder(realEmbedding({ model: ROTATED_MODEL }));
         // While mismatched, the old-model rows are invisible to semantic search (S5 live twin) — shape-only check.
         const during = await store.searchFacts("jsonb subscripting semantics", { mode: "semantic", limit: 10 }, all);
         assert.ok(Array.isArray(during.facts));
         await pollUntil(async () => {
             const st = await rowState("live/cooking");
-            return st.embedding_model === ROTATED && st.has_vec;
+            return st.embedding_model === ROTATED_MODEL && st.has_vec;
         }, { label: "rolling re-embed under the rotated model", timeoutMs: 180_000 });
         const res = await store.searchFacts("jsonb subscripting semantics", { mode: "semantic", limit: 5 }, all);
         assert.ok(res.facts.some((f) => f.key.startsWith("live/jsonb")), "rotated rows are searchable again");
     }, 240_000);
 
     it("oversized embedding failure is isolated by batch failure -> single-row retry", async () => {
-        await store.configureEmbedder(realEmbedding());
+        // startEmbedder is deliberately idempotent: options do not reconfigure
+        // live loops. Restart explicitly so this scenario really runs at batch
+        // 2, and keep the rotated model so the earlier corpus does not become
+        // pending work ahead of the two rows this assertion is about.
+        await store.stopEmbedder("restart oversized isolation scenario");
+        await store.configureEmbedder(realEmbedding({ model: ROTATED_MODEL }));
         const oversized = Array.from({ length: 9000 }, (_, i) => `oversized-token-${i}`).join(" ");
         await store.storeFact([
             { key: "live/oversized", value: { text: oversized }, shared: true },

@@ -1,4 +1,4 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { systemAgentUUID } from "../../src/agent-loader.js";
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
@@ -49,6 +49,31 @@ function createRestartHarness() {
     const calls = [];
 
     const catalog = {
+        providers: {
+            lookupUserId: async () => null,
+            allCredentials: async () => [{
+                name: "test", typeId: "test", class: "shared", ownerUserId: null,
+                baseUrl: "https://example.invalid", secretRef: { kind: "apiKey", value: "test-key" },
+            }],
+            getDefaults: async () => ({
+                cluster: { provider: null, model: null, reasoning: null, context: null },
+                mine: { provider: null, model: null, reasoning: null, context: null },
+                system: { provider: "test", model: "test:model", reasoning: null, context: null },
+                systemUpdatedBy: null,
+                systemUpdatedAt: null,
+            }),
+            listSystemAgentModels: async () => [{
+                agentId: "restartable",
+                provider: "test",
+                model: "test:sonnet-4.6",
+                reasoning: "high",
+                context: null,
+                updatedBy: 1,
+                updatedAt: new Date().toISOString(),
+            }],
+            claimSystemRestart: async () => "claimed",
+            finishSystemRestart: async () => true,
+        },
         async getSession(id) {
             const row = rows.get(id);
             return row && !row.deletedAt ? row : null;
@@ -152,6 +177,8 @@ function createRestartHarness() {
         resolve: (ref) => modelDescriptors.some((model) => model.qualifiedName === ref)
             ? { providerId: "test", type: "openai", modelName: ref.slice("test:".length), sdkProvider: {} }
             : undefined,
+        getModelsByProvider: () => [{ providerId: "test", type: "openai", models: modelDescriptors }],
+        allProviders: [{ id: "test", type: "openai", baseUrl: "https://example.invalid", models: modelDescriptors.map((model) => ({ name: model.modelName })) }],
     };
     mgmt._systemAgents = [agent];
 
@@ -217,6 +244,38 @@ describe("system session restart management", () => {
         assert(startCall, "restart should start a new orchestration");
         assertEqual(startCall.input.prompt, "Bootstrap now.", "replacement should use the system agent initial prompt");
         assertEqual(startCall.input.isSystem, true, "replacement orchestration input should be marked system");
+        assertEqual(startCall.input.config.model, "test:sonnet-4.6", "manual restart uses the persisted per-agent override");
+        assertEqual(startCall.input.config.reasoningEffort, "high", "manual restart uses the override effort");
+    });
+
+    it("clears an existing context tier when restart explicitly requests null", async () => {
+        const { mgmt, rows, calls, sessionId } = createRestartHarness();
+        rows.get(sessionId).contextTier = "long_context";
+
+        await mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+            model: "test:model",
+            contextTier: null,
+            modelResolutionSource: "system_default",
+        });
+
+        assertEqual(rows.get(sessionId).contextTier, null, "replacement CMS tuple clears context tier");
+        const startCall = calls.find((call) => call.type === "startOrchestrationVersioned");
+        assertEqual(startCall.input.config.contextTier, null, "replacement durable config carries explicit null");
+    });
+
+    it("refuses an unusable persisted route before tearing down the live system session", async () => {
+        const { mgmt, calls } = createRestartHarness();
+        mgmt._catalog.providers.allCredentials = async () => [{
+            name: "test", typeId: "test", class: "shared", ownerUserId: null,
+            baseUrl: null, secretRef: {},
+        }];
+
+        await expect(mgmt.restartSystemSession("restartable", {
+            disposition: "hard_delete",
+        })).rejects.toThrow(/cannot run model|No usable provider/);
+        assert(!callTypes(calls).includes("deleteInstance"), "invalid route must not delete the live orchestration");
+        assert(!callTypes(calls).includes("archiveSystemSessionForRestart"), "invalid route must not archive the live CMS row");
     });
 
     it("terminates before restarting when requested", async () => {

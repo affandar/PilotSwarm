@@ -78,8 +78,10 @@ COPY packages/app/mcp/dist/ ./packages/app/mcp/dist/
 # Build the browser app
 RUN npm run build:web --workspace=packages/app
 
-# Copy model providers config (if present)
-COPY .model_providers.json* ./
+# AKS legacy-bootstrap catalog. Never copy the private gitignored local catalog
+# into a released/deployed image; runtime provider state lives in CMS after the
+# one-time compatibility seed.
+COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
 
 EXPOSE 3001
 

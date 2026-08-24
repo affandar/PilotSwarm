@@ -11,6 +11,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createModelProvidersReloader, resolveModelProvidersPath } from "../../src/model-providers.ts";
+import { ModelProviderRegistry } from "../../src/model-providers.ts";
+import { PilotSwarmWorker } from "../../src/worker.ts";
 
 // The registry drops providers whose apiKey env var is unset (credential
 // filtering) and then rejects a defaultModel with no credentialed models —
@@ -54,6 +56,7 @@ describe("model providers hot-reload", () => {
         const reloader = createModelProvidersReloader(file);
         expect(reloader.path).toBe(file);
         expect(reloader.current?.hasModel("azure-openai:gpt-alpha")).toBe(true);
+        expect(reloader.types?.hasModel("azure-openai:gpt-alpha")).toBe(true);
 
         // No change → no reload.
         expect(reloader.checkAndReload()).toBe(false);
@@ -64,6 +67,7 @@ describe("model providers hot-reload", () => {
         expect(reloader.checkAndReload()).toBe(true);
         expect(reloader.current?.hasModel("azure-openai:gpt-beta")).toBe(true);
         expect(reloader.current?.hasModel("azure-openai:gpt-alpha")).toBe(false);
+        expect(reloader.types?.hasModel("azure-openai:gpt-beta")).toBe(true);
     });
 
     it("keeps the last good registry when the file turns malformed, without hot-looping the parse", () => {
@@ -74,11 +78,13 @@ describe("model providers hot-reload", () => {
 
         const reloader = createModelProvidersReloader(file);
         expect(reloader.current?.hasModel("azure-openai:gpt-good")).toBe(true);
+        expect(reloader.types?.hasModel("azure-openai:gpt-good")).toBe(true);
 
         fs.writeFileSync(file, "{ this is not json");
         bumpMtime(file, 5_000);
         expect(reloader.checkAndReload()).toBe(false);          // parse failed → no swap
         expect(reloader.current?.hasModel("azure-openai:gpt-good")).toBe(true);
+        expect(reloader.types?.hasModel("azure-openai:gpt-good")).toBe(true);
         // mtime was recorded up-front: an unchanged broken file is not re-parsed.
         expect(reloader.checkAndReload()).toBe(false);
 
@@ -87,6 +93,25 @@ describe("model providers hot-reload", () => {
         bumpMtime(file, 10_000);
         expect(reloader.checkAndReload()).toBe(true);
         expect(reloader.current?.hasModel("azure-openai:gpt-fixed")).toBe(true);
+        expect(reloader.types?.hasModel("azure-openai:gpt-fixed")).toBe(true);
+    });
+
+    it("keeps uncredentialed non-GitHub types for runtime BYOK providers", () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-mp-types-"));
+        roots.push(root);
+        const file = path.join(root, "model_providers.json");
+        fs.writeFileSync(file, JSON.stringify({
+            providers: [{
+                id: "anthropic",
+                type: "anthropic",
+                baseUrl: "https://example.invalid",
+                models: [{ name: "claude-test" }],
+            }],
+        }));
+
+        const reloader = createModelProvidersReloader(file);
+        expect(reloader.current?.hasModel("anthropic:claude-test")).toBe(false);
+        expect(reloader.types?.hasModel("anthropic:claude-test")).toBe(true);
     });
 
     it("reports no path (and never reloads) when no config file exists anywhere", () => {
@@ -110,5 +135,28 @@ describe("model providers hot-reload", () => {
             if (prevPsPath !== undefined) process.env.PS_MODEL_PROVIDERS_PATH = prevPsPath;
             if (prevMpPath !== undefined) process.env.MODEL_PROVIDERS_PATH = prevMpPath;
         }
+    });
+
+    it("clears stale runtime credentials when the provider store refresh fails", async () => {
+        const types = new ModelProviderRegistry({
+            providers: [{
+                id: "openai-type", type: "openai", baseUrl: "https://example.invalid",
+                models: [{ name: "gpt" }],
+            }],
+        }, { keepUncredentialed: true });
+        let applied = types;
+        const fakeWorker = {
+            _catalog: { providers: {
+                allCredentials: async () => { throw new Error("database unavailable"); },
+                getDefaults: async () => ({ cluster: { model: null } }),
+            } },
+            _modelProviderTypes: types,
+            _modelProviders: types,
+            sessionManager: { setModelProviders: (registry) => { applied = registry; } },
+        };
+
+        await PilotSwarmWorker.prototype._refreshProviderRegistry.call(fakeWorker);
+        expect(applied.allModels).toEqual([]);
+        expect(fakeWorker._modelProviders.allModels).toEqual([]);
     });
 });

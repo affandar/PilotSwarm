@@ -129,6 +129,9 @@ export const TEST_GPT_MODEL = firstKnownModel([
 ]);
 
 export const TEST_CLAUDE_MODEL = firstKnownModel([
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4.8",
     "claude-sonnet-4.6",
     "claude-opus-4.6",
 ]);

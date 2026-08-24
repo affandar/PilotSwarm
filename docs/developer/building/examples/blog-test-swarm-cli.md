@@ -41,7 +41,9 @@ LOG_LEVEL=info
 
 ### Configuring Model Providers
 
-By default, PilotSwarm uses the GitHub Copilot API with your `GITHUB_TOKEN`. For more control — multiple providers, specific models, Azure OpenAI — create a `model_providers.json` in your project root:
+Use `model_providers.json` for provider types and model capabilities. Create
+the actual shared/personal providers and defaults in Admin Console after first
+startup:
 
 ```json
 {
@@ -49,7 +51,6 @@ By default, PilotSwarm uses the GitHub Copilot API with your `GITHUB_TOKEN`. For
     {
       "id": "github-copilot",
       "type": "github",
-      "githubToken": "env:GITHUB_TOKEN",
       "models": [
         {
           "name": "claude-sonnet-4.6",
@@ -63,12 +64,10 @@ By default, PilotSwarm uses the GitHub Copilot API with your `GITHUB_TOKEN`. For
       "id": "azure-openai",
       "type": "azure",
       "baseUrl": "https://your-resource.openai.azure.com/openai",
-      "apiKey": "env:AZURE_OPENAI_KEY",
       "apiVersion": "2024-10-21",
       "models": ["gpt-4.1-mini"]
     }
-  ],
-  "defaultModel": "github-copilot:claude-sonnet-4.6"
+  ]
 }
 ```
 

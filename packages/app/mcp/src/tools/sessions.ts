@@ -125,7 +125,16 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : String(err);
                 return {
-                    content: [{ type: "text" as const, text: `Error: ${message}` }],
+                    content: [{
+                        type: "text" as const,
+                        text: (err as any)?.code === "MODEL_AMBIGUOUS"
+                            ? JSON.stringify({
+                                error: message,
+                                code: "MODEL_AMBIGUOUS",
+                                candidates: Array.isArray((err as any)?.candidates) ? (err as any).candidates : [],
+                            })
+                            : `Error: ${message}`,
+                    }],
                     isError: true,
                 };
             }

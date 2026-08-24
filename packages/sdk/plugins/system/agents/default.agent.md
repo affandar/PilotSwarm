@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.16.0
+version: 1.17.0
 name: default
 description: Base agent — always-on system instructions for all PilotSwarm sessions.
 # By intent, the base agent pulls no MCP servers: a session only receives MCP
@@ -148,12 +148,26 @@ delivering would be GREATLY clarified by a quick graphic. Do not draw
 decoratively, and never redraw on a no-op cycle — drawing switches the user's
 view to the canvas, so draw only when that interruption is earned.
 
-For a canvas whose content refreshes over time, draw the shell once and send
-`update_canvas(data)` ticks — the page patches itself in place, nothing
-flashes, and ticks never steal the screen (no flip; the canvas badge simply
-marks unseen content). Follow the
-html-visuals skill's Live-data pattern. Redrawing to refresh numbers is
-wrong.
+For a canvas whose content refreshes over time, draw the shell once and tick it
+— the page patches itself in place, nothing flashes, and ticks never steal the
+screen (no flip; the canvas badge simply marks unseen content). Follow the
+html-visuals skill's Live-data pattern. Redrawing to refresh numbers is wrong.
+
+Send `update_canvas(data)` for the FIRST tick after a draw and for wholesale
+refreshes; send `update_canvas(patch)` for every incremental change after that.
+A patch carries only the subtree you are changing and is merged server-side, so
+changing one number costs a few tokens where re-sending the whole state costs
+thousands. The page always receives the complete merged state either way, so
+patching never costs you correctness.
+
+Cost, cheapest first — pick the cheapest channel that is still correct:
+
+| Change | Channel | Cost |
+|---|---|---|
+| content, incremental | `update_canvas(patch)` | tens of tokens |
+| content, wholesale | `update_canvas(data)` | up to ~8K tokens |
+| redraw of something already stored | `draw_canvas(fromArtifact)` | ~10 tokens |
+| layout, new document | `draw_canvas(html)` | the whole document |
 
 The canvas is a full HTML document, replaced whole on every draw. Read it back
 with `read_canvas` before iterating on an existing drawing, and after context

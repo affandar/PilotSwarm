@@ -81,8 +81,34 @@ describe("agent-package worker install", () => {
         const ctx = { catalog, artifactStore };
         const cacheDir = path.join(env.baseDir, "agent-packages-cache");
         const fixtures = path.join(env.baseDir, "package-fixtures");
+        const modelProvidersPath = path.join(env.baseDir, "model-providers.agent-package.json");
 
         try {
+            // Session creation now stamps an exact runtime provider:model
+            // before orchestration starts. This suite never runs an LLM turn,
+            // so give it an isolated fake provider instead of depending on an
+            // ambient .model_providers.json credential.
+            fs.writeFileSync(modelProvidersPath, JSON.stringify({
+                providers: [{
+                    id: "fixture-openai-type",
+                    type: "openai",
+                    baseUrl: "https://example.invalid/v1",
+                    models: [{ name: "fixture-model" }],
+                }],
+            }));
+            await catalog.providers.createProvider({
+                name: "fixture-provider",
+                typeId: "fixture-openai-type",
+                class: "shared",
+                secretRef: { apiKey: "fixture-key" },
+            }, null, true);
+            await catalog.providers.setClusterDefault({
+                provider: "fixture-provider",
+                model: "fixture-provider:fixture-model",
+                reasoning: null,
+                context: null,
+            }, true);
+
             // ── Publish v1.0.0 before the worker exists ──────────────
             const v1 = writeFixturePackage(path.join(fixtures, "v1"), {
                 name: "fixture-kit", version: "1.0.0",
@@ -94,7 +120,11 @@ describe("agent-package worker install", () => {
 
             await withClient(env, {
                 workerNodeId: `pkg-worker-${env.runId}`,
-                worker: { agentPackages: { cacheDir, refreshIntervalMs: 0 } },
+                worker: {
+                    modelProvidersPath,
+                    agentPackages: { cacheDir, refreshIntervalMs: 0 },
+                },
+                client: { modelProvidersPath },
             }, async (_client, worker) => {
                 // ── Cold start installed the package ─────────────────
                 const agent = worker.loadedAgents.find((a) => a.name === "fixture-triager");
@@ -192,6 +222,8 @@ describe("agent-package worker install", () => {
                 assert(session?.sessionId, "createSessionForAgent accepts a package agent");
                 const row = await catalog.getSession(session.sessionId);
                 assertEqual(row.agentId, "fixture-triager", "CMS row is bound to the package agent");
+                assertEqual(row.model, "fixture-provider:fixture-model",
+                    "CMS row is stamped without an ambient model credential");
 
                 // ── Disable converges out ────────────────────────────
                 await catalog.setAgentPackageEnabled("fixture-kit", false, OWNER, false);

@@ -20,6 +20,8 @@ const SRC = fs.readFileSync(
     path.resolve(__dirname, "../../src/management-client.ts"),
     "utf8",
 );
+const LIFECYCLE_SRC = fs.readFileSync(path.resolve(__dirname, "../../src/orchestration/lifecycle.ts"), "utf8");
+const PROXY_SRC = fs.readFileSync(path.resolve(__dirname, "../../src/session-proxy.ts"), "utf8");
 
 describe("setSessionModel reasoning-effort contract", () => {
     it("only sends reasoningEffort when the caller explicitly provided one", () => {
@@ -46,5 +48,12 @@ describe("setSessionModel reasoning-effort contract", () => {
             !setModelBlock.includes("match.defaultReasoningEffort"),
             "setSessionModel must not inject the descriptor's defaultReasoningEffort when the caller omitted effort",
         );
+    });
+
+    it("persists model, effort, context tier, and switch source together", () => {
+        assertIncludes(LIFECYCLE_SRC, "newContextTier,", "set_model passes the resolved context tier to persistence");
+        assertIncludes(LIFECYCLE_SRC, 'String(cmdMsg.args?.source ?? "user")', "set_model passes the switch source to persistence");
+        assertIncludes(PROXY_SRC, "contextTier: input.contextTier ?? null", "the activity persists context tier");
+        assertIncludes(PROXY_SRC, 'modelResolutionSource: input.source ?? "model_switch"', "the activity persists source");
     });
 });

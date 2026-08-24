@@ -10,7 +10,8 @@ import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
-import { startSystemAgents } from "./system-agents.js";
+import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
+import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig } from "./mcp-loader.js";
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -176,6 +177,8 @@ export class PilotSwarmWorker {
     private _baseMcpServers: Record<string, any> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
+    /** Provider-type templates, including types with no static credential. */
+    private _modelProviderTypes: ModelProviderRegistry | null = null;
     /** Mtime watcher that re-loads model_providers.json on file change. */
     private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
     private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
@@ -289,6 +292,7 @@ export class PilotSwarmWorker {
         // restart — the registry used to be read exactly once at startup.
         this._modelProvidersReloader = createModelProvidersReloader(options.modelProvidersPath);
         this._modelProviders = this._modelProvidersReloader.current;
+        this._modelProviderTypes = this._modelProvidersReloader.types;
 
         this.sessionManager = new SessionManager(
             options.githubToken,
@@ -314,23 +318,62 @@ export class PilotSwarmWorker {
             },
             effectiveSessionStateDir,
         );
+        this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
 
         // Poll for model_providers.json changes (30s, unref'd so it never
         // holds the process open). On reload, swap the worker's registry AND
         // the SessionManager's — new sessions and per-turn model resolution
         // pick up the fresh catalog immediately.
-        if (this._modelProvidersReloader?.path) {
+        if (this._modelProvidersReloader?.path || this._modelProviders) {
             this._modelProvidersReloadTimer = setInterval(() => {
-                if (this._modelProvidersReloader!.checkAndReload()) {
-                    this._modelProviders = this._modelProvidersReloader!.current;
-                    this.sessionManager.setModelProviders(this._modelProviders);
+                if (this._modelProvidersReloader?.checkAndReload()) {
+                    this._modelProviders = this._modelProvidersReloader.current;
+                    this._modelProviderTypes = this._modelProvidersReloader.types;
                     console.log(
-                        `[PilotSwarmWorker] model providers reloaded from ${this._modelProvidersReloader!.path} ` +
+                        `[PilotSwarmWorker] model providers reloaded from ${this._modelProvidersReloader.path} ` +
                         `(${this._modelProviders?.allModels.length ?? 0} models)`,
                     );
                 }
+                // Providers are created and deleted at runtime, so the
+                // catalog is re-read on the same tick as the file. Without
+                // it a provider somebody just added would resolve no
+                // credential until the worker restarted.
+                void this._refreshProviderRegistry()
+                    .then(() => this._startSystemAgents())
+                    .catch((err) => console.warn(`[PilotSwarmWorker] provider/system reconciliation failed: ${String((err as Error)?.message ?? err)}`));
             }, 30_000);
             this._modelProvidersReloadTimer.unref?.();
+        }
+    }
+
+    /**
+     * Rebuild what the SessionManager resolves models against: the TYPES
+     * from the file, joined to the PROVIDERS in the database. Falls back to
+     * the file alone when there is no catalog, which is what the embedded
+     * single-process test worker runs on.
+     */
+    private async _refreshProviderRegistry(): Promise<void> {
+        const store = this._catalog?.providers;
+        if (!store || !this._modelProviderTypes) {
+            if (this._modelProviders) this.sessionManager.setModelProviders(this._modelProviders);
+            return;
+        }
+        const { buildRuntimeRegistry } = await import("./provider-catalog.js");
+        try {
+            const [credentials, defaults] = await Promise.all([
+                store.allCredentials(),
+                store.getDefaults(null),
+            ]);
+            this._modelProviders = buildRuntimeRegistry(
+                this._modelProviderTypes, credentials, defaults.cluster.model);
+            this.sessionManager.setModelProviders(this._modelProviders);
+        } catch (err) {
+            // Provider identity and credentials are authoritative in CMS.
+            // Clear the runtime registry so a turn fails closed instead of
+            // executing through a stale/file-backed credential.
+            this._modelProviders = buildRuntimeRegistry(this._modelProviderTypes, [], null);
+            this.sessionManager.setModelProviders(this._modelProviders);
+            console.warn(`[PilotSwarmWorker] provider registry refresh failed: ${String((err as Error)?.message ?? err)}`);
         }
     }
 
@@ -509,6 +552,37 @@ export class PilotSwarmWorker {
             if (lastErr) {
                 throw new Error(`CMS initialization failed after ${attempts} attempts — refusing to run a degraded worker without catalog-gated tools: ${String((lastErr as Error)?.message ?? lastErr)}`);
             }
+        }
+
+        // ── Provider budgets: the one-time deployment seed ──────────────
+        //
+        // A fresh cluster holds no providers, and the credentials in the
+        // model-providers file are the obvious place to start: each entry
+        // that carries a usable key becomes one shared provider named after
+        // the entry, so `azure-openai:gpt-5.4` means the same thing before
+        // and after this feature and no deployment file has to change.
+        //
+        // The claim is atomic in the database, so several pods booting
+        // together seed exactly once, and it is read ONCE per cluster ever —
+        // a provider an administrator later deleted stays deleted rather
+        // than reappearing at the next restart.
+        //
+        // Never fatal. A worker that cannot seed can still run every session
+        // whose provider already exists.
+        if (this._catalog?.providers && this._modelProviders) {
+            try {
+                const { bootstrapProviders } = await import("./provider-catalog.js");
+                const seeded = await bootstrapProviders(this._catalog.providers, {
+                    providers: this._modelProviders.allProviders,
+                    defaultModel: this._modelProviders.defaultModel,
+                });
+                if (seeded.claimed) {
+                    console.log(`[PilotSwarmWorker] seeded ${seeded.created} provider(s) from the model-providers file`);
+                }
+            } catch (err) {
+                console.warn(`[PilotSwarmWorker] provider seed skipped: ${String((err as Error)?.message ?? err)}`);
+            }
+            await this._refreshProviderRegistry();
         }
 
         // ── Facts store: base PgFactStore (default) or an EnhancedFactStore
@@ -1732,23 +1806,57 @@ export class PilotSwarmWorker {
         if (this._loadedSystemAgents.length === 0) return;
 
         const duroxideClient = new Client(this._provider);
-        const defaultModel = this._modelProviders?.defaultModel;
-        if (!defaultModel) {
-            throw new Error(
-                "System agents require a configured defaultModel in model_providers.json. " +
-                "Implicit fallback model selection is disabled.",
-            );
+        const providerStore = this._catalog.providers;
+        if (!providerStore || !this._modelProviderTypes) {
+            console.warn("[PilotSwarmWorker] system agents blocked: provider routing is unavailable");
+            return;
         }
-        await startSystemAgents({
-            catalog: this._catalog,
-            duroxideClient,
-            agents: this._loadedSystemAgents,
-            defaultModel,
-            blobEnabled: this.blobEnabled,
-            dehydrateThreshold: this.config.waitThreshold,
-            log: (message) => console.error(message),
-            warn: (message) => console.warn(message),
-        });
+        const [defaults, overrides, credentials] = await Promise.all([
+            providerStore.getDefaults(null),
+            providerStore.listSystemAgentModels(),
+            providerStore.allCredentials(),
+        ]);
+        const fallback = firstRuntimeModel(
+            this._modelProviderTypes,
+            credentials,
+            (provider) => provider.class === "shared" || provider.systemUseEnabled === true,
+        );
+        const systemDefault = defaults.system.provider ? defaults.system : fallback;
+        if (!systemDefault?.model) {
+            console.warn("[PilotSwarmWorker] system agents blocked: no system-eligible model provider is configured");
+            return;
+        }
+
+        const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
+        for (const plan of resolveSystemAgentSessionPlans(this._loadedSystemAgents)) {
+            const override = overrideByAgent.get(plan.agent.id);
+            const route = override ?? systemDefault;
+            if (!route.model || !this._modelProviders?.hasModel(route.model)) {
+                console.warn(`[PilotSwarmWorker] system agent ${plan.agent.id} blocked: configured model ${route.model ?? "(none)"} is unavailable`);
+                continue;
+            }
+            await startSystemAgents({
+                catalog: this._catalog,
+                duroxideClient,
+                agents: this._loadedSystemAgents,
+                agentId: plan.agent.id,
+                defaultModel: route.model,
+                ...(route.reasoning ? { defaultReasoningEffort: route.reasoning as any } : {}),
+                ...(route.context ? { defaultContextTier: route.context as any } : {}),
+                modelResolutionSource: override
+                    ? "agent_override"
+                    : defaults.system.provider ? "system_default" : "first_available",
+                blobEnabled: this.blobEnabled,
+                dehydrateThreshold: this.config.waitThreshold,
+                // A system session row can outlive its orchestration (a
+                // restart, a pending recovery); advance its ledger base so
+                // the fresh lifetime's settles land on new keys instead of
+                // silently colliding with the old lifetime's rows.
+                prepareRetainedSessionLedger: async (sid: string) => { await providerStore.bumpLedgerBase(sid); },
+                log: (message) => console.error(message),
+                warn: (message) => console.warn(message),
+            });
+        }
     }
 
     private async _createProvider(storage: StorageConfig): Promise<any> {

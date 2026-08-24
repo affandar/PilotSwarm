@@ -23,3 +23,8 @@ export {
 export { ApiClient } from "./src/api-client.js";
 export { createCanvasLiveMirror, jsonMergePatch } from "./src/canvas-live-mirror.js";
 export { HttpApiTransport } from "./src/http-api-transport.js";
+export {
+    NON_MANAGEMENT_OPERATION_OWNERS,
+    WEB_MODE_UNSUPPORTED_OPERATION_METHODS,
+    operationRequiresManagementMethod,
+} from "./src/surface-contract.js";

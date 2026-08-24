@@ -192,10 +192,10 @@ pilotswarm             (the app package; this dir is its web/ tree)
   └── vite             (devDependency)
 ```
 
-`pilotswarm-web` now consumes a small supported portal-facing surface from
-`pilotswarm-cli` rather than importing monorepo-relative source files. That
-keeps the publishable package graph explicit and lets the portal reuse the same
-Node transport and plugin-config behavior as the TUI.
+The browser portal and native TUI ship together in `pilotswarm`. The portal
+uses the supported `pilotswarm/host` surface rather than monorepo-relative
+imports, keeping the publishable package graph explicit while reusing the same
+Node transport and plugin configuration behavior.
 
 ## Multi-origin links (PORTAL_LINK_ORIGINS)
 

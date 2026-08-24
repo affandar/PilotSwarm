@@ -14,30 +14,37 @@ export function registerModelsResources(server: McpServer, ctx: ServerContext) {
             mimeType: "application/json",
         },
         async () => {
-            if (!ctx.models) {
+            const models = await ctx.mgmt.listRuntimeModels({ principal: null, isAdmin: ctx.admin });
+            if (!models.length) {
                 return {
                     contents: [
                         {
                             uri: "pilotswarm://models",
-                            text: JSON.stringify({ error: "no model providers configured" }),
+                            text: JSON.stringify({ error: "no usable model providers for this credential" }),
                             mimeType: "application/json",
                         },
                     ],
                 };
             }
 
-            const byProvider = ctx.models.getModelsByProvider();
-            const data = byProvider.map((p) => ({
-                provider_id: p.providerId,
-                type: p.type,
-                models: p.models.map((m) => ({
-                    qualified_name: m.qualifiedName,
-                    model_name: m.modelName,
-                    provider: p.providerId,
-                    description: m.description,
-                    cost: m.cost,
-                })),
-            }));
+            const grouped = new Map<string, { provider_id: string; type: string; models: any[] }>();
+            for (const model of models) {
+                const provider = model.providerId;
+                const group = grouped.get(provider) || {
+                    provider_id: provider,
+                    type: model.providerType || provider,
+                    models: [],
+                };
+                group.models.push({
+                    qualified_name: model.qualifiedName,
+                    model_name: model.modelName,
+                    provider,
+                    description: model.description,
+                    cost: model.cost,
+                });
+                grouped.set(provider, group);
+            }
+            const data = [...grouped.values()];
 
             return {
                 contents: [

@@ -19,6 +19,7 @@ function toWebSocketUrl(apiUrl) {
 async function readErrorEnvelope(response) {
     let message = response.statusText || `HTTP ${response.status}`;
     let code = response.status === 401 ? "UNAUTHORIZED" : response.status === 403 ? "FORBIDDEN" : "INTERNAL_ERROR";
+    let candidates;
     try {
         const payload = await response.json();
         const error = payload?.error;
@@ -26,11 +27,12 @@ async function readErrorEnvelope(response) {
         else if (error && typeof error === "object") {
             if (error.message) message = error.message;
             if (error.code) code = error.code;
+            if (Array.isArray(error.candidates)) candidates = error.candidates;
         } else if (payload?.message) {
             message = payload.message;
         }
     } catch {}
-    return new ApiError(message, { code, status: response.status });
+    return new ApiError(message, { code, status: response.status, candidates });
 }
 
 /**
@@ -168,6 +170,23 @@ export class ApiClient {
             // don't flip the whole app to the admission gate.
             throw await readErrorEnvelope(response);
         }
+        if (!response.ok) throw await readErrorEnvelope(response);
+        return response;
+    }
+
+    async downloadAgentPackageResponse(name, { semver, scope, ownerProvider, ownerSubject } = {}) {
+        const query = new URLSearchParams();
+        if (semver) query.set("semver", semver);
+        if (scope) query.set("scope", scope);
+        if (ownerProvider) query.set("ownerProvider", ownerProvider);
+        if (ownerSubject) query.set("ownerSubject", ownerSubject);
+        const suffix = query.toString() ? `?${query}` : "";
+        const headers = await this.authHeaders();
+        const response = await this.fetchImpl(
+            `${this.apiUrl}${API_PREFIX}/agent-packages/${encodeURIComponent(name)}/download${suffix}`,
+            { method: "GET", headers },
+        );
+        if (response.status === 401) this.onUnauthorized();
         if (!response.ok) throw await readErrorEnvelope(response);
         return response;
     }

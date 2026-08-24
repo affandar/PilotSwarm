@@ -29,7 +29,7 @@ describeCatalogTruth("catalog model is the source of truth", () => {
 
     it("adopts the catalog model and records session.model_mismatch when the runtime config disagrees", async () => {
         const env = getEnv();
-        await withClient(env, {}, async (client) => {
+        await withClient(env, {}, async (client, worker) => {
             const session = await client.createSession({ model: TEST_GPT_MODEL });
             assertNotNull(session, "session created");
             await session.sendAndWait("Say hello in three words.", TIMEOUT);
@@ -41,7 +41,9 @@ describeCatalogTruth("catalog model is the source of truth", () => {
                 // create path that only wrote the row, an out-of-band edit,
                 // a stale snapshot). The row now says Claude while the
                 // runtime config still says GPT.
-                await catalog.updateSession(session.sessionId, { model: TEST_CLAUDE_MODEL });
+                const exactCatalogModel = worker.modelProviders?.normalize(TEST_CLAUDE_MODEL);
+                assertNotNull(exactCatalogModel, "target model resolves to an exact provider:model reference");
+                await catalog.updateSession(session.sessionId, { model: exactCatalogModel });
 
                 // The next turn's getOrCreate must notice, complain loudly,
                 // and run on the CATALOG model.
@@ -52,7 +54,7 @@ describeCatalogTruth("catalog model is the source of truth", () => {
                 assertNotNull(mismatch, "session.model_mismatch event recorded");
                 assertEqual(
                     mismatch.data?.catalogModel,
-                    TEST_CLAUDE_MODEL,
+                    exactCatalogModel,
                     `event names the catalog model (got ${JSON.stringify(mismatch.data)})`,
                 );
                 assertEqual(
@@ -69,7 +71,7 @@ describeCatalogTruth("catalog model is the source of truth", () => {
                 // And the row still shows the catalog model — the runtime
                 // aligned to the catalog, not the other way round.
                 const row = await catalog.getSession(session.sessionId);
-                assertEqual(row.model, TEST_CLAUDE_MODEL, "catalog model unchanged by reconcile");
+                assertEqual(row.model, exactCatalogModel, "catalog model unchanged by reconcile");
             } finally {
                 await catalog.close();
             }

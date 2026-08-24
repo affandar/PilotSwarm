@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: pilotswarm-azure-deployer
 description: "Use when packaging and deploying a PilotSwarm-based app to Azure or AKS. Prepares remote worker and portal packaging, configuration, manifests, rollout guidance, and optional Entra auth setup."
 ---
@@ -18,7 +18,10 @@ Your job is to create or update deployment assets, environment documentation, an
 - ensure remote portal images also contain the app plugin metadata needed for branding and named-agent creation
 - wire blob storage and database configuration appropriately
 - support hybrid datastore deployments where stock PostgreSQL remains the runtime `DATABASE_URL` and HorizonDB is added only for enhanced facts/search/graph via `HORIZON_*` vars
-- keep checked-in model-catalog guidance separate from secrets: `.model_providers.example.json` in source control, the real `.model_providers.json` local/gitignored, and provider keys in env files or Kubernetes secrets
+- keep checked-in model catalogs type-only: `.model_providers.example.json` in
+  source control, the real `.model_providers.json` local/gitignored, and runtime
+  provider credentials/defaults provisioned through Admin or management APIs;
+  env-backed catalog keys are legacy compatibility only
 - wire portal `PLUGIN_DIRS` explicitly so the browser portal can read `plugin.json.portal`, `plugin.json.tui`, agent metadata, and session policy
 - treat portal authentication as an optional add-on; support the shipped Entra provider when requested without implying it is mandatory for every deployment
 - explain rollout and reset constraints clearly when orchestration changes are involved

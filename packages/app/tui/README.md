@@ -1,11 +1,11 @@
-# pilotswarm-cli
+# PilotSwarm TUI
 
 Terminal UI for PilotSwarm.
 
 Install:
 
 ```bash
-npm install pilotswarm-cli
+npm install pilotswarm
 ```
 
 For app-specific worker modules or direct SDK imports, also add:
@@ -20,12 +20,15 @@ Run locally against a plugin directory:
 npx pilotswarm local --env .env --plugin ./plugin --worker ./worker-module.js
 ```
 
-`pilotswarm-cli` provides the shipped TUI. Your app customizes it with `plugin/plugin.json`, `plugin/agents/*.agent.md`, `plugin/skills/*/SKILL.md`, and optional worker-side tools.
+The `pilotswarm` package provides the shipped TUI (`pilotswarm-cli` remains a
+bin alias). Your app customizes it with `plugin/plugin.json`,
+`plugin/agents/*.agent.md`, `plugin/skills/*/SKILL.md`, and optional worker-side
+tools.
 
 The shipped files inspector supports shared artifact browsing, download, local open, and delete flows. Binary artifacts download intact rather than being coerced through UTF-8 text previews.
 
-Portal/runtime helpers that are intentionally shared with `pilotswarm-web`
-are exported from `pilotswarm-cli/portal`.
+Portal/runtime helpers are exported from `pilotswarm/host`; shared UI layers
+are exported from `pilotswarm/ui-core` and `pilotswarm/ui-react`.
 
 Common docs:
 

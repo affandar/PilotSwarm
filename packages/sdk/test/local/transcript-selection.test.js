@@ -8,8 +8,8 @@
  * with the suite — test/local is LLM-backed by design, so an eval that only
  * runs behind a flag is an eval that never runs.
  */
-import { describe, it } from "vitest";
-import { useSuiteEnv } from "../helpers/local-env.js";
+import { beforeAll, describe, it } from "vitest";
+import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import {
@@ -23,6 +23,8 @@ import {
 const TIMEOUT = 120_000;
 const JUDGE_TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
+
+beforeAll(async () => { await preflightChecks(); });
 
 /**
  * Synthetic long-running watch session, shaped like the real thing that

@@ -106,7 +106,7 @@ test("with the toggle off, Save still targets the caller's own key", async () =>
     assert.deepEqual(calls.setSystem, []);
 });
 
-test("the target switch survives begin/cancel edit and flips the action labels", async () => {
+test("the legacy target switch survives begin/cancel without exposing key actions in the new UI", async () => {
     const { controller, store } = makeController();
     await controller.refreshAdminProfile();
     controller.setAdminGhcpKeyStoreAsSystem(true);
@@ -116,8 +116,8 @@ test("the target switch survives begin/cancel edit and flips the action labels",
     controller.cancelAdminEditGhcpKey();
     const view = selectAdminConsole(store.getState());
     assert.equal(view.ghcpKey.storeAsSystem, true, "cancelEdit keeps the target");
-    const edit = view.actions.find((a) => a.id === "edit");
-    assert.equal(edit.label, "Set System key", "action label names the System key target");
+    assert.equal(view.actions.some((action) => action.id === "edit" || action.id === "clear"), false,
+        "legacy key mutations are not exposed by Model Providers");
 });
 
 test("legacy transports without the System methods degrade to a clear error", async () => {
@@ -129,6 +129,5 @@ test("legacy transports without the System methods degrade to a clear error", as
     controller.beginAdminEditGhcpKey();
     controller.setAdminGhcpKeyDraft("ghu_x");
     await controller.saveAdminGhcpKey();
-    const view = selectAdminConsole(store.getState());
-    assert.match(view.ghcpKey.error, /does not support System keys/);
+    assert.match(store.getState().admin.ghcpKey.error, /does not support System keys/);
 });

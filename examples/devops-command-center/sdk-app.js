@@ -15,7 +15,8 @@
  *
  * Requires:
  *   DATABASE_URL — PostgreSQL connection string
- *   GITHUB_TOKEN — GitHub Copilot API token
+ *   GITHUB_TOKEN — optional bootstrap GitHub Copilot token; runtime provider
+ *                  instances/defaults live in CMS
  */
 
 import path from "node:path";
@@ -192,6 +193,8 @@ async function runArtifactHandoffScenario(entry) {
 
 const worker = new PilotSwarmWorker({
     store: STORE,
+    // Bootstrap compatibility for a fresh local CMS. Production deployments
+    // create named runtime providers/defaults through management APIs.
     githubToken: process.env.GITHUB_TOKEN,
     pluginDirs: [PLUGIN_DIR],
     disableManagementAgents: true,  // keep it focused on the devops agents

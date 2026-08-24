@@ -404,6 +404,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     shouldRehydrate: state.activeTimer.shouldRehydrate ?? false,
                     waitPlan: state.activeTimer.waitPlan,
                     interruptKind: "user",
+                    budget: state.activeTimer.budget === true,
                 };
 
                 if (state.activeTimer.shouldRehydrate && userPrompt) {

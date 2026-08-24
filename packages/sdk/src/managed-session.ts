@@ -3,6 +3,9 @@ import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
+// Same arrangement for the provider budget tools: holdsProviderTools() gates
+// the declarations in systemToolDefs() and the handlers in runTurn().
+import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort } from "./model-providers.js";
 
@@ -110,6 +113,9 @@ const DRAW_CANVAS_TOOL_SPEC = {
         + "Drawing switches the user's view to the canvas, so draw only when that interruption is earned — and never "
         + "redraw on a no-op cycle. "
         + "The document is replaced whole each time; use read_canvas first when iterating on an existing drawing. "
+        + "Before drawing over a canvas that already exists, check whether only the CONTENT changed: if the layout "
+        + "is the same, update_canvas(patch) costs tens of tokens where a redraw costs the whole document. "
+        + "Layout change = draw_canvas; content change = update_canvas. "
         + "It renders in the same sandbox as artifact previews: fully self-contained, no network, set your own "
         + "background and text colors, lay out with CSS so it reflows (follow the html-visuals skill). "
         + "Pass an empty string to clear the canvas. Sources: inline html, OR fromArtifact to render a stored "
@@ -603,8 +609,14 @@ export class ManagedSession {
      * System tool definitions for session creation.
      * These are registered at createSession time so the LLM sees them.
      * Handlers are placeholder stubs — real handlers are set per-turn in runTurn().
+     *
+     * `agentIdentity` selects the bundles only some agents carry. A tool
+     * declaration is resident context on every turn of every session that
+     * carries it, so the ten provider budget tools go to the two Token
+     * Manager agents and nobody else. Omitting it declares the tools every
+     * session gets.
      */
-    static systemToolDefs(): Tool<any>[] {
+    static systemToolDefs(opts?: { agentIdentity?: string | null }): Tool<any>[] {
         const waitTool = defineTool("wait", {
             // Defensive override: the Copilot SDK ships built-in tools named
             // `wait` in some configurations (e.g. the desktop-automation MCP
@@ -878,7 +890,8 @@ export class ManagedSession {
         const readCanvasTool = defineTool("read_canvas", READ_CANVAS_TOOL_SPEC);
         const showCanvasTool = defineTool("show_canvas", SHOW_CANVAS_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool];
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool,
+            ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
     }
 
     /**
@@ -2285,6 +2298,19 @@ export class ManagedSession {
             readCanvasTool,
             showCanvasTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
+
+        // The provider budget tools' REAL handlers are built from the catalog
+        // by the host (createProviderTools) and reach this turn as user tools,
+        // because they need a database this class cannot see. What is added
+        // here is the residual case: a session that got the declarations but
+        // no handler for them. Left unregistered, such a call is dropped by
+        // the CLI with no response and the turn hangs; a refusal answers it.
+        const wiredToolNames = new Set(userTools.map((tool: any) => tool.name));
+        const providerToolsForTurn: Tool<any>[] = (!isServiceSession && holdsProviderTools(this.config.agentIdentity))
+            ? providerToolsUnavailable("provider budgets are not wired into this session")
+                .filter((tool: any) => !wiredToolNames.has(tool.name))
+            : [];
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
@@ -2387,6 +2413,7 @@ export class ManagedSession {
         const allTools: Tool<any>[] = [
             ...wrappedUserTools,
             ...systemToolsForTurn,
+            ...providerToolsForTurn,
             ...subAgentToolsForTurn,
             ...createAgentSessionForTurn,
             ...messageAgentSessionForTurn,
@@ -2845,7 +2872,7 @@ export class ManagedSession {
             // retries on a fresh subprocess and lossy-hands-off after bounded
             // attempts. This is the zombie-turn fix — the activity must settle.
             if (errMsg.includes(TURN_INACTIVITY_ERROR_MARKER)) {
-                try { this.copilotSession.abort(); } catch {}
+                try { await this.copilotSession.abort(); } catch {}
                 return {
                     type: "error",
                     message: errMsg,
@@ -2854,7 +2881,7 @@ export class ManagedSession {
             }
             // Timeout — kill it
             if (errMsg.includes("timed out")) {
-                try { this.copilotSession.abort(); } catch {}
+                try { await this.copilotSession.abort(); } catch {}
                 return {
                     type: "error",
                     message: "Copilot was taking too long to process and was killed.",
@@ -2938,7 +2965,7 @@ export class ManagedSession {
      * Session remains alive for future runTurn() calls.
      */
     abort(): void {
-        this.copilotSession.abort();
+        void Promise.resolve(this.copilotSession.abort()).catch(() => {});
     }
 
     /**
@@ -2962,8 +2989,9 @@ export class ManagedSession {
      */
     updateConfig(config: Partial<ManagedSessionConfig>): void {
         if (config.model !== undefined) this.config.model = config.model;
-        if (config.reasoningEffort !== undefined) this.config.reasoningEffort = config.reasoningEffort;
-        if (config.contextTier !== undefined) this.config.contextTier = config.contextTier;
+        if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
+        if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
+        if (config.providerFingerprint !== undefined) this.config.providerFingerprint = config.providerFingerprint;
         if (config.tools !== undefined) this.config.tools = config.tools;
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
@@ -2983,11 +3011,16 @@ export class ManagedSession {
         const nextContextTier = config.contextTier !== undefined
             ? config.contextTier ?? null
             : this.config.contextTier ?? null;
+        const currentProviderFingerprint = this.config.providerFingerprint ?? null;
+        const nextProviderFingerprint = config.providerFingerprint !== undefined
+            ? config.providerFingerprint ?? null
+            : currentProviderFingerprint;
         return Boolean(
             (currentModel || nextModel)
             && (currentModel !== nextModel
                 || currentReasoningEffort !== nextReasoningEffort
-                || currentContextTier !== nextContextTier)
+                || currentContextTier !== nextContextTier
+                || currentProviderFingerprint !== nextProviderFingerprint)
         );
     }
 

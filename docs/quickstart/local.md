@@ -242,7 +242,12 @@ in `run.sh`, so you don't need to worry about expiry for local dev.
 
 ## Step 4: Create Your `.env` File
 
-PilotSwarm uses the local `.model_providers.json` for LLM configuration and `.env` for secrets (API keys, database URL). The repo checks in `.model_providers.example.json` as the template so personal endpoint URLs can stay out of git.
+PilotSwarm uses `.model_providers.json` as a **provider-type catalog**: model
+names, capabilities, and provider-specific endpoint shape. Shared and personal
+provider instances, credentials, defaults, and budgets live in the runtime CMS
+and are managed through Admin Console → Model Providers (or the management
+API/MCP tools). `.env` still carries bootstrap/local-development secrets and
+the database URL.
 
 > **Easiest way to get started:** Set `GITHUB_TOKEN` — this gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, etc.) with no additional setup. You can add BYOK providers later.
 
@@ -253,7 +258,7 @@ Copy the example files:
 ```bash
 cp .env.example .env
 cp .model_providers.example.json .model_providers.json
-# review/edit the local model catalog (keys stay in .env / .env.remote)
+# review/edit the provider-type catalog (no live credentials)
 $EDITOR .model_providers.json
 ```
 
@@ -263,15 +268,18 @@ Then edit `.env` with your credentials:
 # Required
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pilotswarm
 
-# Option A: GitHub Copilot (easiest — gives access to Claude, GPT, etc.)
+# Optional bootstrap credential for first local startup. After the portal is
+# running, create shared/personal providers in Admin Console instead.
 GITHUB_TOKEN=ghu_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Option B: Azure OpenAI / BYOK (no GitHub subscription needed)
-AZURE_OPENAI_KEY=your-azure-openai-key
-# Add more provider keys as needed — see .model_providers.json
+# Azure OpenAI / BYOK credentials are entered on the runtime provider instance,
+# not checked into `.model_providers.json`.
 ```
 
-> **Note:** You only need credentials for the providers you want to use. Providers without valid API keys are automatically hidden from the model picker and agent tools.
+> **Note:** Model selection uses exact runtime names such as
+> `team-azure:gpt-5.4`. A type in `.model_providers.json` is only a template;
+> it becomes selectable after a usable shared or personal provider instance is
+> created. Set user/cluster/system defaults in Admin Console → Model Providers.
 
 ### For Azure PostgreSQL
 

@@ -35,8 +35,23 @@ export declare function artifactDownloadPath(sessionId: string, filename: string
 export declare class ApiError extends Error {
     code: string;
     status: number;
-    constructor(message: string, opts?: { code?: string; status?: number });
+    candidates?: string[];
+    constructor(message: string, opts?: { code?: string; status?: number; candidates?: string[] });
 }
+
+export interface NonManagementOperationOwner {
+    owner: string;
+    file: string;
+    className: string;
+    method: string;
+    reason: string;
+}
+export declare const NON_MANAGEMENT_OPERATION_OWNERS: Readonly<Record<string, NonManagementOperationOwner>>;
+export declare const WEB_MODE_UNSUPPORTED_OPERATION_METHODS: Readonly<Record<string, {
+    alternative: string;
+    reason: string;
+}>>;
+export declare function operationRequiresManagementMethod(operationName: string): boolean;
 
 export interface ApiClientOptions {
     apiUrl: string;
@@ -57,6 +72,12 @@ export declare class ApiClient {
     getAuthContext(): Promise<any>;
     getBootstrap(): Promise<any>;
     downloadArtifactResponse(sessionId: string, filename: string): Promise<Response>;
+    downloadAgentPackageResponse(name: string, options?: {
+        semver?: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<Response>;
     start(): Promise<void>;
     stop(): Promise<void>;
     subscribeSession(sessionId: string, handler: (event: unknown) => void, onResubscribe?: () => void): () => void;

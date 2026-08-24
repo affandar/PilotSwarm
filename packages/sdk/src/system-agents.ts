@@ -35,6 +35,7 @@ export function buildSystemAgentBootstrapPayload(
         dehydrateThreshold: number;
         parentSessionId?: string;
         defaultReasoningEffort?: SerializableSessionConfig["reasoningEffort"];
+        defaultContextTier?: SerializableSessionConfig["contextTier"];
     },
 ): {
     serializableConfig: SerializableSessionConfig;
@@ -42,7 +43,10 @@ export function buildSystemAgentBootstrapPayload(
 } {
     const serializableConfig: SerializableSessionConfig = {
         model: defaultModel,
-        ...(opts.defaultReasoningEffort ? { reasoningEffort: opts.defaultReasoningEffort } : {}),
+        ...(Object.prototype.hasOwnProperty.call(opts, "defaultReasoningEffort")
+            ? { reasoningEffort: opts.defaultReasoningEffort ?? null } : {}),
+        ...(Object.prototype.hasOwnProperty.call(opts, "defaultContextTier")
+            ? { contextTier: opts.defaultContextTier ?? null } : {}),
         boundAgentName: agent.name,
         agentIdentity: agent.id,
         promptLayering: {
@@ -193,9 +197,20 @@ export async function startSystemAgents(opts: {
     agents: AgentConfig[];
     defaultModel: string;
     defaultReasoningEffort?: SerializableSessionConfig["reasoningEffort"];
+    defaultContextTier?: SerializableSessionConfig["contextTier"];
+    modelResolutionSource?: string;
     blobEnabled?: boolean;
     dehydrateThreshold: number;
     agentId?: string;
+    /**
+     * Called before starting an orchestration for a RETAINED session id.
+     * The provider ledger's exactly-once claim is (session_id, turn_index)
+     * and the fresh lifetime counts turns from zero again — the callback
+     * advances the session's ledger base past every existing row so the
+     * settle proc lands the new lifetime's turns on fresh keys instead of
+     * silently dropping them as replays.
+     */
+    prepareRetainedSessionLedger?: (sessionId: string) => Promise<void>;
     log?: (message: string) => void;
     warn?: (message: string) => void;
 }): Promise<SystemAgentStartResult[]> {
@@ -207,7 +222,9 @@ export async function startSystemAgents(opts: {
         const orchestrationId = `session-${sessionId}`;
         try {
             const existingRow = await opts.catalog.getSession(sessionId).catch(() => null);
-            if (existingRow) {
+            const needsOrchestrationStart = Boolean(existingRow)
+                && (!existingRow!.orchestrationId || existingRow!.state === "pending");
+            if (existingRow && !needsOrchestrationStart) {
                 if (existingRow.model && existingRow.model !== opts.defaultModel) {
                     opts.warn?.(
                         `[PilotSwarmWorker] System agent ${agent.name} is reusing persisted session ${sessionId.slice(0, 8)} ` +
@@ -229,22 +246,50 @@ export async function startSystemAgents(opts: {
                 sessionId,
                 blobEnabled: opts.blobEnabled,
                 dehydrateThreshold: opts.dehydrateThreshold,
-                ...(opts.defaultReasoningEffort ? { defaultReasoningEffort: opts.defaultReasoningEffort } : {}),
+                ...(Object.prototype.hasOwnProperty.call(opts, "defaultReasoningEffort")
+                    ? { defaultReasoningEffort: opts.defaultReasoningEffort ?? null } : {}),
+                ...(Object.prototype.hasOwnProperty.call(opts, "defaultContextTier")
+                    ? { defaultContextTier: opts.defaultContextTier ?? null } : {}),
                 ...(parentSessionId ? { parentSessionId } : {}),
             });
 
-            await opts.catalog.createSession(sessionId, {
-                model: opts.defaultModel,
-                ...(opts.defaultReasoningEffort ? { reasoningEffort: opts.defaultReasoningEffort } : {}),
-                ...(parentSessionId ? { parentSessionId } : {}),
-                isSystem: true,
-                agentId: agent.id,
-                splash: agent.splash ?? undefined,
-                splashMobile: agent.splashMobile ?? undefined,
-            });
+            if (!existingRow) {
+                await opts.catalog.createSession(sessionId, {
+                    model: opts.defaultModel,
+                    ...(Object.prototype.hasOwnProperty.call(opts, "defaultReasoningEffort")
+                        ? { reasoningEffort: opts.defaultReasoningEffort ?? undefined } : {}),
+                    ...(Object.prototype.hasOwnProperty.call(opts, "defaultContextTier")
+                        ? { contextTier: opts.defaultContextTier ?? null } : {}),
+                    ...(opts.modelResolutionSource ? { modelResolutionSource: opts.modelResolutionSource } : {}),
+                    ...(parentSessionId ? { parentSessionId } : {}),
+                    isSystem: true,
+                    agentId: agent.id,
+                    splash: agent.splash ?? undefined,
+                    splashMobile: agent.splashMobile ?? undefined,
+                });
+            } else if (needsOrchestrationStart) {
+                await opts.catalog.updateSession(sessionId, {
+                    model: opts.defaultModel,
+                    ...(Object.prototype.hasOwnProperty.call(opts, "defaultReasoningEffort")
+                        ? { reasoningEffort: opts.defaultReasoningEffort ?? null } : {}),
+                    ...(Object.prototype.hasOwnProperty.call(opts, "defaultContextTier")
+                        ? { contextTier: opts.defaultContextTier ?? null } : {}),
+                    ...(opts.modelResolutionSource
+                        ? { modelResolutionSource: opts.modelResolutionSource } : {}),
+                    agentId: agent.id,
+                });
+            }
             const title = agent.title ?? (agent.name.charAt(0).toUpperCase() + agent.name.slice(1) + " Agent");
             await opts.catalog.updateSession(sessionId, { title });
 
+            if (opts.prepareRetainedSessionLedger) {
+                // input.iteration is NOT the vehicle for this: a nonzero
+                // iteration tells the turn to RESUME a session file the fresh
+                // lifetime does not have (verified live — an unbroken resume
+                // fail-loop). The base lives on the session row and the
+                // settle proc applies it.
+                await opts.prepareRetainedSessionLedger(sessionId).catch(() => {});
+            }
             await opts.duroxideClient.startOrchestrationVersioned(
                 orchestrationId,
                 DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -268,6 +313,14 @@ export async function startSystemAgents(opts: {
             });
         } catch (err: any) {
             if (err.message?.includes("already exists") || err.message?.includes("duplicate")) {
+                const current = await opts.catalog.getSession(sessionId).catch(() => null);
+                if (current && (!current.orchestrationId || current.state === "pending")) {
+                    await opts.catalog.updateSession(sessionId, {
+                        orchestrationId,
+                        state: "running",
+                        lastActiveAt: new Date(),
+                    });
+                }
                 results.push({
                     agentId: agent.id,
                     agentName: agent.name,

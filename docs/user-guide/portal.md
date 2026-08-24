@@ -456,12 +456,13 @@ the TUI. Or vice versa.
 6. The state badges, message states (`○`/`✓`/`✓✓`), inspector tabs,
    files all match.
 
-**Per-user keys (Admin Console):**
+**Model providers and defaults (Admin Console):**
 
-7. In the portal there's typically an **Admin** button (or settings
-   menu) that opens the per-user profile + GitHub Copilot key.
-8. Updating your key here takes effect immediately for new sessions
-   without restarting the worker. Useful when your token expires.
+7. Open **Admin → Model Providers**.
+8. **My Providers** holds your credentials and default. **Shared Providers**
+   holds cluster/system routing and system-agent overrides (administrators).
+9. **Providers & Budgets** shows user spend by provider and model. Admins also
+   see system spend as a separate, uncapped breakdown.
 
 **What just happened:**
 
@@ -538,7 +539,7 @@ as your app's portal.
 | Multi-select | Toolbar toggle, click rows, then **Cancel selected** |
 | Filter sessions | Filter input in Sessions pane header |
 | Toggle session summary | Click **Summary** / **Chat** in the top toolbar; Summary is read-only and hides the prompt box |
-| Open Admin Console | Admin / settings menu |
+| Open Admin Console | Admin / settings menu → Model Providers |
 
 Many of the TUI keys (`j`/`k` to navigate, `r` to refresh,
 etc.) work inside the portal too when no input is focused.
@@ -560,7 +561,8 @@ way; you just have a smaller window into them.
 
 **Session is stuck in `running` and nothing's happening.**
 Check the **logs** inspector tab. Common causes: LLM provider rate
-limit, expired GitHub Copilot token (use the Admin Console to update),
+limit, an invalid provider credential (add a replacement in Admin Console →
+Model Providers, update defaults, then remove the old provider),
 worker disconnected.
 
 **Session won't appear in the list.**

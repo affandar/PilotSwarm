@@ -1857,6 +1857,21 @@ describe("session refresh UI recovery", () => {
         }
     });
 
+    it("fails closed instead of offering static models when runtime provider lookup fails", async () => {
+        const { controller, store } = createController({
+            listModels: async () => [{
+                qualifiedName: "static-type:gpt",
+                providerId: "static-type",
+                providerType: "openai",
+                modelName: "gpt",
+            }],
+            listProviders: async () => { throw new Error("provider store unavailable"); },
+        });
+        await controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER);
+        assertEqual(store.getState().ui.modal, null, "static catalog is not offered after authoritative provider failure");
+        assertIncludes(store.getState().ui.statusText, "could not be verified", "picker explains the fail-closed refusal");
+    });
+
     it("lets the user choose reasoning effort after model selection", async () => {
         let created = false;
         let createOptions = null;
@@ -2063,7 +2078,7 @@ describe("session refresh UI recovery", () => {
         }
     });
 
-    it("transport only rejects GitHub provider models when no env or per-user key exists", async () => {
+    it("transport forwards only the requested model and never selects a fallback", async () => {
         const owner = {
             provider: "test",
             subject: "me",
@@ -2081,11 +2096,10 @@ describe("session refresh UI recovery", () => {
             },
         };
 
-        await assertThrows(
-            () => NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, { model: "github-copilot:gpt-5.5", owner }),
-            /GitHub Copilot key missing or invalid/,
-            "GitHub model without env or user key should fail at create time",
-        );
+        const githubModel = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
+            model: "github-copilot:gpt-5.5", owner,
+        });
+        assertEqual(githubModel, "github-copilot:gpt-5.5", "explicit model passes through unchanged");
 
         const azureModel = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
             model: "azure-openai:gpt-5.4-mini",
@@ -2093,20 +2107,79 @@ describe("session refresh UI recovery", () => {
         });
         assertEqual(azureModel, "azure-openai:gpt-5.4-mini", "non-GitHub provider should remain creatable");
 
-        fakeTransport.mgmt.getModelCredentialStatus = (model) => ({ qualifiedName: model, providerType: "github", credentialAvailable: true });
-        const githubWithEnv = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
-            model: "github-copilot:gpt-5.5",
-            owner,
-        });
-        assertEqual(githubWithEnv, "github-copilot:gpt-5.5", "GitHub provider should be creatable when env credential is available");
+        const omitted = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, { owner });
+        assertEqual(omitted, null, "omitted model stays omitted for trusted default resolution");
+    });
 
-        fakeTransport.mgmt.getModelCredentialStatus = (model) => ({ qualifiedName: model, providerType: "github", credentialAvailable: false });
-        fakeTransport.mgmt.getUserProfile = async () => ({ ...owner, githubCopilotKeySet: true });
-        const githubWithUserKey = await NodeSdkTransport.prototype.assertSessionModelCreatable.call(fakeTransport, {
-            model: "github-copilot:gpt-5.5",
-            owner,
+    it("transport lists models through viewer-usable runtime provider names", async () => {
+        const fakeTransport = {
+            _modelProviderViewer: async () => ({ principal: { provider: "test", subject: "me" }, isAdmin: true }),
+            mgmt: {
+                listModels: () => [
+                    { providerId: "github-type", providerType: "github", modelName: "claude", qualifiedName: "github-type:claude" },
+                    { providerId: "azure-type", providerType: "openai", modelName: "gpt", qualifiedName: "azure-type:gpt" },
+                ],
+                listProviders: async () => ({ providers: [
+                    { name: "mine-ghcp", typeId: "github-type", usableByMe: true },
+                    { name: "team-azure", typeId: "azure-type", usableByMe: true },
+                    { name: "someone-else", typeId: "github-type", usableByMe: false },
+                ] }),
+                listRuntimeModels: async (viewer) => {
+                    assertEqual(viewer.principal.subject, "me", "authenticated viewer is passed to management");
+                    return [
+                        { providerId: "mine-ghcp", modelName: "claude", qualifiedName: "mine-ghcp:claude" },
+                        { providerId: "team-azure", modelName: "gpt", qualifiedName: "team-azure:gpt" },
+                    ];
+                },
+            },
+        };
+        const models = await NodeSdkTransport.prototype.listModels.call(fakeTransport);
+        assertEqual(
+            JSON.stringify(models.map((model) => model.qualifiedName).sort()),
+            JSON.stringify(["mine-ghcp:claude", "team-azure:gpt"]),
+            "picker exposes runtime provider identities and excludes another user's provider",
+        );
+    });
+
+    it("transport preserves an explicit null-principal model viewer", async () => {
+        const fakeTransport = {
+            _modelProviderViewer: async () => {
+                throw new Error("must not substitute the transport principal");
+            },
+            mgmt: {
+                listRuntimeModels: async (viewer) => {
+                    assertEqual(viewer.principal, null, "explicit null principal is preserved");
+                    assertEqual(viewer.isAdmin, true, "anonymous admin role is preserved");
+                    return [{ providerId: "team", modelName: "gpt", qualifiedName: "team:gpt" }];
+                },
+            },
+        };
+        const models = await NodeSdkTransport.prototype.listModels.call(fakeTransport, {
+            principal: null,
+            isAdmin: true,
         });
-        assertEqual(githubWithUserKey, "github-copilot:gpt-5.5", "GitHub provider should be creatable when the user key is set");
+        assertEqual(models[0].qualifiedName, "team:gpt");
+    });
+
+    it("provider picker keeps runtime-instance model rows and disables unusable credentials", async () => {
+        const { controller } = createController({ getDefaultModel: () => null });
+        const result = controller._buildProviderPickerGroups({
+            providers: [{
+                name: "team", typeId: "azure-type", class: "shared",
+                usableByMe: true, hasCredential: true,
+            }],
+            status: [],
+            defaults: null,
+        }, [{
+            providerId: "team",
+            providerType: "openai",
+            modelName: "gpt",
+            qualifiedName: "team:gpt",
+            credentialAvailable: false,
+        }], {});
+        assertEqual(result.items?.[0]?.qualifiedName, "team:gpt", "runtime provider model remains selectable by identity");
+        assertEqual(result.items?.[0]?.disabled, true, "unusable credential disables the model before create");
+        assertIncludes(result.items?.[0]?.disabledReason, "no usable credential", "picker explains the refusal");
     });
 
     it("preserves a restored owner filter across startup when auth is enabled", async () => {

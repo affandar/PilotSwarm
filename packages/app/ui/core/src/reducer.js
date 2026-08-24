@@ -7,6 +7,7 @@ import { systemSessionSortOrder } from "./system-titles.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
+    normalizeSessionPause,
     normalizeStoredActiveSessionId,
     normalizeStoredCanvasPrefs,
     canvasKey,
@@ -16,6 +17,8 @@ import {
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
+    BUDGET_SERIES_DAYS,
+    BUDGET_SERIES_RANGES,
     createInitialState,
 } from "./state.js";
 
@@ -31,6 +34,12 @@ function packageResponseIsStale(packages, action) {
     if (packages.selectedName !== action.name) return true;
     if (typeof action.seq === "number") return (packages.selectionSeq ?? 0) !== action.seq;
     return false;
+}
+
+/** A provider name, or null. Names are cluster-unique and never blank. */
+function normalizeProviderName(value) {
+    const name = String(value ?? "").trim();
+    return name ? name : null;
 }
 
 function cloneHistoryMap(historyMap) {
@@ -384,6 +393,13 @@ function computeRawSessionVisualStatus(session) {
     if (!session) return "unknown";
     const status = session.status || "unknown";
     const dormant = status === "waiting" || status === "idle" || status === "unknown";
+    // A budget pause outranks every other dormant reading. A session parked on
+    // a limit is not "waiting" in the sense the list means it — nothing is
+    // going to happen until a person changes a number — and the row is the
+    // only place most people will ever find that out.
+    if (dormant && normalizeSessionPause(session)) {
+        return "budget_paused";
+    }
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -2131,9 +2147,16 @@ export function appReducer(state, action) {
 
         case "admin/visibility": {
             const visible = Boolean(action.visible);
-            if (state.admin.visible === visible) return state;
+            if (state.admin.visible === visible && !(visible && state.ui.budgetOpen)) return state;
             return {
                 ...state,
+                // The admin console and the Providers & Budgets surface take
+                // the SAME slot — the workspace under the header. Opening the
+                // console therefore has to put the budget away, or the console
+                // button reads active while the budget is still what is on
+                // screen and the click looks dead. `ui/budgetOpen` closes the
+                // console; this is the other direction.
+                ui: visible && state.ui.budgetOpen ? { ...state.ui, budgetOpen: false } : state.ui,
                 admin: {
                     ...state.admin,
                     visible,
@@ -2143,6 +2166,19 @@ export function appReducer(state, action) {
                     ghcpKey: visible
                         ? state.admin.ghcpKey
                         : { editing: false, draft: "", saving: false, error: null, lastSavedAt: state.admin.ghcpKey.lastSavedAt },
+                    modelProviders: visible
+                        ? state.admin.modelProviders
+                        : {
+                            ...state.admin.modelProviders,
+                            create: {
+                                ...state.admin.modelProviders.create,
+                                editing: false,
+                                draft: "",
+                                cursorIndex: 0,
+                                saving: false,
+                                error: null,
+                            },
+                        },
                 },
             };
         }
@@ -2336,6 +2372,255 @@ export function appReducer(state, action) {
                         ...state.admin.systemGhcpKey,
                         loading: false,
                         error: action.error ? String(action.error) : "Failed to load System key status",
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/loading": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        loading: true,
+                        error: null,
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/loaded": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        loading: false,
+                        error: null,
+                        providers: Array.isArray(action.providers) ? action.providers : [],
+                        models: Array.isArray(action.models) ? action.models : [],
+                        defaults: action.defaults || null,
+                        fetchedAt: Date.now(),
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/loadFailed": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        loading: false,
+                        error: action.error ? String(action.error) : "Failed to load model providers",
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/mutationPending": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        mutation: { pending: action.pending || "change", error: null },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/mutationDone": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        mutation: { pending: null, error: null },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/mutationFailed": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        mutation: {
+                            pending: null,
+                            error: action.error ? String(action.error) : "The provider change failed",
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/select": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        selection: {
+                            focus: action.focus === "agents" ? "agents" : "providers",
+                            providerName: action.providerName ?? state.admin.modelProviders.selection?.providerName ?? null,
+                            agentId: action.agentId ?? state.admin.modelProviders.selection?.agentId ?? null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/page": {
+            const page = action.page === "shared" ? "shared" : "mine";
+            if (page === state.admin.modelProviders.page) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        page,
+                        selection: {
+                            ...state.admin.modelProviders.selection,
+                            focus: "providers",
+                            providerName: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createBegin": {
+            const draft = String(action.name || "");
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            editing: true,
+                            stage: "name",
+                            name: "",
+                            typeId: String(action.typeId || ""),
+                            shared: action.shared === true,
+                            draft,
+                            cursorIndex: draft.length,
+                            saving: false,
+                            error: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createDraft": {
+            const draft = String(action.draft || "").replace(/\r?\n/gu, "");
+            const cursorIndex = Math.max(0, Math.min(Number(action.cursorIndex) || 0, draft.length));
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: { ...state.admin.modelProviders.create, draft, cursorIndex, error: null },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createType": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            ...state.admin.modelProviders.create,
+                            typeId: String(action.typeId || ""),
+                            error: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createCredential": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            ...state.admin.modelProviders.create,
+                            stage: "credential",
+                            name: String(action.name || ""),
+                            draft: "",
+                            cursorIndex: 0,
+                            error: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createSaving": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            ...state.admin.modelProviders.create,
+                            draft: "",
+                            cursorIndex: 0,
+                            saving: true,
+                            error: null,
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createFailed": {
+            const current = state.admin.modelProviders.create;
+            const credentialStage = current.stage === "credential";
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            ...current,
+                            draft: credentialStage ? "" : current.draft,
+                            cursorIndex: credentialStage ? 0 : current.cursorIndex,
+                            saving: false,
+                            error: action.error ? String(action.error) : "The provider could not be created",
+                        },
+                    },
+                },
+            };
+        }
+        case "admin/modelProviders/createEnd": {
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        create: {
+                            editing: false,
+                            stage: "name",
+                            name: "",
+                            typeId: "",
+                            shared: false,
+                            draft: "",
+                            cursorIndex: 0,
+                            saving: false,
+                            error: null,
+                        },
                     },
                 },
             };
@@ -2868,6 +3153,369 @@ export function appReducer(state, action) {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.diagnosticsOpen;
             if (open === state.ui.diagnosticsOpen) return state;
             return { ...state, ui: { ...state.ui, diagnosticsOpen: open } };
+        }
+
+        // ── Providers & Budgets ─────────────────────────────────────────
+        // The surface itself. It takes the workspace under the header — the
+        // same slot as the admin console — so opening it closes the console
+        // rather than stacking two full-screen surfaces.
+        //
+        // `open` may be omitted to mean "toggle". `provider` lets one dispatch
+        // open the surface AT a provider, which is what the paused line's link
+        // needs: it names the provider that stopped the sessions.
+        case "ui/budgetOpen": {
+            const open = typeof action.open === "boolean" ? action.open : !state.ui.budgetOpen;
+            const provider = action.provider === undefined ? undefined : normalizeProviderName(action.provider);
+            const budget = (open && provider !== undefined)
+                ? { ...state.budget, selectedProvider: provider }
+                : state.budget;
+            const closesConsole = open && state.admin.visible;
+            if (open === state.ui.budgetOpen && budget === state.budget && !closesConsole) return state;
+            return {
+                ...state,
+                ui: { ...state.ui, budgetOpen: open },
+                admin: closesConsole ? { ...state.admin, visible: false } : state.admin,
+                budget,
+            };
+        }
+
+        case "budget/loading": {
+            // A re-read while numbers are already on screen is a REFRESH: it
+            // must not blank the report someone is reading. Only the very
+            // first load gets to show an empty, loading surface.
+            const refresh = action.refresh === true || state.budget.loaded === true;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    loading: !refresh,
+                    refreshing: refresh,
+                    error: null,
+                },
+            };
+        }
+
+        // One successful read. Both payloads are optional so a narrower
+        // re-read — the paused list alone, on the background poll — replaces
+        // only what it actually fetched.
+        case "budget/loaded": {
+            const budget = state.budget;
+            const hasGrid = Array.isArray(action.grid);
+            const grid = hasGrid ? action.grid : budget.grid;
+            const dropped = hasGrid
+                // A provider that is gone cannot stay selected: its rows and
+                // its chart would be a name with nothing behind it.
+                && budget.selectedProvider
+                && !action.grid.some((row) => row?.providerName === budget.selectedProvider);
+            const selectedProvider = dropped ? null : budget.selectedProvider;
+            // A per-model limit can go while its provider stays — someone
+            // removes that one limit, and its row goes with it. The SCOPE has
+            // to be dropped for the same reason the provider is: otherwise
+            // the chart keeps that model's bars on screen under the
+            // provider's heading and the provider's limit line, which is one
+            // subject's numbers labelled as another's.
+            const wasScope = budget.selectedScope || "*";
+            const scopeGone = hasGrid && !dropped && wasScope !== "*"
+                && !action.grid.some((row) => row?.providerName === budget.selectedProvider
+                    && row?.rowKind === "model" && row?.scope === wasScope);
+            const selectedScope = (dropped || scopeGone) ? "*" : wasScope;
+            // But REMEMBER the name. A session stopped on a provider that no
+            // longer exists sends its reader here by name, and clearing the
+            // selection silently left them on a table with nothing selected
+            // and no hint that the name they clicked is the missing thing.
+            const missingProvider = dropped
+                ? budget.selectedProvider
+                : (hasGrid ? null : budget.missingProvider || null);
+            return {
+                ...state,
+                budget: {
+                    ...budget,
+                    loading: false,
+                    refreshing: false,
+                    // `loaded` and `error` are claims about the TABLE, so only
+                    // a read that carried the table may change them. The
+                    // background poll reads the paused list alone; letting it
+                    // set `loaded` would turn an unread namespace into "you
+                    // have no providers", which is the one confusion this flag
+                    // exists to prevent.
+                    loaded: hasGrid ? true : budget.loaded,
+                    error: hasGrid ? null : budget.error,
+                    fetchedAt: hasGrid ? Date.now() : budget.fetchedAt,
+                    grid,
+                    paused: Array.isArray(action.paused) ? action.paused : budget.paused,
+                    pausedError: Array.isArray(action.paused) ? null : budget.pausedError || null,
+                    selectedProvider,
+                    selectedScope,
+                    missingProvider,
+                    // The chart belongs to a row that is no longer there —
+                    // either the provider or the one model limit under it.
+                    series: (selectedProvider === budget.selectedProvider && selectedScope === wasScope)
+                        ? budget.series
+                        : {
+                            provider: null, scope: "*", rangeDays: budget.rangeDays ?? BUDGET_SERIES_DAYS, days: [],
+                            loading: false, loaded: false, error: null, fetchedAt: 0,
+                        },
+                    systemUsage: (selectedProvider === budget.selectedProvider && selectedScope === wasScope)
+                        ? budget.systemUsage
+                        : {
+                            provider: null, scope: "*", rangeDays: budget.rangeDays ?? BUDGET_SERIES_DAYS,
+                            totals: null, days: [], breakdown: [],
+                            loading: false, loaded: false, error: null, fetchedAt: 0,
+                        },
+                },
+            };
+        }
+
+        // Only the WAITING list failed. The table's own numbers were read
+        // successfully in the same round, so nothing about them is stale and
+        // nothing about them is marked — the waiting line is.
+        case "budget/pausedFailed": {
+            const message = action.error ? String(action.error?.message || action.error) : "";
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    loading: false,
+                    refreshing: false,
+                    pausedError: message || "Could not read what is waiting",
+                },
+            };
+        }
+
+        // A read that FAILED. Distinct from a read that came back empty:
+        // "this provider has no limits" and "we could not find out what its
+        // limits are" are different facts, and only one of them is safe to act
+        // on. So `loaded` and the previous numbers stay exactly as they were
+        // and the error rides alongside them — the view says the read failed
+        // rather than drawing zeros.
+        case "budget/loadFailed": {
+            const message = action.error ? String(action.error?.message || action.error) : "";
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    loading: false,
+                    refreshing: false,
+                    // The server's own words. It writes them for a person and
+                    // names the remedy, so passing them through beats any
+                    // "something went wrong" this file could invent.
+                    error: message || "Could not read providers and budgets",
+                },
+            };
+        }
+
+        // The "show overall usage" tick. It changes which pair of numbers the
+        // table prints, never which numbers were read: both pairs are already
+        // in `grid`, so this is a render choice and costs no request.
+        case "budget/overall": {
+            const overall = typeof action.overall === "boolean" ? action.overall : !state.budget.overall;
+            if (overall === state.budget.overall) return state;
+            return { ...state, budget: { ...state.budget, overall } };
+        }
+
+        case "budget/rangeDays": {
+            const rangeDays = Number(action.rangeDays);
+            if (!BUDGET_SERIES_RANGES.includes(rangeDays) || rangeDays === state.budget.rangeDays) return state;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    rangeDays,
+                    series: {
+                        provider: null, scope: "*", rangeDays, days: [],
+                        loading: false, loaded: false, error: null, fetchedAt: 0,
+                    },
+                    systemUsage: {
+                        provider: null, scope: "*", rangeDays, totals: null, days: [], breakdown: [],
+                        loading: false, loaded: false, error: null, fetchedAt: 0,
+                    },
+                },
+            };
+        }
+
+        // Selecting a provider expands its model rows and opens its chart.
+        // Selecting the one already selected clears the selection, which is
+        // how a row collapses again.
+        case "budget/selectProvider": {
+            const provider = normalizeProviderName(action.provider);
+            // '*' is the provider itself; anything else is one of its
+            // model-scoped limits, which is a row you can stand on too — the
+            // chart then shows that model alone.
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const was = state.budget.selectedProvider;
+            const wasScope = state.budget.selectedScope || "*";
+            // Clicking the row you are already on clears it: a provider row
+            // collapses, a model row falls back to the provider above it.
+            let selectedProvider = provider;
+            let selectedScope = scope;
+            if (provider === was && scope === wasScope) {
+                if (scope === "*") { selectedProvider = null; selectedScope = "*"; }
+                else { selectedScope = "*"; }
+            }
+            if (selectedProvider === was && selectedScope === wasScope) return state;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    selectedProvider,
+                    selectedScope,
+                    // Choosing a row that exists answers the question the
+                    // missing name raised, so the line about it goes.
+                    missingProvider: null,
+                    // The old chart described the old row. Leaving it up under
+                    // a new name is the one way this screen could show one
+                    // provider's spend labelled as another's — or a whole
+                    // provider's spend labelled as one model's.
+                    series: {
+                        provider: null, scope: "*", rangeDays: state.budget.rangeDays ?? BUDGET_SERIES_DAYS, days: [],
+                        loading: false, loaded: false, error: null, fetchedAt: 0,
+                    },
+                    systemUsage: {
+                        provider: null, scope: "*", rangeDays: state.budget.rangeDays ?? BUDGET_SERIES_DAYS,
+                        totals: null, days: [], breakdown: [],
+                        loading: false, loaded: false, error: null, fetchedAt: 0,
+                    },
+                },
+            };
+        }
+
+        case "budget/series/loading": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = Number(action.rangeDays) || state.budget.rangeDays || BUDGET_SERIES_DAYS;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    series: { ...state.budget.series, provider, scope, rangeDays, loading: true, error: null },
+                },
+            };
+        }
+
+        // A response for a provider the reader has already left is dropped.
+        // The table and the chart under it must always name the same provider.
+        case "budget/series/loaded": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = action.rangeDays === undefined
+                ? (state.budget.rangeDays || BUDGET_SERIES_DAYS)
+                : Number(action.rangeDays);
+            if (provider !== state.budget.selectedProvider) return state;
+            // The SCOPE has to match too, or a provider-wide answer that was
+            // already in flight paints itself under a model row's heading.
+            if (scope !== (state.budget.selectedScope || "*")) return state;
+            if (rangeDays !== (state.budget.rangeDays || BUDGET_SERIES_DAYS)) return state;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    series: {
+                        provider,
+                        scope,
+                        rangeDays,
+                        days: Array.isArray(action.days) ? action.days : [],
+                        loading: false,
+                        loaded: true,
+                        error: null,
+                        fetchedAt: Date.now(),
+                    },
+                },
+            };
+        }
+
+        case "budget/series/failed": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = action.rangeDays === undefined
+                ? (state.budget.rangeDays || BUDGET_SERIES_DAYS)
+                : Number(action.rangeDays);
+            if (provider !== state.budget.selectedProvider) return state;
+            if (scope !== (state.budget.selectedScope || "*")) return state;
+            if (rangeDays !== (state.budget.rangeDays || BUDGET_SERIES_DAYS)) return state;
+            const message = action.error ? String(action.error?.message || action.error) : "";
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    series: {
+                        ...state.budget.series,
+                        provider,
+                        scope,
+                        rangeDays,
+                        loading: false,
+                        // The numbers already drawn stay put and are marked
+                        // old; a failed re-read is not a day with no usage.
+                        error: message || "Could not read the daily usage",
+                    },
+                },
+            };
+        }
+
+        case "budget/systemUsage/loading": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = Number(action.rangeDays) || state.budget.rangeDays || BUDGET_SERIES_DAYS;
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    systemUsage: { ...state.budget.systemUsage, provider, scope, rangeDays, loading: true, error: null },
+                },
+            };
+        }
+
+        case "budget/systemUsage/loaded": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = action.rangeDays === undefined
+                ? (state.budget.rangeDays || BUDGET_SERIES_DAYS)
+                : Number(action.rangeDays);
+            if (provider !== state.budget.selectedProvider || scope !== (state.budget.selectedScope || "*")) return state;
+            if (rangeDays !== (state.budget.rangeDays || BUDGET_SERIES_DAYS)) return state;
+            const report = action.report || {};
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    systemUsage: {
+                        provider,
+                        scope,
+                        rangeDays,
+                        totals: report.totals || { tokensTotal: 0, turns: 0, sessions: 0 },
+                        days: Array.isArray(report.daily) ? report.daily : [],
+                        breakdown: Array.isArray(report.breakdown) ? report.breakdown : [],
+                        loading: false,
+                        loaded: true,
+                        error: null,
+                        fetchedAt: Date.now(),
+                    },
+                },
+            };
+        }
+
+        case "budget/systemUsage/failed": {
+            const provider = normalizeProviderName(action.provider);
+            const scope = typeof action.scope === "string" && action.scope ? action.scope : "*";
+            const rangeDays = action.rangeDays === undefined
+                ? (state.budget.rangeDays || BUDGET_SERIES_DAYS)
+                : Number(action.rangeDays);
+            if (provider !== state.budget.selectedProvider || scope !== (state.budget.selectedScope || "*")) return state;
+            if (rangeDays !== (state.budget.rangeDays || BUDGET_SERIES_DAYS)) return state;
+            const message = action.error ? String(action.error?.message || action.error) : "";
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    systemUsage: {
+                        ...state.budget.systemUsage,
+                        provider,
+                        scope,
+                        rangeDays,
+                        loading: false,
+                        error: message || "Could not read system spend",
+                    },
+                },
+            };
         }
 
         // The agent-driven flip. The guards (active session, freshness,

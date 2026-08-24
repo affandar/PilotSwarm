@@ -7,6 +7,7 @@ import { applyReasoningEffortToProviderConfig } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
+import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
@@ -26,6 +27,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { createHash } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -348,12 +350,22 @@ export class SessionManager {
         return this.clients.get("") ?? this.clients.get(this.githubToken || "");
     }
     set client(value: CopilotClient | undefined) {
+        const providerTokens = new Set<string>();
+        for (const provider of this.workerDefaults.modelProviders?.allProviders ?? []) {
+            const first = provider.models?.[0];
+            const modelName = typeof first === "string" ? first : first?.name;
+            if (!modelName) continue;
+            const token = this.workerDefaults.modelProviders?.resolve(`${provider.id}:${modelName}`)?.githubToken;
+            if (token) providerTokens.add(token);
+        }
         if (value) {
             this.clients.set("", value);
             if (this.githubToken) this.clients.set(this.githubToken, value);
+            for (const token of providerTokens) this.clients.set(token, value);
         } else {
             this.clients.delete("");
             if (this.githubToken) this.clients.delete(this.githubToken);
+            for (const token of providerTokens) this.clients.delete(token);
         }
     }
     private sessions = new Map<string, ManagedSession>();
@@ -394,6 +406,7 @@ export class SessionManager {
     private sessionCatalog: SessionCatalog | null = null;
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
+    private _refreshModelProviders: (() => Promise<void>) | null = null;
     /** Lineage lookup for ancestor/descendant facts access. */
     private _getLineageSessionIds: ((sessionId: string) => Promise<string[]>) | null = null;
     /** Per-session critical sections; protects the SDK session handle and local session.db. */
@@ -427,9 +440,51 @@ export class SessionManager {
         this.sessionConfigs.set(sessionId, config);
     }
 
-    /** Get a human-readable model summary for LLM tool consumption. */
-    getModelSummary(): string | undefined {
-        return this.workerDefaults.modelProviders?.getModelSummaryForLLM();
+    private async _allowedModelProviderIds(sessionId: string): Promise<Set<string> | null> {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return null;
+        const store = this.sessionCatalog?.providers;
+        if (!store || !this.sessionCatalog) return new Set(registry.allProviders.map((provider) => provider.id));
+
+        const row = await this.sessionCatalog.getSession(sessionId).catch(() => null);
+        if (!row) return new Set();
+        if (row.isSystem) {
+            const providers = await store.allCredentials();
+            return new Set(providers
+                .filter((provider) => provider.class === "shared" || provider.systemUseEnabled === true)
+                .map((provider) => provider.name));
+        }
+        const actor = row.owner ? await store.lookupUserId(row.owner) : null;
+        const providers = await store.listProviders(actor, false);
+        return new Set(providers
+            .filter((provider) => provider.usableByMe)
+            .map((provider) => provider.name));
+    }
+
+    /** Get a viewer-scoped model summary for in-session LLM tools. */
+    async getModelSummary(sessionId: string): Promise<string | undefined> {
+        const registry = this.workerDefaults.modelProviders;
+        if (!registry) return undefined;
+        const allowed = await this._allowedModelProviderIds(sessionId);
+        return registry.getModelSummaryForLLM(allowed ?? undefined);
+    }
+
+    async normalizeModelRefForSession(
+        sessionId: string,
+        model: string,
+        options?: { requireQualified?: boolean },
+    ): Promise<string> {
+        const ref = String(model || "").trim();
+        const provider = ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : "";
+        const allowed = await this._allowedModelProviderIds(sessionId);
+        if (!ref || (options?.requireQualified && !provider) || (allowed && provider && !allowed.has(provider))) {
+            throw new Error(`Unknown model "${ref}". Call list_available_models and choose an exact provider:model value.`);
+        }
+        const normalized = this.normalizeModelRef(ref, options);
+        if (!normalized) {
+            throw new Error(`Unknown model "${ref}". Call list_available_models and choose an exact provider:model value.`);
+        }
+        return normalized;
     }
 
     /**
@@ -485,6 +540,25 @@ export class SessionManager {
             model: normalized!,
             reasoningEffort: descriptor?.defaultReasoningEffort ?? null,
         };
+    }
+
+    async resolveModelSwitchConfigForSession(
+        sessionId: string,
+        model: string,
+        reasoningEffort?: import("./model-providers.js").ReasoningEffort | null,
+    ): Promise<{ model: string; reasoningEffort: import("./model-providers.js").ReasoningEffort | null }> {
+        const normalized = await this.normalizeModelRefForSession(
+            sessionId, model, { requireQualified: true },
+        );
+        const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
+        if (reasoningEffort) {
+            const supported = descriptor?.supportedReasoningEfforts ?? [];
+            if (!supported.includes(reasoningEffort)) {
+                throw new Error(`Model ${normalized} does not support reasoning effort '${reasoningEffort}'`);
+            }
+            return { model: normalized, reasoningEffort };
+        }
+        return { model: normalized, reasoningEffort: descriptor?.defaultReasoningEffort ?? null };
     }
 
     /**
@@ -654,6 +728,14 @@ export class SessionManager {
         this.workerDefaults.modelProviders = registry ?? undefined;
     }
 
+    setModelProvidersRefresher(refresh: (() => Promise<void>) | null): void {
+        this._refreshModelProviders = refresh;
+    }
+
+    async refreshModelProviders(): Promise<void> {
+        await this._refreshModelProviders?.();
+    }
+
     /** Set the duroxide client for tuner-only inspect tools. */
     setDuroxideClient(client: any): void {
         this._duroxideClient = client;
@@ -779,7 +861,13 @@ export class SessionManager {
         const registry = this.workerDefaults.modelProviders;
         if (!registry || !effectiveModel) return undefined;
         const resolved = registry.resolve(effectiveModel);
-        if (!resolved || resolved.type !== "github") return undefined;
+        const legacyGithubReference = effectiveModel.startsWith("github-copilot:");
+        if (resolved && resolved.type !== "github") return undefined;
+        if (!resolved && !legacyGithubReference) return undefined;
+        // A runtime provider instance owns its credential. The legacy user
+        // column is consulted only for pre-migration github-copilot:* rows;
+        // otherwise it could silently replace a personal provider's own key.
+        if (resolved?.type === "github" && resolved.githubToken) return resolved.githubToken;
 
         let row: any = preloadedRow ?? null;
         if (!row) {
@@ -1221,6 +1309,11 @@ export class SessionManager {
             } catch { /* row not readable — fall through to configured model */ }
             const catalogModel = String(catalogRow?.model || "").trim();
             const configuredModel = String(config.model || "").trim();
+            if (config.admittedModel && catalogModel !== config.admittedModel) {
+                throw new Error(
+                    `Session model changed after provider admission (${config.admittedModel} -> ${catalogModel || "(none)"}); retry the turn for a fresh admission decision.`,
+                );
+            }
             if (catalogModel && catalogModel !== configuredModel) {
                 emitSessionManagerTrace(
                     sessionId,
@@ -1279,6 +1372,9 @@ export class SessionManager {
                 ),
             }
             : baseProviderConfig;
+        config.providerFingerprint = createHash("sha256")
+            .update(JSON.stringify(baseProviderConfig.provider ?? {}))
+            .digest("hex");
 
         // Context-window tier: only models whose catalog entry declares
         // supportedContextTiers get the field at all. An explicit valid tier
@@ -1364,8 +1460,9 @@ export class SessionManager {
         // per-turn handler still refuses with a clear message.
         // Canvas tools are declared for EVERY session now — sub-agents draw
         // their own canvases (slots 1-5), independent of the parent's.
-        const systemTools = ManagedSession.systemToolDefs()
-            .filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
+        const systemTools = ManagedSession.systemToolDefs({
+            agentIdentity: effectiveSerializableConfig.agentIdentity,
+        }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs()
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
@@ -1472,6 +1569,22 @@ export class SessionManager {
                 sessionId,
             })
             : [];
+        // Provider budgets. Declared by managed-session for the two Token
+        // Manager identities; the real handlers need a catalog, which only
+        // this class has, so they are attached here — a declared tool with no
+        // handler is dropped by the CLI and hangs the turn.
+        const providerTools = this.sessionCatalog?.providers
+            && holdsProviderTools(effectiveSerializableConfig.agentIdentity)
+            ? createProviderTools({
+                catalog: this.sessionCatalog,
+                // Resolved per invocation, as a session outlives the role
+                // that created it. The cluster Token Manager acts with
+                // cluster authority; the personal one acts as the session's
+                // OWNER, and the database refuses the rest.
+                resolveViewer: () => this._resolveProviderViewer(
+                    sessionId, effectiveSerializableConfig.agentIdentity),
+            })
+            : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)
         // declare ONLY their user tools (the transcript pager): no system,
         // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
@@ -1486,6 +1599,7 @@ export class SessionManager {
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
+            ...unlessService(providerTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -1494,6 +1608,7 @@ export class SessionManager {
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
+            ...unlessService(providerTools),
         ];
         config.tools = persistentSessionTools;
 
@@ -2164,6 +2279,9 @@ export class SessionManager {
                     return { provider: resolved.sdkProvider };
                 }
             }
+            if (model && (model.includes(":") || registry.getDescriptor(model))) {
+                throw new Error(`Model provider for "${model}" has no usable credential or endpoint.`);
+            }
         }
 
         // 2. Fall back to legacy single provider
@@ -2296,6 +2414,34 @@ export class SessionManager {
      *     nothing has re-confirmed in half a day is not evidence of current
      *     privilege.
      */
+    /**
+     * Who the provider tools act as.
+     *
+     * The cluster Token Manager is machinery and acts with cluster
+     * authority. Every other holder — the personal Token Manager anyone can
+     * run — acts as the SESSION'S OWNER, and the database decides the rest:
+     * the tool list is identical either way, which is the whole point of
+     * putting authority in SQL rather than in a tool registry.
+     */
+    private async _resolveProviderViewer(
+        sessionId: string, agentIdentity?: string,
+    ): Promise<{ userId: number | null; isAdmin: boolean }> {
+        if (agentIdentity === "token-manager") return { userId: null, isAdmin: true };
+        try {
+            const viewer = await this._resolveInspectViewer(sessionId);
+            if (viewer.isSystemPrincipal) return { userId: null, isAdmin: true };
+            if (!viewer.provider || !viewer.subject) return { userId: null, isAdmin: false };
+            const userId = await this.sessionCatalog?.providers?.lookupUserId({
+                provider: viewer.provider, subject: viewer.subject,
+            }) ?? null;
+            return { userId, isAdmin: viewer.isAdmin === true };
+        } catch {
+            // Fail closed: a viewer with no id and no role can read the
+            // shared providers and change nothing.
+            return { userId: null, isAdmin: false };
+        }
+    }
+
     private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {
         const cached = SessionManager._inspectViewerCache.get(sessionId);
         if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) return cached.viewer;

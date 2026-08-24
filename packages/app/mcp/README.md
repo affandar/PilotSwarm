@@ -497,9 +497,33 @@ metadata is owner/admin only.
 
 | Tool | Description |
 |------|-------------|
-| `list_models` | Discovery — list all available LLM models, optionally grouped by provider (web mode reads them through the API; direct mode reads `--model-providers`) |
+| `list_models` | Discovery — list runtime `provider:model` choices usable by this credential, optionally grouped by provider instance |
 | `switch_model` | Change the model for a session (web mode uses the API's model-switch operation — the same path as the portal UI) |
 | `send_command` | Send an arbitrary orchestration command to a session ([direct mode](#direct-mode-internal) only — raw command plumbing is not exposed over the Web API) |
+
+### Runtime Providers And Budgets
+
+| Tool | Description |
+|------|-------------|
+| `list_providers` | Visible shared providers plus the caller's personal providers; admins may inspect fleet metadata |
+| `get_provider_status` | Limits, current-window usage, reset times, and the caller's allowance ceiling |
+| `get_provider_usage_grid` | Fixed day/week/month usage and quota cells for every visible provider/model |
+| `get_provider_usage` | Historical totals, daily chart data, and bounded breakdowns (up to 365 days) |
+| `create_my_provider` / `delete_my_provider` | Create/delete the caller's personal provider instance |
+| `create_provider` / `delete_provider` | Admin shared-provider lifecycle |
+| `set_model_default` | User or cluster default routing |
+| `set_system_model_default` / `set_system_session_model` | Admin system routing and per-agent overrides |
+| `set_provider_limit` / `remove_provider_limit` | Day/week/month provider or per-model limits |
+| `set_provider_allowance` | Admin per-user share of shared-provider limits |
+| `set_provider_hold` | Admin hold/release for a provider |
+| `list_paused_sessions` | Sessions currently waiting on provider policy |
+
+Provider credentials are never returned. A normal user cannot discover another
+user's personal provider; aggregate all-user spend is available only for named
+shared providers. Historical accounting survives session deletion.
+
+`get_agent_package` also returns an authenticated `download_url` for the full,
+SHA-verified package tarball. Tree/file reads remain available for inspection.
 
 ---
 

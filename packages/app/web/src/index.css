@@ -1996,7 +1996,9 @@ body.is-resizing-pane-y iframe {
   white-space: normal;
   display: -webkit-box;
   -webkit-box-orient: vertical;
+  line-clamp: 2;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -2013,6 +2015,36 @@ body.is-resizing-pane-y iframe {
 .ps-session-detail-field.is-warm .ps-session-detail-value { color: var(--ps-warning); }
 .ps-session-detail-field.is-hot .ps-session-detail-value { color: var(--ps-danger); }
 .ps-session-detail-field.is-armed .ps-session-detail-value { color: var(--ps-accent); }
+
+/* WHY a session is stopped, under the fixed rows.
+   The one exception to "every row is one clamped line": a pause is a sentence
+   and a remedy, and clamping it to a line is what made three sessions stopped
+   for three different reasons read identically. It appears only on a session
+   that is actually waiting, so the box's height is still the same for every
+   session that is not. */
+.ps-session-detail-pause {
+  grid-column: 1 / -1;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--ps-border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.ps-session-detail-pause.is-paused .ps-session-detail-label { color: var(--ps-danger); opacity: 1; }
+.ps-session-detail-why {
+  min-width: 0;
+  flex: 1 1 200px;
+  overflow-wrap: anywhere;
+  color: var(--ps-foreground);
+}
+.ps-session-detail-pause .ps-budget-link { margin-left: 6px; color: var(--ps-accent); }
+.ps-session-detail-clears {
+  display: block;
+  color: var(--ps-muted);
+  font-size: 0.92em;
+}
 
 /* Compact column mode (narrow): rows lay out at max-content so the list
    scrolls horizontally as ONE unit (is-session-compact on the grid). */
@@ -2096,9 +2128,8 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-session-pane.ps-mobile-session-pane .ps-session-row-title {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: block;
+  max-height: 2lh;
   overflow: hidden;
   overflow-wrap: anywhere;
   white-space: normal;
@@ -7905,4 +7936,534 @@ textarea.ps-link-input {
   line-height: 1.35;
   white-space: pre;
   overflow: auto;
+}
+
+
+/* ── Providers & Budgets ─────────────────────────────────────────────────────
+   Takes the workspace under the header, like the admin console: this is a
+   place you READ, and a floating dialog gave a chart plus four tables a
+   letterbox to live in.
+
+   ONE table. Providers down the side, Day / Week / Month across the top, and
+   every cell is `used / quota`. Selecting a provider expands its per-model
+   limits into the same three columns and opens its days below.
+
+   Two numbers on this surface must never be confused. What EVERYONE spent
+   against a limit, and what YOU spent against your share of it. They are
+   usually far apart on a shared provider, so only one pair is ever on screen
+   and the heading over the three columns says which — a tick swaps them both
+   at once. Never one pair in one column and the other pair beside it. */
+.ps-budget-surface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  /* SURFACE, not the page background — the same lesson the admin console
+     learned: a workspace is a panel you work in, not the desktop it sits on.
+     In Win95 the page background is the #008080 wallpaper and the surface is
+     the #c0c0c0 chrome; painting this with the wallpaper stood every muted
+     label on teal at ~2:1. */
+  background: var(--ps-surface);
+}
+
+.ps-budget-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--ps-border);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--ps-accent) 7%, var(--ps-surface)),
+    var(--ps-surface));
+}
+.ps-budget-headline { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.ps-budget-h { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.01em; }
+.ps-budget-head .ps-budget-sub { color: var(--ps-muted); font-size: 12px; }
+.ps-budget-head-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.ps-budget-coin {
+  display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border-radius: 999px; border: 1.5px solid var(--ps-accent);
+  color: var(--ps-accent); font-size: 11px; line-height: 1; flex: none;
+  align-self: center;
+}
+.ps-budget-close {
+  font: inherit; background: transparent; border: 1px solid var(--ps-border);
+  color: var(--ps-muted); border-radius: var(--ps-radius-sm); padding: 4px 9px; cursor: pointer;
+}
+.ps-budget-close:hover { color: var(--ps-foreground); border-color: var(--ps-muted); }
+
+/* The one scroll region. Everything inside scrolls with the page rather than
+   nesting a second scroller. */
+.ps-budget { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px 20px 40px; }
+
+/* A refresh refetches. The previous table STAYS on screen and dims, rather
+   than being replaced by a one-line "Reading…" that collapses the page and
+   springs it back. Only the first load has nothing to keep. */
+.ps-budget-body { transition: opacity 120ms ease; }
+.ps-budget-body.is-refreshing { opacity: 0.55; }
+@media (prefers-reduced-motion: reduce) {
+  .ps-budget-body { transition: none; }
+}
+
+/* ── Anything waiting right now ──────────────────────────────────────────────
+   One line, and only when something is stopped. WHY a particular session is
+   stopped is said on the session itself, where the remedy is; this answers the
+   one question the session cannot — "is anything waiting at all". */
+.ps-budget-waiting {
+  padding: 8px 12px; margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--ps-warning) 45%, var(--ps-border));
+  border-left-width: 3px; border-left-color: var(--ps-warning);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-warning) 7%, transparent);
+  font-size: 12px; overflow-wrap: anywhere;
+}
+/* A name with nothing behind it is a broken reference, not a budget in a
+   state — the same dashed treatment every unresolvable name on this surface
+   has carried. */
+/* The status line lives in a flex track that never allowed itself to shrink,
+   so a long message ran out over the toolbar buttons instead of ellipsizing
+   inside its own column. min-width: 0 is what lets a flex item be narrower
+   than its content. */
+.ps-toolbar-side { min-width: 0; }
+
+.ps-budget-waiting.is-missing {
+  border-color: var(--ps-border-strong); border-left-color: var(--ps-danger);
+  border-style: dashed; border-left-style: solid;
+  background: color-mix(in srgb, var(--ps-danger) 6%, transparent);
+}
+
+/* ── The table ───────────────────────────────────────────────────────────────
+   One list of providers, three period columns, and a tick that decides which
+   pair of numbers is in them. Everything else that used to be on this surface
+   — two tabs, four stat tiles, five filters, six pivots, four detail panels —
+   is gone; a person asked what they had spent and had to assemble the answer
+   from eight places. */
+/* One reading column, so a provider's name and its Month figure stay in the
+   same glance. Left to fill the workspace the table ran to 1460px and put a
+   thousand pixels of nothing between "azure-openai" and the number that
+   belongs to it. Everything that must line up with the table shares this. */
+.ps-budget-surface { --ps-budget-col: 1040px; }
+.ps-budget-table-head, .ps-budget-grid, .ps-budget-actions,
+.ps-budget-foot, .ps-budget-chart-pane, .ps-budget-waiting {
+  max-width: var(--ps-budget-col);
+}
+
+.ps-budget-table-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+  flex-wrap: wrap; margin-bottom: 8px;
+}
+.ps-budget-table-head .ps-budget-label { margin-bottom: 0; }
+.ps-budget-toggle {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  font-size: 12px; color: var(--ps-muted); cursor: pointer; user-select: none;
+}
+.ps-budget-toggle:hover { color: var(--ps-foreground); }
+.ps-budget-toggle input { accent-color: var(--ps-accent); cursor: pointer; margin: 0; }
+.ps-budget-toggle input:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; }
+
+.ps-budget-grid {
+  width: 100%; border-collapse: collapse;
+  border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm);
+  background: var(--ps-chrome); overflow: hidden;
+}
+.ps-budget-grid-h {
+  font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase; font-weight: 700;
+  color: var(--ps-muted); background: var(--ps-chrome-strong);
+  border-bottom: 1px solid var(--ps-border); padding: 8px 10px; text-align: left;
+}
+.ps-budget-grid-h.is-name { vertical-align: bottom; }
+/* Which pair of numbers the three columns hold. Centred over the span it
+   governs, because it is the heading for all three and for neither name. */
+.ps-budget-grid-h.is-span {
+  text-align: center; color: var(--ps-accent);
+  border-bottom-color: color-mix(in srgb, var(--ps-accent) 30%, var(--ps-border));
+}
+.ps-budget-grid-h.is-num { text-align: right; width: 132px; }
+
+.ps-budget-grid-row { border-bottom: 1px solid var(--ps-border); cursor: pointer; }
+.ps-budget-grid-row:last-child { border-bottom: 0; }
+.ps-budget-grid-row:hover { background: var(--ps-chrome-strong); }
+.ps-budget-grid-row.is-on {
+  background: color-mix(in srgb, var(--ps-accent) 9%, transparent);
+  box-shadow: inset 3px 0 0 var(--ps-accent);
+}
+/* A model limit belongs to the provider above it and is never a row you can
+   select in its own right. */
+.ps-budget-grid-row.is-model { cursor: default; background: color-mix(in srgb, var(--ps-foreground) 3%, transparent); }
+.ps-budget-grid-row.is-model:hover { background: color-mix(in srgb, var(--ps-foreground) 4%, transparent); }
+
+.ps-budget-grid-name { padding: 9px 10px; min-width: 0; }
+/* Indented, so a model limit reads as sitting under its provider rather than
+   beside it. */
+.ps-budget-grid-name.is-model { padding-left: 26px; }
+/* ONE control for the whole cell: selecting a provider and expanding its
+   per-model limits are the same act. Stripped of every button default so the
+   row reads as a row. */
+.ps-budget-grid-pick {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  border: 0; background: transparent; padding: 0; width: 100%;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.ps-budget-grid-pick:focus-visible { outline: 2px solid var(--ps-accent); outline-offset: 2px; border-radius: 2px; }
+.ps-budget-grid-pname { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+/* The owner of a user provider, beside its name. Quieter than the name it
+   qualifies, and it wraps with it rather than pushing the chips onto a
+   second line. */
+.ps-budget-grid-owner { color: var(--ps-muted); font-weight: 400; font-size: 12px; }
+.ps-budget-grid-mname { font-family: var(--ps-mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
+/* Both take their own line under the name: they are sentences about the row,
+   not marks beside it. */
+.ps-budget-grid-allow, .ps-budget-grid-teaser {
+  flex-basis: 100%; font-size: 11px; color: var(--ps-muted);
+}
+.ps-budget-grid-teaser { font-style: italic; }
+.ps-budget-grid-row.is-on .ps-budget-grid-teaser { color: var(--ps-accent); font-style: normal; }
+
+/* The three numeric columns. Tabular figures and no wrapping, or `480.0K` and
+   `1.2M` stop lining up and the column stops being scannable. */
+.ps-budget-grid-num {
+  padding: 9px 10px; text-align: right; white-space: nowrap;
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+}
+/* The quota half. Muted, so the eye lands on what was spent — the half that
+   changes — while the limit stays legible beside it. */
+.ps-budget-q { font-weight: 400; }
+/* The provider's own limit is spent while your share is not. Marked in the
+   cell, because a plain number here reads as headroom you do not have. */
+.ps-budget-blocked { color: var(--ps-danger); font-size: 10px; }
+/* A line whose own read failed, while the numbers around it are fresh. */
+.ps-budget-waiting.is-stale { opacity: 0.75; border-left-color: var(--ps-muted); }
+.ps-budget-q.is-inf { font-size: 14px; line-height: 1; }
+
+/* ── Add, Edit, Remove ───────────────────────────────────────────────────────
+   They act on the selected row, and say which row that is. */
+.ps-budget-actions {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px;
+}
+.ps-budget-actions .ps-budget-sub { margin-left: 4px; }
+.ps-budget-foot { display: block; margin-top: 6px; }
+
+/* ── The selected provider's days ────────────────────────────────────────── */
+.ps-budget-chart-pane { margin-top: 22px; }
+.ps-budget-chart-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 8px;
+}
+.ps-budget-chart-title { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+
+/* ── Sections, panels, rows ───────────────────────────────────────────────── */
+.ps-budget-label {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-size: 10.5px; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--ps-muted); margin-bottom: 8px;
+}
+/* "No limits" and "could not load the limits" are different facts and only one
+   of them is safe to act on, so a failed read never borrows the empty state. */
+.ps-budget-empty { padding: 16px; color: var(--ps-muted); font-size: 12px; }
+.ps-budget-empty.is-error {
+  color: var(--ps-danger);
+  border-left: 3px solid var(--ps-danger);
+  background: color-mix(in srgb, var(--ps-danger) 7%, transparent);
+}
+
+.ps-budget-sub { color: var(--ps-muted); font-size: 11px; }
+
+/* ── How full, as a colour ───────────────────────────────────────────────────
+   Only the USED half of a cell is tinted: it is the half that moves, and the
+   quota beside it is already the comparison. Never the only signal — the two
+   numbers say it in words first. */
+.ps-budget-pct { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ps-foreground); }
+.ps-budget-pct.warn { color: var(--ps-warning); }
+.ps-budget-pct.over { color: var(--ps-danger); }
+.ps-budget-pct.idle { color: var(--ps-muted); }
+
+/* An inline provider reference that jumps to it. A button, styled as the text
+   around it plus an underline, so it reads as "click me" without becoming a
+   chip. */
+.ps-budget-link {
+  border: 0; padding: 0; margin: 0; background: transparent; font: inherit; color: inherit;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.ps-budget-link:hover { color: var(--ps-foreground); }
+.ps-budget-link:focus-visible { outline: 1px solid var(--ps-modal-selected-border); outline-offset: 2px; border-radius: 2px; }
+
+/* ── Chips ───────────────────────────────────────────────────────────────────
+   Small, uppercase, and never more than three on a row. Class first (shared or
+   yours), then the two defaults, then anything wrong. */
+.ps-budget-chip {
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 3px; border: 1px solid var(--ps-border);
+  color: var(--ps-muted); white-space: nowrap; flex: none;
+}
+/* Class. A shared provider is everybody's and its numbers are everybody's; a
+   personal one is only ever yours, which is why the two never look alike. */
+.ps-budget-chip.is-shared {
+  color: var(--ps-accent); border-color: color-mix(in srgb, var(--ps-accent) 55%, transparent);
+}
+/* A provider one person owns. Quieter than shared: it concerns nobody else,
+   so it names itself without competing with the row it sits on. */
+.ps-budget-chip.is-personal {
+  color: var(--ps-muted); border-color: var(--ps-border-strong);
+}
+/* ── Sheets ──────────────────────────────────────────────────────────────────
+   Local to the surface, same chrome as the app's modals. Every one of them
+   states its consequences before the confirm is reachable. */
+.ps-budget-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 50; background: var(--ps-modal-backdrop);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.ps-budget-sheet {
+  width: min(520px, 100%); max-height: calc(100vh - 32px); overflow: auto;
+  background: var(--ps-modal-background); border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-md); color: var(--ps-modal-foreground);
+  /* The same drop shadow every other dialog in this file uses. A shadow is
+     cast light, not a palette colour, so it stays black under every theme. */
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+}
+.ps-budget-sheet-top { padding: 14px 18px; border-bottom: 1px solid var(--ps-modal-border); display: flex; flex-direction: column; gap: 3px; }
+.ps-budget-sheet-title { font-weight: 600; }
+.ps-budget-sheet-sub { color: var(--ps-modal-muted); font-size: 11px; }
+.ps-budget-sheet-body { padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+.ps-budget-sheet-foot {
+  border-top: 1px solid var(--ps-modal-border); padding: 14px 18px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.ps-budget-sheet-note { color: var(--ps-modal-muted); font-size: 11px; }
+.ps-budget-sheet-actions { display: flex; gap: 8px; flex: none; }
+/* The server's own words. It already names the remedy, so it is printed, never
+   replaced with "something went wrong". */
+.ps-budget-sheet-error {
+  color: var(--ps-danger); font-size: 12px; padding: 8px 10px; border-radius: var(--ps-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ps-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--ps-danger) 8%, transparent);
+}
+.ps-budget-field { display: flex; flex-direction: column; gap: 6px; }
+.ps-budget-field-hint { color: var(--ps-modal-muted); font-size: 11px; }
+.ps-budget-input {
+  padding: 8px 11px; border-radius: var(--ps-radius-sm); border: 1px solid var(--ps-modal-border);
+  background: var(--ps-background); color: var(--ps-foreground); font: inherit; font-size: 13px;
+}
+.ps-budget-input:focus {
+  outline: none; border-color: var(--ps-modal-selected-border);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-modal-selected-border) 20%, transparent);
+}
+.ps-budget-input::placeholder { color: color-mix(in srgb, var(--ps-muted) 74%, transparent); }
+.ps-budget-input.is-invalid { border-color: var(--ps-danger); }
+/* A value the sheet shows but will not take back — a name after creation, a
+   period on an edit. Readable, obviously not a field. */
+.ps-budget-input.is-static { color: var(--ps-muted); }
+.ps-budget-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.ps-budget-seg-btn {
+  padding: 7px 13px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm);
+  background: transparent; color: var(--ps-muted); font: inherit; font-size: 12px; cursor: pointer;
+}
+.ps-budget-seg-btn:hover { color: var(--ps-foreground); }
+.ps-budget-sheet .ps-budget-seg-btn.is-on,
+.ps-budget-seg-btn.is-on {
+  border-color: var(--ps-modal-selected-border);
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
+  font-weight: 700;
+}
+/* What saving will do, in the sheet, before it is saved. Green by default
+   because most of these grant room; is-warn for a save that pauses sessions on
+   their next turn; is-danger for one that leaves sessions with no provider. */
+.ps-budget-note {
+  border-left: 2px solid var(--ps-success); padding: 2px 0 2px 12px;
+  color: var(--ps-modal-muted); font-size: 11.5px; line-height: 1.55;
+}
+.ps-budget-note.is-warn { border-left-color: var(--ps-warning); }
+.ps-budget-note.is-danger { border-left-color: var(--ps-danger); color: var(--ps-modal-foreground); }
+.ps-budget-consequences { display: flex; flex-direction: column; gap: 9px; font-size: 12.5px; }
+
+/* The confirm is the app's own selected/active treatment, not a filled accent
+   button: --ps-accent is the theme's cyan and a filled cyan block on the dark
+   surface read as a disabled control. The selection colours are what every
+   other primary control here uses.
+
+   Scoped under the sheet: (0,3,0), which TIES the theme's own
+   `:root[data-ps-theme=…] .ps-mini-button` (also 0,3,0) and wins on source
+   order — this block is last in the file. Without it that rule painted the
+   confirm transparent with a grey border, a visual sibling of Cancel. If a
+   theme rule ever moves below this one, this must gain a level. */
+.ps-budget-sheet .ps-mini-button.is-primary {
+  border-color: var(--ps-modal-selected-border);
+  background: var(--ps-modal-selected-background);
+  color: var(--ps-modal-selected-foreground);
+  font-weight: 700;
+}
+.ps-budget-sheet .ps-mini-button.is-primary:hover:not(:disabled) { filter: brightness(1.15); }
+.ps-budget-sheet .ps-mini-button.is-danger:not(:disabled) {
+  background: color-mix(in srgb, var(--ps-danger) 14%, transparent);
+}
+/* Danger keeps its red edge under every theme. The workspace-dark theme's
+   `:root[data-ps-theme=…] .ps-mini-button` rule is (0,3,0) and later than
+   `.ps-mini-button.is-danger`, so it greyed the border on Delete and Remove;
+   this is (0,3,0) too and comes after it. */
+.ps-budget-surface .ps-mini-button.is-danger,
+.ps-budget-sheet .ps-mini-button.is-danger {
+  color: var(--ps-danger);
+  border-color: color-mix(in srgb, var(--ps-danger) 50%, transparent);
+}
+
+/* ── Usage over time ─────────────────────────────────────────────────────────
+   Scaled to the tallest day rather than to a cap: a spike is the thing worth
+   seeing, and flattening it to fit a ceiling hides exactly that. */
+.ps-budget-tl-col { flex: 1 1 0; display: flex; align-items: flex-end; justify-content: center; height: 100%; min-width: 0; }
+.ps-budget-tl-bar {
+  width: 100%; border-radius: 3px 3px 0 0; min-height: 2px;
+  background: linear-gradient(180deg,
+    var(--ps-accent),
+    color-mix(in srgb, var(--ps-accent) 55%, transparent));
+  transition: opacity 120ms ease;
+}
+.ps-budget-tl-col:hover .ps-budget-tl-bar { filter: brightness(1.18); }
+/* A day that went past the dashed line. The line already says where the limit
+   is; this says which days crossed it, without the reader measuring by eye. */
+.ps-budget-tl-col.is-over .ps-budget-tl-bar {
+  background: linear-gradient(180deg,
+    var(--ps-danger),
+    color-mix(in srgb, var(--ps-danger) 50%, transparent));
+}
+/* An idle day is still a day: a hairline at the baseline, so the calendar
+   reads as continuous rather than as bars with gaps between them. */
+.ps-budget-tl-col.is-idle .ps-budget-tl-bar {
+  background: color-mix(in srgb, var(--ps-foreground) 16%, transparent);
+  border-radius: 1px;
+}
+.ps-budget-tl-col.is-idle:hover .ps-budget-tl-bar { filter: none; background: var(--ps-muted); }
+.ps-budget-tl-median {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--ps-foreground) 28%, transparent);
+  pointer-events: none;
+}
+/* Above the bars, which are painted later in the same stacking context. The
+   line has to cross them — a limit line that stops at the first tall day says
+   nothing about the days that broke it — and its label was drawn underneath
+   them and unreadable. */
+.ps-budget-tl-median { z-index: 2; }
+/* The label knocks a hole in its own line, so it needs the ground it sits on —
+   the SURFACE, which is what this workspace paints, not the page behind it. */
+.ps-budget-tl-median span {
+  position: absolute; right: 0; top: -15px; font-size: 9.5px;
+  letter-spacing: 0.06em; color: var(--ps-muted);
+  background: var(--ps-surface); padding: 0 5px; border-radius: 2px;
+  white-space: nowrap;
+}
+.ps-budget-tl-x { display: flex; flex: 1 1 auto; min-width: 0; gap: 5px; margin-top: 0; }
+.ps-budget-tl-x span {
+  flex: 1 1 0; min-width: 0; text-align: center;
+  font-size: 9.5px; color: var(--ps-muted);
+  overflow: hidden; white-space: nowrap;
+}
+/* One span per column, so a label always sits on its own bar. A span that
+   PRINTS a date additionally claims its text's width: on a wide axis the slot
+   is already bigger and this changes nothing, while on a phone the slot is
+   15px against a 26px date and every label came out clipped to "08-". How MANY
+   dates get printed is measured in the chart, so the printed ones always fit
+   the axis rather than pushing it wider. */
+.ps-budget-tl-x span.is-tick { min-width: max-content; }
+.ps-budget-legend {
+  display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--ps-border); font-size: 11px; color: var(--ps-muted);
+}
+
+/* Axes. A chart without them is decoration: the y ticks give magnitude, the x
+   label says what a column is, and the gridlines let a bar be read against a
+   value instead of against its neighbours. */
+.ps-budget-chart { padding: 16px 16px 12px; }
+.ps-budget-yaxis-title {
+  font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ps-muted); margin-bottom: 4px;
+}
+.ps-budget-plotwrap { display: flex; gap: 8px; }
+.ps-budget-yaxis { position: relative; width: 46px; height: 150px; flex: none; }
+.ps-budget-ytick {
+  position: absolute; right: 0; transform: translateY(-50%);
+  font-size: 9.5px; color: var(--ps-muted); font-variant-numeric: tabular-nums;
+}
+.ps-budget-plot { position: relative; flex: 1 1 auto; height: 150px; min-width: 0; }
+.ps-budget-gridline {
+  position: absolute; left: 0; right: 0; height: 0;
+  border-top: 1px solid color-mix(in srgb, var(--ps-foreground) 8%, transparent);
+}
+.ps-budget-bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 5px; }
+.ps-budget-xaxis { display: flex; gap: 8px; margin-top: 7px; }
+.ps-budget-xaxis-spacer { width: 46px; flex: none; }
+.ps-budget-xaxis-title {
+  font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ps-muted); text-align: center; margin-top: 6px;
+}
+/* A range with no usage gets NO axis. The scale used to be floored at one
+   token, which drew a y-axis reading 1 / 0.75 / 0.5 / 0.25 tokens, a legend
+   claiming "peak 1/day" and a median line pinned 4% off the floor — five
+   invented numbers on a chart of nothing. The columns stay, because the run of
+   days is still worth seeing; the ruler goes. */
+.ps-budget-noaxis {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 11.5px; color: var(--ps-muted); pointer-events: none;
+}
+
+/* ── Phone ───────────────────────────────────────────────────────────────────
+   Three numeric columns do not survive 390px: each slot is 15px wide and
+   "480.0K / 500.0K" needs about 90. So each provider becomes a card with its
+   three periods stacked, and every number carries the period it belongs to.
+   The label comes from the column via data-period, not from CSS counting
+   children, so the two can never drift apart. */
+@media (max-width: 720px) {
+  .ps-budget-head { padding: 11px 13px; flex-wrap: wrap; gap: 9px; }
+  .ps-budget-headline { flex-wrap: wrap; gap: 6px; }
+  .ps-budget-head .ps-budget-sub { flex-basis: 100%; }
+  .ps-budget { padding: 13px 13px 36px; }
+
+  /* Every one of these is written with the same weight as the rule that
+     overrides it below — `.ps-budget-grid td` is (0,1,1) and would beat a bare
+     `.ps-budget-grid-num` (0,1,0) whatever the order, which is exactly how the
+     stacked cells failed to become rows the first time. */
+  .ps-budget-grid, .ps-budget-grid thead, .ps-budget-grid tbody,
+  .ps-budget-grid tr, .ps-budget-grid th, .ps-budget-grid td { display: block; }
+  /* "Provider" and the three period names go — every cell prints its own
+     period now. The spanning heading STAYS: it is the only thing on screen
+     that says which pair of numbers these are. */
+  .ps-budget-grid th.ps-budget-grid-h.is-name,
+  .ps-budget-grid th.ps-budget-grid-h.is-num { display: none; }
+  .ps-budget-grid th.ps-budget-grid-h.is-span { text-align: left; width: auto; }
+  .ps-budget-grid-row { padding: 10px 0; }
+  .ps-budget-grid td.ps-budget-grid-name { padding: 0 10px 7px; }
+  .ps-budget-grid td.ps-budget-grid-name.is-model { padding-left: 22px; }
+  /* An inline gutter, NOT a flex row: `used / quota` is one reading and a
+     flex container would put the label, the used figure and the quota at
+     three separate stops across the card, which is the one thing a cell must
+     never do. */
+  .ps-budget-grid td.ps-budget-grid-num {
+    padding: 3px 10px; text-align: left; white-space: nowrap;
+  }
+  .ps-budget-grid td.ps-budget-grid-num::before {
+    content: attr(data-period);
+    display: inline-block; width: 54px;
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    font-weight: 700; color: var(--ps-muted);
+  }
+
+  .ps-budget-tl-x span { font-size: 8.5px; }
+  .ps-budget-yaxis, .ps-budget-xaxis-spacer { width: 34px; }
+  .ps-budget-yaxis, .ps-budget-plot { height: 108px; }
+  .ps-budget-chart { padding: 12px 10px 10px; }
+}
+
+/* iOS Safari toolbars eat 12-15vh, so the `100vh` ceiling on .ps-budget-sheet
+   measures a viewport the person cannot see: the foot — which holds the
+   confirm — lands below the fold with no way to scroll to it. The same fix
+   .ps-modal and .ps-share-modal carry, at the same breakpoint.
+
+   This block MUST stay below the base rule. Media queries contribute no
+   specificity, so an override written earlier in the file simply loses to a
+   same-specificity base rule written later, and the ceiling ships as dead CSS
+   that looks correct in the source. */
+@media (max-width: 920px) {
+  .ps-budget-sheet-backdrop {
+    padding: 12px;
+    /* The home-indicator strip is not part of svh on iOS. */
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .ps-budget-sheet { max-height: 82svh; }
 }

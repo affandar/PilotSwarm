@@ -255,6 +255,76 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "canvas_share_links",
             sql: migration_0048_canvas_share_links(schema),
         },
+        {
+            version: "0049",
+            name: "provider_budgets",
+            sql: migration_0049_provider_budgets(schema),
+        },
+        {
+            version: "0050",
+            name: "provider_budget_procs",
+            sql: migration_0050_provider_budget_procs(schema),
+        },
+        {
+            version: "0051",
+            name: "provider_budget_runtime",
+            sql: migration_0051_provider_budget_runtime(schema),
+        },
+        {
+            version: "0052",
+            name: "provider_pause_liveness",
+            sql: migration_0052_provider_pause_liveness(schema),
+        },
+        {
+            version: "0053",
+            name: "provider_meters",
+            sql: migration_0053_provider_meters(schema),
+        },
+        {
+            version: "0054",
+            name: "provider_grid_owner",
+            sql: migration_0054_provider_grid_owner(schema),
+        },
+        {
+            version: "0055",
+            name: "provider_grid_owner_label",
+            sql: migration_0055_provider_grid_owner_label(schema),
+        },
+        {
+            version: "0056",
+            name: "provider_admission_defaults",
+            sql: migration_0056_provider_admission_defaults(schema),
+        },
+        {
+            version: "0057",
+            name: "provider_system_routing",
+            sql: migration_0057_provider_system_routing(schema),
+        },
+        {
+            version: "0058",
+            name: "legacy_github_provider_migration",
+            sql: migration_0058_legacy_github_provider_migration(schema),
+        },
+        {
+            version: "0059",
+            name: "provider_authoritative_routing",
+            sql: migration_0059_provider_authoritative_routing(schema),
+        },
+        {
+            version: "0060",
+            name: "provider_grid_metered_models",
+            sql: migration_0060_provider_grid_metered_models(schema),
+        },
+        {
+            version: "0061",
+            name: "provider_correctness_fixes",
+            sql: migration_0061_provider_correctness_fixes(schema),
+        },
+        {
+            version: "0062",
+            name: "provider_ledger_base",
+            sql: migration_0062_provider_ledger_base(schema),
+        },
     ];
 }
 
@@ -9304,5 +9374,3509 @@ CREATE TABLE IF NOT EXISTS ${s}.canvas_share_links (
 
 CREATE UNIQUE INDEX IF NOT EXISTS canvas_share_links_token_hash
     ON ${s}.canvas_share_links (token_hash);
+`;
+}
+
+/**
+ * 0049 — provider budgets. See docs/proposals/providers-and-budgets.md.
+ *
+ * A PROVIDER is a credential with a budget policy, and it is the only object:
+ * shared (admin-made, anyone may spend, carries a per-person allowance) or
+ * personal (user-made, owner-only). A session runs `provider:model` and is
+ * charged to that provider. There are no pools, no payers, no grants and no
+ * fallbacks — resolution scope is the whole access story: for user U the
+ * namespace is every shared provider plus U's own, and another user's
+ * personal provider is indistinguishable from a name that was never created.
+ *
+ * Three properties this schema is built around:
+ *
+ * 1. EXACTLY-ONCE ACCOUNTING. provider_usage_ledger PK (session_id,
+ *    turn_index) is the claim: counters move only when the ledger row is
+ *    first inserted, so an activity retry cannot double-charge.
+ *
+ * 2. HISTORY OUTLIVES THE PROVIDER. The ledger stores provider_name as a
+ *    plain string with NO foreign key. Deleting a provider (a hard DELETE —
+ *    a provider is there or not there, there is no retired state) cascades
+ *    its rules and counters and leaves every past row intact; re-creating
+ *    the name later reports under the one name.
+ *
+ * 3. WINDOWS ARE PLAIN UTC CALENDAR WINDOWS. Day = midnight UTC, week =
+ *    Monday 00:00 UTC (date_trunc('week') is Monday-based), month = the 1st.
+ *    There are no anchors, which is what keeps this pinned to
+ *    quota-windows.ts by arithmetic rather than by hope. date_trunc is
+ *    always applied to a UTC-projected PLAIN timestamp: date_trunc on a
+ *    timestamptz truncates in the SESSION timezone, which would move every
+ *    boundary on a connection whose TimeZone is not UTC.
+ */
+function migration_0049_provider_budgets(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- ── tables ───────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_instances (
+    name            TEXT PRIMARY KEY,
+    type_id         TEXT NOT NULL,
+    class           TEXT NOT NULL CHECK (class IN ('shared','personal')),
+    owner_user_id   BIGINT REFERENCES ${s}.users(user_id) ON DELETE CASCADE,
+    secret_ref      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    base_url        TEXT,
+    allowance_pct   SMALLINT NOT NULL DEFAULT 100 CHECK (allowance_pct BETWEEN 1 AND 100),
+    hold_until_utc  TIMESTAMPTZ,
+    hold_indefinite BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- A shared provider has no owner; a personal one always has one.
+    CONSTRAINT provider_instances_owner_matches_class CHECK (
+        (class = 'shared'   AND owner_user_id IS NULL) OR
+        (class = 'personal' AND owner_user_id IS NOT NULL)),
+    -- An allowance divides a shared budget between people. A personal
+    -- provider has exactly one person, so there is nothing to divide.
+    CONSTRAINT provider_instances_allowance_shared_only CHECK (
+        class = 'shared' OR allowance_pct = 100),
+    -- No colon: a model reference is 'provider:model' and splits on the
+    -- first one, so a colon in a name would make references ambiguous.
+    CONSTRAINT provider_instances_name_shape CHECK (
+        name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$')
+);
+
+CREATE INDEX IF NOT EXISTS provider_instances_owner
+    ON ${s}.provider_instances (owner_user_id) WHERE owner_user_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_budget_rules (
+    rule_id         TEXT PRIMARY KEY,
+    provider_name   TEXT NOT NULL REFERENCES ${s}.provider_instances(name) ON DELETE CASCADE,
+    period          TEXT NOT NULL CHECK (period IN ('day','week','month')),
+    model_qualified TEXT,
+    limit_tokens    BIGINT NOT NULL CHECK (limit_tokens > 0),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One limit per (period, scope). An overall limit and a per-model limit are
+-- different scopes and coexist; saving the same combination replaces it.
+CREATE UNIQUE INDEX IF NOT EXISTS provider_budget_rules_scope
+    ON ${s}.provider_budget_rules (provider_name, period, COALESCE(model_qualified, '*'));
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_quota_counters (
+    rule_id          TEXT NOT NULL REFERENCES ${s}.provider_budget_rules(rule_id) ON DELETE CASCADE,
+    window_key_utc   TEXT NOT NULL,
+    used_tokens      BIGINT NOT NULL DEFAULT 0,
+    window_start_utc TIMESTAMPTZ NOT NULL,
+    resets_at_utc    TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (rule_id, window_key_utc)
+);
+
+-- The allowance's per-person mirror. Maintained for EVERY rule, not only
+-- those under a reduced allowance, so changing an allowance never needs a
+-- ledger scan to discover what each person had already spent.
+CREATE TABLE IF NOT EXISTS ${s}.provider_quota_counters_user (
+    rule_id          TEXT NOT NULL REFERENCES ${s}.provider_budget_rules(rule_id) ON DELETE CASCADE,
+    user_id          BIGINT NOT NULL,
+    window_key_utc   TEXT NOT NULL,
+    used_tokens      BIGINT NOT NULL DEFAULT 0,
+    window_start_utc TIMESTAMPTZ NOT NULL,
+    resets_at_utc    TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (rule_id, user_id, window_key_utc)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_usage_ledger (
+    session_id         TEXT    NOT NULL,
+    turn_index         INTEGER NOT NULL,
+    provider_name      TEXT,
+    model_qualified    TEXT,
+    owner_user_id      BIGINT,
+    charge_class       TEXT NOT NULL DEFAULT 'user'
+                       CHECK (charge_class IN ('user','system','unattributed')),
+    tokens_input       BIGINT NOT NULL DEFAULT 0,
+    tokens_output      BIGINT NOT NULL DEFAULT 0,
+    tokens_cache_read  BIGINT NOT NULL DEFAULT 0,
+    tokens_cache_write BIGINT NOT NULL DEFAULT 0,
+    tokens_total       BIGINT NOT NULL DEFAULT 0,
+    agent_id           TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, turn_index)
+);
+
+CREATE INDEX IF NOT EXISTS provider_usage_ledger_created
+    ON ${s}.provider_usage_ledger (created_at DESC);
+CREATE INDEX IF NOT EXISTS provider_usage_ledger_provider
+    ON ${s}.provider_usage_ledger (provider_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS provider_usage_ledger_owner
+    ON ${s}.provider_usage_ledger (owner_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_cluster_settings (
+    singleton         BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    default_provider  TEXT,
+    default_model     TEXT,
+    default_reasoning TEXT,
+    default_context   TEXT,
+    bootstrapped_at   TIMESTAMPTZ,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO ${s}.provider_cluster_settings (singleton) VALUES (TRUE)
+    ON CONFLICT (singleton) DO NOTHING;
+
+-- A person's default is a COLUMN, not a profile_settings key: the portal
+-- replaces profile_settings wholesale on every preference save, which would
+-- erase anything stored beside it.
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS default_provider  TEXT;
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS default_model     TEXT;
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS default_reasoning TEXT;
+ALTER TABLE ${s}.users ADD COLUMN IF NOT EXISTS default_context   TEXT;
+
+ALTER TABLE ${s}.session_turn_metrics ADD COLUMN IF NOT EXISTS provider_name TEXT;
+ALTER TABLE ${s}.session_turn_metrics ADD COLUMN IF NOT EXISTS owner_user_id BIGINT;
+ALTER TABLE ${s}.session_turn_metrics ADD COLUMN IF NOT EXISTS charge_class  TEXT;
+
+-- The structured pause record. The paused-sessions reader reads THIS; it
+-- never parses wait_reason prose, which is written for a human.
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS pause_state JSONB;
+
+-- ── window bounds (parity-pinned to quota-windows.ts) ────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_window_bounds(
+    p_kind TEXT, p_now TIMESTAMPTZ
+) RETURNS TABLE(window_start TIMESTAMPTZ, resets_at TIMESTAMPTZ, window_key TEXT) AS $$
+DECLARE
+    v_now   TIMESTAMP := p_now AT TIME ZONE 'UTC';
+    v_step  INTERVAL  := CASE p_kind WHEN 'day'  THEN interval '1 day'
+                                     WHEN 'week' THEN interval '7 days'
+                                     ELSE interval '1 month' END;
+    v_start TIMESTAMP;
+BEGIN
+    IF p_kind NOT IN ('day','week','month') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: unknown period %', p_kind;
+    END IF;
+    v_start      := date_trunc(p_kind, v_now);
+    window_start := v_start AT TIME ZONE 'UTC';
+    resets_at    := (v_start + v_step) AT TIME ZONE 'UTC';
+    window_key   := to_char(v_start, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+    RETURN NEXT;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- ── helpers ──────────────────────────────────────────────────────────
+
+-- Principal → user_id, WITHOUT creating the row. cms_register_user is the
+-- creating path; a read must not mint users as a side effect of looking.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_user_id(
+    p_provider TEXT, p_subject TEXT
+) RETURNS BIGINT AS $$
+    SELECT u.user_id FROM ${s}.users u
+     WHERE u.provider = p_provider AND u.subject = p_subject;
+$$ LANGUAGE sql STABLE;
+
+-- The namespace rule, in one place: every shared provider, plus the
+-- viewer's own. A name outside it returns NO ROW — the same answer a name
+-- that was never created gets, which is what makes another user's personal
+-- provider indistinguishable from nonexistent.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_in_namespace(
+    p_name TEXT, p_viewer BIGINT
+) RETURNS TABLE(
+    name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT,
+    secret_ref JSONB, base_url TEXT, allowance_pct SMALLINT,
+    hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN
+) AS $$
+    SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id,
+           pi.secret_ref, pi.base_url, pi.allowance_pct,
+           pi.hold_until_utc, pi.hold_indefinite
+      FROM ${s}.provider_instances pi
+     WHERE pi.name = p_name
+       AND (pi.class = 'shared'
+            OR (p_viewer IS NOT NULL AND pi.owner_user_id = p_viewer));
+$$ LANGUAGE sql STABLE;
+
+-- The per-person ceiling. GREATEST(1, ...) so a tiny limit under a small
+-- allowance still lets a first turn run: every pause in this system is
+-- "the turn that crossed completed, the next one waits", and a zero
+-- ceiling would be the one exception that blocks before any work at all.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_ceiling(
+    p_limit BIGINT, p_pct SMALLINT
+) RETURNS BIGINT AS $$
+    -- Through numeric, not bigint. A limit near the top of bigint times a
+    -- percentage overflows before the division brings it back down, and the
+    -- error surfaces from the ADMISSION gate — which fails open — and from
+    -- the status read, which then dies for every provider in the list, not
+    -- just the one carrying the absurd number.
+    SELECT GREATEST(1::BIGINT, ((p_limit::numeric * p_pct) / 100)::BIGINT);
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Split a model reference. 'azure-prod:gpt-5.4' → ('azure-prod','gpt-5.4').
+-- An unqualified reference has no provider and resolves to nothing: this
+-- model requires every session to name the provider that pays for it.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_split_ref(
+    p_ref TEXT
+) RETURNS TABLE(provider_name TEXT, model_name TEXT) AS $$
+    SELECT CASE WHEN position(':' in COALESCE(p_ref,'')) > 1
+                THEN split_part(p_ref, ':', 1) END,
+           CASE WHEN position(':' in COALESCE(p_ref,'')) > 1
+                THEN substring(p_ref from position(':' in p_ref) + 1) END;
+$$ LANGUAGE sql IMMUTABLE;
+`;
+}
+
+/**
+ * 0050 — the read/write surface over 0049's tables.
+ *
+ * AUTHORITY, in one sentence: a shared provider is managed by cluster
+ * admins, a personal provider by its owner, and everything else is open.
+ * There are no grants and no per-provider roles to consult.
+ *
+ * REFUSALS TELL YOU AS MUCH AS YOU CAN ALREADY SEE. A name outside your
+ * namespace is PROVIDER_NOT_FOUND — the same words a typo gets, because
+ * saying "forbidden" would confirm that someone else's personal provider
+ * exists. A name you CAN see but may not manage is PROVIDER_FORBIDDEN,
+ * which tells you nothing you did not already know.
+ */
+function migration_0050_provider_budget_procs(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- ── management: providers ────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_create(
+    p_name TEXT, p_type_id TEXT, p_class TEXT, p_owner BIGINT,
+    p_secret JSONB, p_base_url TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT) AS $$
+DECLARE v_name TEXT := NULLIF(BTRIM(p_name), '');
+BEGIN
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a provider needs a name';
+    END IF;
+    IF p_class NOT IN ('shared','personal') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: class must be shared or personal';
+    END IF;
+    IF p_class = 'shared' AND NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can add a shared provider';
+    END IF;
+    IF p_class = 'personal' AND p_actor IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: sign in to add a provider of your own';
+    END IF;
+    -- A personal provider belongs to the person MAKING it, never to whoever
+    -- the caller names. p_owner is an argument, and an argument is a wish:
+    -- honouring it let anyone plant a credential and a base_url inside
+    -- someone else's namespace, where that person's sessions would resolve
+    -- it and spend through it.
+    IF p_class = 'personal' AND p_owner IS DISTINCT FROM p_actor THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: a provider of your own is created in your own name';
+    END IF;
+    -- The name is the identity every session reference resolves through, so
+    -- a collision is reported as a collision. It says a name is taken and
+    -- nothing else: not the class, not the owner, not the type.
+    IF EXISTS (SELECT 1 FROM ${s}.provider_instances pi WHERE pi.name = v_name) THEN
+        RAISE EXCEPTION 'PROVIDER_CONFLICT: the name "%" is already taken', v_name;
+    END IF;
+    INSERT INTO ${s}.provider_instances
+        (name, type_id, class, owner_user_id, secret_ref, base_url)
+    VALUES (v_name, p_type_id, p_class,
+            CASE WHEN p_class = 'personal' THEN p_actor END,
+            COALESCE(p_secret, '{}'::jsonb), NULLIF(BTRIM(p_base_url), ''));
+    RETURN QUERY SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id
+                   FROM ${s}.provider_instances pi WHERE pi.name = v_name;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- May the actor manage this provider? Raises rather than returning false,
+-- so every mutation gets the same refusal wording for free.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_assert_manage(
+    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS ${s}.provider_instances AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    SELECT * INTO v_row FROM ${s}.provider_instances pi WHERE pi.name = p_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+
+    -- A personal provider answers to its owner and to NOBODY else — an
+    -- administrator included. Being an administrator is authority over the
+    -- cluster's own credentials, not over a credential someone brought from
+    -- home: an admin who could set limits on, hold, or delete a person's own
+    -- key would be reaching into a namespace the whole design says is
+    -- theirs. It reads as absent, the same as any name outside a namespace,
+    -- so this refusal cannot be used to discover that it exists either.
+    IF v_row.class = 'personal' THEN
+        IF p_actor IS NULL OR v_row.owner_user_id IS DISTINCT FROM p_actor THEN
+            RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+        END IF;
+        RETURN v_row;
+    END IF;
+
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: "%" is a shared provider; only an administrator can change it', p_name;
+    END IF;
+    RETURN v_row;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_delete(
+    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE
+    v_row ${s}.provider_instances;
+    v_waiting BIGINT;
+BEGIN
+    v_row := ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    -- Sessions naming it are not touched: they resolve nothing at their next
+    -- turn and wait, which is the whole no-fallback rule. Report how many so
+    -- the caller can say it.
+    SELECT count(*) INTO v_waiting
+      FROM ${s}.sessions ss
+      CROSS JOIN LATERAL ${s}.cms_provider_split_ref(ss.model) sp
+     WHERE ss.deleted_at IS NULL
+       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND sp.provider_name = p_name;
+    -- Rules and counters cascade. The ledger keeps its rows: provider_name
+    -- there is a record of what happened, not a reference to a live row.
+    DELETE FROM ${s}.provider_instances pi WHERE pi.name = p_name;
+    UPDATE ${s}.provider_cluster_settings SET default_provider = NULL, default_model = NULL,
+           default_reasoning = NULL, default_context = NULL, updated_at = now()
+     WHERE singleton AND default_provider = p_name;
+    UPDATE ${s}.users u SET default_provider = NULL, default_model = NULL,
+           default_reasoning = NULL, default_context = NULL
+     WHERE u.default_provider = p_name;
+    RETURN v_waiting;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── management: limits, allowance, holds ─────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_limit(
+    p_name TEXT, p_period TEXT, p_model TEXT, p_tokens BIGINT,
+    p_rule_id TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(rule_id TEXT, seeded_tokens BIGINT) AS $$
+-- The OUT parameter rule_id would otherwise shadow the COLUMN of the same
+-- name, and an ON CONFLICT target that resolves to a variable is rejected
+-- as ambiguous. Inside this body a bare column name means the column.
+#variable_conflict use_column
+DECLARE
+    v_model  TEXT := NULLIF(BTRIM(p_model), '');
+    v_rule   TEXT;
+    v_bounds RECORD;
+    v_seed   BIGINT;
+BEGIN
+    PERFORM ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    IF p_period NOT IN ('day','week','month') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: period must be day, week or month';
+    END IF;
+    IF p_tokens IS NULL OR p_tokens <= 0 THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a limit must be a positive number of tokens';
+    END IF;
+    -- A limit scoped to one model matches the QUALIFIED reference a session
+    -- runs, so a bare model name matches nothing — the limit saves, shows in
+    -- the report as a live cap, and silently never fires. Refuse it and say
+    -- what to write instead.
+    IF v_model IS NOT NULL AND v_model NOT LIKE p_name || ':%' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a limit on one model names it as "%:<model>", not "%"', p_name, v_model;
+    END IF;
+
+    INSERT INTO ${s}.provider_budget_rules (rule_id, provider_name, period, model_qualified, limit_tokens)
+    VALUES (p_rule_id, p_name, p_period, v_model, p_tokens)
+    ON CONFLICT (provider_name, period, COALESCE(model_qualified, '*'))
+    DO UPDATE SET limit_tokens = EXCLUDED.limit_tokens, updated_at = now()
+    RETURNING ${s}.provider_budget_rules.rule_id INTO v_rule;
+
+    -- A new limit counts from what this window has ALREADY spent; it does
+    -- not hand out a fresh allocation. The count is re-derived from the
+    -- ledger rather than carried forward, which makes saving a limit twice
+    -- idempotent.
+    --
+    -- ORDER MATTERS, and this is the whole reason the counter rows are
+    -- claimed before the sum is taken. Re-deriving is a read followed by a
+    -- write, and a turn that settles between the two used to have its charge
+    -- ASSIGNED away — the settle incremented a row, then this UPDATE
+    -- overwrote it with a total computed before that increment existed. A
+    -- provider then ran past a hard cap with the gate still answering
+    -- 'clear', and the two counters disagreed for the rest of the window.
+    -- Claiming the rows first makes a concurrent settle either commit ahead
+    -- of the sum (and be counted) or block until after it (and add on top).
+    SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(p_period, now());
+
+    INSERT INTO ${s}.provider_quota_counters
+        (rule_id, window_key_utc, used_tokens, window_start_utc, resets_at_utc)
+    VALUES (v_rule, v_bounds.window_key, 0, v_bounds.window_start, v_bounds.resets_at)
+    ON CONFLICT (rule_id, window_key_utc) DO UPDATE SET updated_at = now();
+
+    -- Only this provider's OWN history. The ledger keeps a name, not a
+    -- reference, so a name that was deleted and made again would otherwise
+    -- inherit the spend of the provider that used to hold it — and be born
+    -- at a limit it never spent a token against. Its own creation instant is
+    -- the line between the two.
+    SELECT COALESCE(sum(l.tokens_total), 0) INTO v_seed
+      FROM ${s}.provider_usage_ledger l
+      JOIN ${s}.provider_instances pi ON pi.name = p_name
+     WHERE l.provider_name = p_name
+       AND l.charge_class = 'user'
+       AND (v_model IS NULL OR l.model_qualified = v_model)
+       AND l.created_at >= GREATEST(v_bounds.window_start, pi.created_at)
+       AND l.created_at <  v_bounds.resets_at;
+
+    UPDATE ${s}.provider_quota_counters c
+       SET used_tokens = v_seed, updated_at = now()
+     WHERE c.rule_id = v_rule AND c.window_key_utc = v_bounds.window_key;
+
+    -- The per-person mirror, same reasoning: claim every row that could be
+    -- touched, then recompute. A person with no spend this window gets no
+    -- row, which reads as zero.
+    INSERT INTO ${s}.provider_quota_counters_user
+        (rule_id, user_id, window_key_utc, used_tokens, window_start_utc, resets_at_utc)
+    SELECT v_rule, l.owner_user_id, v_bounds.window_key, 0,
+           v_bounds.window_start, v_bounds.resets_at
+      FROM ${s}.provider_usage_ledger l
+      JOIN ${s}.provider_instances pi ON pi.name = p_name
+     WHERE l.provider_name = p_name
+       AND l.charge_class = 'user'
+       AND l.owner_user_id IS NOT NULL
+       AND (v_model IS NULL OR l.model_qualified = v_model)
+       AND l.created_at >= GREATEST(v_bounds.window_start, pi.created_at)
+       AND l.created_at <  v_bounds.resets_at
+     GROUP BY l.owner_user_id
+    ON CONFLICT (rule_id, user_id, window_key_utc) DO UPDATE SET updated_at = now();
+
+    UPDATE ${s}.provider_quota_counters_user cu
+       SET used_tokens = agg.total, updated_at = now()
+      FROM (
+        SELECT l.owner_user_id AS uid, COALESCE(sum(l.tokens_total), 0) AS total
+          FROM ${s}.provider_usage_ledger l
+          JOIN ${s}.provider_instances pi ON pi.name = p_name
+         WHERE l.provider_name = p_name
+           AND l.charge_class = 'user'
+           AND l.owner_user_id IS NOT NULL
+           AND (v_model IS NULL OR l.model_qualified = v_model)
+           AND l.created_at >= GREATEST(v_bounds.window_start, pi.created_at)
+           AND l.created_at <  v_bounds.resets_at
+         GROUP BY l.owner_user_id
+      ) agg
+     WHERE cu.rule_id = v_rule AND cu.window_key_utc = v_bounds.window_key
+       AND cu.user_id = agg.uid;
+
+    RETURN QUERY SELECT v_rule, v_seed;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_remove_limit(
+    p_name TEXT, p_period TEXT, p_model TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE v_deleted INTEGER;
+BEGIN
+    PERFORM ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    -- Without this a mistyped period answered "nothing was there" while the
+    -- limit it meant to remove stayed in force.
+    IF p_period NOT IN ('day','week','month') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: period must be day, week or month';
+    END IF;
+    DELETE FROM ${s}.provider_budget_rules r
+     WHERE r.provider_name = p_name AND r.period = p_period
+       AND COALESCE(r.model_qualified, '*') = COALESCE(NULLIF(BTRIM(p_model), ''), '*');
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted > 0;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_allowance(
+    p_name TEXT, p_pct SMALLINT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS SMALLINT AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    v_row := ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    IF v_row.class <> 'shared' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: "%" is your own provider; an allowance divides a shared budget between people', p_name;
+    END IF;
+    IF p_pct IS NULL OR p_pct < 1 OR p_pct > 100 THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: an allowance is a percentage between 1 and 100';
+    END IF;
+    UPDATE ${s}.provider_instances pi
+       SET allowance_pct = p_pct, updated_at = now()
+     WHERE pi.name = p_name;
+    RETURN p_pct;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_hold(
+    p_name TEXT, p_until TIMESTAMPTZ, p_indefinite BOOLEAN,
+    p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+BEGIN
+    PERFORM ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    UPDATE ${s}.provider_instances pi
+       SET hold_until_utc = p_until,
+           hold_indefinite = COALESCE(p_indefinite, FALSE),
+           updated_at = now()
+     WHERE pi.name = p_name;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── defaults ─────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_cluster_default(
+    p_provider TEXT, p_model TEXT, p_reasoning TEXT, p_context TEXT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can set the cluster default';
+    END IF;
+    -- Both halves or neither. A tuple with a provider and no model is not a
+    -- default anybody can start a session from, and reporting success for it
+    -- left the caller believing something had been set.
+    IF NULLIF(BTRIM(COALESCE(p_provider, '')), '') IS NULL
+       OR NULLIF(BTRIM(COALESCE(p_model, '')), '') IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the cluster default needs a provider and a model';
+    END IF;
+    SELECT * INTO v_row FROM ${s}.provider_instances pi WHERE pi.name = p_provider;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_provider;
+    END IF;
+    -- The cluster default is what system sessions run on. Machinery on one
+    -- person's own credential would stop the moment they removed it.
+    IF v_row.class <> 'shared' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the cluster default must be a shared provider';
+    END IF;
+    -- Both halves must agree. A session runs the MODEL reference, so a tuple
+    -- naming a shared provider beside somebody's personal model reference
+    -- would put the machinery on a private credential — through the half
+    -- nobody was checking.
+    IF p_model NOT LIKE p_provider || ':%' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the model must belong to "%": write it as "%:<model>"', p_provider, p_provider;
+    END IF;
+    UPDATE ${s}.provider_cluster_settings
+       SET default_provider = p_provider, default_model = p_model,
+           default_reasoning = NULLIF(BTRIM(COALESCE(p_reasoning, '')), ''),
+           default_context = NULLIF(BTRIM(COALESCE(p_context, '')), ''),
+           updated_at = now()
+     WHERE singleton;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_user_default(
+    p_actor BIGINT, p_provider TEXT, p_model TEXT, p_reasoning TEXT, p_context TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE v_name TEXT := NULLIF(BTRIM(COALESCE(p_provider, '')), '');
+BEGIN
+    IF p_actor IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: sign in to set a default';
+    END IF;
+    IF v_name IS NOT NULL THEN
+        -- Your default must be something you can actually run.
+        IF NOT EXISTS (SELECT 1 FROM ${s}.cms_provider_in_namespace(v_name, p_actor)) THEN
+            RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', v_name;
+        END IF;
+        IF NULLIF(BTRIM(COALESCE(p_model, '')), '') IS NULL THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: a default needs a provider and a model';
+        END IF;
+        IF p_model NOT LIKE v_name || ':%' THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: the model must belong to "%": write it as "%:<model>"', v_name, v_name;
+        END IF;
+    END IF;
+    UPDATE ${s}.users u
+       SET default_provider = v_name,
+           default_model = CASE WHEN v_name IS NULL THEN NULL ELSE p_model END,
+           default_reasoning = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_reasoning, '')), '') END,
+           default_context = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_context, '')), '') END
+     WHERE u.user_id = p_actor;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_get_defaults(
+    p_actor BIGINT
+) RETURNS TABLE(
+    cluster_provider TEXT, cluster_model TEXT, cluster_reasoning TEXT, cluster_context TEXT,
+    my_provider TEXT, my_model TEXT, my_reasoning TEXT, my_context TEXT
+) AS $$
+    SELECT c.default_provider, c.default_model, c.default_reasoning, c.default_context,
+           u.default_provider, u.default_model, u.default_reasoning, u.default_context
+      FROM ${s}.provider_cluster_settings c
+      LEFT JOIN ${s}.users u ON u.user_id = p_actor
+     WHERE c.singleton;
+$$ LANGUAGE sql STABLE;
+
+-- ── bootstrap: the one-time deployment seed ──────────────────────────
+-- Claims the flag atomically, so several fresh pods racing at first boot
+-- seed exactly once. After the claim the declaration is never read again:
+-- an administrator who deletes a seeded provider has deleted it, and no
+-- restart brings it back.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_bootstrap(
+    p_instances JSONB, p_default JSONB
+) RETURNS TABLE(claimed BOOLEAN, created INTEGER) AS $$
+DECLARE
+    v_claimed BOOLEAN := FALSE;
+    v_created INTEGER := 0;
+    v_item    JSONB;
+BEGIN
+    UPDATE ${s}.provider_cluster_settings
+       SET bootstrapped_at = now(), updated_at = now()
+     WHERE singleton AND bootstrapped_at IS NULL;
+    GET DIAGNOSTICS v_created = ROW_COUNT;
+    v_claimed := v_created > 0;
+    v_created := 0;
+    IF NOT v_claimed THEN
+        RETURN QUERY SELECT FALSE, 0;
+        RETURN;
+    END IF;
+
+    FOR v_item IN SELECT * FROM jsonb_array_elements(COALESCE(p_instances, '[]'::jsonb)) LOOP
+        BEGIN
+            PERFORM ${s}.cms_provider_create(
+                v_item->>'name', v_item->>'typeId', 'shared', NULL,
+                COALESCE(v_item->'secretRef', '{}'::jsonb), v_item->>'baseUrl',
+                NULL, TRUE);
+            v_created := v_created + 1;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'provider bootstrap skipped %: %', v_item->>'name', SQLERRM;
+        END;
+    END LOOP;
+
+    -- The default is NOT best-effort. It names what system sessions run, and
+    -- a cluster that seeded without one has no machinery and no fallback for
+    -- anybody who never set a default of their own. Raising rolls back the
+    -- claim along with everything else, so the next pod to boot tries again
+    -- and the operator sees the same loud error until the file is fixed —
+    -- which is the opposite of the quiet, permanent half-seeded cluster a
+    -- swallowed error leaves behind.
+    IF p_default IS NOT NULL AND p_default->>'provider' IS NOT NULL THEN
+        PERFORM ${s}.cms_provider_set_cluster_default(
+            p_default->>'provider', p_default->>'model',
+            p_default->>'reasoning', p_default->>'context', TRUE);
+    END IF;
+
+    RETURN QUERY SELECT TRUE, v_created;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+`;
+}
+
+
+/**
+ * 0052 — a pause record is a snapshot, so check it before reporting it.
+ *
+ * `sessions.pause_state` is written by the admission gate and cleared by the
+ * same gate on the session's next turn. That makes it a CACHE of a decision,
+ * and it is only as fresh as the session is busy. Release a hold on a session
+ * that is slow, stopped, or waiting on a durable timer and the record sits
+ * there unchanged — so the surface keeps naming a cause that no longer
+ * exists, and the very action taken to fix it appears to have done nothing.
+ * That was observed live: a released hold, and a session still reported as
+ * held by it.
+ *
+ * The fix is to check the record against live truth at READ time. The
+ * database already holds everything needed to say whether the recorded cause
+ * still applies, and a stale record is then simply not reported.
+ *
+ * NOT the wake query. cms_provider_paused_for exists to find the sessions
+ * that must be nudged when a cause disappears, and it finds them BY the
+ * record — so filtering it on liveness would find nothing at the exact
+ * moment it is needed, and the session would never be told to look again.
+ * One reads the record as history to act on; the other reads it as a claim
+ * about now. Only the second needs checking.
+ */
+function migration_0052_provider_pause_liveness(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_pause_is_live(
+    p_pause JSONB, p_owner BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_kind   TEXT := p_pause->>'kind';
+    v_name   TEXT := p_pause->>'provider';
+    v_inst   RECORD;
+    v_rule   RECORD;
+    v_bounds RECORD;
+    v_used   BIGINT;
+    v_you    BIGINT;
+BEGIN
+    IF p_pause IS NULL OR v_kind IS NULL THEN RETURN FALSE; END IF;
+
+    -- A name that does not resolve is exactly what this pause reports, so it
+    -- is live while the name is still missing and dead the moment it is not.
+    IF v_kind = 'no_provider' THEN
+        RETURN NOT EXISTS (SELECT 1 FROM ${s}.cms_provider_in_namespace(COALESCE(v_name, ''), p_owner));
+    END IF;
+
+    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(COALESCE(v_name, ''), p_owner);
+    -- The provider went away under a session that was paused for some other
+    -- reason. It is still stuck, so the record still stands.
+    IF NOT FOUND THEN RETURN TRUE; END IF;
+
+    IF v_kind = 'hold' THEN
+        RETURN COALESCE(v_inst.hold_indefinite, FALSE)
+            OR (v_inst.hold_until_utc IS NOT NULL AND v_inst.hold_until_utc > now());
+    END IF;
+
+    SELECT * INTO v_rule FROM ${s}.provider_budget_rules r
+     WHERE r.rule_id = p_pause->>'ruleId';
+    -- The limit that stopped it was removed.
+    IF NOT FOUND THEN RETURN FALSE; END IF;
+
+    SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+    SELECT COALESCE(c.used_tokens, 0) INTO v_used
+      FROM ${s}.provider_quota_counters c
+     WHERE c.rule_id = v_rule.rule_id AND c.window_key_utc = v_bounds.window_key;
+    v_used := COALESCE(v_used, 0);
+
+    IF v_kind = 'limit' THEN
+        RETURN v_used >= v_rule.limit_tokens;
+    END IF;
+
+    IF v_kind = 'allowance' THEN
+        IF v_inst.allowance_pct >= 100 OR p_owner IS NULL THEN RETURN FALSE; END IF;
+        SELECT COALESCE(cu.used_tokens, 0) INTO v_you
+          FROM ${s}.provider_quota_counters_user cu
+         WHERE cu.rule_id = v_rule.rule_id AND cu.user_id = p_owner
+           AND cu.window_key_utc = v_bounds.window_key;
+        RETURN COALESCE(v_you, 0) >= ${s}.cms_provider_ceiling(v_rule.limit_tokens, v_inst.allowance_pct);
+    END IF;
+
+    -- A kind this version does not know about is reported rather than hidden:
+    -- silence would be the one failure mode worse than a stale record.
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Report only the pauses whose cause still holds.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_list_paused(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_limit INTEGER
+) RETURNS TABLE(
+    session_id TEXT, title TEXT, model TEXT, owner_user_id BIGINT,
+    owner_email TEXT, state TEXT, pause_state JSONB, updated_at TIMESTAMPTZ
+) AS $$
+    SELECT ss.session_id, ss.title, ss.model, so.user_id, ou.email, ss.state,
+           ss.pause_state, ss.updated_at
+      FROM ${s}.sessions ss
+      LEFT JOIN ${s}.session_owners so ON so.session_id = ss.session_id
+      LEFT JOIN ${s}.users ou ON ou.user_id = so.user_id
+     WHERE ss.deleted_at IS NULL
+       AND ss.pause_state IS NOT NULL
+       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND (COALESCE(p_is_admin, FALSE) OR so.user_id = p_viewer)
+       AND ${s}.cms_provider_pause_is_live(ss.pause_state, so.user_id)
+     ORDER BY ss.updated_at DESC
+     LIMIT COALESCE(p_limit, 100);
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0051 — the runtime pair, plus the readers behind every surface.
+ *
+ * cms_provider_check_turn is THE admission call: one round trip that
+ * resolves the payer, applies the hold, the limits and the allowance, and
+ * records the structured pause. cms_provider_settle_turn is its
+ * counterpart: one call that writes the ledger row and moves the counters,
+ * exactly once, no matter how many times an activity retries.
+ *
+ * The decision lives HERE rather than in TypeScript on purpose. The
+ * counters are in this database; splitting "read the numbers" from "judge
+ * the numbers" across a process boundary buys a testable pure function and
+ * pays for it with two implementations that can disagree about whether a
+ * session may run. The TypeScript side keeps only presentation logic.
+ */
+function migration_0051_provider_budget_runtime(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- ── admission ────────────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_check_turn(
+    p_session_id TEXT, p_model TEXT
+) RETURNS TABLE(
+    verdict TEXT, provider_name TEXT, model_qualified TEXT,
+    exempt BOOLEAN, pause JSONB, rules JSONB
+) AS $$
+DECLARE
+    v_sess    RECORD;
+    v_owner   BIGINT;
+    v_ref     TEXT;
+    v_split   RECORD;
+    v_inst    RECORD;
+    v_rule    RECORD;
+    v_bounds  RECORD;
+    v_used    BIGINT;
+    v_you     BIGINT;
+    v_ceiling BIGINT;
+    v_rules   JSONB := '[]'::jsonb;
+    v_block   JSONB := NULL;
+    v_kind    TEXT  := NULL;
+    v_reset   TIMESTAMPTZ := NULL;
+    v_pause   JSONB := NULL;
+BEGIN
+    SELECT ss.is_system, ss.model, ss.pause_state INTO v_sess
+      FROM ${s}.sessions ss WHERE ss.session_id = p_session_id;
+    IF NOT FOUND THEN
+        -- Nothing to admit and nothing to charge. The gate's posture is
+        -- fail-open, so say clear rather than inventing a refusal.
+        RETURN QUERY SELECT 'clear'::TEXT, NULL::TEXT, NULL::TEXT, FALSE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    SELECT so.user_id INTO v_owner FROM ${s}.session_owners so
+     WHERE so.session_id = p_session_id;
+
+    -- The catalog row is authoritative for the model, exactly as the turn
+    -- runtime treats it; the argument is only the turn's own override.
+    v_ref := COALESCE(NULLIF(BTRIM(COALESCE(p_model, '')), ''), v_sess.model);
+    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
+
+    -- Assigned unconditionally. A RECORD that was never assigned raises
+    -- "record is not assigned yet" the moment a field is read, and the read
+    -- below sits behind an OR whose short-circuiting Postgres does not
+    -- promise — so an unqualified model reference could throw instead of
+    -- answering, and the gate's fail-open posture would run the turn.
+    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(
+        COALESCE(v_split.provider_name, ''), v_owner);
+
+    IF v_inst.name IS NULL THEN
+        v_pause := jsonb_build_object(
+            'kind', 'no_provider',
+            'provider', v_split.provider_name,
+            'modelRef', v_ref);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'no_provider'::TEXT, v_split.provider_name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    -- System sessions are never paused: a limit that could stop the
+    -- machinery would leave nobody able to raise the limit that stopped it.
+    -- They still resolve a provider, because their spend is still recorded.
+    IF COALESCE(v_sess.is_system, FALSE) THEN
+        IF v_sess.pause_state IS NOT NULL THEN
+            UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+        END IF;
+        RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, TRUE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    IF COALESCE(v_inst.hold_indefinite, FALSE)
+       OR (v_inst.hold_until_utc IS NOT NULL AND v_inst.hold_until_utc > now()) THEN
+        v_pause := jsonb_build_object(
+            'kind', 'hold',
+            'provider', v_inst.name,
+            'resetsAtUtc', CASE WHEN COALESCE(v_inst.hold_indefinite, FALSE)
+                                THEN NULL ELSE to_char(v_inst.hold_until_utc AT TIME ZONE 'UTC',
+                                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    FOR v_rule IN
+        SELECT r.* FROM ${s}.provider_budget_rules r
+         WHERE r.provider_name = v_inst.name
+           AND (r.model_qualified IS NULL OR r.model_qualified = v_ref)
+    LOOP
+        SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+        SELECT COALESCE(c.used_tokens, 0) INTO v_used
+          FROM ${s}.provider_quota_counters c
+         WHERE c.rule_id = v_rule.rule_id AND c.window_key_utc = v_bounds.window_key;
+        v_used := COALESCE(v_used, 0);
+
+        v_ceiling := NULL;
+        v_you := NULL;
+        IF v_inst.allowance_pct < 100 AND v_owner IS NOT NULL THEN
+            v_ceiling := ${s}.cms_provider_ceiling(v_rule.limit_tokens, v_inst.allowance_pct);
+            SELECT COALESCE(cu.used_tokens, 0) INTO v_you
+              FROM ${s}.provider_quota_counters_user cu
+             WHERE cu.rule_id = v_rule.rule_id AND cu.user_id = v_owner
+               AND cu.window_key_utc = v_bounds.window_key;
+            v_you := COALESCE(v_you, 0);
+        END IF;
+
+        v_rules := v_rules || jsonb_build_object(
+            'ruleId', v_rule.rule_id,
+            'providerName', v_inst.name,
+            'period', v_rule.period,
+            'modelQualified', v_rule.model_qualified,
+            'limitTokens', v_rule.limit_tokens,
+            'usedTokens', v_used,
+            'ceilingTokens', v_ceiling,
+            'yourUsedTokens', v_you,
+            'windowStartUtc', to_char(v_bounds.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+            'resetsAtUtc', to_char(v_bounds.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+
+        IF v_used >= v_rule.limit_tokens THEN
+            -- A limit stops everyone. It outranks an allowance in the
+            -- report because raising the allowance would not help.
+            IF v_kind IS DISTINCT FROM 'limit' THEN
+                v_kind := 'limit';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens, 'usedTokens', v_used);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        ELSIF v_ceiling IS NOT NULL AND v_you >= v_ceiling THEN
+            IF v_kind IS NULL THEN
+                v_kind := 'allowance';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens,
+                                              'ceilingTokens', v_ceiling, 'yourUsedTokens', v_you);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        END IF;
+    END LOOP;
+
+    IF v_kind IS NOT NULL THEN
+        -- The LATEST reset among blocking rules: a session blocked by a
+        -- daily and a monthly does not resume when the daily turns over.
+        v_pause := v_block
+            || jsonb_build_object('kind', v_kind, 'provider', v_inst.name,
+                                  'resetsAtUtc', to_char(v_reset AT TIME ZONE 'UTC',
+                                                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, v_rules;
+        RETURN;
+    END IF;
+
+    IF v_sess.pause_state IS NOT NULL THEN
+        UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+    END IF;
+    RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, FALSE, NULL::JSONB, v_rules;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── settlement ───────────────────────────────────────────────────────
+-- Exactly once. The ledger's (session_id, turn_index) primary key IS the
+-- claim: a second call for the same turn inserts nothing, moves no
+-- counter, and returns false. Everything downstream of accounting depends
+-- on this one ON CONFLICT.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_settle_turn(
+    p_session_id TEXT, p_turn_index INTEGER, p_provider TEXT, p_model TEXT,
+    p_owner BIGINT, p_charge_class TEXT, p_agent_id TEXT,
+    p_in BIGINT, p_out BIGINT, p_cache_read BIGINT, p_cache_write BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_total  BIGINT := COALESCE(p_in,0) + COALESCE(p_out,0)
+                     + COALESCE(p_cache_read,0) + COALESCE(p_cache_write,0);
+    v_class  TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_charge_class,'')), ''), 'user');
+    v_rule   RECORD;
+    v_bounds RECORD;
+    v_first  INTEGER;
+BEGIN
+    IF p_provider IS NULL THEN v_class := 'unattributed'; END IF;
+
+    INSERT INTO ${s}.provider_usage_ledger
+        (session_id, turn_index, provider_name, model_qualified, owner_user_id,
+         charge_class, tokens_input, tokens_output, tokens_cache_read,
+         tokens_cache_write, tokens_total, agent_id)
+    VALUES (p_session_id, p_turn_index, p_provider, p_model, p_owner,
+            v_class, COALESCE(p_in,0), COALESCE(p_out,0), COALESCE(p_cache_read,0),
+            COALESCE(p_cache_write,0), v_total, p_agent_id)
+    ON CONFLICT (session_id, turn_index) DO NOTHING;
+    GET DIAGNOSTICS v_first = ROW_COUNT;
+    IF v_first = 0 THEN RETURN FALSE; END IF;
+
+    -- System spend is recorded and shown, but never consumes a budget that
+    -- people plan around. Unattributed spend has no provider to consume.
+    IF v_class <> 'user' OR p_provider IS NULL OR v_total <= 0 THEN
+        RETURN TRUE;
+    END IF;
+
+    -- FOR UPDATE: an administrator removing this limit at the same instant
+    -- would otherwise let the loop reach an INSERT whose foreign key has
+    -- just gone, and settlement would fail on a turn that was already paid
+    -- for. Locking the rule makes the delete wait; the counters cascade away
+    -- immediately afterwards, which is the right answer either way.
+    FOR v_rule IN
+        SELECT r.* FROM ${s}.provider_budget_rules r
+         WHERE r.provider_name = p_provider
+           AND (r.model_qualified IS NULL OR r.model_qualified = p_model)
+         FOR UPDATE
+    LOOP
+        SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+        INSERT INTO ${s}.provider_quota_counters
+            (rule_id, window_key_utc, used_tokens, window_start_utc, resets_at_utc)
+        VALUES (v_rule.rule_id, v_bounds.window_key, v_total, v_bounds.window_start, v_bounds.resets_at)
+        ON CONFLICT (rule_id, window_key_utc) DO UPDATE
+            SET used_tokens = ${s}.provider_quota_counters.used_tokens + EXCLUDED.used_tokens,
+                updated_at = now();
+
+        -- Kept for EVERY rule, not only those under a reduced allowance, so
+        -- lowering an allowance never has to scan the ledger to find out
+        -- what each person had already spent this window.
+        IF p_owner IS NOT NULL THEN
+            INSERT INTO ${s}.provider_quota_counters_user
+                (rule_id, user_id, window_key_utc, used_tokens, window_start_utc, resets_at_utc)
+            VALUES (v_rule.rule_id, p_owner, v_bounds.window_key, v_total,
+                    v_bounds.window_start, v_bounds.resets_at)
+            ON CONFLICT (rule_id, user_id, window_key_utc) DO UPDATE
+                SET used_tokens = ${s}.provider_quota_counters_user.used_tokens + EXCLUDED.used_tokens,
+                    updated_at = now();
+        END IF;
+    END LOOP;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── readers ──────────────────────────────────────────────────────────
+
+-- The caller's namespace, plus (for an administrator) everyone else's
+-- personal providers, flagged. Two different questions — "what may I run?"
+-- and "what exists?" — answered by one row set with usable_by_me.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_list(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT, owner_email TEXT,
+    owner_display_name TEXT, base_url TEXT, allowance_pct SMALLINT,
+    hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN, has_credential BOOLEAN,
+    usable_by_me BOOLEAN, is_cluster_default BOOLEAN, is_my_default BOOLEAN,
+    rule_count BIGINT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id, ou.email, ou.display_name,
+           pi.base_url, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+           (pi.secret_ref IS NOT NULL AND pi.secret_ref <> '{}'::jsonb),
+           (pi.class = 'shared' OR pi.owner_user_id = p_viewer),
+           (cs.default_provider = pi.name),
+           (vu.default_provider = pi.name),
+           (SELECT count(*) FROM ${s}.provider_budget_rules r WHERE r.provider_name = pi.name),
+           pi.created_at
+      FROM ${s}.provider_instances pi
+      LEFT JOIN ${s}.users ou ON ou.user_id = pi.owner_user_id
+      LEFT JOIN ${s}.users vu ON vu.user_id = p_viewer
+      CROSS JOIN ${s}.provider_cluster_settings cs
+     WHERE cs.singleton
+       AND (pi.class = 'shared'
+            OR pi.owner_user_id = p_viewer
+            OR COALESCE(p_is_admin, FALSE))
+     ORDER BY (pi.class = 'shared') DESC, pi.name;
+$$ LANGUAGE sql STABLE;
+
+-- Per-provider budget state: the limits, what the provider has spent
+-- against them, and the viewer's own usage and ceiling where an allowance
+-- applies. Shared totals are open to everyone who may spend — a limit
+-- people cannot measure themselves against is not one they can plan for.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_status(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_names TEXT[]
+) RETURNS TABLE(
+    name TEXT, class TEXT, allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ,
+    hold_indefinite BOOLEAN, rules JSONB
+) AS $$
+    SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+           COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                   'ruleId', r.rule_id,
+                   'period', r.period,
+                   'modelQualified', r.model_qualified,
+                   'limitTokens', r.limit_tokens,
+                   'usedTokens', COALESCE(c.used_tokens, 0),
+                   'ceilingTokens', CASE WHEN pi.allowance_pct < 100
+                                         THEN ${s}.cms_provider_ceiling(r.limit_tokens, pi.allowance_pct) END,
+                   'yourUsedTokens', CASE WHEN p_viewer IS NOT NULL
+                                          THEN COALESCE(cu.used_tokens, 0) END,
+                   'windowStartUtc', to_char(wb.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                   'resetsAtUtc', to_char(wb.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+                   ORDER BY r.period, COALESCE(r.model_qualified, ''))
+                 FROM ${s}.provider_budget_rules r
+                 CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(r.period, now()) wb
+                 LEFT JOIN ${s}.provider_quota_counters c
+                        ON c.rule_id = r.rule_id AND c.window_key_utc = wb.window_key
+                 LEFT JOIN ${s}.provider_quota_counters_user cu
+                        ON cu.rule_id = r.rule_id AND cu.window_key_utc = wb.window_key
+                       AND cu.user_id = p_viewer
+                WHERE r.provider_name = pi.name
+           ), '[]'::jsonb)
+      FROM ${s}.provider_instances pi
+     WHERE (pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE))
+       AND (p_names IS NULL OR pi.name = ANY(p_names))
+     ORDER BY (pi.class = 'shared') DESC, pi.name;
+$$ LANGUAGE sql STABLE;
+
+-- Sessions waiting on a budget, read from the structured record the gate
+-- wrote. Row-scoped: an administrator sees the fleet, everyone else sees
+-- the sessions they own — including, deliberately, their own paused ones.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_list_paused(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_limit INTEGER
+) RETURNS TABLE(
+    session_id TEXT, title TEXT, model TEXT, owner_user_id BIGINT,
+    owner_email TEXT, state TEXT, pause_state JSONB, updated_at TIMESTAMPTZ
+) AS $$
+    SELECT ss.session_id, ss.title, ss.model, so.user_id, ou.email, ss.state,
+           ss.pause_state, ss.updated_at
+      FROM ${s}.sessions ss
+      LEFT JOIN ${s}.session_owners so ON so.session_id = ss.session_id
+      LEFT JOIN ${s}.users ou ON ou.user_id = so.user_id
+     WHERE ss.deleted_at IS NULL
+       AND ss.pause_state IS NOT NULL
+       -- A session that ENDED while paused is not waiting for anything. Its
+       -- pause record is history, and leaving it in this list kept finished
+       -- work in "Paused now" for ever.
+       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND (COALESCE(p_is_admin, FALSE) OR so.user_id = p_viewer)
+     ORDER BY ss.updated_at DESC
+     LIMIT COALESCE(p_limit, 100);
+$$ LANGUAGE sql STABLE;
+
+-- ── usage reporting ──────────────────────────────────────────────────
+-- One filter shape, three questions. A non-administrator is clamped to
+-- their own rows: attribution is the one thing this design keeps private.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_totals(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
+) RETURNS TABLE(tokens_total BIGINT, turns BIGINT, sessions BIGINT) AS $$
+    SELECT COALESCE(sum(l.tokens_total), 0), count(*)::BIGINT,
+           count(DISTINCT l.session_id)::BIGINT
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+       AND (COALESCE(p_is_admin, FALSE)
+            OR l.owner_user_id IS NOT DISTINCT FROM p_viewer
+            -- A named SHARED provider's TOTAL is open to everyone who may
+            -- spend from it: a limit people cannot measure themselves
+            -- against is not a limit they can plan around.
+            --
+            -- Only the total. The moment an attribution filter is present
+            -- the question stops being "what has this provider spent" and
+            -- becomes "what did THAT PERSON spend on it" — which is
+            -- admin-only, and which this disjunct happily answered until
+            -- the two were separated: naming a shared provider opened every
+            -- row, and p_owner then narrowed the open set to one person.
+            -- User ids are small integers, so the whole cluster was
+            -- enumerable in a loop.
+            OR (p_provider IS NOT NULL AND p_owner IS NULL AND p_session IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM ${s}.provider_instances pi
+                     WHERE pi.name = p_provider AND pi.class = 'shared')))
+       AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+       AND (p_provider IS NULL OR l.provider_name = p_provider)
+       AND (p_model IS NULL OR l.model_qualified = p_model)
+       AND (p_session IS NULL OR l.session_id = p_session)
+       AND (p_class IS NULL OR l.charge_class = p_class);
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_daily(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
+) RETURNS TABLE(day_utc DATE, tokens_total BIGINT, turns BIGINT) AS $$
+    SELECT (l.created_at AT TIME ZONE 'UTC')::date, COALESCE(sum(l.tokens_total), 0), count(*)::BIGINT
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+       AND (COALESCE(p_is_admin, FALSE)
+            OR l.owner_user_id IS NOT DISTINCT FROM p_viewer
+            -- A named SHARED provider's TOTAL is open to everyone who may
+            -- spend from it: a limit people cannot measure themselves
+            -- against is not a limit they can plan around.
+            --
+            -- Only the total. The moment an attribution filter is present
+            -- the question stops being "what has this provider spent" and
+            -- becomes "what did THAT PERSON spend on it" — which is
+            -- admin-only, and which this disjunct happily answered until
+            -- the two were separated: naming a shared provider opened every
+            -- row, and p_owner then narrowed the open set to one person.
+            -- User ids are small integers, so the whole cluster was
+            -- enumerable in a loop.
+            OR (p_provider IS NOT NULL AND p_owner IS NULL AND p_session IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM ${s}.provider_instances pi
+                     WHERE pi.name = p_provider AND pi.class = 'shared')))
+       AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+       AND (p_provider IS NULL OR l.provider_name = p_provider)
+       AND (p_model IS NULL OR l.model_qualified = p_model)
+       AND (p_session IS NULL OR l.session_id = p_session)
+       AND (p_class IS NULL OR l.charge_class = p_class)
+     GROUP BY 1 ORDER BY 1;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT,
+    p_dim TEXT, p_limit INTEGER
+) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turns BIGINT) AS $$
+    WITH rows AS (
+        SELECT l.*,
+               CASE p_dim
+                   WHEN 'session'  THEN l.session_id
+                   WHEN 'provider' THEN COALESCE(l.provider_name, '(none)')
+                   WHEN 'model'    THEN COALESCE(l.model_qualified, '(none)')
+                   WHEN 'agent'    THEN COALESCE(l.agent_id, '(none)')
+                   WHEN 'user'     THEN COALESCE(l.owner_user_id::TEXT,
+                                          CASE WHEN l.charge_class = 'system'
+                                               THEN '(system)' ELSE '(unowned)' END)
+                   ELSE COALESCE(l.provider_name, '(none)')
+               END AS dim_key
+          FROM ${s}.provider_usage_ledger l
+         WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+           AND (COALESCE(p_is_admin, FALSE) OR l.owner_user_id IS NOT DISTINCT FROM p_viewer)
+           AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+           AND (p_provider IS NULL OR l.provider_name = p_provider)
+           AND (p_model IS NULL OR l.model_qualified = p_model)
+           AND (p_session IS NULL OR l.session_id = p_session)
+           AND (p_class IS NULL OR l.charge_class = p_class)
+    )
+    SELECT g.dim_key,
+           CASE p_dim
+               WHEN 'session' THEN COALESCE((SELECT ss.title FROM ${s}.sessions ss
+                                              WHERE ss.session_id = g.dim_key), g.dim_key)
+               WHEN 'user'    THEN COALESCE((SELECT COALESCE(uu.display_name, uu.email, uu.subject)
+                                               FROM ${s}.users uu
+                                              WHERE uu.user_id::TEXT = g.dim_key), g.dim_key)
+               ELSE g.dim_key
+           END,
+           sum(g.tokens_total)::BIGINT, count(*)::BIGINT
+      FROM rows g
+     GROUP BY g.dim_key
+     ORDER BY 3 DESC
+     LIMIT COALESCE(p_limit, 40);
+$$ LANGUAGE sql STABLE;
+
+-- The wake query: which sessions are waiting on THIS provider. Called
+-- whenever the thing that paused them stops being true — a limit raised or
+-- removed, an allowance raised, a hold released, or the provider's name
+-- created again after it went missing.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_paused_for(
+    p_name TEXT
+) RETURNS TABLE(session_id TEXT) AS $$
+    SELECT ss.session_id FROM ${s}.sessions ss
+     WHERE ss.deleted_at IS NULL
+       AND ss.pause_state IS NOT NULL
+       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND ss.pause_state->>'provider' = p_name;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0053 — a meter is not a limit.
+ *
+ * A usage counter used to exist only because a limit existed: its key was the
+ * budget rule's id. A period with no limit therefore had no counter and no
+ * number, and saving a limit had to rebuild the window's spend from the ledger
+ * before it could enforce anything.
+ *
+ * The counter is now keyed by what it measures:
+ *
+ *   provider_meters      (provider_name, period, scope, window_key_utc)
+ *   provider_meters_user (provider_name, period, scope, window_key_utc, user_id)
+ *
+ *     period  day | week | month
+ *     scope   a qualified model reference, or '*' for all models
+ *
+ * Every settled turn moves twelve rows — three periods x (all models, the
+ * model that ran), for the provider's total and for the person who ran it —
+ * whether or not a limit exists. Two things fall out of that:
+ *
+ * 1. NOTHING SEEDS. cms_provider_set_limit saves a limit and stops. The meter
+ *    the limit reads has been running since the provider's first turn.
+ *
+ * 2. THE LOST-UPDATE RACE IS GONE BY CONSTRUCTION. Seeding was a read and
+ *    then an assign, so a turn that settled between the two had its charge
+ *    overwritten — a hard limit stopped enforcing and the two counters
+ *    disagreed for the rest of the window. Every write to a meter is now an
+ *    increment, and there is no read-then-assign left to lose one.
+ *
+ * WINDOWS ARE NOW FIXED BY STRUCTURE. Day is 00:00 UTC, week is Monday 00:00
+ * UTC, month is the 1st. That was already true — 0049 removed per-rule
+ * anchors — but one meter key per (provider, period) makes it permanent:
+ * every rule of a period on a provider reads the same row, so they must agree
+ * on the window. If a billing cycle starting on the 15th is ever needed, the
+ * anchor belongs on the PROVIDER, so all its month limits share one boundary.
+ *
+ * provider_quota_counters and provider_quota_counters_user are dropped.
+ * Nothing is deployed, so there is no compatibility shape to keep.
+ *
+ * ORDER INSIDE THIS MIGRATION MATTERS: the new tables, then every procedure
+ * that named the old ones, then the drop. A procedure still pointing at a
+ * table being dropped is the one way this can fail halfway.
+ */
+function migration_0053_provider_meters(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- ── the meters ───────────────────────────────────────────────────────
+
+-- provider_name REFERENCES provider_instances so deleting a provider takes
+-- its meters with it, and a name created again starts from zero. That is the
+-- same rule the ledger already follows by holding a name rather than a
+-- reference: the history stays, the running total does not.
+CREATE TABLE IF NOT EXISTS ${s}.provider_meters (
+    provider_name    TEXT NOT NULL REFERENCES ${s}.provider_instances(name) ON DELETE CASCADE,
+    period           TEXT NOT NULL CHECK (period IN ('day','week','month')),
+    scope            TEXT NOT NULL,
+    window_key_utc   TEXT NOT NULL,
+    used_tokens      BIGINT NOT NULL DEFAULT 0,
+    window_start_utc TIMESTAMPTZ NOT NULL,
+    resets_at_utc    TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_name, period, scope, window_key_utc)
+);
+
+-- The per-person mirror, kept for EVERY turn rather than only where an
+-- allowance is reduced, so lowering an allowance never has to scan the ledger
+-- to discover what each person had already spent this window.
+CREATE TABLE IF NOT EXISTS ${s}.provider_meters_user (
+    provider_name    TEXT NOT NULL REFERENCES ${s}.provider_instances(name) ON DELETE CASCADE,
+    period           TEXT NOT NULL CHECK (period IN ('day','week','month')),
+    scope            TEXT NOT NULL,
+    window_key_utc   TEXT NOT NULL,
+    user_id          BIGINT NOT NULL,
+    used_tokens      BIGINT NOT NULL DEFAULT 0,
+    window_start_utc TIMESTAMPTZ NOT NULL,
+    resets_at_utc    TIMESTAMPTZ NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider_name, period, scope, window_key_utc, user_id)
+);
+
+-- ── settlement ───────────────────────────────────────────────────────
+-- Exactly once, unchanged: the ledger's (session_id, turn_index) primary key
+-- IS the claim. A second call for the same turn inserts nothing, moves no
+-- meter, and returns false. What changed below the claim is only WHICH rows
+-- move — meters keyed by what they measure, not by a rule that may not exist.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_settle_turn(
+    p_session_id TEXT, p_turn_index INTEGER, p_provider TEXT, p_model TEXT,
+    p_owner BIGINT, p_charge_class TEXT, p_agent_id TEXT,
+    p_in BIGINT, p_out BIGINT, p_cache_read BIGINT, p_cache_write BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_total BIGINT := COALESCE(p_in,0) + COALESCE(p_out,0)
+                    + COALESCE(p_cache_read,0) + COALESCE(p_cache_write,0);
+    v_class TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_charge_class,'')), ''), 'user');
+    v_scope TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_model,'')), ''), '*');
+    v_first INTEGER;
+BEGIN
+    IF p_provider IS NULL THEN v_class := 'unattributed'; END IF;
+
+    INSERT INTO ${s}.provider_usage_ledger
+        (session_id, turn_index, provider_name, model_qualified, owner_user_id,
+         charge_class, tokens_input, tokens_output, tokens_cache_read,
+         tokens_cache_write, tokens_total, agent_id)
+    VALUES (p_session_id, p_turn_index, p_provider, p_model, p_owner,
+            v_class, COALESCE(p_in,0), COALESCE(p_out,0), COALESCE(p_cache_read,0),
+            COALESCE(p_cache_write,0), v_total, p_agent_id)
+    ON CONFLICT (session_id, turn_index) DO NOTHING;
+    GET DIAGNOSTICS v_first = ROW_COUNT;
+    IF v_first = 0 THEN RETURN FALSE; END IF;
+
+    -- System spend is recorded and shown, but never consumes a budget that
+    -- people plan around. Unattributed spend has no provider to consume.
+    IF v_class <> 'user' OR p_provider IS NULL OR v_total <= 0 THEN
+        RETURN TRUE;
+    END IF;
+
+    -- A meter references its provider, so a name deleted while this turn was
+    -- running has nothing left to move. Taking the parent row's key lock here
+    -- makes a delete arriving NOW wait until this turn is counted, and a
+    -- delete that already committed report itself as a missing row rather
+    -- than as a foreign key violation on a turn that has already been paid
+    -- for and written to the ledger.
+    PERFORM 1 FROM ${s}.provider_instances pi
+     WHERE pi.name = p_provider FOR KEY SHARE;
+    IF NOT FOUND THEN RETURN TRUE; END IF;
+
+    -- Three periods x (all models, the model that ran). A turn that named no
+    -- model has one scope, not two, so it writes three rows rather than six.
+    --
+    -- ORDER BY is not cosmetic: a multi-row upsert takes its row locks in the
+    -- order the rows arrive, and two settles on one provider touch the same
+    -- six keys. A fixed order is what stops them deadlocking each other.
+    INSERT INTO ${s}.provider_meters
+        (provider_name, period, scope, window_key_utc, used_tokens,
+         window_start_utc, resets_at_utc)
+    SELECT p_provider, per.period, sc.scope, wb.window_key, v_total,
+           wb.window_start, wb.resets_at
+      FROM (VALUES ('day'),('week'),('month')) AS per(period)
+      CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+      CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+     ORDER BY per.period, sc.scope
+    ON CONFLICT (provider_name, period, scope, window_key_utc) DO UPDATE
+        SET used_tokens = ${s}.provider_meters.used_tokens + EXCLUDED.used_tokens,
+            updated_at = now();
+
+    IF p_owner IS NOT NULL THEN
+        INSERT INTO ${s}.provider_meters_user
+            (provider_name, period, scope, window_key_utc, user_id, used_tokens,
+             window_start_utc, resets_at_utc)
+        SELECT p_provider, per.period, sc.scope, wb.window_key, p_owner, v_total,
+               wb.window_start, wb.resets_at
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+          CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+         ORDER BY per.period, sc.scope
+        ON CONFLICT (provider_name, period, scope, window_key_utc, user_id) DO UPDATE
+            SET used_tokens = ${s}.provider_meters_user.used_tokens + EXCLUDED.used_tokens,
+                updated_at = now();
+    END IF;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── saving a limit saves a limit ─────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_limit(
+    p_name TEXT, p_period TEXT, p_model TEXT, p_tokens BIGINT,
+    p_rule_id TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(rule_id TEXT, seeded_tokens BIGINT) AS $$
+-- The OUT parameter rule_id would otherwise shadow the COLUMN of the same
+-- name, and an ON CONFLICT target that resolves to a variable is rejected as
+-- ambiguous. Inside this body a bare column name means the column.
+#variable_conflict use_column
+DECLARE
+    v_model  TEXT := NULLIF(BTRIM(p_model), '');
+    v_rule   TEXT;
+    v_bounds RECORD;
+    v_used   BIGINT;
+BEGIN
+    PERFORM ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    IF p_period NOT IN ('day','week','month') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: period must be day, week or month';
+    END IF;
+    IF p_tokens IS NULL OR p_tokens <= 0 THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a limit must be a positive number of tokens';
+    END IF;
+    -- A limit scoped to one model matches the QUALIFIED reference a session
+    -- runs, so a bare model name matches nothing — the limit saves, shows in
+    -- the report as a live cap, and silently never fires. Refuse it and say
+    -- what to write instead.
+    IF v_model IS NOT NULL AND v_model NOT LIKE p_name || ':%' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a limit on one model names it as "%:<model>", not "%"', p_name, v_model;
+    END IF;
+
+    INSERT INTO ${s}.provider_budget_rules (rule_id, provider_name, period, model_qualified, limit_tokens)
+    VALUES (p_rule_id, p_name, p_period, v_model, p_tokens)
+    ON CONFLICT (provider_name, period, COALESCE(model_qualified, '*'))
+    DO UPDATE SET limit_tokens = EXCLUDED.limit_tokens, updated_at = now()
+    RETURNING ${s}.provider_budget_rules.rule_id INTO v_rule;
+
+    -- Nothing is seeded and nothing is reset. The meter for this period and
+    -- scope has been counting since the provider's first turn, so the limit
+    -- simply starts being compared against a number that already exists.
+    --
+    -- What comes back is what this limit ALREADY counts, so the editor can
+    -- say "sessions pause on their next turn" before the save rather than
+    -- after it. It is a read: no write derives a counter from the ledger any
+    -- more, which is what the settle-during-save race used to overwrite.
+    SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(p_period, now());
+    SELECT COALESCE(m.used_tokens, 0) INTO v_used
+      FROM ${s}.provider_meters m
+     WHERE m.provider_name = p_name
+       AND m.period = p_period
+       AND m.scope = COALESCE(v_model, '*')
+       AND m.window_key_utc = v_bounds.window_key;
+
+    RETURN QUERY SELECT v_rule, COALESCE(v_used, 0);
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── admission, re-pointed ────────────────────────────────────────────
+-- Every verdict below is the one 0051 gave. The only change is where the
+-- number comes from: the meter at (provider, period, scope, window) instead
+-- of a counter keyed by the rule's id.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_check_turn(
+    p_session_id TEXT, p_model TEXT
+) RETURNS TABLE(
+    verdict TEXT, provider_name TEXT, model_qualified TEXT,
+    exempt BOOLEAN, pause JSONB, rules JSONB
+) AS $$
+DECLARE
+    v_sess    RECORD;
+    v_owner   BIGINT;
+    v_ref     TEXT;
+    v_split   RECORD;
+    v_inst    RECORD;
+    v_rule    RECORD;
+    v_bounds  RECORD;
+    v_scope   TEXT;
+    v_used    BIGINT;
+    v_you     BIGINT;
+    v_ceiling BIGINT;
+    v_rules   JSONB := '[]'::jsonb;
+    v_block   JSONB := NULL;
+    v_kind    TEXT  := NULL;
+    v_reset   TIMESTAMPTZ := NULL;
+    v_pause   JSONB := NULL;
+BEGIN
+    SELECT ss.is_system, ss.model, ss.pause_state INTO v_sess
+      FROM ${s}.sessions ss WHERE ss.session_id = p_session_id;
+    IF NOT FOUND THEN
+        -- Nothing to admit and nothing to charge. The gate's posture is
+        -- fail-open, so say clear rather than inventing a refusal.
+        RETURN QUERY SELECT 'clear'::TEXT, NULL::TEXT, NULL::TEXT, FALSE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    SELECT so.user_id INTO v_owner FROM ${s}.session_owners so
+     WHERE so.session_id = p_session_id;
+
+    -- The catalog row is authoritative for the model, exactly as the turn
+    -- runtime treats it; the argument is only the turn's own override.
+    v_ref := COALESCE(NULLIF(BTRIM(COALESCE(p_model, '')), ''), v_sess.model);
+    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
+
+    -- Assigned unconditionally. A RECORD that was never assigned raises
+    -- "record is not assigned yet" the moment a field is read, and the read
+    -- below sits behind an OR whose short-circuiting Postgres does not
+    -- promise — so an unqualified model reference could throw instead of
+    -- answering, and the gate's fail-open posture would run the turn.
+    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(
+        COALESCE(v_split.provider_name, ''), v_owner);
+
+    IF v_inst.name IS NULL THEN
+        v_pause := jsonb_build_object(
+            'kind', 'no_provider',
+            'provider', v_split.provider_name,
+            'modelRef', v_ref);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'no_provider'::TEXT, v_split.provider_name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    -- System sessions are never paused: a limit that could stop the
+    -- machinery would leave nobody able to raise the limit that stopped it.
+    -- They still resolve a provider, because their spend is still recorded.
+    IF COALESCE(v_sess.is_system, FALSE) THEN
+        IF v_sess.pause_state IS NOT NULL THEN
+            UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+        END IF;
+        RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, TRUE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    IF COALESCE(v_inst.hold_indefinite, FALSE)
+       OR (v_inst.hold_until_utc IS NOT NULL AND v_inst.hold_until_utc > now()) THEN
+        v_pause := jsonb_build_object(
+            'kind', 'hold',
+            'provider', v_inst.name,
+            'resetsAtUtc', CASE WHEN COALESCE(v_inst.hold_indefinite, FALSE)
+                                THEN NULL ELSE to_char(v_inst.hold_until_utc AT TIME ZONE 'UTC',
+                                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    FOR v_rule IN
+        SELECT r.* FROM ${s}.provider_budget_rules r
+         WHERE r.provider_name = v_inst.name
+           AND (r.model_qualified IS NULL OR r.model_qualified = v_ref)
+    LOOP
+        SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+        v_scope := COALESCE(v_rule.model_qualified, '*');
+
+        SELECT COALESCE(m.used_tokens, 0) INTO v_used
+          FROM ${s}.provider_meters m
+         WHERE m.provider_name = v_inst.name AND m.period = v_rule.period
+           AND m.scope = v_scope AND m.window_key_utc = v_bounds.window_key;
+        v_used := COALESCE(v_used, 0);
+
+        v_ceiling := NULL;
+        v_you := NULL;
+        IF v_inst.allowance_pct < 100 AND v_owner IS NOT NULL THEN
+            v_ceiling := ${s}.cms_provider_ceiling(v_rule.limit_tokens, v_inst.allowance_pct);
+            SELECT COALESCE(mu.used_tokens, 0) INTO v_you
+              FROM ${s}.provider_meters_user mu
+             WHERE mu.provider_name = v_inst.name AND mu.period = v_rule.period
+               AND mu.scope = v_scope AND mu.window_key_utc = v_bounds.window_key
+               AND mu.user_id = v_owner;
+            v_you := COALESCE(v_you, 0);
+        END IF;
+
+        v_rules := v_rules || jsonb_build_object(
+            'ruleId', v_rule.rule_id,
+            'providerName', v_inst.name,
+            'period', v_rule.period,
+            'modelQualified', v_rule.model_qualified,
+            'limitTokens', v_rule.limit_tokens,
+            'usedTokens', v_used,
+            'ceilingTokens', v_ceiling,
+            'yourUsedTokens', v_you,
+            'windowStartUtc', to_char(v_bounds.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+            'resetsAtUtc', to_char(v_bounds.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+
+        IF v_used >= v_rule.limit_tokens THEN
+            -- A limit stops everyone. It outranks an allowance in the
+            -- report because raising the allowance would not help.
+            IF v_kind IS DISTINCT FROM 'limit' THEN
+                v_kind := 'limit';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens, 'usedTokens', v_used);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        ELSIF v_ceiling IS NOT NULL AND v_you >= v_ceiling THEN
+            IF v_kind IS NULL THEN
+                v_kind := 'allowance';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens,
+                                              'ceilingTokens', v_ceiling, 'yourUsedTokens', v_you);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        END IF;
+    END LOOP;
+
+    IF v_kind IS NOT NULL THEN
+        -- The LATEST reset among blocking rules: a session blocked by a
+        -- daily and a monthly does not resume when the daily turns over.
+        v_pause := v_block
+            || jsonb_build_object('kind', v_kind, 'provider', v_inst.name,
+                                  'resetsAtUtc', to_char(v_reset AT TIME ZONE 'UTC',
+                                                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, v_rules;
+        RETURN;
+    END IF;
+
+    IF v_sess.pause_state IS NOT NULL THEN
+        UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+    END IF;
+    RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, FALSE, NULL::JSONB, v_rules;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ── the readers, re-pointed ──────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_status(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_names TEXT[]
+) RETURNS TABLE(
+    name TEXT, class TEXT, allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ,
+    hold_indefinite BOOLEAN, rules JSONB
+) AS $$
+    SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+           COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                   'ruleId', r.rule_id,
+                   'period', r.period,
+                   'modelQualified', r.model_qualified,
+                   'limitTokens', r.limit_tokens,
+                   'usedTokens', COALESCE(m.used_tokens, 0),
+                   'ceilingTokens', CASE WHEN pi.allowance_pct < 100
+                                         THEN ${s}.cms_provider_ceiling(r.limit_tokens, pi.allowance_pct) END,
+                   'yourUsedTokens', CASE WHEN p_viewer IS NOT NULL
+                                          THEN COALESCE(mu.used_tokens, 0) END,
+                   'windowStartUtc', to_char(wb.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                   'resetsAtUtc', to_char(wb.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+                   ORDER BY r.period, COALESCE(r.model_qualified, ''))
+                 FROM ${s}.provider_budget_rules r
+                 CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(r.period, now()) wb
+                 LEFT JOIN ${s}.provider_meters m
+                        ON m.provider_name = r.provider_name AND m.period = r.period
+                       AND m.scope = COALESCE(r.model_qualified, '*')
+                       AND m.window_key_utc = wb.window_key
+                 LEFT JOIN ${s}.provider_meters_user mu
+                        ON mu.provider_name = r.provider_name AND mu.period = r.period
+                       AND mu.scope = COALESCE(r.model_qualified, '*')
+                       AND mu.window_key_utc = wb.window_key
+                       AND mu.user_id = p_viewer
+                WHERE r.provider_name = pi.name
+           ), '[]'::jsonb)
+      FROM ${s}.provider_instances pi
+     WHERE (pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE))
+       AND (p_names IS NULL OR pi.name = ANY(p_names))
+     ORDER BY (pi.class = 'shared') DESC, pi.name;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_pause_is_live(
+    p_pause JSONB, p_owner BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_kind   TEXT := p_pause->>'kind';
+    v_name   TEXT := p_pause->>'provider';
+    v_inst   RECORD;
+    v_rule   RECORD;
+    v_bounds RECORD;
+    v_scope  TEXT;
+    v_used   BIGINT;
+    v_you    BIGINT;
+BEGIN
+    IF p_pause IS NULL OR v_kind IS NULL THEN RETURN FALSE; END IF;
+
+    -- A name that does not resolve is exactly what this pause reports, so it
+    -- is live while the name is still missing and dead the moment it is not.
+    IF v_kind = 'no_provider' THEN
+        RETURN NOT EXISTS (SELECT 1 FROM ${s}.cms_provider_in_namespace(COALESCE(v_name, ''), p_owner));
+    END IF;
+
+    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(COALESCE(v_name, ''), p_owner);
+    -- The provider went away under a session that was paused for some other
+    -- reason. It is still stuck, so the record still stands.
+    IF NOT FOUND THEN RETURN TRUE; END IF;
+
+    IF v_kind = 'hold' THEN
+        RETURN COALESCE(v_inst.hold_indefinite, FALSE)
+            OR (v_inst.hold_until_utc IS NOT NULL AND v_inst.hold_until_utc > now());
+    END IF;
+
+    SELECT * INTO v_rule FROM ${s}.provider_budget_rules r
+     WHERE r.rule_id = p_pause->>'ruleId';
+    -- The limit that stopped it was removed.
+    IF NOT FOUND THEN RETURN FALSE; END IF;
+
+    SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+    v_scope := COALESCE(v_rule.model_qualified, '*');
+    SELECT COALESCE(m.used_tokens, 0) INTO v_used
+      FROM ${s}.provider_meters m
+     WHERE m.provider_name = v_rule.provider_name AND m.period = v_rule.period
+       AND m.scope = v_scope AND m.window_key_utc = v_bounds.window_key;
+    v_used := COALESCE(v_used, 0);
+
+    IF v_kind = 'limit' THEN
+        RETURN v_used >= v_rule.limit_tokens;
+    END IF;
+
+    IF v_kind = 'allowance' THEN
+        IF v_inst.allowance_pct >= 100 OR p_owner IS NULL THEN RETURN FALSE; END IF;
+        SELECT COALESCE(mu.used_tokens, 0) INTO v_you
+          FROM ${s}.provider_meters_user mu
+         WHERE mu.provider_name = v_rule.provider_name AND mu.period = v_rule.period
+           AND mu.scope = v_scope AND mu.window_key_utc = v_bounds.window_key
+           AND mu.user_id = p_owner;
+        RETURN COALESCE(v_you, 0) >= ${s}.cms_provider_ceiling(v_rule.limit_tokens, v_inst.allowance_pct);
+    END IF;
+
+    -- A kind this version does not know about is reported rather than hidden:
+    -- silence would be the one failure mode worse than a stale record.
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- ── the table, in one call ───────────────────────────────────────────
+--
+-- One row per line the screen draws: a provider, then one row for each model
+-- it has a limit on. Every row carries the same three cells — day, week,
+-- month — so a model limit reads exactly like the provider above it, which is
+-- what makes "the model is capped while the provider still has room" visible.
+--
+-- Each cell carries FOUR numbers, because the screen shows two of them at a
+-- time and must never mix them up:
+--
+--   usedTokens / quotaTokens          what everyone spent, against the limit
+--   yourUsedTokens / yourQuotaTokens  what you spent, against your share
+--
+-- A null quota is no limit for that period, and the used number beside it is
+-- still real: the meter runs whether or not anybody capped it. A null
+-- yourUsedTokens means nobody is signed in — which is not the same as zero,
+-- and the screen must not draw it as zero.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_grid(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    provider_name TEXT, row_kind TEXT, scope TEXT, class TEXT,
+    allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN,
+    model_row_count INTEGER, periods JSONB
+) AS $$
+    WITH visible AS (
+        SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+               (SELECT count(DISTINCT r.model_qualified)::INTEGER
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.provider_name = pi.name AND r.model_qualified IS NOT NULL) AS model_rows
+          FROM ${s}.provider_instances pi
+         WHERE pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE)
+    ),
+    grid_rows AS (
+        SELECT v.*, 'provider'::TEXT AS row_kind, '*'::TEXT AS scope FROM visible v
+        UNION ALL
+        SELECT v.*, 'model'::TEXT, mr.model_qualified
+          FROM visible v
+          JOIN (SELECT DISTINCT r.provider_name, r.model_qualified
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.model_qualified IS NOT NULL) mr ON mr.provider_name = v.name
+    ),
+    windows AS (
+        SELECT per.period, wb.window_start, wb.resets_at, wb.window_key
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+    )
+    SELECT g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+           g.hold_until_utc, g.hold_indefinite,
+           CASE WHEN g.row_kind = 'provider' THEN g.model_rows ELSE 0 END,
+           jsonb_object_agg(w.period, jsonb_build_object(
+               'ruleId', r.rule_id,
+               'quotaTokens', r.limit_tokens,
+               'usedTokens', COALESCE(m.used_tokens, 0),
+               'yourQuotaTokens', CASE
+                   WHEN r.limit_tokens IS NULL OR p_viewer IS NULL THEN NULL
+                   WHEN g.allowance_pct < 100
+                        THEN ${s}.cms_provider_ceiling(r.limit_tokens, g.allowance_pct)
+                   ELSE r.limit_tokens END,
+               'yourUsedTokens', CASE WHEN p_viewer IS NULL THEN NULL
+                                      ELSE COALESCE(mu.used_tokens, 0) END,
+               'windowStartUtc', to_char(w.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'resetsAtUtc', to_char(w.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM grid_rows g
+      CROSS JOIN windows w
+      LEFT JOIN ${s}.provider_budget_rules r
+             ON r.provider_name = g.name AND r.period = w.period
+            AND COALESCE(r.model_qualified, '*') = g.scope
+      LEFT JOIN ${s}.provider_meters m
+             ON m.provider_name = g.name AND m.period = w.period
+            AND m.scope = g.scope AND m.window_key_utc = w.window_key
+      LEFT JOIN ${s}.provider_meters_user mu
+             ON mu.provider_name = g.name AND mu.period = w.period
+            AND mu.scope = g.scope AND mu.window_key_utc = w.window_key
+            AND mu.user_id = p_viewer
+     GROUP BY g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+              g.hold_until_utc, g.hold_indefinite, g.model_rows
+     ORDER BY (g.class = 'shared') DESC, g.name, (g.row_kind = 'model'), g.scope;
+$$ LANGUAGE sql STABLE;
+
+-- ── the counters keyed by a rule are gone ────────────────────────────
+-- Last, so nothing above is still pointing at them.
+
+DROP TABLE IF EXISTS ${s}.provider_quota_counters_user;
+DROP TABLE IF EXISTS ${s}.provider_quota_counters;
+`;
+}
+
+
+// ─── Migration 0054: the grid says whose row it is ───────────────
+//
+// An administrator sees every personal provider, and the grid said nothing
+// about whose they were. The screen then treated one of somebody else's
+// providers as an ordinary row of its own: unmarked, priced into the reader's
+// own headroom, called "your provider" by the Delete sheet — and then refused
+// by the database, correctly, when they acted on it.
+//
+// Two booleans fix all of it at the source, because the answer is the
+// database's to give and not the client's to guess:
+//
+//   owned_by_me    this row is yours (or it is shared, which is everyone's)
+//   manageable     you may change it — admin on a shared one, owner on a
+//                  personal one, exactly what cms_provider_assert_manage
+//                  already enforces
+//
+// The RETURNS TABLE widens, which CREATE OR REPLACE cannot do, so the old
+// function is dropped first. Its argument list is unchanged.
+
+function migration_0054_provider_grid_owner(schema: string): string {
+    const s = schema;
+    return `
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_grid(BIGINT, BOOLEAN);
+
+CREATE FUNCTION ${s}.cms_provider_usage_grid(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    provider_name TEXT, row_kind TEXT, scope TEXT, class TEXT,
+    allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN,
+    model_row_count INTEGER, owned_by_me BOOLEAN, manageable BOOLEAN, periods JSONB
+) AS $$
+    WITH visible AS (
+        SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+               -- Shared is everyone's, so it is nobody's to be marked as.
+               (pi.class = 'shared' OR pi.owner_user_id IS NOT DISTINCT FROM p_viewer) AS owned_by_me,
+               (CASE WHEN pi.class = 'shared' THEN COALESCE(p_is_admin, FALSE)
+                     ELSE pi.owner_user_id IS NOT DISTINCT FROM p_viewer END) AS manageable,
+               (SELECT count(DISTINCT r.model_qualified)::INTEGER
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.provider_name = pi.name AND r.model_qualified IS NOT NULL) AS model_rows
+          FROM ${s}.provider_instances pi
+         WHERE pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE)
+    ),
+    grid_rows AS (
+        SELECT v.*, 'provider'::TEXT AS row_kind, '*'::TEXT AS scope FROM visible v
+        UNION ALL
+        SELECT v.*, 'model'::TEXT, mr.model_qualified
+          FROM visible v
+          JOIN (SELECT DISTINCT r.provider_name, r.model_qualified
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.model_qualified IS NOT NULL) mr ON mr.provider_name = v.name
+    ),
+    windows AS (
+        SELECT per.period, wb.window_start, wb.resets_at, wb.window_key
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+    )
+    SELECT g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+           g.hold_until_utc, g.hold_indefinite,
+           CASE WHEN g.row_kind = 'provider' THEN g.model_rows ELSE 0 END,
+           g.owned_by_me, g.manageable,
+           jsonb_object_agg(w.period, jsonb_build_object(
+               'ruleId', r.rule_id,
+               'quotaTokens', r.limit_tokens,
+               'usedTokens', COALESCE(m.used_tokens, 0),
+               -- Somebody else's personal provider has no share for YOU: its
+               -- whole budget is theirs, and pricing it as the reader's own
+               -- headroom is the arithmetic that made an admin's table lie.
+               'yourQuotaTokens', CASE
+                   WHEN r.limit_tokens IS NULL OR p_viewer IS NULL THEN NULL
+                   WHEN NOT g.owned_by_me THEN NULL
+                   WHEN g.allowance_pct < 100
+                        THEN ${s}.cms_provider_ceiling(r.limit_tokens, g.allowance_pct)
+                   ELSE r.limit_tokens END,
+               'yourUsedTokens', CASE WHEN p_viewer IS NULL THEN NULL
+                                      ELSE COALESCE(mu.used_tokens, 0) END,
+               'windowStartUtc', to_char(w.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'resetsAtUtc', to_char(w.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM grid_rows g
+      CROSS JOIN windows w
+      LEFT JOIN ${s}.provider_budget_rules r
+             ON r.provider_name = g.name AND r.period = w.period
+            AND COALESCE(r.model_qualified, '*') = g.scope
+      LEFT JOIN ${s}.provider_meters m
+             ON m.provider_name = g.name AND m.period = w.period
+            AND m.scope = g.scope AND m.window_key_utc = w.window_key
+      LEFT JOIN ${s}.provider_meters_user mu
+             ON mu.provider_name = g.name AND mu.period = w.period
+            AND mu.scope = g.scope AND mu.window_key_utc = w.window_key
+            AND mu.user_id = p_viewer
+     GROUP BY g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+              g.hold_until_utc, g.hold_indefinite, g.model_rows,
+              g.owned_by_me, g.manageable
+     ORDER BY (g.class = 'shared') DESC, g.name, (g.row_kind = 'model'), g.scope;
+$$ LANGUAGE sql STABLE;
+
+-- ── a recycled name does not inherit the old provider's chart ────────
+--
+-- The meters are keyed to provider_instances ON DELETE CASCADE, so deleting
+-- and re-creating a name starts them at zero. The LEDGER has no such key —
+-- it keeps the name on purpose, so history outlives the provider — and the
+-- chart read it by name alone. So a fresh provider's row said 0 while the
+-- chart under it drew the previous holder's spend, across owners and across
+-- shared/personal, under one heading.
+--
+-- Bounded at the current instance's created_at when a provider is NAMED: the
+-- chart then describes the provider now on screen, which is the row it sits
+-- under. An unfiltered report is untouched and still carries the whole
+-- history, which is where that history belongs.
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_daily(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
+) RETURNS TABLE(day_utc DATE, tokens_total BIGINT, turns BIGINT) AS $$
+    SELECT (l.created_at AT TIME ZONE 'UTC')::date, COALESCE(sum(l.tokens_total), 0), count(*)::BIGINT
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+       AND (COALESCE(p_is_admin, FALSE)
+            OR l.owner_user_id IS NOT DISTINCT FROM p_viewer
+            OR (p_provider IS NOT NULL AND p_owner IS NULL AND p_session IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM ${s}.provider_instances pi
+                     WHERE pi.name = p_provider AND pi.class = 'shared')))
+       AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+       AND (p_provider IS NULL OR l.provider_name = p_provider)
+       -- Nothing from before THIS provider took the name.
+       AND (p_provider IS NULL OR l.created_at >= COALESCE(
+               (SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = p_provider),
+               '-infinity'::timestamptz))
+       AND (p_model IS NULL OR l.model_qualified = p_model)
+       AND (p_session IS NULL OR l.session_id = p_session)
+       AND (p_class IS NULL OR l.charge_class = p_class)
+     GROUP BY 1 ORDER BY 1;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+
+// ─── Migration 0055: a user provider says WHOSE it is ────────────────
+//
+// 0054 gave the grid `owned_by_me`, which answers "may I touch this" but not
+// "whose is it". On an administrator's screen every user provider then read
+// as an anonymous row: `carol-azure  USER` says nothing an admin can act on,
+// and two people's providers are told apart only by whatever they happened to
+// name them.
+//
+// So the grid carries the owner's display name (falling back to the email,
+// then the id — a user row can be sparse). Only for a provider that has an
+// owner: a shared provider is everybody's and has no name to print.
+//
+// RETURNS TABLE widens again, so DROP + CREATE. Argument list unchanged.
+
+function migration_0055_provider_grid_owner_label(schema: string): string {
+    const s = schema;
+    return `
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_grid(BIGINT, BOOLEAN);
+
+CREATE FUNCTION ${s}.cms_provider_usage_grid(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    provider_name TEXT, row_kind TEXT, scope TEXT, class TEXT,
+    allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN,
+    model_row_count INTEGER, owned_by_me BOOLEAN, manageable BOOLEAN,
+    owner_label TEXT, periods JSONB
+) AS $$
+    WITH visible AS (
+        SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+               (pi.class = 'shared' OR pi.owner_user_id IS NOT DISTINCT FROM p_viewer) AS owned_by_me,
+               (CASE WHEN pi.class = 'shared' THEN COALESCE(p_is_admin, FALSE)
+                     ELSE pi.owner_user_id IS NOT DISTINCT FROM p_viewer END) AS manageable,
+               -- Whose it is. A shared provider is everybody's, so it has no
+               -- owner to name; a user row can be sparse, so fall back down
+               -- to something that still identifies a person.
+               (CASE WHEN pi.class = 'shared' OR pi.owner_user_id IS NULL THEN NULL
+                     ELSE COALESCE(
+                         NULLIF(BTRIM(u.display_name), ''),
+                         NULLIF(BTRIM(u.email), ''),
+                         'user ' || pi.owner_user_id::text) END) AS owner_label,
+               (SELECT count(DISTINCT r.model_qualified)::INTEGER
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.provider_name = pi.name AND r.model_qualified IS NOT NULL) AS model_rows
+          FROM ${s}.provider_instances pi
+          LEFT JOIN ${s}.users u ON u.user_id = pi.owner_user_id
+         WHERE pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE)
+    ),
+    grid_rows AS (
+        SELECT v.*, 'provider'::TEXT AS row_kind, '*'::TEXT AS scope FROM visible v
+        UNION ALL
+        SELECT v.*, 'model'::TEXT, mr.model_qualified
+          FROM visible v
+          JOIN (SELECT DISTINCT r.provider_name, r.model_qualified
+                  FROM ${s}.provider_budget_rules r
+                 WHERE r.model_qualified IS NOT NULL) mr ON mr.provider_name = v.name
+    ),
+    windows AS (
+        SELECT per.period, wb.window_start, wb.resets_at, wb.window_key
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+    )
+    SELECT g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+           g.hold_until_utc, g.hold_indefinite,
+           CASE WHEN g.row_kind = 'provider' THEN g.model_rows ELSE 0 END,
+           g.owned_by_me, g.manageable,
+           CASE WHEN g.row_kind = 'provider' THEN g.owner_label ELSE NULL END,
+           jsonb_object_agg(w.period, jsonb_build_object(
+               'ruleId', r.rule_id,
+               'quotaTokens', r.limit_tokens,
+               'usedTokens', COALESCE(m.used_tokens, 0),
+               'yourQuotaTokens', CASE
+                   WHEN r.limit_tokens IS NULL OR p_viewer IS NULL THEN NULL
+                   WHEN NOT g.owned_by_me THEN NULL
+                   WHEN g.allowance_pct < 100
+                        THEN ${s}.cms_provider_ceiling(r.limit_tokens, g.allowance_pct)
+                   ELSE r.limit_tokens END,
+               'yourUsedTokens', CASE WHEN p_viewer IS NULL THEN NULL
+                                      ELSE COALESCE(mu.used_tokens, 0) END,
+               'windowStartUtc', to_char(w.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'resetsAtUtc', to_char(w.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM grid_rows g
+      CROSS JOIN windows w
+      LEFT JOIN ${s}.provider_budget_rules r
+             ON r.provider_name = g.name AND r.period = w.period
+            AND COALESCE(r.model_qualified, '*') = g.scope
+      LEFT JOIN ${s}.provider_meters m
+             ON m.provider_name = g.name AND m.period = w.period
+            AND m.scope = g.scope AND m.window_key_utc = w.window_key
+      LEFT JOIN ${s}.provider_meters_user mu
+             ON mu.provider_name = g.name AND mu.period = w.period
+            AND mu.scope = g.scope AND mu.window_key_utc = w.window_key
+            AND mu.user_id = p_viewer
+     GROUP BY g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+              g.hold_until_utc, g.hold_indefinite, g.model_rows,
+              g.owned_by_me, g.manageable, g.owner_label
+     ORDER BY (g.class = 'shared') DESC, g.name, (g.row_kind = 'model'), g.scope;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0060 — model rows describe spend, not only limits.
+ *
+ * provider_meters already records all user-charged model usage for day, week,
+ * and month. The grid previously sourced model rows only from limit rules, so
+ * an uncapped Luna/Sol model was invisible even while its spend rolled into the
+ * provider total. Include every model metered in a current window, plus every
+ * model with a rule (including an unused one).
+ */
+function migration_0060_provider_grid_metered_models(schema: string): string {
+    const s = schema;
+    return `
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_grid(BIGINT, BOOLEAN);
+
+CREATE FUNCTION ${s}.cms_provider_usage_grid(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    provider_name TEXT, row_kind TEXT, scope TEXT, class TEXT,
+    allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN,
+    model_row_count INTEGER, owned_by_me BOOLEAN, manageable BOOLEAN,
+    owner_label TEXT, periods JSONB
+) AS $$
+    WITH windows AS (
+        SELECT per.period, wb.window_start, wb.resets_at, wb.window_key
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+    ),
+    model_scopes AS (
+        SELECT r.provider_name, r.model_qualified AS scope
+          FROM ${s}.provider_budget_rules r
+         WHERE r.model_qualified IS NOT NULL
+        UNION
+        SELECT m.provider_name, m.scope
+          FROM ${s}.provider_meters m
+          JOIN windows w ON w.period = m.period AND w.window_key = m.window_key_utc
+         WHERE m.scope <> '*'
+    ),
+    visible AS (
+        SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+               (pi.class = 'shared' OR pi.owner_user_id IS NOT DISTINCT FROM p_viewer) AS owned_by_me,
+               (CASE WHEN pi.class = 'shared' THEN COALESCE(p_is_admin, FALSE)
+                     ELSE pi.owner_user_id IS NOT DISTINCT FROM p_viewer END) AS manageable,
+               (CASE WHEN pi.class = 'shared' OR pi.owner_user_id IS NULL THEN NULL
+                     ELSE COALESCE(
+                         NULLIF(BTRIM(u.display_name), ''),
+                         NULLIF(BTRIM(u.email), ''),
+                         'user ' || pi.owner_user_id::text) END) AS owner_label,
+               (SELECT count(*)::INTEGER FROM model_scopes ms WHERE ms.provider_name = pi.name) AS model_rows
+          FROM ${s}.provider_instances pi
+          LEFT JOIN ${s}.users u ON u.user_id = pi.owner_user_id
+         WHERE pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE)
+    ),
+    grid_rows AS (
+        SELECT v.*, 'provider'::TEXT AS row_kind, '*'::TEXT AS scope FROM visible v
+        UNION ALL
+        SELECT v.*, 'model'::TEXT, ms.scope
+          FROM visible v
+          JOIN model_scopes ms ON ms.provider_name = v.name
+    )
+    SELECT g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+           g.hold_until_utc, g.hold_indefinite,
+           CASE WHEN g.row_kind = 'provider' THEN g.model_rows ELSE 0 END,
+           g.owned_by_me, g.manageable,
+           CASE WHEN g.row_kind = 'provider' THEN g.owner_label ELSE NULL END,
+           jsonb_object_agg(w.period, jsonb_build_object(
+               'ruleId', r.rule_id,
+               'quotaTokens', r.limit_tokens,
+               'usedTokens', COALESCE(m.used_tokens, 0),
+               'yourQuotaTokens', CASE
+                   WHEN r.limit_tokens IS NULL OR p_viewer IS NULL THEN NULL
+                   WHEN NOT g.owned_by_me THEN NULL
+                   WHEN g.allowance_pct < 100
+                        THEN ${s}.cms_provider_ceiling(r.limit_tokens, g.allowance_pct)
+                   ELSE r.limit_tokens END,
+               'yourUsedTokens', CASE WHEN p_viewer IS NULL THEN NULL
+                                      ELSE COALESCE(mu.used_tokens, 0) END,
+               'windowStartUtc', to_char(w.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'resetsAtUtc', to_char(w.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM grid_rows g
+      CROSS JOIN windows w
+      LEFT JOIN ${s}.provider_budget_rules r
+             ON r.provider_name = g.name AND r.period = w.period
+            AND COALESCE(r.model_qualified, '*') = g.scope
+      LEFT JOIN ${s}.provider_meters m
+             ON m.provider_name = g.name AND m.period = w.period
+            AND m.scope = g.scope AND m.window_key_utc = w.window_key
+      LEFT JOIN ${s}.provider_meters_user mu
+             ON mu.provider_name = g.name AND mu.period = w.period
+            AND mu.scope = g.scope AND mu.window_key_utc = w.window_key
+            AND mu.user_id = p_viewer
+     GROUP BY g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+              g.hold_until_utc, g.hold_indefinite, g.model_rows,
+              g.owned_by_me, g.manageable, g.owner_label
+     ORDER BY (g.class = 'shared') DESC, g.name, (g.row_kind = 'model'), g.scope;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0056 — admission resolves the same effective default as session execution.
+ *
+ * Sessions created without an explicit model intentionally store NULL; the
+ * worker resolves that to the owner's default, then the cluster default. The
+ * provider gate runs before the worker, so it must use the same precedence or
+ * every default-model session is parked as `no_provider` forever.
+ */
+function migration_0056_provider_admission_defaults(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_check_turn(
+    p_session_id TEXT, p_model TEXT
+) RETURNS TABLE(
+    verdict TEXT, provider_name TEXT, model_qualified TEXT,
+    exempt BOOLEAN, pause JSONB, rules JSONB
+) AS $$
+DECLARE
+    v_sess    RECORD;
+    v_owner   BIGINT;
+    v_ref     TEXT;
+    v_split   RECORD;
+    v_inst    RECORD;
+    v_rule    RECORD;
+    v_bounds  RECORD;
+    v_scope   TEXT;
+    v_used    BIGINT;
+    v_you     BIGINT;
+    v_ceiling BIGINT;
+    v_rules   JSONB := '[]'::jsonb;
+    v_block   JSONB := NULL;
+    v_kind    TEXT  := NULL;
+    v_reset   TIMESTAMPTZ := NULL;
+    v_pause   JSONB := NULL;
+BEGIN
+    SELECT ss.is_system, ss.model, ss.pause_state INTO v_sess
+      FROM ${s}.sessions ss WHERE ss.session_id = p_session_id;
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT 'clear'::TEXT, NULL::TEXT, NULL::TEXT, FALSE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    SELECT so.user_id INTO v_owner FROM ${s}.session_owners so
+     WHERE so.session_id = p_session_id;
+
+    SELECT COALESCE(
+               NULLIF(BTRIM(COALESCE(p_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(v_sess.model, '')), ''),
+               NULLIF(BTRIM(COALESCE(u.default_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(cs.default_model, '')), ''))
+      INTO v_ref
+      FROM ${s}.provider_cluster_settings cs
+      LEFT JOIN ${s}.users u ON u.user_id = v_owner
+     WHERE cs.singleton;
+    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
+
+    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(
+        COALESCE(v_split.provider_name, ''), v_owner);
+
+    IF v_inst.name IS NULL THEN
+        v_pause := jsonb_build_object(
+            'kind', 'no_provider',
+            'provider', v_split.provider_name,
+            'modelRef', v_ref);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'no_provider'::TEXT, v_split.provider_name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    IF COALESCE(v_sess.is_system, FALSE) THEN
+        IF v_sess.pause_state IS NOT NULL THEN
+            UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+        END IF;
+        RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, TRUE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    IF COALESCE(v_inst.hold_indefinite, FALSE)
+       OR (v_inst.hold_until_utc IS NOT NULL AND v_inst.hold_until_utc > now()) THEN
+        v_pause := jsonb_build_object(
+            'kind', 'hold',
+            'provider', v_inst.name,
+            'resetsAtUtc', CASE WHEN COALESCE(v_inst.hold_indefinite, FALSE)
+                                THEN NULL ELSE to_char(v_inst.hold_until_utc AT TIME ZONE 'UTC',
+                                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') END);
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, '[]'::jsonb;
+        RETURN;
+    END IF;
+
+    FOR v_rule IN
+        SELECT r.* FROM ${s}.provider_budget_rules r
+         WHERE r.provider_name = v_inst.name
+           AND (r.model_qualified IS NULL OR r.model_qualified = v_ref)
+    LOOP
+        SELECT * INTO v_bounds FROM ${s}.cms_provider_window_bounds(v_rule.period, now());
+        v_scope := COALESCE(v_rule.model_qualified, '*');
+
+        SELECT COALESCE(m.used_tokens, 0) INTO v_used
+          FROM ${s}.provider_meters m
+         WHERE m.provider_name = v_inst.name AND m.period = v_rule.period
+           AND m.scope = v_scope AND m.window_key_utc = v_bounds.window_key;
+        v_used := COALESCE(v_used, 0);
+
+        v_ceiling := NULL;
+        v_you := NULL;
+        IF v_inst.allowance_pct < 100 AND v_owner IS NOT NULL THEN
+            v_ceiling := ${s}.cms_provider_ceiling(v_rule.limit_tokens, v_inst.allowance_pct);
+            SELECT COALESCE(mu.used_tokens, 0) INTO v_you
+              FROM ${s}.provider_meters_user mu
+             WHERE mu.provider_name = v_inst.name AND mu.period = v_rule.period
+               AND mu.scope = v_scope AND mu.window_key_utc = v_bounds.window_key
+               AND mu.user_id = v_owner;
+            v_you := COALESCE(v_you, 0);
+        END IF;
+
+        v_rules := v_rules || jsonb_build_object(
+            'ruleId', v_rule.rule_id,
+            'providerName', v_inst.name,
+            'period', v_rule.period,
+            'modelQualified', v_rule.model_qualified,
+            'limitTokens', v_rule.limit_tokens,
+            'usedTokens', v_used,
+            'ceilingTokens', v_ceiling,
+            'yourUsedTokens', v_you,
+            'windowStartUtc', to_char(v_bounds.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+            'resetsAtUtc', to_char(v_bounds.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+
+        IF v_used >= v_rule.limit_tokens THEN
+            IF v_kind IS DISTINCT FROM 'limit' THEN
+                v_kind := 'limit';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens, 'usedTokens', v_used);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        ELSIF v_ceiling IS NOT NULL AND v_you >= v_ceiling THEN
+            IF v_kind IS NULL THEN
+                v_kind := 'allowance';
+                v_block := jsonb_build_object('ruleId', v_rule.rule_id, 'period', v_rule.period,
+                                              'modelQualified', v_rule.model_qualified,
+                                              'limitTokens', v_rule.limit_tokens,
+                                              'ceilingTokens', v_ceiling, 'yourUsedTokens', v_you);
+            END IF;
+            IF v_reset IS NULL OR v_bounds.resets_at > v_reset THEN v_reset := v_bounds.resets_at; END IF;
+        END IF;
+    END LOOP;
+
+    IF v_kind IS NOT NULL THEN
+        v_pause := v_block
+            || jsonb_build_object('kind', v_kind, 'provider', v_inst.name,
+                                  'resetsAtUtc', to_char(v_reset AT TIME ZONE 'UTC',
+                                                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
+        UPDATE ${s}.sessions ss SET pause_state = v_pause
+         WHERE ss.session_id = p_session_id
+           AND ss.pause_state IS DISTINCT FROM v_pause;
+        RETURN QUERY SELECT 'paused'::TEXT, v_inst.name, v_ref, FALSE, v_pause, v_rules;
+        RETURN;
+    END IF;
+
+    IF v_sess.pause_state IS NOT NULL THEN
+        UPDATE ${s}.sessions ss SET pause_state = NULL WHERE ss.session_id = p_session_id;
+    END IF;
+    RETURN QUERY SELECT 'clear'::TEXT, v_inst.name, v_ref, FALSE, NULL::JSONB, v_rules;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+`;
+}
+
+/**
+ * 0057 — runtime provider routing for system sessions.
+ *
+ * Ordinary-session defaults remain on the existing cluster/user columns.
+ * System machinery gets an independent default plus persistent per-agent
+ * overrides. A personal provider remains private to its owner; an admin owner
+ * may explicitly allow only system sessions to consume it.
+ */
+function migration_0057_provider_system_routing(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.provider_instances
+    ADD COLUMN IF NOT EXISTS display_name TEXT,
+    ADD COLUMN IF NOT EXISTS system_use_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS system_use_enabled_by BIGINT REFERENCES ${s}.users(user_id),
+    ADD COLUMN IF NOT EXISTS system_use_enabled_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.provider_cluster_settings
+    ADD COLUMN IF NOT EXISTS system_default_provider TEXT,
+    ADD COLUMN IF NOT EXISTS system_default_model TEXT,
+    ADD COLUMN IF NOT EXISTS system_default_reasoning TEXT,
+    ADD COLUMN IF NOT EXISTS system_default_context TEXT,
+    ADD COLUMN IF NOT EXISTS system_default_updated_by BIGINT,
+    ADD COLUMN IF NOT EXISTS system_default_updated_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS ${s}.system_agent_model_overrides (
+    agent_id          TEXT PRIMARY KEY,
+    provider_name     TEXT NOT NULL REFERENCES ${s}.provider_instances(name),
+    model_qualified   TEXT NOT NULL,
+    reasoning_effort  TEXT,
+    context_tier      TEXT,
+    updated_by        BIGINT NOT NULL REFERENCES ${s}.users(user_id),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS system_agent_model_overrides_provider
+    ON ${s}.system_agent_model_overrides(provider_name);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_assert_system_eligible(
+    p_name TEXT, p_actor BIGINT
+) RETURNS ${s}.provider_instances AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    SELECT * INTO v_row FROM ${s}.provider_instances pi WHERE pi.name = p_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+    IF v_row.class = 'shared' THEN
+        RETURN v_row;
+    END IF;
+    IF p_actor IS NULL OR v_row.owner_user_id IS DISTINCT FROM p_actor THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+    IF NOT COALESCE(v_row.system_use_enabled, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: "%" is your own provider but is not enabled for system sessions', p_name;
+    END IF;
+    RETURN v_row;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_for_system(
+    p_name TEXT
+) RETURNS TABLE(
+    name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT,
+    secret_ref JSONB, base_url TEXT, allowance_pct SMALLINT,
+    hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN
+) AS $$
+    SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id,
+           pi.secret_ref, pi.base_url, pi.allowance_pct,
+           pi.hold_until_utc, pi.hold_indefinite
+      FROM ${s}.provider_instances pi
+     WHERE pi.name = p_name
+       AND (pi.class = 'shared' OR pi.system_use_enabled);
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_display_name(
+    p_name TEXT, p_display_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+BEGIN
+    PERFORM ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    UPDATE ${s}.provider_instances pi
+       SET display_name = NULLIF(BTRIM(COALESCE(p_display_name, '')), ''),
+           updated_at = now()
+     WHERE pi.name = p_name;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_system_use(
+    p_name TEXT, p_enabled BOOLEAN, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    IF p_actor IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: sign in to change system use';
+    END IF;
+    SELECT * INTO v_row FROM ${s}.provider_instances pi WHERE pi.name = p_name;
+    IF NOT FOUND OR v_row.class <> 'personal' OR v_row.owner_user_id IS DISTINCT FROM p_actor THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+    IF COALESCE(p_enabled, FALSE) AND NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator may enable their own provider for system sessions';
+    END IF;
+    IF NOT COALESCE(p_enabled, FALSE) THEN
+        IF EXISTS (
+            SELECT 1 FROM ${s}.provider_cluster_settings cs
+             WHERE cs.singleton AND cs.system_default_provider = p_name
+        ) OR EXISTS (
+            SELECT 1 FROM ${s}.system_agent_model_overrides o
+             WHERE o.provider_name = p_name
+        ) THEN
+            RAISE EXCEPTION 'PROVIDER_IN_USE: "%" is still selected for system sessions', p_name;
+        END IF;
+    END IF;
+    UPDATE ${s}.provider_instances pi
+       SET system_use_enabled = COALESCE(p_enabled, FALSE),
+           system_use_enabled_by = CASE WHEN COALESCE(p_enabled, FALSE) THEN p_actor ELSE NULL END,
+           system_use_enabled_at = CASE WHEN COALESCE(p_enabled, FALSE) THEN now() ELSE NULL END,
+           updated_at = now()
+     WHERE pi.name = p_name;
+    RETURN COALESCE(p_enabled, FALSE);
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_system_default(
+    p_provider TEXT, p_model TEXT, p_reasoning TEXT, p_context TEXT,
+    p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_name TEXT := NULLIF(BTRIM(COALESCE(p_provider, '')), '');
+    v_model TEXT := NULLIF(BTRIM(COALESCE(p_model, '')), '');
+BEGIN
+    IF p_actor IS NULL OR NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can set the system default';
+    END IF;
+    IF (v_name IS NULL) <> (v_model IS NULL) THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the system default needs both a provider and model, or neither to clear it';
+    END IF;
+    IF v_name IS NOT NULL THEN
+        PERFORM ${s}.cms_provider_assert_system_eligible(v_name, p_actor);
+        IF v_model NOT LIKE v_name || ':%' THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: the model must belong to "%": write it as "%:<model>"', v_name, v_name;
+        END IF;
+    END IF;
+    UPDATE ${s}.provider_cluster_settings
+       SET system_default_provider = v_name,
+           system_default_model = v_model,
+           system_default_reasoning = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_reasoning, '')), '') END,
+           system_default_context = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_context, '')), '') END,
+           system_default_updated_by = p_actor,
+           system_default_updated_at = now(),
+           updated_at = now()
+     WHERE singleton;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_system_agent_model(
+    p_agent_id TEXT, p_provider TEXT, p_model TEXT, p_reasoning TEXT, p_context TEXT,
+    p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_agent TEXT := NULLIF(BTRIM(COALESCE(p_agent_id, '')), '');
+    v_name TEXT := NULLIF(BTRIM(COALESCE(p_provider, '')), '');
+    v_model TEXT := NULLIF(BTRIM(COALESCE(p_model, '')), '');
+BEGIN
+    IF p_actor IS NULL OR NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can set a system-agent model';
+    END IF;
+    IF v_agent IS NULL OR v_name IS NULL OR v_model IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a system-agent override needs agent, provider and model';
+    END IF;
+    PERFORM ${s}.cms_provider_assert_system_eligible(v_name, p_actor);
+    IF v_model NOT LIKE v_name || ':%' THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the model must belong to "%": write it as "%:<model>"', v_name, v_name;
+    END IF;
+    INSERT INTO ${s}.system_agent_model_overrides
+        (agent_id, provider_name, model_qualified, reasoning_effort, context_tier, updated_by)
+    VALUES (
+        v_agent, v_name, v_model,
+        NULLIF(BTRIM(COALESCE(p_reasoning, '')), ''),
+        NULLIF(BTRIM(COALESCE(p_context, '')), ''), p_actor)
+    ON CONFLICT (agent_id) DO UPDATE
+       SET provider_name = EXCLUDED.provider_name,
+           model_qualified = EXCLUDED.model_qualified,
+           reasoning_effort = EXCLUDED.reasoning_effort,
+           context_tier = EXCLUDED.context_tier,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = now();
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_clear_system_agent_model(
+    p_agent_id TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE v_deleted INTEGER;
+BEGIN
+    IF p_actor IS NULL OR NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can clear a system-agent model';
+    END IF;
+    DELETE FROM ${s}.system_agent_model_overrides o
+     WHERE o.agent_id = NULLIF(BTRIM(COALESCE(p_agent_id, '')), '');
+    GET DIAGNOSTICS v_deleted = ROW_COUNT;
+    RETURN v_deleted > 0;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_list_system_agent_models()
+RETURNS TABLE(
+    agent_id TEXT, provider_name TEXT, model_qualified TEXT,
+    reasoning_effort TEXT, context_tier TEXT,
+    updated_by BIGINT, updated_at TIMESTAMPTZ
+) AS $$
+    SELECT o.agent_id, o.provider_name, o.model_qualified,
+           o.reasoning_effort, o.context_tier, o.updated_by, o.updated_at
+      FROM ${s}.system_agent_model_overrides o
+     ORDER BY o.agent_id;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_delete(
+    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BIGINT AS $$
+DECLARE
+    v_row ${s}.provider_instances;
+    v_waiting BIGINT;
+BEGIN
+    v_row := ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    IF EXISTS (
+        SELECT 1 FROM ${s}.provider_cluster_settings cs
+         WHERE cs.singleton
+           AND (cs.default_provider = p_name OR cs.system_default_provider = p_name)
+    ) OR EXISTS (
+        SELECT 1 FROM ${s}.users u WHERE u.default_provider = p_name
+    ) OR EXISTS (
+        SELECT 1 FROM ${s}.system_agent_model_overrides o WHERE o.provider_name = p_name
+    ) THEN
+        RAISE EXCEPTION 'PROVIDER_IN_USE: "%" is selected by a default or system-agent override; clear that routing first', p_name;
+    END IF;
+    SELECT count(*) INTO v_waiting
+      FROM ${s}.sessions ss
+      CROSS JOIN LATERAL ${s}.cms_provider_split_ref(ss.model) sp
+     WHERE ss.deleted_at IS NULL
+       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND sp.provider_name = p_name;
+    DELETE FROM ${s}.provider_instances pi WHERE pi.name = p_name;
+    RETURN v_waiting;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_set_cluster_default(
+    p_provider TEXT, p_model TEXT, p_reasoning TEXT, p_context TEXT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_name TEXT := NULLIF(BTRIM(COALESCE(p_provider, '')), '');
+    v_model TEXT := NULLIF(BTRIM(COALESCE(p_model, '')), '');
+    v_row ${s}.provider_instances;
+BEGIN
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can set the cluster default';
+    END IF;
+    IF (v_name IS NULL) <> (v_model IS NULL) THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the cluster default needs both a provider and model, or neither to clear it';
+    END IF;
+    IF v_name IS NOT NULL THEN
+        SELECT * INTO v_row FROM ${s}.provider_instances pi WHERE pi.name = v_name;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', v_name;
+        END IF;
+        IF v_row.class <> 'shared' THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: the cluster default must be a shared provider';
+        END IF;
+        IF v_model NOT LIKE v_name || ':%' THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: the model must belong to "%": write it as "%:<model>"', v_name, v_name;
+        END IF;
+    END IF;
+    UPDATE ${s}.provider_cluster_settings
+       SET default_provider = v_name,
+           default_model = v_model,
+           default_reasoning = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_reasoning, '')), '') END,
+           default_context = CASE WHEN v_name IS NULL THEN NULL ELSE NULLIF(BTRIM(COALESCE(p_context, '')), '') END,
+           updated_at = now()
+     WHERE singleton;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+DROP FUNCTION IF EXISTS ${s}.cms_provider_list(BIGINT, BOOLEAN);
+CREATE FUNCTION ${s}.cms_provider_list(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT, owner_email TEXT,
+    owner_display_name TEXT, display_name TEXT, base_url TEXT, allowance_pct SMALLINT,
+    hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN, has_credential BOOLEAN,
+    usable_by_me BOOLEAN, system_use_enabled BOOLEAN, system_eligible BOOLEAN,
+    is_cluster_default BOOLEAN, is_my_default BOOLEAN, is_system_default BOOLEAN,
+    rule_count BIGINT, created_at TIMESTAMPTZ
+) AS $$
+    SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id, ou.email, ou.display_name,
+           pi.display_name, pi.base_url, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+           (pi.secret_ref IS NOT NULL AND pi.secret_ref <> '{}'::jsonb),
+           (pi.class = 'shared' OR pi.owner_user_id = p_viewer),
+           pi.system_use_enabled,
+           (pi.class = 'shared' OR (pi.owner_user_id = p_viewer AND pi.system_use_enabled)),
+           (cs.default_provider = pi.name),
+           (vu.default_provider = pi.name),
+           (cs.system_default_provider = pi.name),
+           (SELECT count(*) FROM ${s}.provider_budget_rules r WHERE r.provider_name = pi.name),
+           pi.created_at
+      FROM ${s}.provider_instances pi
+      LEFT JOIN ${s}.users ou ON ou.user_id = pi.owner_user_id
+      LEFT JOIN ${s}.users vu ON vu.user_id = p_viewer
+      CROSS JOIN ${s}.provider_cluster_settings cs
+     WHERE cs.singleton
+       AND (pi.class = 'shared'
+            OR pi.owner_user_id = p_viewer
+            OR COALESCE(p_is_admin, FALSE))
+     ORDER BY (pi.class = 'shared') DESC, pi.name;
+$$ LANGUAGE sql STABLE;
+
+DROP FUNCTION IF EXISTS ${s}.cms_provider_get_defaults(BIGINT);
+CREATE FUNCTION ${s}.cms_provider_get_defaults(
+    p_actor BIGINT
+) RETURNS TABLE(
+    cluster_provider TEXT, cluster_model TEXT, cluster_reasoning TEXT, cluster_context TEXT,
+    my_provider TEXT, my_model TEXT, my_reasoning TEXT, my_context TEXT,
+    system_provider TEXT, system_model TEXT, system_reasoning TEXT, system_context TEXT,
+    system_updated_by BIGINT, system_updated_at TIMESTAMPTZ
+) AS $$
+    SELECT c.default_provider, c.default_model, c.default_reasoning, c.default_context,
+           u.default_provider, u.default_model, u.default_reasoning, u.default_context,
+           c.system_default_provider, c.system_default_model,
+           c.system_default_reasoning, c.system_default_context,
+           c.system_default_updated_by, c.system_default_updated_at
+      FROM ${s}.provider_cluster_settings c
+      LEFT JOIN ${s}.users u ON u.user_id = p_actor
+     WHERE c.singleton;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0058 — turn legacy per-user GHCP keys into private provider instances.
+ *
+ * Keys never leave PostgreSQL. Regular users migrate automatically and keep
+ * the legacy column for dual-read rollback. The synthetic System key requires
+ * an authenticated admin to claim it into their own personal provider.
+ */
+function migration_0058_legacy_github_provider_migration(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.provider_legacy_key_migrations (
+    source_kind      TEXT NOT NULL CHECK (source_kind IN ('user','system')),
+    source_user_id   BIGINT NOT NULL REFERENCES ${s}.users(user_id) ON DELETE CASCADE,
+    provider_name    TEXT UNIQUE REFERENCES ${s}.provider_instances(name) ON DELETE SET NULL,
+    migrated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_kind, source_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_legacy_session_models (
+    session_id       TEXT PRIMARY KEY REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    original_model   TEXT NOT NULL,
+    migrated_model   TEXT NOT NULL,
+    migrated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+DECLARE
+    v_user RECORD;
+    v_name TEXT;
+    v_existing RECORD;
+BEGIN
+    FOR v_user IN
+        SELECT u.user_id, u.github_copilot_key
+          FROM ${s}.users u
+         WHERE NOT (u.provider = 'system' AND u.subject = 'system')
+           AND NULLIF(BTRIM(u.github_copilot_key), '') IS NOT NULL
+         ORDER BY u.user_id
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM ${s}.provider_legacy_key_migrations m
+             WHERE m.source_kind = 'user' AND m.source_user_id = v_user.user_id
+        ) THEN
+            CONTINUE;
+        END IF;
+        v_name := 'ghcp-u' || v_user.user_id::text;
+        SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id INTO v_existing
+          FROM ${s}.provider_instances pi WHERE pi.name = v_name;
+        IF FOUND THEN
+            IF v_existing.type_id <> 'github-copilot'
+               OR v_existing.class <> 'personal'
+               OR v_existing.owner_user_id IS DISTINCT FROM v_user.user_id THEN
+                RAISE EXCEPTION 'PROVIDER_CONFLICT: legacy GHCP migration name "%" is already used by another provider', v_name;
+            END IF;
+        ELSE
+            INSERT INTO ${s}.provider_instances
+                (name, type_id, class, owner_user_id, secret_ref, display_name)
+            VALUES (
+                v_name, 'github-copilot', 'personal', v_user.user_id,
+                jsonb_build_object(
+                    'kind', 'githubToken',
+                    'value', v_user.github_copilot_key,
+                    'migratedFrom', 'users.github_copilot_key'),
+                'My GitHub Copilot');
+        END IF;
+        INSERT INTO ${s}.provider_legacy_key_migrations(source_kind, source_user_id, provider_name)
+        VALUES ('user', v_user.user_id, v_name)
+        ON CONFLICT (source_kind, source_user_id) DO NOTHING;
+    END LOOP;
+
+     INSERT INTO ${s}.provider_legacy_session_models(session_id, original_model, migrated_model)
+     SELECT ss.session_id, ss.model,
+              m.provider_name || substring(ss.model from position(':' in ss.model))
+      FROM ${s}.session_owners so
+      JOIN ${s}.provider_legacy_key_migrations m
+        ON m.source_kind = 'user' AND m.source_user_id = so.user_id
+        JOIN ${s}.sessions ss ON ss.session_id = so.session_id
+      WHERE m.provider_name IS NOT NULL
+       AND ss.is_system = FALSE
+         AND ss.deleted_at IS NULL
+         AND ss.state NOT IN ('completed','failed','error','cancelled')
+         AND ss.model LIKE 'github-copilot:%'
+     ON CONFLICT (session_id) DO NOTHING;
+
+     UPDATE ${s}.sessions ss
+         SET model = sm.migrated_model
+        FROM ${s}.provider_legacy_session_models sm
+      WHERE sm.session_id = ss.session_id
+         AND ss.model = sm.original_model
+         AND EXISTS (
+              SELECT 1 FROM ${s}.provider_instances pi
+                WHERE sm.migrated_model LIKE pi.name || ':%'
+         );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_adopt_system_github_key(
+    p_name TEXT, p_display_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT) AS $$
+DECLARE
+    v_name TEXT := NULLIF(BTRIM(COALESCE(p_name, '')), '');
+    v_system_user BIGINT;
+    v_key TEXT;
+    v_adopted_name TEXT;
+BEGIN
+    IF p_actor IS NULL OR NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an authenticated administrator may adopt the System GitHub Copilot key';
+    END IF;
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: the adopted provider needs a name';
+    END IF;
+    SELECT u.user_id, u.github_copilot_key INTO v_system_user, v_key
+      FROM ${s}.users u
+         WHERE u.provider = 'system' AND u.subject = 'system'
+         FOR UPDATE;
+    IF v_system_user IS NULL OR NULLIF(BTRIM(v_key), '') IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: no legacy System GitHub Copilot key is configured';
+    END IF;
+
+    SELECT m.provider_name INTO v_adopted_name
+      FROM ${s}.provider_legacy_key_migrations m
+     WHERE m.source_kind = 'system' AND m.source_user_id = v_system_user;
+    IF FOUND THEN
+        IF v_adopted_name IS NULL THEN
+            RAISE EXCEPTION 'PROVIDER_CONFLICT: the legacy System key was already adopted and that provider was deleted';
+        END IF;
+        IF v_adopted_name <> v_name OR NOT EXISTS (
+            SELECT 1 FROM ${s}.provider_instances pi
+             WHERE pi.name = v_adopted_name
+               AND pi.class = 'personal'
+               AND pi.owner_user_id = p_actor
+        ) THEN
+            RAISE EXCEPTION 'PROVIDER_CONFLICT: the legacy System key has already been adopted';
+        END IF;
+        RETURN QUERY
+        SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id
+          FROM ${s}.provider_instances pi WHERE pi.name = v_adopted_name;
+        RETURN;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM ${s}.provider_instances pi WHERE pi.name = v_name) THEN
+        RAISE EXCEPTION 'PROVIDER_CONFLICT: the name "%" is already taken', v_name;
+    END IF;
+    INSERT INTO ${s}.provider_instances
+        (name, type_id, class, owner_user_id, secret_ref, display_name,
+         system_use_enabled, system_use_enabled_by, system_use_enabled_at)
+    VALUES (
+        v_name, 'github-copilot', 'personal', p_actor,
+        jsonb_build_object(
+            'kind', 'githubToken',
+            'value', v_key,
+            'migratedFrom', 'system.github_copilot_key'),
+        COALESCE(NULLIF(BTRIM(p_display_name), ''), 'System GitHub Copilot'),
+        TRUE, p_actor, now());
+
+    INSERT INTO ${s}.provider_legacy_key_migrations(source_kind, source_user_id, provider_name)
+    VALUES ('system', v_system_user, v_name)
+    ON CONFLICT (source_kind, source_user_id) DO NOTHING;
+
+    RETURN QUERY
+    SELECT pi.name, pi.type_id, pi.class, pi.owner_user_id
+      FROM ${s}.provider_instances pi WHERE pi.name = v_name;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_legacy_key_migration_status()
+RETURNS TABLE(
+    regular_keys BIGINT,
+    migrated_regular_keys BIGINT,
+    system_key_present BOOLEAN,
+    system_key_adopted BOOLEAN
+) AS $$
+    SELECT
+        (SELECT count(*) FROM ${s}.users u
+          WHERE NOT (u.provider = 'system' AND u.subject = 'system')
+            AND NULLIF(BTRIM(u.github_copilot_key), '') IS NOT NULL),
+        (SELECT count(*) FROM ${s}.provider_legacy_key_migrations m WHERE m.source_kind = 'user'),
+        EXISTS (SELECT 1 FROM ${s}.users u
+                 WHERE u.provider = 'system' AND u.subject = 'system'
+                   AND NULLIF(BTRIM(u.github_copilot_key), '') IS NOT NULL),
+        EXISTS (SELECT 1 FROM ${s}.provider_legacy_key_migrations m WHERE m.source_kind = 'system');
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0059 — make the stamped CMS model authoritative end to end.
+ *
+ * Creation validates and locks the provider in the same transaction as the
+ * session insert. Admission uses the system namespace for machinery. Legacy
+ * bootstrap records one receipt per provider, so a credential-poor process
+ * cannot permanently block a better-provisioned worker from adding the rest.
+ */
+function migration_0059_provider_authoritative_routing(schema: string): string {
+    const s = `"${schema}"`;
+    const systemAwareCheck = migration_0056_provider_admission_defaults(schema)
+        .replace(
+            "SELECT ss.is_system, ss.model, ss.pause_state INTO v_sess",
+            "SELECT ss.is_system, ss.model, ss.pause_state, ss.agent_id INTO v_sess",
+        )
+        .replace(
+`    IF NOT FOUND THEN
+        RETURN QUERY SELECT 'clear'::TEXT, NULL::TEXT, NULL::TEXT, FALSE, NULL::JSONB, '[]'::jsonb;
+        RETURN;
+    END IF;`,
+`    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: session "%" does not exist', p_session_id;
+    END IF;`,
+        )
+        .replace(
+`    SELECT COALESCE(
+               NULLIF(BTRIM(COALESCE(p_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(v_sess.model, '')), ''),
+               NULLIF(BTRIM(COALESCE(u.default_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(cs.default_model, '')), ''))
+      INTO v_ref
+      FROM ${s}.provider_cluster_settings cs
+      LEFT JOIN ${s}.users u ON u.user_id = v_owner
+     WHERE cs.singleton;`,
+`    SELECT CASE WHEN COALESCE(v_sess.is_system, FALSE) THEN COALESCE(
+               NULLIF(BTRIM(COALESCE(v_sess.model, '')), ''),
+               NULLIF(BTRIM(COALESCE(o.model_qualified, '')), ''),
+               NULLIF(BTRIM(COALESCE(cs.system_default_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(cs.default_model, '')), ''))
+           ELSE COALESCE(
+               NULLIF(BTRIM(COALESCE(v_sess.model, '')), ''),
+               NULLIF(BTRIM(COALESCE(u.default_model, '')), ''),
+               NULLIF(BTRIM(COALESCE(cs.default_model, '')), '')) END
+      INTO v_ref
+      FROM ${s}.provider_cluster_settings cs
+      LEFT JOIN ${s}.users u ON u.user_id = v_owner
+      LEFT JOIN ${s}.system_agent_model_overrides o ON o.agent_id = v_sess.agent_id
+     WHERE cs.singleton;`,
+        )
+        .replace(
+`    SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(
+        COALESCE(v_split.provider_name, ''), v_owner);`,
+`    IF COALESCE(v_sess.is_system, FALSE) THEN
+        SELECT * INTO v_inst FROM ${s}.cms_provider_for_system(
+            COALESCE(v_split.provider_name, ''));
+    ELSE
+        SELECT * INTO v_inst FROM ${s}.cms_provider_in_namespace(
+            COALESCE(v_split.provider_name, ''), v_owner);
+    END IF;`,
+        );
+    const authoritativeCheck = systemAwareCheck.replace(
+`    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
+
+    IF COALESCE(v_sess.is_system, FALSE) THEN`,
+`    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(v_ref);
+
+    IF v_sess.model IS NULL AND v_ref IS NOT NULL THEN
+        UPDATE ${s}.sessions ss
+           SET model = v_ref,
+               reasoning_effort = CASE WHEN COALESCE(v_sess.is_system, FALSE) THEN COALESCE(
+                   (SELECT o.reasoning_effort FROM ${s}.system_agent_model_overrides o WHERE o.agent_id = v_sess.agent_id),
+                   (SELECT cs.system_default_reasoning FROM ${s}.provider_cluster_settings cs WHERE cs.singleton),
+                   (SELECT cs.default_reasoning FROM ${s}.provider_cluster_settings cs WHERE cs.singleton))
+                 ELSE COALESCE(
+                   (SELECT u.default_reasoning FROM ${s}.users u WHERE u.user_id = v_owner),
+                   (SELECT cs.default_reasoning FROM ${s}.provider_cluster_settings cs WHERE cs.singleton)) END,
+               context_tier = CASE WHEN COALESCE(v_sess.is_system, FALSE) THEN COALESCE(
+                   (SELECT o.context_tier FROM ${s}.system_agent_model_overrides o WHERE o.agent_id = v_sess.agent_id),
+                   (SELECT cs.system_default_context FROM ${s}.provider_cluster_settings cs WHERE cs.singleton),
+                   (SELECT cs.default_context FROM ${s}.provider_cluster_settings cs WHERE cs.singleton))
+                 ELSE COALESCE(
+                   (SELECT u.default_context FROM ${s}.users u WHERE u.user_id = v_owner),
+                   (SELECT cs.default_context FROM ${s}.provider_cluster_settings cs WHERE cs.singleton)) END,
+               model_resolution_source = CASE WHEN COALESCE(v_sess.is_system, FALSE) THEN
+                   CASE WHEN EXISTS (SELECT 1 FROM ${s}.system_agent_model_overrides o WHERE o.agent_id = v_sess.agent_id)
+                        THEN 'agent_override'
+                        WHEN (SELECT cs.system_default_model FROM ${s}.provider_cluster_settings cs WHERE cs.singleton) IS NOT NULL
+                        THEN 'system_default' ELSE 'cluster_default' END
+                 ELSE CASE WHEN (SELECT u.default_model FROM ${s}.users u WHERE u.user_id = v_owner) IS NOT NULL
+                           THEN 'user_default' ELSE 'cluster_default' END END,
+               updated_at = now()
+         WHERE ss.session_id = p_session_id AND ss.model IS NULL;
+    END IF;
+
+    IF COALESCE(v_sess.is_system, FALSE) THEN`,
+    );
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS context_tier TEXT,
+    ADD COLUMN IF NOT EXISTS model_resolution_source TEXT;
+
+CREATE TABLE IF NOT EXISTS ${s}.provider_bootstrap_receipts (
+    provider_name TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.system_agent_restart_rollouts (
+    agent_id          TEXT PRIMARY KEY,
+    operation_id      TEXT NOT NULL,
+    claim_id          TEXT NOT NULL,
+    target_model      TEXT NOT NULL,
+    target_reasoning  TEXT,
+    target_context    TEXT,
+    disposition       TEXT NOT NULL CHECK (disposition IN ('complete','terminate','hard_delete')),
+    status            TEXT NOT NULL CHECK (status IN ('in_progress','failed','complete')),
+    claimed_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at      TIMESTAMPTZ,
+    last_error        TEXT
+);
+
+INSERT INTO ${s}.provider_bootstrap_receipts(provider_name)
+SELECT pi.name FROM ${s}.provider_instances pi
+ WHERE pi.secret_ref->>'source' = 'config-file'
+ON CONFLICT (provider_name) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_assert_session_model(
+    p_model TEXT,
+    p_owner_provider TEXT,
+    p_owner_subject TEXT,
+    p_is_system BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_split RECORD;
+    v_owner BIGINT;
+    v_found BOOLEAN := FALSE;
+BEGIN
+    SELECT * INTO v_split FROM ${s}.cms_provider_split_ref(p_model);
+    IF v_split.provider_name IS NULL OR v_split.model_name IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: a session model must be an exact provider:model reference';
+    END IF;
+    IF COALESCE(p_is_system, FALSE) THEN
+        SELECT TRUE INTO v_found
+          FROM ${s}.provider_instances pi
+         WHERE pi.name = v_split.provider_name
+           AND (pi.class = 'shared' OR pi.system_use_enabled)
+         FOR KEY SHARE;
+    ELSE
+        SELECT u.user_id INTO v_owner FROM ${s}.users u
+         WHERE u.provider = NULLIF(BTRIM(p_owner_provider), '')
+           AND u.subject = NULLIF(BTRIM(p_owner_subject), '');
+        SELECT TRUE INTO v_found
+          FROM ${s}.provider_instances pi
+         WHERE pi.name = v_split.provider_name
+           AND (pi.class = 'shared' OR (v_owner IS NOT NULL AND pi.owner_user_id = v_owner))
+         FOR KEY SHARE;
+    END IF;
+    IF NOT COALESCE(v_found, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no usable provider named "%"', v_split.provider_name;
+    END IF;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_claim_system_restart(
+    p_agent_id TEXT, p_operation_id TEXT, p_claim_id TEXT,
+    p_model TEXT, p_reasoning TEXT, p_context TEXT, p_disposition TEXT
+) RETURNS TEXT AS $$
+DECLARE v_row ${s}.system_agent_restart_rollouts;
+BEGIN
+    IF NULLIF(BTRIM(p_agent_id), '') IS NULL
+       OR NULLIF(BTRIM(p_operation_id), '') IS NULL
+       OR NULLIF(BTRIM(p_claim_id), '') IS NULL
+       OR NULLIF(BTRIM(p_model), '') IS NULL
+       OR p_disposition NOT IN ('complete','terminate','hard_delete') THEN
+        RAISE EXCEPTION 'PROVIDER_INVALID: invalid system restart claim';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtext('system-restart:' || p_agent_id));
+
+    SELECT * INTO v_row FROM ${s}.system_agent_restart_rollouts r
+     WHERE r.agent_id = p_agent_id FOR UPDATE;
+    IF FOUND THEN
+        IF v_row.operation_id = p_operation_id AND v_row.status = 'complete' THEN
+            RETURN 'complete';
+        END IF;
+        IF v_row.status = 'in_progress'
+           AND v_row.claimed_at > now() - interval '10 minutes' THEN
+            RETURN 'busy';
+        END IF;
+        UPDATE ${s}.system_agent_restart_rollouts r
+           SET operation_id = p_operation_id, claim_id = p_claim_id,
+               target_model = p_model,
+               target_reasoning = NULLIF(BTRIM(COALESCE(p_reasoning, '')), ''),
+               target_context = NULLIF(BTRIM(COALESCE(p_context, '')), ''),
+               disposition = p_disposition, status = 'in_progress',
+               claimed_at = now(), completed_at = NULL, last_error = NULL
+         WHERE r.agent_id = p_agent_id;
+    ELSE
+        INSERT INTO ${s}.system_agent_restart_rollouts
+            (agent_id, operation_id, claim_id, target_model, target_reasoning,
+             target_context, disposition, status)
+        VALUES (
+            p_agent_id, p_operation_id, p_claim_id, p_model,
+            NULLIF(BTRIM(COALESCE(p_reasoning, '')), ''),
+            NULLIF(BTRIM(COALESCE(p_context, '')), ''),
+            p_disposition, 'in_progress');
+    END IF;
+    RETURN 'claimed';
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_finish_system_restart(
+    p_agent_id TEXT, p_claim_id TEXT, p_error TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE v_updated INTEGER;
+BEGIN
+    UPDATE ${s}.system_agent_restart_rollouts r
+       SET status = CASE WHEN NULLIF(BTRIM(COALESCE(p_error, '')), '') IS NULL
+                         THEN 'complete' ELSE 'failed' END,
+           completed_at = now(),
+           last_error = NULLIF(BTRIM(COALESCE(p_error, '')), '')
+     WHERE r.agent_id = p_agent_id AND r.claim_id = p_claim_id;
+    GET DIAGNOSTICS v_updated = ROW_COUNT;
+    RETURN v_updated > 0;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_get_system_restart(
+    p_agent_id TEXT
+) RETURNS TABLE(
+    agent_id TEXT, operation_id TEXT, target_model TEXT,
+    target_reasoning TEXT, target_context TEXT,
+    disposition TEXT, status TEXT, claimed_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ, last_error TEXT
+) AS $$
+    SELECT r.agent_id, r.operation_id, r.target_model,
+           r.target_reasoning, r.target_context,
+           r.disposition, r.status, r.claimed_at,
+           r.completed_at, r.last_error
+      FROM ${s}.system_agent_restart_rollouts r
+     WHERE r.agent_id = p_agent_id;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_bootstrap(
+    p_instances JSONB, p_default JSONB
+) RETURNS TABLE(claimed BOOLEAN, created INTEGER) AS $$
+DECLARE
+    v_item JSONB;
+    v_receipt TEXT;
+    v_created INTEGER := 0;
+    v_claimed BOOLEAN := FALSE;
+BEGIN
+    FOR v_item IN SELECT * FROM jsonb_array_elements(COALESCE(p_instances, '[]'::jsonb)) LOOP
+        v_receipt := NULL;
+        IF COALESCE(v_item->>'name', '') !~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$' THEN
+            RAISE EXCEPTION 'PROVIDER_INVALID: invalid provider name "%"', v_item->>'name';
+        END IF;
+        INSERT INTO ${s}.provider_bootstrap_receipts(provider_name)
+        VALUES (v_item->>'name')
+        ON CONFLICT (provider_name) DO NOTHING
+        RETURNING provider_name INTO v_receipt;
+        IF v_receipt IS NULL THEN CONTINUE; END IF;
+
+        -- Fail closed: any malformed entry rolls back every provider and
+        -- receipt in this call, leaving a later process free to retry.
+        PERFORM ${s}.cms_provider_create(
+            v_item->>'name', v_item->>'typeId', 'shared', NULL,
+            COALESCE(v_item->'secretRef', '{}'::jsonb), v_item->>'baseUrl',
+            NULL, TRUE);
+        v_created := v_created + 1;
+        v_claimed := TRUE;
+    END LOOP;
+
+    IF p_default IS NOT NULL AND p_default->>'provider' IS NOT NULL
+       AND EXISTS (SELECT 1 FROM ${s}.provider_cluster_settings cs
+                    WHERE cs.singleton AND cs.bootstrapped_at IS NULL) THEN
+        PERFORM ${s}.cms_provider_set_cluster_default(
+            p_default->>'provider', p_default->>'model',
+            p_default->>'reasoning', p_default->>'context', TRUE);
+        UPDATE ${s}.provider_cluster_settings
+           SET bootstrapped_at = now(), updated_at = now()
+         WHERE singleton AND bootstrapped_at IS NULL;
+        v_claimed := TRUE;
+    END IF;
+
+    RETURN QUERY SELECT v_claimed, v_created;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_rollback_legacy_session_models(
+    p_is_admin BOOLEAN
+) RETURNS INTEGER AS $$
+DECLARE v_count INTEGER;
+BEGIN
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can roll back migrated session models';
+    END IF;
+    UPDATE ${s}.sessions ss
+       SET model = sm.original_model
+      FROM ${s}.provider_legacy_session_models sm
+     WHERE sm.session_id = ss.session_id
+       AND ss.model = sm.migrated_model;
+    GET DIAGNOSTICS v_count = ROW_COUNT;
+    RETURN v_count;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_clear_routing_dependencies(
+    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS JSONB AS $$
+DECLARE
+    v_row ${s}.provider_instances;
+    v_cluster INTEGER := 0;
+    v_system INTEGER := 0;
+    v_users INTEGER := 0;
+    v_overrides INTEGER := 0;
+BEGIN
+    v_row := ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+    IF v_row.class = 'shared' AND NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: only an administrator can clear shared-provider routing';
+    END IF;
+
+    UPDATE ${s}.provider_cluster_settings cs
+       SET default_provider = NULL, default_model = NULL,
+           default_reasoning = NULL, default_context = NULL,
+           updated_at = now()
+     WHERE cs.singleton AND cs.default_provider = p_name;
+    GET DIAGNOSTICS v_cluster = ROW_COUNT;
+
+    UPDATE ${s}.provider_cluster_settings cs
+       SET system_default_provider = NULL, system_default_model = NULL,
+           system_default_reasoning = NULL, system_default_context = NULL,
+           system_default_updated_by = p_actor,
+           system_default_updated_at = now(), updated_at = now()
+     WHERE cs.singleton AND cs.system_default_provider = p_name;
+    GET DIAGNOSTICS v_system = ROW_COUNT;
+
+    UPDATE ${s}.users u
+       SET default_provider = NULL, default_model = NULL,
+           default_reasoning = NULL, default_context = NULL
+     WHERE u.default_provider = p_name
+       AND (v_row.class = 'shared' OR u.user_id = p_actor);
+    GET DIAGNOSTICS v_users = ROW_COUNT;
+
+    DELETE FROM ${s}.system_agent_model_overrides o WHERE o.provider_name = p_name;
+    GET DIAGNOSTICS v_overrides = ROW_COUNT;
+
+    RETURN jsonb_build_object(
+        'clusterDefault', v_cluster,
+        'systemDefault', v_system,
+        'userDefaults', v_users,
+        'systemOverrides', v_overrides);
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_update_session(
+    p_session_id TEXT,
+    p_updates JSONB
+) RETURNS VOID AS $$
+BEGIN
+    UPDATE ${s}.sessions SET
+        orchestration_id  = CASE WHEN p_updates ? 'orchestrationId'  THEN (p_updates->>'orchestrationId') ELSE orchestration_id END,
+        title             = CASE WHEN p_updates ? 'title'            THEN (p_updates->>'title') ELSE title END,
+        title_locked      = CASE WHEN p_updates ? 'titleLocked'      THEN (p_updates->>'titleLocked')::BOOLEAN ELSE title_locked END,
+        state             = CASE WHEN p_updates ? 'state'            THEN (p_updates->>'state') ELSE state END,
+        model             = CASE WHEN p_updates ? 'model'            THEN (p_updates->>'model') ELSE model END,
+        reasoning_effort  = CASE WHEN p_updates ? 'reasoningEffort'  THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+        context_tier      = CASE WHEN p_updates ? 'contextTier'      THEN NULLIF(BTRIM(p_updates->>'contextTier'), '') ELSE context_tier END,
+        model_resolution_source = CASE WHEN p_updates ? 'modelResolutionSource' THEN NULLIF(BTRIM(p_updates->>'modelResolutionSource'), '') ELSE model_resolution_source END,
+        last_active_at    = CASE WHEN p_updates ? 'lastActiveAt'     THEN (p_updates->>'lastActiveAt')::TIMESTAMPTZ ELSE last_active_at END,
+        current_iteration = CASE WHEN p_updates ? 'currentIteration' THEN (p_updates->>'currentIteration')::INT ELSE current_iteration END,
+        last_error        = CASE WHEN p_updates ? 'lastError'        THEN (p_updates->>'lastError') ELSE last_error END,
+        wait_reason       = CASE WHEN p_updates ? 'waitReason'       THEN (p_updates->>'waitReason') ELSE wait_reason END,
+        is_system         = CASE WHEN p_updates ? 'isSystem'         THEN (p_updates->>'isSystem')::BOOLEAN ELSE is_system END,
+        agent_id          = CASE WHEN p_updates ? 'agentId'          THEN (p_updates->>'agentId') ELSE agent_id END,
+        splash            = CASE WHEN p_updates ? 'splash'           THEN (p_updates->>'splash') ELSE splash END,
+        splash_mobile     = CASE WHEN p_updates ? 'splashMobile'     THEN (p_updates->>'splashMobile') ELSE splash_mobile END,
+        active_turn_index = CASE WHEN (p_updates ? 'state') AND (p_updates->>'state') <> 'running' THEN NULL ELSE active_turn_index END,
+        updated_at        = now()
+    WHERE session_id = p_session_id;
+
+    UPDATE ${s}.session_metrics
+       SET model = CASE WHEN p_updates ? 'model' THEN (p_updates->>'model') ELSE model END,
+           reasoning_effort = CASE WHEN p_updates ? 'reasoningEffort' THEN NULLIF(BTRIM(p_updates->>'reasoningEffort'), '') ELSE reasoning_effort END,
+           updated_at = CASE WHEN p_updates ? 'model' OR p_updates ? 'reasoningEffort' THEN now() ELSE updated_at END
+     WHERE session_id = p_session_id
+       AND (p_updates ? 'model' OR p_updates ? 'reasoningEffort');
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+${authoritativeCheck}
+`;
+}
+
+// ─── Migration 0061: provider correctness fixes ──────────────────────
+//
+// Two defects from the 2026-08-24 campaign, both in code that already
+// shipped in this lineage — so both land as REPLACEMENTS here, never as
+// edits to an applied migration.
+//
+// 1. A recycled provider NAME must not inherit the old holder's spend in
+//    ANY section of the usage report. The bound landed on the daily series
+//    (the chart the portal draws) and nowhere else, so one response
+//    contradicted itself: totals and breakdown counted ledger rows from
+//    before the current instance existed while daily excluded them. The
+//    same provider-epoch bound now applies to all three.
+//
+// 2. cms_provider_next_turn_index: the ledger PK (session_id, turn_index)
+//    is the exactly-once settlement claim. A restarted system session
+//    keeps its session_id while its fresh orchestration counts turns from
+//    zero again, so once the new lifetime reached an index the old one had
+//    written, settle's ON CONFLICT DO NOTHING read every turn as a replay
+//    and the spend vanished. The restart path now seeds the new lifetime's
+//    first index from this function.
+
+function migration_0061_provider_correctness_fixes(schema: string): string {
+    const s = schema;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_totals(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
+) RETURNS TABLE(tokens_total BIGINT, turns BIGINT, sessions BIGINT) AS $$
+    SELECT COALESCE(sum(l.tokens_total), 0), count(*)::BIGINT,
+           count(DISTINCT l.session_id)::BIGINT
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+       AND (COALESCE(p_is_admin, FALSE)
+            OR l.owner_user_id IS NOT DISTINCT FROM p_viewer
+            -- A named SHARED provider's TOTAL is open to everyone who may
+            -- spend from it; the moment an attribution filter is present
+            -- the question becomes admin-only. (Unchanged from 0051.)
+            OR (p_provider IS NOT NULL AND p_owner IS NULL AND p_session IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM ${s}.provider_instances pi
+                     WHERE pi.name = p_provider AND pi.class = 'shared')))
+       AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+       AND (p_provider IS NULL OR l.provider_name = p_provider)
+       -- Nothing from before THIS provider took the name.
+       AND (p_provider IS NULL OR l.created_at >= COALESCE(
+               (SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = p_provider),
+               '-infinity'::timestamptz))
+       AND (p_model IS NULL OR l.model_qualified = p_model)
+       AND (p_session IS NULL OR l.session_id = p_session)
+       AND (p_class IS NULL OR l.charge_class = p_class);
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT,
+    p_dim TEXT, p_limit INTEGER
+) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turns BIGINT) AS $$
+    WITH rows AS (
+        SELECT l.*,
+               CASE p_dim
+                   WHEN 'session'  THEN l.session_id
+                   WHEN 'provider' THEN COALESCE(l.provider_name, '(none)')
+                   WHEN 'model'    THEN COALESCE(l.model_qualified, '(none)')
+                   WHEN 'agent'    THEN COALESCE(l.agent_id, '(none)')
+                   WHEN 'user'     THEN COALESCE(l.owner_user_id::TEXT,
+                                          CASE WHEN l.charge_class = 'system'
+                                               THEN '(system)' ELSE '(unowned)' END)
+                   ELSE COALESCE(l.provider_name, '(none)')
+               END AS dim_key
+          FROM ${s}.provider_usage_ledger l
+         WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+           AND (COALESCE(p_is_admin, FALSE) OR l.owner_user_id IS NOT DISTINCT FROM p_viewer)
+           AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+           AND (p_provider IS NULL OR l.provider_name = p_provider)
+           -- Nothing from before THIS provider took the name.
+           AND (p_provider IS NULL OR l.created_at >= COALESCE(
+                   (SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = p_provider),
+                   '-infinity'::timestamptz))
+           AND (p_model IS NULL OR l.model_qualified = p_model)
+           AND (p_session IS NULL OR l.session_id = p_session)
+           AND (p_class IS NULL OR l.charge_class = p_class)
+    )
+    SELECT g.dim_key,
+           CASE p_dim
+               WHEN 'session' THEN COALESCE((SELECT ss.title FROM ${s}.sessions ss
+                                              WHERE ss.session_id = g.dim_key), g.dim_key)
+               WHEN 'user'    THEN COALESCE((SELECT COALESCE(uu.display_name, uu.email, uu.subject)
+                                               FROM ${s}.users uu
+                                              WHERE uu.user_id::TEXT = g.dim_key), g.dim_key)
+               ELSE g.dim_key
+           END,
+           sum(g.tokens_total)::BIGINT, count(*)::BIGINT
+      FROM rows g
+     GROUP BY g.dim_key
+     ORDER BY 3 DESC
+     LIMIT COALESCE(p_limit, 40);
+$$ LANGUAGE sql STABLE;
+
+-- The next free settlement index for a session, across every lifetime the
+-- ledger has seen. -1+1 = 0 for a session with no spend at all.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_next_turn_index(
+    p_session_id TEXT
+) RETURNS INTEGER AS $$
+    SELECT (COALESCE(MAX(l.turn_index), -1) + 1)::INTEGER
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.session_id = p_session_id;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+// ─── Migration 0062: the ledger survives a retained session id ───────
+//
+// The ledger PK (session_id, turn_index) is the exactly-once settlement
+// claim. A restarted system session keeps its session_id while its fresh
+// orchestration counts turns from zero, so the new lifetime's indexes
+// collide with the old lifetime's rows and ON CONFLICT DO NOTHING reads
+// every one as a replay — the spend silently vanishes (live-proved: a
+// 31K-token sweeper turn wrote no row).
+//
+// The orchestration input cannot carry the correction: input.iteration is
+// the resume/bootstrap discriminator, and seeding it makes a fresh
+// lifetime try to resume a session file it does not have (also
+// live-proved — an unbroken resume fail-loop). So the base lives on the
+// SESSION ROW, the restart path advances it past every existing row, and
+// the settle proc applies it. The orchestration keeps counting from zero;
+// only the ledger key moves.
+
+function migration_0062_provider_ledger_base(schema: string): string {
+    const s = schema;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS provider_ledger_base INTEGER NOT NULL DEFAULT 0;
+
+-- Advance the base past every ledger row the session id already has.
+-- Idempotent: with no new spend, a second bump computes the same base.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_bump_ledger_base(
+    p_session_id TEXT
+) RETURNS INTEGER AS $$
+DECLARE v_base INTEGER;
+BEGIN
+    SELECT ${s}.cms_provider_next_turn_index(p_session_id) INTO v_base;
+    UPDATE ${s}.sessions
+       SET provider_ledger_base = v_base
+     WHERE session_id = p_session_id;
+    RETURN v_base;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_settle_turn(
+    p_session_id TEXT, p_turn_index INTEGER, p_provider TEXT, p_model TEXT,
+    p_owner BIGINT, p_charge_class TEXT, p_agent_id TEXT,
+    p_in BIGINT, p_out BIGINT, p_cache_read BIGINT, p_cache_write BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_total BIGINT := COALESCE(p_in,0) + COALESCE(p_out,0)
+                    + COALESCE(p_cache_read,0) + COALESCE(p_cache_write,0);
+    v_class TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_charge_class,'')), ''), 'user');
+    v_scope TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_model,'')), ''), '*');
+    -- The lifetime offset. Stable for the whole turn: only a restart moves
+    -- it, and a restart deletes the orchestration mid-turn anyway.
+    v_index INTEGER := COALESCE(p_turn_index, 0) + COALESCE(
+        (SELECT ss.provider_ledger_base FROM ${s}.sessions ss
+          WHERE ss.session_id = p_session_id), 0);
+    v_first INTEGER;
+BEGIN
+    IF p_provider IS NULL THEN v_class := 'unattributed'; END IF;
+
+    INSERT INTO ${s}.provider_usage_ledger
+        (session_id, turn_index, provider_name, model_qualified, owner_user_id,
+         charge_class, tokens_input, tokens_output, tokens_cache_read,
+         tokens_cache_write, tokens_total, agent_id)
+    VALUES (p_session_id, v_index, p_provider, p_model, p_owner,
+            v_class, COALESCE(p_in,0), COALESCE(p_out,0), COALESCE(p_cache_read,0),
+            COALESCE(p_cache_write,0), v_total, p_agent_id)
+    ON CONFLICT (session_id, turn_index) DO NOTHING;
+    GET DIAGNOSTICS v_first = ROW_COUNT;
+    IF v_first = 0 THEN RETURN FALSE; END IF;
+
+    IF v_class <> 'user' OR p_provider IS NULL OR v_total <= 0 THEN
+        RETURN TRUE;
+    END IF;
+
+    PERFORM 1 FROM ${s}.provider_instances pi
+     WHERE pi.name = p_provider FOR KEY SHARE;
+    IF NOT FOUND THEN RETURN TRUE; END IF;
+
+    INSERT INTO ${s}.provider_meters
+        (provider_name, period, scope, window_key_utc, used_tokens,
+         window_start_utc, resets_at_utc)
+    SELECT p_provider, per.period, sc.scope, wb.window_key, v_total,
+           wb.window_start, wb.resets_at
+      FROM (VALUES ('day'),('week'),('month')) AS per(period)
+      CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+      CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+     ORDER BY per.period, sc.scope
+    ON CONFLICT (provider_name, period, scope, window_key_utc) DO UPDATE
+        SET used_tokens = ${s}.provider_meters.used_tokens + EXCLUDED.used_tokens,
+            updated_at = now();
+
+    IF p_owner IS NOT NULL THEN
+        INSERT INTO ${s}.provider_meters_user
+            (provider_name, period, scope, window_key_utc, user_id, used_tokens,
+             window_start_utc, resets_at_utc)
+        SELECT p_provider, per.period, sc.scope, wb.window_key, p_owner, v_total,
+               wb.window_start, wb.resets_at
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+          CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+         ORDER BY per.period, sc.scope
+        ON CONFLICT (provider_name, period, scope, window_key_utc, user_id) DO UPDATE
+            SET used_tokens = ${s}.provider_meters_user.used_tokens + EXCLUDED.used_tokens,
+                updated_at = now();
+    END IF;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
 `;
 }

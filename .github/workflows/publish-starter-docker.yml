@@ -108,6 +108,17 @@ jobs:
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Verify release tag matches package versions
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(node -p 'require("./packages/sdk/package.json").version')"
+          horizon="$(node -p 'require("./packages/horizon-store/package.json").version')"
+          app="$(node -p 'require("./packages/app/package.json").version')"
+          [[ "${sdk}" == "${horizon}" && "${sdk}" == "${app}" ]]
+          [[ "${GITHUB_REF_NAME}" == "v${sdk}" ]]
+
       - name: Build and optionally push starter image
         uses: docker/build-push-action@v6
         with:

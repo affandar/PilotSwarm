@@ -6,7 +6,7 @@ import {
     getPromptInputRows,
     selectActiveSession,
     selectAdminConsole,
-    selectAdminGhcpKeyEditorModal,
+    selectAdminProviderCreateModal,
     selectChatPaneChrome,
     selectLiveActivityLines,
     selectChatLines,
@@ -2036,7 +2036,7 @@ function buildAdminPackagesLines(view) {
     lines.push([
         { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
         { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
-        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
         { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
     ]);
     return lines;
@@ -2083,7 +2083,95 @@ function buildAdminWorkersLines(view) {
     lines.push([
         { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
         { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
-        { text: "g ", color: "yellow", bold: true }, { text: "GitHub Keys  ", color: "gray" },
+        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
+        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+    ]);
+    return lines;
+}
+
+function buildAdminModelProviderLines(view) {
+    const providers = view.modelProviders || {};
+    const lines = [];
+    const configured = (entry) => entry?.configured?.model || "automatic";
+    const effective = (entry) => entry?.effective?.model || "blocked — no usable provider";
+    lines.push([{ text: "Model Providers", color: "cyan", bold: true }]);
+    if (providers.loading) lines.push([{ text: "Loading providers and defaults...", color: "gray" }]);
+    if (providers.error || providers.mutation?.error) {
+        lines.push([{ text: `! ${providers.mutation?.error || providers.error}`, color: "red", bold: true }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    if (providers.page !== "shared") {
+        lines.push([{ text: "My Providers", color: "white", bold: true }]);
+        if (!(providers.myProviders || []).length) {
+            lines.push([{ text: "  No personal providers.", color: "gray" }]);
+        }
+        for (const provider of providers.myProviders || []) {
+            const selected = providers.selection?.providerName === provider.name;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: provider.name, color: selected ? "white" : "gray", bold: selected },
+                ...(view.isAdmin ? [{ text: provider.systemUseEnabled ? "  [system]" : "  [user]", color: provider.systemUseEnabled ? "green" : "gray" }] : []),
+            ]);
+        }
+        lines.push([{ text: "", color: "gray" }]);
+        lines.push([{ text: "My Session Default", color: "white", bold: true }]);
+        lines.push([{ text: `  configured  ${configured(providers.mySessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: `  effective   ${effective(providers.mySessionDefault)}`, color: "cyan" }]);
+    } else if (view.isAdmin) {
+        lines.push([{ text: "Shared Providers", color: "white", bold: true }]);
+        if (!(providers.sharedProviders || []).length) {
+            lines.push([{ text: "  No shared providers.", color: "gray" }]);
+        }
+        for (const provider of providers.sharedProviders || []) {
+            const selected = providers.selection?.providerName === provider.name;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: provider.name, color: selected ? "white" : "gray", bold: selected },
+                { text: "  [shared]", color: "green" },
+            ]);
+        }
+        lines.push([{ text: `  Cluster Session Default  ${configured(providers.clusterSessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: `  System Session Default   ${configured(providers.systemSessionDefault)}`, color: "gray" }]);
+        lines.push([{ text: "", color: "gray" }]);
+        lines.push([{ text: "System Agent Overrides", color: "white", bold: true }]);
+        if (!(providers.systemAgentRoutes || []).length) {
+            lines.push([{ text: "  No registered or overridden system agents.", color: "gray" }]);
+        }
+        for (const route of providers.systemAgentRoutes || []) {
+            const selected = providers.selection?.agentId === route.agentId;
+            lines.push([
+                { text: selected ? "› " : "  ", color: selected ? "green" : "gray", bold: selected },
+                { text: route.title, color: selected ? "white" : "gray", bold: selected },
+                { text: `  ${route.effectiveModel || "blocked"}`, color: "cyan" },
+                { text: route.override ? "  [override]" : "  [system default]", color: route.override ? "yellow" : "gray" },
+            ]);
+        }
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    if (providers.page !== "shared") {
+        lines.push([
+            { text: " e ", color: "green", bold: true }, { text: "add  ", color: "gray" },
+            { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
+            { text: "u ", color: "cyan", bold: true }, { text: "my default  ", color: "gray" },
+            ...(view.isAdmin ? [{ text: "t ", color: "yellow", bold: true }, { text: "system use  ", color: "gray" }] : []),
+        ]);
+    } else if (view.isAdmin) {
+        lines.push([
+            { text: " E ", color: "green", bold: true }, { text: "add  ", color: "gray" },
+            { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
+            { text: "l ", color: "cyan", bold: true }, { text: "cluster default  ", color: "gray" },
+            { text: "s ", color: "cyan", bold: true }, { text: "system default  ", color: "gray" },
+            { text: " C/T/H ", color: "yellow", bold: true }, { text: "next system default + Complete/Terminate/Hard Delete restart  ", color: "gray" },
+            { text: "Tab ", color: "cyan", bold: true }, { text: "providers/agents  ", color: "gray" },
+            { text: "j/k ", color: "cyan", bold: true }, { text: "select  ", color: "gray" },
+            { text: "o ", color: "yellow", bold: true }, { text: "cycle override", color: "gray" },
+        ]);
+    }
+    lines.push([
+        { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+        { text: "m/M ", color: "cyan", bold: true }, { text: "my/shared  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
         { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
     ]);
     return lines;
@@ -2115,6 +2203,11 @@ function buildAdminConsoleLines(view) {
 
     if (view.section === "workers") {
         lines.push(...buildAdminWorkersLines(view));
+        return lines;
+    }
+
+    if (view.section === "providers") {
+        lines.push(...buildAdminModelProviderLines(view));
         return lines;
     }
 
@@ -2262,6 +2355,55 @@ function AdminGhcpKeyEditorModalContainer({ controller }) {
     return React.createElement(AdminGhcpKeyEditorModal, { state });
 }
 
+function AdminProviderCreateModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectAdminProviderCreateModal(state);
+    if (!modal) return null;
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = Math.max(56, Math.min(modal.idealWidth || 72, (viewport.width || 120) - 12));
+    const statusLines = modal.error
+        ? [[{ text: `! ${modal.error}`, color: "red", bold: true }]]
+        : modal.saving ? [[{ text: "Creating provider...", color: "yellow" }]] : [];
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: Math.max(5, (modal.detailsLines?.length || 0) + 2),
+                lines: modal.detailsLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: modal.label,
+                value: modal.displayValue,
+                cursorIndex: modal.cursorIndex,
+                focused: !modal.saving,
+                placeholder: modal.placeholder,
+                rows: 1,
+                readOnly: modal.saving,
+            }),
+            statusLines.length ? React.createElement(platform.Panel, {
+                title: "Status", color: modal.error ? "red" : "yellow", focused: false,
+                width, height: 3, lines: statusLines, scrollOffset: 0, scrollMode: "top", marginBottom: 1, fillColor: "surface",
+            }) : null,
+            React.createElement(platform.Panel, {
+                title: "Help", color: "cyan", focused: false,
+                width, height: 6, lines: modal.helpLines, scrollOffset: 0, scrollMode: "top", fillColor: "surface",
+            })));
+}
+
+function AdminProviderCreateModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({ admin: rootState.admin }), shallowEqualObject);
+    return React.createElement(AdminProviderCreateModal, { state });
+}
+
 export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
     const platform = useUiPlatform();
     const layoutState = useControllerSelector(controller, (state) => ({
@@ -2406,6 +2548,6 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(FilesFilterModalContainer, { controller }),
         React.createElement(HistoryFormatModalContainer, { controller }),
         React.createElement(ConfirmModalContainer, { controller }),
-        React.createElement(AdminGhcpKeyEditorModalContainer, { controller }),
+        React.createElement(AdminProviderCreateModalContainer, { controller }),
     );
 }

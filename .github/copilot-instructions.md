@@ -28,9 +28,19 @@ When writing or updating files under `docs/bugreports/`, keep downstream deploym
 
 **Do NOT modify `.model_providers.json`, `.env`, or `.env.remote` without the user explicitly asking.** The real `.model_providers.json` is a local gitignored config file that may contain personal service URLs, while `.env` / `.env.remote` hold credentials. Never read env files to extract secrets, never commit the real `.model_providers.json`, and never overwrite local config with placeholder content unless the user asked for that exact reset.
 
-When env or model-catalog shape changes, keep `.env.example` and `.model_providers.example.json` in sync with placeholder values. The checked-in `.model_providers.example.json` is the shareable template; the real `.model_providers.json` stays local and gitignored. Provider availability is still controlled by env-backed keys.
+When env or model-catalog shape changes, keep `.env.example` and
+`.model_providers.example.json` in sync with placeholder values. The catalog is
+provider-type/model metadata only. Named shared/personal providers,
+credentials, defaults, limits, allowances, and holds are runtime CMS state;
+do not add new live credentials or `defaultModel` routing to checked-in
+catalogs. Env-backed catalog credentials remain bootstrap compatibility only.
 
-Legacy AKS Dockerfiles currently copy `.model_providers.json*` from the build context. A release deploy must not silently treat the private gitignored catalog as the released catalog: it may contain stale capabilities even when checked-in deploy catalogs are correct. Do not overwrite the private file for a build. Use an explicit checked-in deploy catalog (or a temporary clean build context) and verify the catalog inside running worker/portal images plus the live `listModels()` surface.
+AKS Dockerfiles copy the explicit checked-in deploy catalog, never the private
+gitignored `.model_providers.json`. Verify the type catalog inside running
+worker/portal images plus the viewer-scoped runtime `listModels()` surface.
+Provider/budget schema changes follow the normal stored-procedure migration
+rules and must keep management client, Web API, MCP, TUI/portal, docs, and tests
+in parity.
 
 `.env` and `.env.horizondb` are two **standalone** local configs, never layered. `.env` is stock-PostgreSQL only: it backs the default `./scripts/run-tests.sh` run (all suites with the PG fact store) and must leave the HorizonDB enhanced-facts/graph settings empty. `.env.horizondb` is a complete standalone config (stock PG runtime storage + HorizonDB enhanced facts/graph) used by `./scripts/run-tests.sh --with-horizondb` and the Horizon Harvester scripts. Those paths load **only** `.env.horizondb` — there is **no fallback to `.env`, ever** — so every value the run needs (`DATABASE_URL`, `GITHUB_TOKEN`, model keys, `HORIZON_*`) must be duplicated in it. Keep `.env.horizondb.example` in sync with its shape, like `.env.example`.
 

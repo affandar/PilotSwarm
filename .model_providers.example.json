@@ -3,7 +3,6 @@
         {
             "id": "github-copilot",
             "type": "github",
-            "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
                     "name": "claude-opus-5",
@@ -128,7 +127,6 @@
             "id": "azure-openai",
             "type": "openai",
             "baseUrl": "https://your-foundry-resource.services.ai.azure.com/openai/v1",
-            "apiKey": "env:AZURE_OAI_KEY",
             "models": [
                 {
                     "name": "gpt-5.4",
@@ -164,7 +162,6 @@
             "id": "anthropic",
             "type": "anthropic",
             "baseUrl": "https://api.anthropic.com",
-            "apiKey": "env:ANTHROPIC_API_KEY",
             "models": [
                 {
                     "name": "claude-opus-4-6",
@@ -187,10 +184,5 @@
                 }
             ]
         }
-    ],
-    "_defaultModel_opus46": "anthropic:claude-opus-4-6",
-    "defaultModel_sonnet46": "anthropic:claude-sonnet-4-6",
-    "_defaultModel_gpt54": "azure-openai:gpt-5.4",
-    "defaultModel": "github-copilot:claude-sonnet-5",
-    "_defaultModel_gpt54mini": "azure-openai:gpt-5.4-mini"
+    ]
 }

@@ -24,11 +24,12 @@ import * as path from "node:path";
 import type { SessionCatalog, AgentPackageSelector, AgentPrincipal } from "./cms.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readAgentPackageTarGz } from "./agent-package-format.js";
-import { fetchAgentPackageTarGz, publishAgentPackageDir } from "./agent-package-service.js";
+import { publishAgentPackageDir, readAgentPackageVersionEntries } from "./agent-package-service.js";
 import { diffPackageTrees, patchArtifacts, entriesToMap, type PackageEntry } from "./agent-package-diff.js";
 import { guardedImportFetch } from "./agent-package-import-fetch.js";
 import { loadImportPolicy, type ImportPolicy } from "./agent-package-import-policy.js";
 import { parseAgentFqn } from "./agent-fqn.js";
+import { listBundledAgentNames } from "./agent-loader.js";
 
 /**
  * Staging lives in ONE session artifact rather than N.
@@ -145,6 +146,8 @@ export interface CreateAgentManagerToolsOptions {
     importPolicy?: ImportPolicy;
     /** Session id used to attach patch artifacts. */
     sessionId?: string;
+    /** Agent names a package may not shadow. Defaults to bundled agents. */
+    reservedAgentNames?: string[];
 }
 
 /** Turn an FQN into a registry selector, or explain why it cannot be one. */
@@ -263,15 +266,14 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
 
     /** Read a package's active (or named) version as tar entries. */
     const entriesForVersion = async (name: string, selector: AgentPackageSelector | null, semver: string | undefined, viewer: AgentManagerViewer) => {
-        const detail = await catalog.getAgentPackage(name, principalOf(viewer), viewer.isAdmin, selector);
-        if (!detail) return { error: `package "${name}" not found, or not visible to you.` };
-        const version = semver
-            ? detail.versions.find((v) => v.semver === semver)
-            : detail.versions.find((v) => v.versionId === detail.activeVersionId) ?? detail.versions[0];
-        if (!version) return { error: semver ? `${name}@${semver} is not a published version.` : `package "${name}" has no versions.` };
         if (!artifactStore) return { error: "no artifact store is configured on this worker." };
-        const targz = await fetchAgentPackageTarGz(artifactStore, version.artifactFilename, version.sha256);
-        return { entries: readAgentPackageTarGz(targz), version, detail };
+        try {
+            return await readAgentPackageVersionEntries(
+                { catalog, artifactStore }, name, principalOf(viewer), viewer.isAdmin, selector, semver,
+            );
+        } catch (error: any) {
+            return { error: error?.message || String(error) };
+        }
     };
 
     const listAgentPackagesTool = defineTool("list_agent_packages", {
@@ -613,6 +615,18 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             if (!changelog.includes(args.semver)) {
                 return { error: `publish_agent_package: ${CHANGELOG_PATH} has no entry for ${args.semver}. Add one before publishing.` };
             }
+            let plugin;
+            try {
+                plugin = JSON.parse(staged.files["plugin.json"] || "");
+            } catch {
+                return { error: "publish_agent_package: staged plugin.json is missing or invalid JSON." };
+            }
+            if (plugin.name !== staged.package || args.package !== staged.package) {
+                return { error: `publish_agent_package: package identity mismatch (staged=${staged.package}, plugin=${plugin.name || "?"}, requested=${args.package}).` };
+            }
+            if (plugin.version !== args.semver) {
+                return { error: `publish_agent_package: plugin.json version ${plugin.version || "(missing)"} does not match requested ${args.semver}.` };
+            }
 
             const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-publish-"));
             try {
@@ -646,9 +660,8 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                         // agent-authored version from a human `agents push`.
                         createdBy: `agent-manager (approved by ${args.approved_by})`,
                         isAdmin: viewer.isAdmin,
-                        name: staged.package,
-                        semver: args.semver,
-                    } as any,
+                        validate: { reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames() },
+                    },
                 );
                 await artifactStore.deleteArtifact(opts.sessionId, STAGING_ARTIFACT).catch(() => {});
                 const status = (outcome as any)?.status ?? "published";
@@ -657,8 +670,8 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     .map((w: any) => w.message);
                 return {
                     status,
-                    package: staged.package,
-                    semver: args.semver,
+                    package: outcome.name,
+                    semver: outcome.semver,
                     scope: args.scope === "shared" ? "shared" : "user",
                     approvedBy: args.approved_by,
                     // "noop" is not success: it means this exact semver+content

@@ -41,14 +41,39 @@ function createPortalServer({ app }) {
     };
 }
 
-function createJsonRpcError(error, status = 500) {
-    return {
-        status,
-        body: {
-            ok: false,
-            error: error?.message || String(error),
-        },
+const LEGACY_RPC_STATUS_BY_CODE = {
+    INVALID_REQUEST: 400,
+    MODEL_AMBIGUOUS: 400,
+    MODEL_UNRESOLVED: 400,
+    VALIDATION_FAILED: 400,
+    PORTAL_AUTH_REQUIRED: 401,
+    UNAUTHORIZED: 401,
+    FORBIDDEN: 403,
+    NOT_FOUND: 404,
+    REGENERATE_UNSUPPORTED: 409,
+    FACTS_ENHANCED_UNSUPPORTED: 409,
+    GRAPH_UNSUPPORTED: 409,
+    CONFLICT: 409,
+    PAYLOAD_TOO_LARGE: 413,
+};
+
+export function createJsonRpcError(error, fallbackStatus = 500) {
+    const status = LEGACY_RPC_STATUS_BY_CODE[error?.code]
+        || (Number.isInteger(error?.status) ? error.status : fallbackStatus);
+    const code = error?.code
+        || (status === 400 ? "INVALID_REQUEST"
+            : status === 401 ? "UNAUTHORIZED"
+                : status === 403 ? "FORBIDDEN"
+                    : status === 404 ? "NOT_FOUND"
+                        : status === 409 ? "CONFLICT"
+                            : status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL_ERROR");
+    const detail = {
+        code,
+        message: status >= 500 ? "Internal server error" : (error?.message || String(error)),
     };
+    if (status < 500 && Array.isArray(error?.candidates)) detail.candidates = error.candidates;
+    if (status < 500 && Array.isArray(error?.validation?.errors)) detail.validation = error.validation;
+    return { status, body: { ok: false, error: detail } };
 }
 
 function sendSpaIndex(res) {
@@ -94,6 +119,9 @@ export async function startServer(opts = {}) {
     // Everything else keeps the 2 MB cap. Mounted first so the path-scoped
     // parser wins; the global parser skips already-parsed bodies.
     app.use("/api/v1/sessions/:sessionId/artifacts/:filename", express.json({ limit: "8mb" }));
+    // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
+    // the default 2 MB request cap, so reserve 4 MB for this route.
+    app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
     app.use(express.json({ limit: "2mb" }));
 
     const { server, protocol } = createPortalServer({ app });

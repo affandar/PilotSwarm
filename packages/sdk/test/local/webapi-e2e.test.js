@@ -106,6 +106,108 @@ describe("web api e2e", () => {
         await client.stop();
     });
 
+    it("returns structured candidates for ambiguous runtime-provider models", async () => {
+        const typeModel = (await mgmt.getModelsByProvider())[0].models[0];
+        const suffix = Date.now().toString(36);
+        const names = [`web-amb-a-${suffix}`, `web-amb-b-${suffix}`];
+        const credentials = typeModel.providerType === "github"
+            ? { githubToken: "github_pat_web_ambiguity_test" }
+            : { apiKey: "web-ambiguity-test-key" };
+        for (const name of names) {
+            await mgmt.createMyProvider(null, {
+                name,
+                type: typeModel.providerId,
+                credentials,
+            });
+        }
+        const client = new PilotSwarmClient({ apiUrl });
+        await client.start();
+        try {
+            let error = null;
+            try {
+                await client.createSession({ model: typeModel.modelName });
+            } catch (caught) {
+                error = caught;
+            }
+            assert(error instanceof ApiError, "ambiguous Web create returns ApiError");
+            assertEqual(error.code, "MODEL_AMBIGUOUS", "ambiguity code preserved");
+            for (const name of names) {
+                assert(error.candidates.includes(`${name}:${typeModel.modelName}`), `candidate includes ${name}`);
+            }
+
+            const legacyResponse = await fetch(`${apiUrl}/api/rpc`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                    method: "createSession",
+                    params: { model: typeModel.modelName },
+                }),
+            });
+            assertEqual(legacyResponse.status, 400, "legacy RPC ambiguity is a client error");
+            const legacy = await legacyResponse.json();
+            assertEqual(legacy.error.code, "MODEL_AMBIGUOUS", "legacy RPC preserves ambiguity code");
+            for (const name of names) {
+                assert(legacy.error.candidates.includes(`${name}:${typeModel.modelName}`), `legacy candidate includes ${name}`);
+            }
+        } finally {
+            await client.stop();
+            for (const name of names) await mgmt.deleteMyProvider(null, name);
+        }
+    });
+
+    it("rejects unsafe agent-package upload paths as a client error", async () => {
+        let error = null;
+        try {
+            await mgmt.uploadAgentPackage([
+                { path: "../escape.md", contentBase64: Buffer.from("x").toString("base64") },
+            ], "user");
+        } catch (caught) {
+            error = caught;
+        }
+        assert(error instanceof ApiError, "unsafe upload returns ApiError");
+        assertEqual(error.status, 400, "unsafe upload maps to HTTP 400");
+        assertEqual(error.code, "INVALID_REQUEST", "unsafe upload keeps validation code");
+        assertIncludes(error.message, "not a safe relative path", "unsafe upload keeps actionable message");
+
+        let collision = null;
+        try {
+            await mgmt.uploadAgentPackage([
+                { path: "a", contentBase64: Buffer.from("x").toString("base64") },
+                { path: "a/b", contentBase64: Buffer.from("y").toString("base64") },
+            ], "user");
+        } catch (caught) {
+            collision = caught;
+        }
+        assert(collision instanceof ApiError, "colliding upload returns ApiError");
+        assertEqual(collision.status, 400, "colliding upload maps to HTTP 400");
+        assertIncludes(collision.message, "conflicts with file path", "collision explains the conflicting paths");
+    });
+
+    it("downloads a full verified agent-package tarball through Web management", async () => {
+        const suffix = Date.now().toString(36);
+        const name = `web-download-${suffix}`;
+        const encode = (value) => Buffer.from(value, "utf8").toString("base64");
+        const published = await mgmt.uploadAgentPackage([
+            {
+                path: "plugin.json",
+                contentBase64: encode(JSON.stringify({ name, version: "1.0.0", description: "download fixture" })),
+            },
+            {
+                path: "agents/probe.agent.md",
+                contentBase64: encode("---\nname: probe\ndescription: probe\nschemaVersion: 1\nversion: 1.0.0\n---\n\nProbe."),
+            },
+        ], "user");
+        try {
+            const download = await mgmt.downloadAgentPackage(name, null, null, false);
+            assertEqual(download.semver, "1.0.0", "downloaded version");
+            assertEqual(download.sha256, published.sha256, "downloaded sha");
+            assertEqual(download.contentType, "application/gzip", "download content type");
+            assert(download.body instanceof Uint8Array && download.body.length > 0, "downloaded tarball bytes");
+        } finally {
+            await mgmt.deleteAgentPackage(name, null, false);
+        }
+    });
+
     it("covers the management surface end to end", { timeout: TIMEOUT }, async () => {
         const created = await mgmt.listSessionsPage({ limit: 5 });
         assert(Array.isArray(created.sessions), "listSessionsPage returns sessions");
@@ -171,6 +273,38 @@ describe("web api e2e", () => {
         assert(Array.isArray(models) && models.length > 0, "models listed");
         const defaultModel = await mgmt.getDefaultModel();
         assert(typeof defaultModel === "string" && defaultModel.length > 0, "default model resolved");
+
+        // Runtime provider/default operations resolve the authenticated user
+        // server-side and stamp the selected provider before orchestration.
+        const typeModel = (await mgmt.getModelsByProvider())[0].models[0];
+        const personalProvider = `webapi-mine-${Date.now().toString(36)}`;
+        await mgmt.createMyProvider(null, {
+            name: personalProvider,
+            type: typeModel.providerId,
+            credentials: typeModel.providerType === "github"
+                ? { githubToken: "github_pat_webapi_test" }
+                : { apiKey: "webapi-test-key" },
+        });
+        await mgmt.setModelDefault(null, {
+            scope: "user",
+            provider: personalProvider,
+            model: typeModel.modelName,
+        });
+        const modelDefaults = await mgmt.getModelDefaults();
+        assertEqual(
+            modelDefaults.userSession.effective.model,
+            `${personalProvider}:${typeModel.modelName}`,
+            "web default resolves through the personal provider",
+        );
+        const defaulted = await client.createSession();
+        assertEqual(
+            (await mgmt.getSession(defaulted.sessionId)).model,
+            `${personalProvider}:${typeModel.modelName}`,
+            "web session stamps the exact personal provider model before a turn",
+        );
+        await mgmt.deleteSession(defaulted.sessionId);
+        await mgmt.setModelDefault(null, { scope: "user", provider: null, model: null });
+        await mgmt.deleteMyProvider(null, personalProvider);
 
         // Profile rides the authenticated (no-auth synthetic) principal.
         const profile = await mgmt.setUserProfileSettings(null, { theme: "webapi-test" });

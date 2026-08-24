@@ -24,17 +24,16 @@ cp .model_providers.example.json .model_providers.json
 $EDITOR .model_providers.json
 ```
 
-Then edit `.env` with your credentials:
+Then edit `.env` with the database and optional compatibility credentials:
 
 ```bash
 # Required
 DATABASE_URL=postgresql://user:password@localhost:5432/pilotswarm
 
-# LLM provider keys (at least one required)
-# Easiest: use GITHUB_TOKEN for GitHub Copilot access
-GITHUB_TOKEN=ghp_xxxxxxxxxxxx
-# Or: BYOK with Azure OpenAI / other providers
-# AZURE_OPENAI_KEY=your-key
+# Optional legacy bootstrap keys. New deployments add runtime providers in
+# Admin Console → Model Providers or through PilotSwarmManagementClient.
+# GITHUB_TOKEN=github_pat_xxxxxxxxxxxx
+# AZURE_OAI_KEY=your-key
 
 # Optional — session dehydration to blob storage
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...
@@ -49,7 +48,18 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 # PILOTSWARM_TURN_TIMEOUT_MS=1200000
 ```
 
-> **Model providers** are configured in the local `.model_providers.json`, which is usually copied from the checked-in `.model_providers.example.json` template. API keys use `env:VAR_NAME` syntax to reference `.env` variables. Providers whose API key is not set are automatically excluded from the model list.
+> **Provider types and models** are declared in `.model_providers.json`, usually
+> copied from the checked-in type-only `.model_providers.example.json`. Runtime
+> provider instances carry credentials and are created in **Admin Console →
+> Model Providers** or through `PilotSwarmManagementClient.createProvider()` /
+> `createMyProvider()`. `setModelDefault()` controls future ordinary sessions;
+> `setSystemModelDefault()` independently controls system machinery. With no
+> configured default, PilotSwarm deterministically selects the first model of
+> the first eligible runtime provider and stamps that exact `provider:model`
+> before orchestration starts.
+
+Credential references and `defaultModel` in a catalog remain supported only as
+a one-time legacy bootstrap path. New catalogs should contain neither.
 
 ### Portal Auth Add-Ons
 
@@ -551,47 +561,51 @@ This enables true multi-node scaling — sessions can migrate between workers tr
 
 ## LLM Provider Configuration
 
-PilotSwarm uses the local `.model_providers.json` to configure LLM providers. Most setups copy that file from the checked-in `.model_providers.example.json` template first. API keys are stored in `.env` and referenced via `env:VAR_NAME` syntax.
+The model catalog describes provider types, models, and capabilities. Runtime
+provider instances hold credentials and are created through management APIs or
+**Admin Console → Model Providers**. New configuration should not put runtime
+credentials or session defaults in the static catalog; credential-bearing
+catalog entries are accepted only as a legacy bootstrap source during the
+transition.
 
-> **Easiest way to get started:** Set `GITHUB_TOKEN` in `.env`. This gives you access to all models available through GitHub Copilot (Claude, GPT-4.1, GPT-5.1, etc.) with no additional configuration needed.
+For a personal GitHub Copilot credential, open the Admin Console and choose
+**Add GitHub Copilot provider**. The provider is private to its
+owner. An administrator may separately allow system sessions to use their own
+personal provider, but that machinery grant never makes it available to other
+users. Administrators can also create shared providers for ordinary cluster
+use.
 
-For BYOK (bring-your-own-key) providers like Azure OpenAI, edit the local `.model_providers.json` and set the corresponding API key in `.env`.
+The same page owns independent routing settings:
 
-BYOK providers whose API key env var is not set are **automatically excluded** from the model list — they won't appear in the TUI model picker or the `list_available_models` tool. This means you only need credentials for the providers you actually use.
+- **My Session Default**: shared providers plus the current user's own.
+- **Cluster Session Default**: shared providers only; administrator-managed.
+- **System Session Default**: shared providers plus the current administrator's
+  system-enabled personal providers.
+- **System Agent Overrides**: persistent per-agent choices; changing one uses a
+  durable model switch, while restart remains a separate session action.
 
-The `github-copilot` provider is different: configured GitHub Copilot models remain visible even when the worker-wide `GITHUB_TOKEN` env var is not set, because a user may supply a per-user key from the Admin Console. Creating a session with a GitHub Copilot model requires either the worker env `GITHUB_TOKEN` or the session owner's per-user GitHub Copilot key. Non-GitHub provider models can still be created when no GitHub key is configured.
+Changing ordinary defaults affects future sessions only. Changing the system
+default can optionally Complete, Terminate, or Hard Delete & Restart existing
+inheriting system sessions; per-agent overrides are excluded.
 
 ```bash
 # Get a GitHub token (easiest path)
 gh auth token
 ```
 
-The token is only needed on the **worker** side. Clients don't need it.
+Credentials are write-only: provider reads, defaults reads, logs, and selector
+view models never return them. Browser and terminal password drafts are cleared
+on save and cancel; the native UI also removes its draft before awaiting the
+provider-create request.
 
-### Per-User GitHub Copilot Key Override
+### Legacy Per-User GitHub Copilot Key
 
-In addition to the worker-wide `GITHUB_TOKEN`, each user can store their own
-GitHub Copilot key in their CMS user profile. When a session runs on a model
-served by the `github-copilot` provider, the worker first looks up the
-session owner's per-user key and uses it as the GitHub token for that
-session's `CopilotClient`. If the user has not configured a key (or the
-session has no resolvable owner), the worker falls back to the env-supplied
-`GITHUB_TOKEN`. If neither is available, creating a session with a
-`github-copilot:*` model fails with a clear configuration error; other
-configured providers are unaffected.
-
-Users manage their key from the **Admin Console**:
-
-- Native TUI: press `Shift+A` to open the console, then `e` to set or
-  replace the key, `c` to clear it, `r` to refresh, `Esc` to close.
-- Portal: click the `Admin` button in the toolbar, then use the inline
-  form to set, clear, or refresh.
-
-The raw key is never exposed through the public profile API — both the
-management client (`getUserProfile`) and the shared UI selector
-(`selectAdminConsole`) only carry a `githubCopilotKeySet` boolean. The
-key text is read internally only by the worker's per-session token
-resolver.
+The profile-key management APIs remain during the migration window for rollback
+and adoption tooling. They are not the current Admin Console experience and new
+deployments should create personal runtime providers instead. A deployment may
+still consume `GITHUB_TOKEN` or legacy key material through its compatibility
+bootstrap path, but it should translate that material into provider/default
+desired state rather than maintain a second long-lived configuration source.
 
 ## npm Scripts
 

@@ -51,7 +51,13 @@ export type TurnResult = TurnResultVariant & SnapshotCommitCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    // `budget` marks a wait the PROVIDER BUDGET gate created rather than one
+    // the agent asked for. The difference matters exactly once: an
+    // interrupted wait is normally re-armed after the turn that interrupted
+    // it, but a budget pause must not be — that turn already re-asked the
+    // gate and got a fresh answer, so re-arming would put a session that was
+    // just released straight back to sleep.
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -170,9 +176,9 @@ export interface TurnOptions {
 /** Serializable config — travels through duroxide (no functions). */
 export interface SerializableSessionConfig {
     model?: string;
-    reasoningEffort?: ReasoningEffort;
+    reasoningEffort?: ReasoningEffort | null;
     /** Context-window tier ("default" = smaller window; "long_context" = the model's long-context tier). */
-    contextTier?: import("./model-providers.js").ContextTier;
+    contextTier?: import("./model-providers.js").ContextTier | null;
     systemMessage?: string | { mode: "append" | "replace"; content: string };
     /** Internal: orchestration-generated system guidance for the next turn only. */
     turnSystemPrompt?: string;
@@ -213,6 +219,10 @@ export interface SerializableSessionConfig {
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
 export interface ManagedSessionConfig extends SerializableSessionConfig {
+    /** Internal hash of resolved provider endpoint/credential; never serialized or exposed. */
+    providerFingerprint?: string;
+    /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
+    admittedModel?: string;
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**
@@ -576,6 +586,13 @@ export interface OrchestrationInput {
     waitingForAgentIds?: string[];
     /** Pending input_required question context (for answer routing after CAN). v1.0.32+. */
     pendingInputQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    /**
+     * Prompts the budget gate refused before their turn could run, carried
+     * across continue-as-new so a queued message survives a paused session's
+     * epoch boundary. Each was durably recorded as a user.message at stash
+     * time; the next turn that actually runs replays them. v1.0.70+.
+     */
+    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[] }>;
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;
@@ -997,6 +1014,8 @@ export interface PilotSwarmWorkerOptions {
 export interface PilotSwarmClientOptions {
     /** PostgreSQL connection string. PilotSwarm requires PostgreSQL for CMS and facts. */
     store: string;
+    /** Provider type catalog used to resolve and stamp exact session models. */
+    modelProvidersPath?: string;
     /**
      * Client-created sessions are always started with durable session state enabled.
      * Durability is backed by the worker's configured session store (blob or local filesystem).

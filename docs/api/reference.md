@@ -63,6 +63,7 @@ engine's reason.
 | `GET /api/v1/auth/me` | authed | `{ principal, authorization }` for the caller |
 | `GET /api/v1/bootstrap` | authed | Mode, worker count, log config, models, creatable agents, session policy, auth context |
 | `GET /api/v1/sessions/:sessionId/artifacts/:filename/download` | authed | Binary artifact stream (`Content-Disposition: attachment`) |
+| `GET /api/v1/agent-packages/:name/download` | authed | Full SHA-verified package tarball; optional `semver`, `scope`, and admin owner selector query params |
 
 ## Streaming: `WS /api/v1/ws`
 
@@ -262,11 +263,47 @@ data or reveals anyone else's grouping.
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| listModels | `GET /api/v1/models` | — | All available models. |
-| getModelsByProvider | `GET /api/v1/models/by-provider` | — | Models grouped by provider. |
+| listModels | `GET /api/v1/models` | — | Viewer-usable runtime provider instances (`catalogKind=runtime_provider`). Direct management callers use `listRuntimeModels(viewer)` for the same semantics; synchronous `listModels()` is the type template catalog. |
+| getModelsByProvider | `GET /api/v1/models/by-provider` | — | Model templates grouped by provider type (`catalogKind=provider_type`). Use `listModels` for viewer-usable runtime provider instances. |
 | getDefaultModel | `GET /api/v1/models/default` | — | The deployment default model. |
 | listCreatableAgents | `GET /api/v1/agents` | — | Agents sessions can be created for. |
 | getSessionCreationPolicy | `GET /api/v1/session-creation-policy` | — | Session creation policy. |
+
+### Runtime model providers and defaults
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| listProviders | `GET /api/v1/providers` | — | Shared providers, the caller's personal providers, and admin-visible metadata. Credentials are never returned. |
+| createMyProvider | `POST /api/v1/me/providers` | name, type, credentials, baseUrl? (body) | Add a private BYOK provider for the authenticated user. |
+| createProvider **[admin]** | `POST /api/v1/management/providers` | name, type, credentials, baseUrl? (body) | Add a shared cluster provider. |
+| clearProviderRoutingDependencies | `POST /api/v1/providers/:name/clear-routing` | name (path) | Explicitly clear ordinary/system defaults and agent overrides before deleting a provider. Shared providers require admin. |
+| setProviderSystemUse **[admin]** | `PUT /api/v1/management/providers/:name/system-use` | name (path), enabled (body) | Permit system sessions to use the calling admin's personal provider without exposing it to other users. |
+| getModelDefaults | `GET /api/v1/model-defaults` | — | Configured/effective user and cluster defaults; admins also receive system routing and per-agent overrides. |
+| setModelDefault | `PUT /api/v1/model-defaults` | scope, provider, model, reasoningEffort?, contextTier? (body) | Set/clear a user or cluster ordinary-session default. Cluster scope requires admin. Existing sessions do not change. |
+| setSystemModelDefault **[admin]** | `PUT /api/v1/management/system-model-default` | provider, model, reasoningEffort?, contextTier?, restartExisting? (body) | Set/clear the system default; optionally restart inheriting sessions with complete, terminate, or hard_delete. |
+| setSystemSessionModel **[admin]** | `PUT /api/v1/management/system-sessions/:agentId/model` | agentId (path), provider, model, reasoningEffort?, contextTier? (body) | Set one persistent system-agent model override. |
+| clearSystemSessionModel **[admin]** | `DELETE /api/v1/management/system-sessions/:agentId/model` | agentId (path) | Clear one override and return the agent to the system default. |
+| getLegacyProviderMigrationStatus **[admin]** | `GET /api/v1/management/providers/legacy-key-migration` | — | Aggregate legacy GHCP migration status; never returns keys or hashes. |
+| adoptLegacySystemGitHubCopilotKey **[admin]** | `POST /api/v1/management/providers/adopt-system-github-key` | name (body) | Copy the legacy synthetic System key server-side into the calling admin's private, system-enabled provider. |
+| getProviderStatus | `GET /api/v1/providers/status` | names? (query) | Limits, current-window usage, reset times, and the caller's allowance ceiling. |
+| getProviderUsageGrid | `GET /api/v1/providers/usage-grid` | — | Every visible provider/model row with fixed day, week, and month meter windows. |
+| getProviderUsage | `GET /api/v1/providers/usage` | days?, provider?, model?, mine?, ownerUserId?, sessionId?, chargeClass?, dimension?, limit? (query) | Historical totals, daily series, and a bounded breakdown. Non-admin reads are owner-scoped except aggregate totals for a named shared provider. |
+| setProviderLimit | `PUT /api/v1/providers/:name/limit` | name (path), period, model?, tokens (body) | Save/replace one day, week, or month limit for a provider or one qualified model. Shared requires admin; personal requires owner. |
+| removeProviderLimit | `DELETE /api/v1/providers/:name/limit` | name (path), period, model? (query) | Remove one provider/model limit. |
+| setProviderAllowance **[admin]** | `PUT /api/v1/management/providers/:name/allowance` | name (path), pct (body) | Set the per-user share of shared-provider limits. |
+| setProviderHold **[admin]** | `PUT /api/v1/management/providers/:name/hold` | name (path), untilUtc?, release? (body) | Hold or release new turns against a provider. |
+| listPausedSessions | `GET /api/v1/providers/paused` | — | Sessions waiting on a provider, limit, allowance, or hold; fleet-wide for admins, own sessions otherwise. |
+
+Trusted session creation resolves `explicit → user default → cluster default →
+first usable provider/model`, validates capabilities, and writes the exact
+qualified model before orchestration starts. System sessions resolve
+`per-agent override → system default → first system-eligible provider/model`.
+System-default restart rollouts are serialized per agent with durable claims;
+completed agents are idempotently skipped and failed agents can be retried.
+Provider accounting is exactly-once per `(session, turn)`. Historical usage
+survives session and provider deletion; current rules/meters are removed with a
+deleted provider. The budget table always shows fixed day/week/month windows,
+while the selected daily chart offers 14-, 30-, and 90-day history ranges.
 
 ### Current user
 
@@ -274,7 +311,7 @@ data or reveals anyone else's grouping.
 |---|---|---|---|
 | getCurrentUserProfile | `GET /api/v1/me/profile` | — | Profile of the authenticated principal. |
 | setCurrentUserProfileSettings | `PATCH /api/v1/me/profile/settings` | settings (body) | Replace profile settings. |
-| setCurrentUserGitHubCopilotKey | `PUT /api/v1/me/github-copilot-key` | key (body) | Set (or clear with null) the per-user GitHub Copilot key. |
+| setCurrentUserGitHubCopilotKey **[legacy]** | `PUT /api/v1/me/github-copilot-key` | key (body) | Legacy rollback API. New users add a private GitHub Copilot runtime provider in Admin Console. |
 
 ### System
 

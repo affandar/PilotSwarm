@@ -108,7 +108,7 @@ test("workers view: liveness window, phase counts, pool sort, health text", asyn
     assert.equal(laptop.pkgText, null, "worker without agent-packages state shows no pkg column");
 });
 
-test("workers section is hidden from non-admins; unknown sections fall back to ghcp", async () => {
+test("workers section is hidden from non-admins; unknown sections fall back to providers", async () => {
     const { store } = makeController({}, { ...ADMIN, subject: "alice", isAdmin: false });
     store.dispatch({ type: "admin/visibility", visible: true });
     store.dispatch({
@@ -121,7 +121,7 @@ test("workers section is hidden from non-admins; unknown sections fall back to g
         "non-admins never see the Workers section");
 
     store.dispatch({ type: "admin/section", section: "bogus" });
-    assert.equal(selectAdminConsole(store.getState()).section, "ghcp");
+    assert.equal(selectAdminConsole(store.getState()).section, "providers");
 });
 
 test("transport without listWorkers degrades to a visible error, not a crash", async () => {

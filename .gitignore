@@ -64,3 +64,10 @@ examples/horizon-harvester/graph.md
 .scratch/
 packages/app/.scratch/
 examples/artifacts/
+
+# Scratch from UX drive sessions: screenshots, throwaway Playwright scripts,
+# logs. 664 files that otherwise flood every editor changelist.
+.design-tokenpool/
+
+# Playwright run artifacts — never release material.
+packages/app/test-results/

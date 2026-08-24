@@ -28,8 +28,18 @@ import type {
     StopTurnResult,
     PromptAttachmentRef,
 } from "./types.js";
-import type { SessionCatalog, SessionRow, TopEventEmitterRow } from "./cms.js";
+import type {
+    SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
+    AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentWorkerStateRow, WorkerRow,
+} from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import type {
+    ProviderStore, ProviderRow, ProviderStatusRow, PausedSessionRow, DefaultTuple, UsageFilters,
+    ProviderClass, UsageGridRow, ProviderDefaults, ProviderCredential, SystemAgentModelOverride,
+} from "./provider-store.js";
+import { ProviderError } from "./provider-store.js";
+import type { BudgetPeriod } from "./provider-budgets.js";
+import { PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -78,7 +88,8 @@ import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
-import { loadModelProviders, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
+import { loadModelProviders, loadModelProviderTypes, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
+import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
@@ -90,6 +101,19 @@ import {
     type SystemAgentStartResult,
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
+import type { ArtifactStore } from "./session-store.js";
+import {
+    AgentPackageValidationError,
+    deleteAgentPackageEverywhere,
+    fetchAgentPackageTarGz,
+    publishAgentPackageDir,
+    publishPackedAgentPackage,
+    readAgentPackageVersionEntries,
+    resolveAgentPackageVersion,
+} from "./agent-package-service.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -116,6 +140,22 @@ function assertValidDate(value: Date, label: string): void {
     if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
         throw new Error(`${label} must be a valid Date`);
     }
+}
+
+/**
+ * A default is one tuple, saved whole. With no provider there is nothing to
+ * run, so the other three go with it — carrying a model for a provider that
+ * was cleared would leave a half-default nobody can act on.
+ */
+function normalizeDefaultTuple(tuple: DefaultTuple | null | undefined): DefaultTuple {
+    const provider = String(tuple?.provider ?? "").trim() || null;
+    if (!provider) return { provider: null, model: null, reasoning: null, context: null };
+    return {
+        provider,
+        model: String(tuple?.model ?? "").trim() || null,
+        reasoning: String(tuple?.reasoning ?? "").trim() || null,
+        context: String(tuple?.context ?? "").trim() || null,
+    };
 }
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
@@ -214,6 +254,10 @@ export interface RestartSystemSessionOptions {
     timeoutMs?: number;
     model?: string;
     reasoningEffort?: ReasoningEffort | null;
+    contextTier?: ContextTier | null;
+    modelResolutionSource?: string;
+    /** Stable id for an idempotent multi-agent rollout; omitted for a new manual restart. */
+    operationId?: string;
 }
 
 export interface RestartSystemSessionResult {
@@ -223,13 +267,17 @@ export interface RestartSystemSessionResult {
     disposition: "complete" | "terminate" | "hard_delete";
     previousSessionExisted: boolean;
     startResults: SystemAgentStartResult[];
+    skippedReason?: "busy" | "complete";
 }
 
 function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisposition): "complete" | "terminate" | "hard_delete" {
     if (disposition === "complete") return "complete";
     if (disposition === "terminate") return "terminate";
     if (disposition === "hard_delete" || disposition === "hardDelete") return "hard_delete";
-    throw new Error(`Unsupported system session restart disposition: ${String(disposition)}`);
+    throw Object.assign(
+        new Error(`Unsupported system session restart disposition: ${String(disposition)}`),
+        { code: "INVALID_REQUEST" },
+    );
 }
 
 function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
@@ -254,6 +302,7 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
         serviceOf: row.serviceOf ?? undefined,
         model: row.model ?? undefined,
         reasoningEffort: row.reasoningEffort ?? undefined,
+        contextTier: row.contextTier ?? undefined,
         shortSummary: row.shortSummary ?? undefined,
         summaryState: row.summaryState ?? undefined,
         summaryUpdatedAt: row.summaryUpdatedAt?.getTime(),
@@ -295,6 +344,7 @@ export interface PilotSwarmSessionView {
     serviceOf?: string;
     model?: string;
     reasoningEffort?: string;
+    contextTier?: string;
     shortSummary?: string;
     summaryState?: SessionSummaryState;
     summaryUpdatedAt?: number;
@@ -345,6 +395,7 @@ export interface PilotSwarmSessionPage {
 
 /** Model summary for UI display. */
 export interface ModelSummary {
+    catalogKind?: "provider_type" | "runtime_provider";
     qualifiedName: string;
     providerId: string;
     providerType: string;
@@ -371,6 +422,105 @@ export interface ModelCredentialStatus {
     providerId?: string;
     providerType?: string;
     credentialAvailable: boolean;
+}
+
+/**
+ * Who is asking for a provider-budget operation.
+ *
+ * `principal` is the caller's identity, resolved to a numeric user id on the
+ * way in because the `cms_provider_*` procedures take numbers; `null` is a
+ * caller the deployment has never seen, which the procedures read as nobody.
+ * `isAdmin` is the role the caller authenticated with. Neither field decides
+ * anything here — every rule about who may do what is in SQL.
+ */
+export interface ProviderViewer {
+    principal: UserPrincipal | null;
+    isAdmin: boolean;
+}
+
+/** What a caller sends to make a provider — the words the surface uses, not the column names. */
+export interface ProviderCreateInput {
+    name: string;
+    type: string;
+    credentials?: Record<string, unknown> | null;
+    baseUrl?: string | null;
+}
+
+export interface ModelDefaultInput {
+    scope: "user" | "cluster";
+    provider: string | null;
+    model: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+    contextTier?: ContextTier | null;
+}
+
+export interface SystemModelDefaultInput {
+    provider: string | null;
+    model: string | null;
+    reasoningEffort?: ReasoningEffort | null;
+    contextTier?: ContextTier | null;
+    restartExisting?: false | { disposition: SystemSessionRestartDisposition };
+}
+
+export interface ResolvedModelDefault {
+    provider: string;
+    model: string;
+    reasoningEffort: ReasoningEffort | null;
+    contextTier: ContextTier | null;
+    source: "user_default" | "cluster_default" | "system_default" | "first_available";
+}
+
+/** Which limit on which provider: one per (period, scope). */
+export interface ProviderLimitRef {
+    provider: string;
+    period: BudgetPeriod;
+    /** One model, or every model on the provider when absent. */
+    model?: string | null;
+}
+
+export interface ProviderLimitInput extends ProviderLimitRef {
+    /** A whole number of tokens. Hard — the first turn past it waits. */
+    tokens: number;
+}
+
+export interface ProviderHoldInput {
+    provider: string;
+    /** When the hold lifts by itself. */
+    untilUtc?: string | null;
+    /** Lift it now. */
+    release?: boolean;
+}
+
+/** What a usage breakdown groups by. */
+export type ProviderUsageDimension = "session" | "user" | "provider" | "model" | "agent";
+
+export const PROVIDER_USAGE_DIMENSIONS: ProviderUsageDimension[] =
+    ["session", "user", "provider", "model", "agent"];
+
+export interface ProviderUsageQuery extends UsageFilters {
+    dimension?: string | null;
+    limit?: number | null;
+    /**
+     * "Only my own spend", resolved HERE from the authenticated caller.
+     *
+     * The alternative is for the caller to send their own `ownerUserId`, which
+     * means the client has to know its own id and the wire has to carry one —
+     * and a wire that can carry your id can carry somebody else's. This cannot:
+     * the flag is a boolean and the id is the actor the server already
+     * resolved. It wins over `ownerUserId` when both are sent.
+     */
+    mine?: boolean | null;
+}
+
+/** The whole usage view in one answer: totals, the daily chart, one breakdown. */
+export interface ProviderUsageReport {
+    totals: { tokensTotal: number; turns: number; sessions: number };
+    daily: Array<{ dayUtc: string; tokensTotal: number; turns: number }>;
+    breakdown: Array<{ key: string; label: string; tokensTotal: number; turns: number }>;
+    /** The dimension actually grouped by, which is the default when the request named an unknown one. */
+    dimension: ProviderUsageDimension;
+    /** True when more rows exist than `limit` returned. */
+    truncated: boolean;
 }
 
 /** Status change result from watchSessionStatus. */
@@ -452,6 +602,8 @@ export interface PilotSwarmManagementClientOptions {
      * minting tokens. Only consulted when `useManagedIdentity` is `true`.
      */
     aadDbUser?: string;
+    /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
+    artifactStore?: ArtifactStore | null;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -470,6 +622,7 @@ export class PilotSwarmManagementClient {
     private _duroxideClient: any = null;
     private _modelProviders: ModelProviderRegistry | null = null;
     private _systemAgents: AgentConfig[] = [];
+    private _artifactStore: ArtifactStore | null = null;
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
@@ -492,6 +645,7 @@ export class PilotSwarmManagementClient {
             return new WebPilotSwarmManagementClient(options) as unknown as PilotSwarmManagementClient;
         }
         this.config = options;
+        this._artifactStore = options.artifactStore ?? null;
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -550,7 +704,14 @@ export class PilotSwarmManagementClient {
         }
 
         // Load model providers
-        this._modelProviders = loadModelProviders(this.config.modelProvidersPath);
+        this._modelProviders = loadModelProviderTypes(this.config.modelProvidersPath);
+                const legacyProviders = loadModelProviders(this.config.modelProvidersPath);
+                if (this._catalog.providers && legacyProviders) {
+                    await bootstrapProviders(this._catalog.providers, {
+                        providers: legacyProviders.allProviders,
+                        defaultModel: legacyProviders.defaultModel,
+                    });
+                }
         this._systemAgents = loadSystemAgentConfigs({
             pluginDirs: this.config.pluginDirs,
             disableManagementAgents: this.config.disableManagementAgents,
@@ -652,9 +813,12 @@ export class PilotSwarmManagementClient {
             candidate.sessionId === target ||
             `session-${candidate.sessionId}` === target);
         if (!plan) {
-            throw new Error(
-                `System agent "${target}" is not known to this management client. ` +
-                `Configure pluginDirs/systemAgents so the client can recreate the system session.`,
+            throw Object.assign(
+                new Error(
+                    `System agent "${target}" is not known to this management client. ` +
+                    `Configure pluginDirs/systemAgents so the client can recreate the system session.`,
+                ),
+                { code: "NOT_FOUND" },
             );
         }
         return plan;
@@ -1031,6 +1195,7 @@ export class PilotSwarmManagementClient {
             isSystem: row.isSystem || undefined,
             model: row.model ?? undefined,
             reasoningEffort: row.reasoningEffort ?? undefined,
+            contextTier: row.contextTier ?? undefined,
             shortSummary: row.shortSummary ?? undefined,
             summaryState: row.summaryState ?? undefined,
             summaryUpdatedAt: row.summaryUpdatedAt?.getTime(),
@@ -1358,9 +1523,40 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const trimmed = String(model || "").trim();
         if (!trimmed) throw new Error("setSessionModel requires a model id");
-        const models = this.listModels();
-        const match = models.find((m) => m.qualifiedName === trimmed);
-        if (!match) throw new Error(`Unknown model: ${trimmed}`);
+        const session = await this.getSession(sessionId).catch(() => null);
+        if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        const store = this._requireProviders();
+        if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
+        const actor = session.owner
+            ? await store.lookupUserId(session.owner)
+            : null;
+        const credentials = await store.allCredentials();
+        let selection;
+        try {
+            selection = resolveRuntimeModelSelection(this._modelProviders, credentials, {
+                requestedModel: trimmed,
+                requestedReasoning: opts?.reasoningEffort,
+                requestedContext: opts?.contextTier,
+                eligible: session.isSystem
+                    ? (provider) => provider.class === "shared" || provider.systemUseEnabled === true
+                    : (provider) => provider.class === "shared" || (actor !== null && provider.ownerUserId === actor),
+            });
+        } catch (error: any) {
+            if (error?.code === "MODEL_AMBIGUOUS") throw error;
+            if (error?.code === "MODEL_UNRESOLVED") {
+                throw Object.assign(
+                    new Error(`Unknown model: ${trimmed}. ${error.message}`),
+                    { code: "MODEL_UNRESOLVED" },
+                );
+            }
+            throw new Error(`Unknown model: ${trimmed}. ${error?.message || String(error)}`);
+        }
+        const credential = credentials.find((provider) => provider.name === selection.provider)!;
+        const modelName = selection.model.slice(selection.model.indexOf(":") + 1);
+        const match = this._providerTypeModels(credential.typeId)
+            .find((candidate) => candidate.modelName === modelName);
+        if (!match) throw new Error(`Unknown model: ${selection.model}`);
+        const resolvedModel = selection.model;
         // Reasoning effort is applied ONLY when the caller asked for one.
         // When omitted, the key is left out of the command args entirely so
         // the orchestration's set_model handler PRESERVES the session's
@@ -1372,7 +1568,7 @@ export class PilotSwarmManagementClient {
         if (nextReasoningEffort) {
             const supported = match.supportedReasoningEfforts ?? [];
             if (!supported.includes(nextReasoningEffort)) {
-                throw new Error(`Model ${trimmed} does not support reasoning effort '${nextReasoningEffort}'`);
+                throw new Error(`Model ${resolvedModel} does not support reasoning effort '${nextReasoningEffort}'`);
             }
         }
         // Context-window tier follows the same preserve-when-omitted contract.
@@ -1381,16 +1577,14 @@ export class PilotSwarmManagementClient {
         if (nextContextTier) {
             const supported = match.supportedContextTiers ?? [];
             if (!supported.includes(nextContextTier)) {
-                throw new Error(`Model ${trimmed} does not support context tier '${nextContextTier}'`);
+                throw new Error(`Model ${resolvedModel} does not support context tier '${nextContextTier}'`);
             }
         }
-        const session = await this.getSession(sessionId).catch(() => null);
-        if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
         await this.sendCommand(sessionId, {
             cmd: "set_model",
             id: buildLifecycleCommandId("set-model"),
             args: {
-                model: trimmed,
+                model: resolvedModel,
                 ...(hasExplicitEffort ? { reasoningEffort: nextReasoningEffort } : {}),
                 ...(hasExplicitContextTier ? { contextTier: nextContextTier } : {}),
                 source: opts?.source ?? "user",
@@ -1414,18 +1608,72 @@ export class PilotSwarmManagementClient {
         const session = await this.getSession(sessionId).catch(() => null);
         if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
         if ((session as any).isSystem) {
-            throw new Error("System sessions are excluded from regeneration (use restartSystemSession)");
+            throw Object.assign(
+                new Error("System sessions are excluded from regeneration (use restartSystemSession)"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
         }
         if ((session as any).serviceKind) {
-            throw new Error("Service sessions are runtime machinery and are excluded from regeneration");
+            throw Object.assign(
+                new Error("Service sessions are runtime machinery and are excluded from regeneration"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
         }
-        const models = this.listModels();
-        const isKnown = (m?: string | null) => !!m && models.some((x) => x.qualifiedName === m);
-        if (opts?.distillerModel && !isKnown(opts.distillerModel)) {
-            throw new Error(`Unknown distiller model: ${opts.distillerModel}`);
+        const store = this._requireProviders();
+        if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
+        const actor = session.owner ? await store.lookupUserId(session.owner) : null;
+        const credentials = await store.allCredentials();
+        const eligible = (provider: ProviderCredential) =>
+            provider.class === "shared" || (actor !== null && provider.ownerUserId === actor);
+        const resolveRequested = (
+            model: string,
+            reasoning?: string | null,
+            context?: string | null,
+        ) => resolveRuntimeModelSelection(this._modelProviders!, credentials, {
+            requestedModel: model,
+            requestedReasoning: reasoning,
+            requestedContext: context,
+            eligible,
+        });
+
+        let targetModel = opts?.model;
+        let distillerModel = opts?.distillerModel;
+        let distillerReasoningEffort = opts?.distillerReasoningEffort;
+        let distillerContextTier = opts?.distillerContextTier;
+        if (targetModel) {
+            try {
+                targetModel = resolveRequested(targetModel).model;
+            } catch (error: any) {
+                if (error?.code === "MODEL_AMBIGUOUS") throw error;
+                if (error?.code === "MODEL_UNRESOLVED") {
+                    throw Object.assign(
+                        new Error(`Unknown model: ${opts?.model}. ${error.message}`),
+                        { code: "MODEL_UNRESOLVED" },
+                    );
+                }
+                throw new Error(`Unknown model: ${opts?.model}. ${error?.message || String(error)}`);
+            }
         }
-        if (opts?.model && !isKnown(opts.model)) {
-            throw new Error(`Unknown model: ${opts.model}`);
+        if (distillerModel) {
+            try {
+                const resolved = resolveRequested(
+                    distillerModel,
+                    distillerReasoningEffort,
+                    distillerContextTier,
+                );
+                distillerModel = resolved.model;
+                distillerReasoningEffort = resolved.reasoning ?? undefined;
+                distillerContextTier = resolved.context ?? undefined;
+            } catch (error: any) {
+                if (error?.code === "MODEL_AMBIGUOUS") throw error;
+                if (error?.code === "MODEL_UNRESOLVED") {
+                    throw Object.assign(
+                        new Error(`Unknown distiller model: ${opts?.distillerModel}. ${error.message}`),
+                        { code: "MODEL_UNRESOLVED" },
+                    );
+                }
+                throw new Error(`Unknown distiller model: ${opts?.distillerModel}. ${error?.message || String(error)}`);
+            }
         }
         // Dead-model guard: the reborn session's grounding turn runs on the
         // session's model. If that model no longer resolves (a common regen
@@ -1433,10 +1681,16 @@ export class PilotSwarmManagementClient {
         // discard the transcript and then wedge on the dead model. Require a
         // live replacement rather than making a broken session strictly worse.
         const currentModel = (session as any).model as string | undefined;
-        if (!opts?.model && currentModel && !isKnown(currentModel)) {
-            throw new Error(
-                `Session model '${currentModel}' is no longer available; pass a replacement model to regenerate this session.`,
-            );
+        if (!targetModel && currentModel) {
+            try {
+                resolveRequested(currentModel);
+            } catch (error: any) {
+                if (error?.code === "MODEL_AMBIGUOUS") throw error;
+                throw Object.assign(new Error(
+                    `Session model '${currentModel}' is no longer available; pass a replacement model to regenerate this session. `
+                    + `${error?.message || String(error)}`,
+                ), { code: "MODEL_UNRESOLVED" });
+            }
         }
         const attemptId = buildLifecycleCommandId("regenerate");
         await this.sendCommand(sessionId, {
@@ -1446,10 +1700,10 @@ export class PilotSwarmManagementClient {
                 ...(opts?.handoff ? { handoff: String(opts.handoff).slice(0, 4_000) } : {}),
                 ...(opts?.instructions ? { instructions: String(opts.instructions).slice(0, 4_000) } : {}),
                 ...(opts?.distillMode === "deterministic" ? { distill_mode: "deterministic" } : {}),
-                ...(opts?.distillerModel ? { distillerModel: opts.distillerModel } : {}),
-                ...(opts?.distillerReasoningEffort ? { distillerReasoningEffort: opts.distillerReasoningEffort } : {}),
-                ...(opts?.distillerContextTier ? { distillerContextTier: opts.distillerContextTier } : {}),
-                ...(opts?.model ? { model: opts.model } : {}),
+                ...(distillerModel ? { distillerModel } : {}),
+                ...(distillerReasoningEffort ? { distillerReasoningEffort } : {}),
+                ...(distillerContextTier ? { distillerContextTier } : {}),
+                ...(targetModel ? { model: targetModel } : {}),
                 ...(opts?.force ? { force: true } : {}),
                 source: opts?.source ?? "operator",
             },
@@ -1537,7 +1791,13 @@ export class PilotSwarmManagementClient {
     ): Promise<RestartSystemSessionResult> {
         this._ensureStarted();
         if (!options?.disposition) {
-            throw new Error("restartSystemSession requires a disposition: complete, terminate, or hard_delete");
+            throw Object.assign(
+                new Error(
+                    "restartSystemSession requires a disposition: complete, terminate, or hard_delete "
+                    + "(HTTP callers send it inside the options envelope: {\"options\":{\"disposition\":\"complete\"}})",
+                ),
+                { code: "INVALID_REQUEST" },
+            );
         }
 
         const disposition = normalizeSystemRestartDisposition(options.disposition);
@@ -1546,11 +1806,90 @@ export class PilotSwarmManagementClient {
         const reason = options.reason ?? `Restarting system session ${plan.agent.id}`;
         const existingRow = await this._catalog!.getSession(sessionId);
         const previousSessionExisted = Boolean(existingRow);
+        const providerStore = this._catalog!.providers;
+        let persistedRoute: DefaultTuple | null = null;
+        let persistedSource: string | null = null;
+        if (providerStore) {
+            const [defaults, overrides, credentials] = await Promise.all([
+                providerStore.getDefaults(null),
+                providerStore.listSystemAgentModels(),
+                providerStore.allCredentials(),
+            ]);
+            const override = overrides.find((candidate) => candidate.agentId === plan.agent.id);
+            if (override) {
+                persistedRoute = override;
+                persistedSource = "agent_override";
+            } else if (defaults.system.provider && defaults.system.model) {
+                persistedRoute = defaults.system;
+                persistedSource = "system_default";
+            } else {
+                persistedRoute = this._firstAvailableTuple(
+                    credentials,
+                    (provider) => provider.class === "shared" || provider.systemUseEnabled === true,
+                );
+                persistedSource = persistedRoute ? "first_available" : null;
+            }
+        }
+        let defaultModel = options.model
+            ?? persistedRoute?.model
+            ?? existingRow?.model
+            ?? this._modelProviders?.defaultModel;
+        if (!defaultModel) {
+            throw new Error("Cannot restart system session without a configured default model");
+        }
+        let restartReasoning = Object.prototype.hasOwnProperty.call(options, "reasoningEffort")
+            ? options.reasoningEffort ?? null
+            : persistedRoute?.reasoning ?? existingRow?.reasoningEffort ?? null;
+        let restartContext = Object.prototype.hasOwnProperty.call(options, "contextTier")
+            ? options.contextTier ?? null
+            : persistedRoute?.context ?? existingRow?.contextTier ?? null;
+        let restartSource = options.modelResolutionSource ?? persistedSource ?? existingRow?.modelResolutionSource ?? "manual_restart";
+        if (providerStore) {
+            if (!this._modelProviders) {
+                throw new Error("Cannot restart system session without a provider type catalog");
+            }
+            const credentials = await providerStore.allCredentials();
+            const validated = resolveRuntimeModelSelection(this._modelProviders, credentials, {
+                requestedModel: defaultModel,
+                requestedReasoning: restartReasoning,
+                requestedContext: restartContext,
+                eligible: (provider) => provider.class === "shared" || provider.systemUseEnabled === true,
+            });
+            defaultModel = validated.model;
+            restartReasoning = validated.reasoning as ReasoningEffort | null;
+            restartContext = validated.context as ContextTier | null;
+            if (!options.modelResolutionSource && !persistedSource) restartSource = validated.source;
+        }
+        const operationId = options.operationId ?? `manual:${buildLifecycleCommandId("system-restart")}`;
+        const claimId = buildLifecycleCommandId("system-restart-claim");
+        if (providerStore) {
+            const claim = await providerStore.claimSystemRestart({
+                agentId: plan.agent.id,
+                operationId,
+                claimId,
+                model: defaultModel,
+                reasoning: restartReasoning,
+                context: restartContext,
+                disposition,
+            });
+            if (claim !== "claimed") {
+                return {
+                    agentId: plan.agent.id,
+                    agentName: plan.agent.name,
+                    sessionId,
+                    disposition,
+                    previousSessionExisted,
+                    startResults: [],
+                    skippedReason: claim,
+                };
+            }
+        }
 
         if (existingRow && !existingRow.isSystem) {
             throw new Error(`Session ${sessionId.slice(0, 8)} exists but is not a system session`);
         }
 
+        try {
         if (existingRow) {
             if (disposition === "complete") {
                 const view = await this.getSession(sessionId).catch(() => null);
@@ -1581,25 +1920,30 @@ export class PilotSwarmManagementClient {
             }
         }
 
-        const defaultModel = options.model ?? this._modelProviders?.defaultModel ?? existingRow?.model;
-        if (!defaultModel) {
-            throw new Error("Cannot restart system session without a configured default model");
-        }
-
         const startResults = await startSystemAgents({
             catalog: this._catalog!,
             duroxideClient: this._duroxideClient,
             agents: this._systemAgents,
             defaultModel,
-            ...(options.reasoningEffort ? { defaultReasoningEffort: options.reasoningEffort } : {}),
+            defaultReasoningEffort: restartReasoning as ReasoningEffort | null,
+            defaultContextTier: restartContext as ContextTier | null,
+            modelResolutionSource: restartSource,
             blobEnabled: this.config.blobEnabled,
             dehydrateThreshold: this.config.waitThreshold ?? DEFAULT_SYSTEM_AGENT_DEHYDRATE_THRESHOLD,
             agentId: plan.agent.id,
+            // The retained session id already has ledger rows from earlier
+            // lifetimes; advance its ledger base so the new lifetime's
+            // settles land on fresh keys instead of silently colliding.
+            ...(providerStore ? {
+                prepareRetainedSessionLedger: async (sid: string) => { await providerStore.bumpLedgerBase(sid); },
+            } : {}),
         });
         const newSession = await this.getSession(sessionId).catch(() => null);
         if (!newSession) {
             throw new Error(`System session ${plan.agent.id} was not recreated`);
         }
+
+        await providerStore?.finishSystemRestart(plan.agent.id, claimId, null);
 
         return {
             agentId: plan.agent.id,
@@ -1609,6 +1953,10 @@ export class PilotSwarmManagementClient {
             previousSessionExisted,
             startResults,
         };
+        } catch (error: any) {
+            await providerStore?.finishSystemRestart(plan.agent.id, claimId, error?.message || String(error));
+            throw error;
+        }
     }
 
     // ─── Session Events ──────────────────────────────────────
@@ -2610,6 +2958,1156 @@ export class PilotSwarmManagementClient {
         );
     }
 
+    // ─── Provider budgets ────────────────────────────────────
+    //
+    // The capabilities of docs/proposals/providers-and-budgets-surface.md.
+    // Each one resolves the caller to a user id and hands that number, with
+    // the role they signed in as, to a `cms_provider_*` procedure. Nothing
+    // below asks whether the caller is allowed to do the thing: the procedure
+    // raises PROVIDER_FORBIDDEN / PROVIDER_NOT_FOUND when they are not, and
+    // that refusal is the same on every surface because it is made in one
+    // place. See provider-store.ts.
+
+    private _requireProviders(): ProviderStore {
+        this._ensureStarted();
+        const providers = this._catalog!.providers;
+        if (!providers) throw new Error("Provider budgets are not available on this deployment.");
+        return providers;
+    }
+
+    /**
+     * The caller as the procedures want them: a numeric user id and a role.
+     * The id lookup never creates a row, so an unknown caller stays `null`
+     * rather than being minted by a read.
+     */
+    private async _providerActor(viewer: ProviderViewer): Promise<{
+        store: ProviderStore;
+        actor: number | null;
+        isAdmin: boolean;
+    }> {
+        const store = this._requireProviders();
+        return {
+            store,
+            actor: await store.lookupUserId(viewer?.principal ?? null),
+            isAdmin: viewer?.isAdmin === true,
+        };
+    }
+
+    private async _auditProviderMutation(
+        viewer: ProviderViewer,
+        action: string,
+        target: string | null,
+        details?: Record<string, unknown>,
+    ): Promise<void> {
+        await this._catalog!.recordAuthzAudit({
+            actor: viewer.principal ? {
+                provider: viewer.principal.provider,
+                subject: viewer.principal.subject,
+                display: viewer.principal.email ?? viewer.principal.displayName ?? null,
+            } : null,
+            action,
+            target,
+            decision: "provider_change",
+            reason: null,
+            details: details ?? null,
+        }).catch(() => {});
+    }
+
+    private _providerTypeModels(typeId: string): ModelDescriptor[] {
+        return this._modelProviders?.getModelsByProvider()
+            .find((group) => group.providerId === typeId)?.models ?? [];
+    }
+
+    private _normalizeProviderTuple(
+        row: ProviderRow,
+        tuple: DefaultTuple,
+    ): DefaultTuple {
+        const provider = String(tuple.provider || "").trim();
+        const requested = String(tuple.model || "").trim();
+        if (!provider || !requested) {
+            throw new ProviderError("PROVIDER_INVALID", "A default needs both a provider and model.");
+        }
+        const prefix = `${provider}:`;
+        const modelName = requested.startsWith(prefix)
+            ? requested.slice(prefix.length)
+            : (requested.includes(":") ? "" : requested);
+        if (!modelName) {
+            throw new ProviderError(
+                "PROVIDER_INVALID",
+                `The model must belong to "${provider}": write it as "${provider}:<model>".`,
+            );
+        }
+        const descriptor = this._providerTypeModels(row.typeId)
+            .find((model) => model.modelName === modelName);
+        if (this._modelProviders && !descriptor) {
+            throw new ProviderError(
+                "PROVIDER_INVALID",
+                `Provider type "${row.typeId}" does not offer model "${modelName}".`,
+            );
+        }
+        const reasoning = tuple.reasoning ?? descriptor?.defaultReasoningEffort ?? null;
+        if (reasoning && descriptor?.supportedReasoningEfforts?.length
+            && !descriptor.supportedReasoningEfforts.includes(reasoning as ReasoningEffort)) {
+            throw new ProviderError("PROVIDER_INVALID", `Model ${provider}:${modelName} does not support reasoning effort '${reasoning}'.`);
+        }
+        const context = tuple.context ?? descriptor?.defaultContextTier ?? null;
+        if (context && descriptor?.supportedContextTiers?.length
+            && !descriptor.supportedContextTiers.includes(context as ContextTier)) {
+            throw new ProviderError("PROVIDER_INVALID", `Model ${provider}:${modelName} does not support context tier '${context}'.`);
+        }
+        return { provider, model: `${provider}:${modelName}`, reasoning, context };
+    }
+
+    private async _validatedDefaultTuple(
+        store: ProviderStore,
+        actor: number | null,
+        isAdmin: boolean,
+        tuple: DefaultTuple,
+        scope: "user" | "cluster" | "system",
+    ): Promise<DefaultTuple> {
+        if (!tuple.provider) return normalizeDefaultTuple(null);
+        const rows = await store.listProviders(actor, isAdmin);
+        const row = rows.find((candidate) => candidate.name === tuple.provider);
+        if (!row) throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${tuple.provider}".`);
+        if (scope === "user" && !row.usableByMe) {
+            throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${tuple.provider}".`);
+        }
+        if (scope === "cluster" && row.class !== "shared") {
+            throw new ProviderError("PROVIDER_INVALID", "The cluster default must be a shared provider.");
+        }
+        if (scope === "system" && !row.systemEligible) {
+            throw new ProviderError("PROVIDER_INVALID", `Provider "${row.name}" is not enabled for system sessions.`);
+        }
+        const normalized = this._normalizeProviderTuple(row, tuple);
+        const credential = scope === "system"
+            ? await store.getSystemCredential(row.name)
+            : await store.getCredential(row.name, actor);
+        const modelName = normalized.model!.slice(normalized.model!.indexOf(":") + 1);
+        if (!credential || !this._modelProviders
+            || !resolveProviderCredential(this._modelProviders, credential, modelName)) {
+            throw new ProviderError("PROVIDER_INVALID", `Provider "${row.name}" does not have a usable credential and endpoint.`);
+        }
+        return normalized;
+    }
+
+    private _firstAvailableTuple(
+        credentials: ProviderCredential[],
+        eligible: (credential: ProviderCredential) => boolean,
+    ): DefaultTuple | null {
+        if (!this._modelProviders) return null;
+        for (const credential of credentials) {
+            if (!eligible(credential)) continue;
+            const first = this._providerTypeModels(credential.typeId)[0];
+            if (!first) continue;
+            if (!resolveProviderCredential(this._modelProviders, credential, first.modelName)) continue;
+            return {
+                provider: credential.name,
+                model: `${credential.name}:${first.modelName}`,
+                reasoning: first.defaultReasoningEffort ?? null,
+                context: first.defaultContextTier ?? null,
+            };
+        }
+        return null;
+    }
+
+    private _resolvedDefault(
+        tuple: DefaultTuple | null,
+        source: ResolvedModelDefault["source"],
+    ): ResolvedModelDefault | null {
+        if (!tuple?.provider || !tuple.model) return null;
+        return {
+            provider: tuple.provider,
+            model: tuple.model,
+            reasoningEffort: tuple.reasoning as ReasoningEffort | null,
+            contextTier: tuple.context as ContextTier | null,
+            source,
+        };
+    }
+
+    /** Every shared provider plus the caller's own. Admins also see other people's, unusable. */
+    async listProviders(viewer: ProviderViewer): Promise<{ providers: ProviderRow[] }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        return { providers: await store.listProviders(actor, isAdmin) };
+    }
+
+    /** Limits, what has been spent against them, reset times, and the caller's own ceiling. */
+    async getProviderStatus(
+        viewer: ProviderViewer,
+        names?: string[] | null,
+    ): Promise<{ providers: ProviderStatusRow[] }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        return { providers: await store.providerStatus(actor, isAdmin, names ?? null) };
+    }
+
+    /**
+     * Everything the provider table draws, in one read.
+     *
+     * Rows come back in render order — shared providers first, then the
+     * caller's own, each immediately followed by its model-scoped limits — so
+     * a table draws the array as it arrives and never asks a second time per
+     * provider.
+     *
+     * Every period reports a used figure whether or not a limit caps it. That
+     * is the fact `getProviderStatus` cannot carry: it lists limits, and a
+     * period with no limit has no limit to list.
+     */
+    async getProviderUsageGrid(viewer: ProviderViewer): Promise<{ rows: UsageGridRow[] }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        return { rows: await store.usageGrid(actor, isAdmin) };
+    }
+
+    /** Create a shared provider: anyone in the cluster may spend from it. */
+    /**
+     * Wake every session waiting on this provider.
+     *
+     * The durable timer a paused session sleeps on is only the BACKSTOP. What
+     * should actually release it is the change itself — a limit raised or
+     * removed, an allowance widened, a hold released, a missing name created
+     * again — and without this that promise was never kept: a session paused
+     * on a monthly limit would sleep out the backstop no matter what an
+     * administrator did.
+     *
+     * The wake is a nudge, not a decision. Each woken session re-enters the
+     * gate on its next turn and pauses again if the reason still holds, so a
+     * raise that is still not enough wakes nobody in the end — and waking
+     * after a change that releases no one costs one cheap re-check, because
+     * the gate runs before the model.
+     *
+     * Best-effort throughout. A failed wake leaves the backstop, which is
+     * exactly what it is for.
+     */
+    private async _wakeProvidersPaused(providerName: string): Promise<void> {
+        const store = this._catalog?.providers;
+        if (!store || !this._duroxideClient) return;
+        try {
+            const sessionIds = await store.pausedFor(providerName);
+            for (const sessionId of sessionIds) {
+                try {
+                    // The orchestration id is DERIVED, not stored: getSession
+                    // builds this same string at its top and then returns a
+                    // view that does not carry it. Reading it back off that
+                    // view gave undefined every time, so `if (!orchId)
+                    // continue` skipped every session and this whole function
+                    // has never woken anything. Releasing a hold, raising a
+                    // limit, widening an allowance, removing a limit and
+                    // creating a provider were all silent no-ops behind the
+                    // catch below, leaving the 6-hour backstop as the only
+                    // real release.
+                    const orchId = `session-${sessionId}`;
+                    await this._catalog!.updateSession(sessionId, {
+                        state: "running", waitReason: null, lastActiveAt: new Date(),
+                    }).catch(() => {});
+                    await this._duroxideClient.enqueueEvent(orchId, "messages", JSON.stringify({
+                        prompt: PROVIDER_BUDGET_WAKE_PROMPT,
+                    }));
+                } catch {
+                    // One unreachable session must not stop the others.
+                }
+            }
+        } catch {
+            // The backstop timer still covers every one of them.
+        }
+    }
+
+    /**
+     * Refuse a provider type this deployment does not describe.
+     *
+     * The database cannot check it: the types live in the model-providers
+     * FILE, which SQL has never read. Without this, a typo created a
+     * provider that listed as an ordinary usable row and could never run a
+     * turn — buildRuntimeRegistry drops an instance whose type it does not
+     * know, silently, so the failure surfaced only as a session that waited
+     * for ever on a name that was right there in the table.
+     */
+    private _assertKnownProviderType(typeId: string): void {
+        const wanted = String(typeId ?? "").trim();
+        const known = this.getModelsByProvider().map((g) => g.providerId);
+        // No catalog at all is not evidence of a bad type — a deployment that
+        // has not loaded one yet would refuse everything.
+        if (known.length === 0) return;
+        if (known.includes(wanted)) return;
+        throw new ProviderError(
+            "PROVIDER_INVALID",
+            `No provider type named "${wanted}" on this deployment. `
+            + `It has ${known.slice(0, 6).join(", ")}${known.length > 6 ? ", …" : ""}.`,
+        );
+    }
+
+    async createProvider(
+        viewer: ProviderViewer,
+        input: ProviderCreateInput,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        this._assertKnownProviderType(input.type);
+        const created = await store.createProvider({
+            name: input.name,
+            typeId: input.type,
+            class: "shared",
+            secretRef: input.credentials ?? null,
+            baseUrl: input.baseUrl ?? null,
+        }, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "createProvider", created.name, { class: "shared", type: created.typeId });
+        // A name that did not resolve a moment ago now does.
+        await this._wakeProvidersPaused(input.name);
+        return created;
+    }
+
+    /** Create a provider of the caller's own, on their own credentials. Nobody else sees it. */
+    async createMyProvider(
+        viewer: ProviderViewer,
+        input: ProviderCreateInput,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (actor === null) {
+            throw new ProviderError("PROVIDER_FORBIDDEN", "Sign in to add a personal provider.");
+        }
+        this._assertKnownProviderType(input.type);
+        const created = await store.createProvider({
+            name: input.name,
+            typeId: input.type,
+            class: "personal",
+            ownerUserId: actor,
+            secretRef: input.credentials ?? null,
+            baseUrl: input.baseUrl ?? null,
+        }, actor, isAdmin);
+        await this._wakeProvidersPaused(input.name);
+        await this._auditProviderMutation(viewer, "createMyProvider", created.name, { class: "personal", type: created.typeId });
+        return created;
+    }
+
+    /**
+     * Remove a shared provider. Its sessions are not moved anywhere: they
+     * wait on a name that no longer resolves, and the count says how many.
+     */
+    async deleteProvider(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const result = { name, waitingSessions: await store.deleteProvider(name, actor, isAdmin) };
+        await this._auditProviderMutation(viewer, "deleteProvider", name, { waitingSessions: result.waitingSessions });
+        return result;
+    }
+
+    /**
+     * Remove one of the caller's own providers. The same call as
+     * `deleteProvider`: `cms_provider_delete` refuses a name the caller may
+     * not touch, so the two differ only in which door offers them.
+     */
+    async deleteMyProvider(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+        // The /me namespace holds ONLY the caller's own personal providers.
+        // Delegating straight to deleteProvider let an admin delete a SHARED
+        // provider through this route, and answered "forbidden" for shared
+        // names — an existence oracle. Anything that is not the caller's own
+        // personal provider is a name this namespace has never heard of.
+        const { store, actor } = await this._providerActor(viewer);
+        const rows = await store.listProviders(actor, false);
+        const mine = rows.find((row) => row.name === name && row.class === "personal" && row.ownerUserId === actor);
+        if (!mine) {
+            throw new ProviderError("PROVIDER_NOT_FOUND", `there is no provider named "${name}"`);
+        }
+        const result = { name, waitingSessions: await store.deleteProvider(name, actor, false) };
+        await this._auditProviderMutation(viewer, "deleteMyProvider", name, { waitingSessions: result.waitingSessions });
+        return result;
+    }
+
+    async clearProviderRoutingDependencies(viewer: ProviderViewer, name: string) {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const result = await store.clearRoutingDependencies(name, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "clearProviderRoutingDependencies", name, result);
+        return { name, ...result };
+    }
+
+    /**
+     * Save one limit. The same (period, scope) replaces what was there.
+     * `seededTokens` is what this period had already spent when the limit
+     * landed — a limit counts from the current window, it never resets it.
+     */
+    async setProviderLimit(
+        viewer: ProviderViewer,
+        input: ProviderLimitInput,
+    ): Promise<{ ruleId: string; seededTokens: number }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        // Validate here, not in Postgres: an unparsable or fractional value
+        // used to reach the proc and come back as a raw 22P02 dressed up as
+        // an internal server error.
+        const tokens = Number(input.tokens);
+        if (!Number.isSafeInteger(tokens) || tokens < 0) {
+            throw new ProviderError("PROVIDER_INVALID", "A limit is a whole number of tokens, zero or more.");
+        }
+        const saved = await store.setLimit({
+            name: input.provider,
+            period: input.period,
+            modelQualified: input.model ?? null,
+            limitTokens: tokens,
+        }, actor, isAdmin);
+        await this._wakeProvidersPaused(input.provider);
+        return saved;
+    }
+
+    /** Drop one limit. `removed` is false when that (period, scope) had none. */
+    async removeProviderLimit(viewer: ProviderViewer, input: ProviderLimitRef): Promise<{ removed: boolean }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const removed = await store.removeLimit(input.provider, input.period, input.model ?? null, actor, isAdmin);
+        await this._wakeProvidersPaused(input.provider);
+        return { removed };
+    }
+
+    /** The share of each of a shared provider's limits that one person may use. 100 is full. */
+    async setProviderAllowance(
+        viewer: ProviderViewer,
+        input: { provider: string; pct: number },
+    ): Promise<{ name: string; allowancePct: number }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const allowancePct = await store.setAllowance(input.provider, Number(input.pct), actor, isAdmin);
+        await this._wakeProvidersPaused(input.provider);
+        return { name: input.provider, allowancePct };
+    }
+
+    /**
+     * Pause new turns against a provider, independently of any limit. With
+     * neither an end time nor a release the hold has no end, and only
+     * another call lifts it.
+     */
+    async setProviderHold(
+        viewer: ProviderViewer,
+        input: ProviderHoldInput,
+    ): Promise<{ name: string; holdUntilUtc: string | null; holdIndefinite: boolean }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const release = input.release === true;
+        const untilUtc = release ? null : (input.untilUtc ?? null);
+        if (untilUtc !== null) {
+            const parsed = Date.parse(untilUtc);
+            if (Number.isNaN(parsed)) {
+                throw new ProviderError("PROVIDER_INVALID", `"${untilUtc}" is not a timestamp.`);
+            }
+            // A hold that has already ended holds nothing; accepting one and
+            // echoing it back as set is the write-path lie the 2026-08-21
+            // audit flagged. The Edit sheet validates too, but the API must
+            // not trust the sheet.
+            if (parsed <= Date.now()) {
+                throw new ProviderError("PROVIDER_INVALID", "A hold must end in the future.");
+            }
+        }
+        const indefinite = !release && !untilUtc;
+        await store.setHold(input.provider, { untilUtc, indefinite }, actor, isAdmin);
+        await this._wakeProvidersPaused(input.provider);
+        return { name: input.provider, holdUntilUtc: untilUtc, holdIndefinite: indefinite };
+    }
+
+    /** Compatibility read: configured ordinary defaults plus system routing. */
+    async getDefaults(viewer: ProviderViewer): Promise<ProviderDefaults> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        return store.getDefaults(actor);
+    }
+
+    /** @deprecated Use setModelDefault({ scope: "cluster", ... }). */
+    async setClusterDefault(viewer: ProviderViewer, tuple: DefaultTuple): Promise<DefaultTuple> {
+        return this.setModelDefault(viewer, {
+            scope: "cluster",
+            provider: tuple.provider,
+            model: tuple.model,
+            reasoningEffort: tuple.reasoning as ReasoningEffort | null,
+            contextTier: tuple.context as ContextTier | null,
+        });
+    }
+
+    /** @deprecated Use setModelDefault({ scope: "user", ... }). */
+    async setMyDefault(viewer: ProviderViewer, tuple: DefaultTuple | null): Promise<DefaultTuple> {
+        return this.setModelDefault(viewer, {
+            scope: "user",
+            provider: tuple?.provider ?? null,
+            model: tuple?.model ?? null,
+            reasoningEffort: tuple?.reasoning as ReasoningEffort | null,
+            contextTier: tuple?.context as ContextTier | null,
+        });
+    }
+
+    async setModelDefault(viewer: ProviderViewer, input: ModelDefaultInput): Promise<DefaultTuple> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (input.scope !== "user" && input.scope !== "cluster") {
+            throw new ProviderError("PROVIDER_INVALID", "scope must be user or cluster.");
+        }
+        if (input.scope === "cluster" && !isAdmin) {
+            throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set the cluster default.");
+        }
+        const requested = normalizeDefaultTuple({
+            provider: input.provider,
+            model: input.model,
+            reasoning: input.reasoningEffort ?? null,
+            context: input.contextTier ?? null,
+        });
+        const next = await this._validatedDefaultTuple(store, actor, isAdmin, requested, input.scope);
+        if (input.scope === "cluster") await store.setClusterDefault(next, isAdmin);
+        else await store.setUserDefault(actor, next);
+        await this._auditProviderMutation(viewer, "setModelDefault", next.provider, {
+            scope: input.scope, model: next.model, cleared: next.provider === null,
+        });
+        return next;
+    }
+
+    async setProviderSystemUse(
+        viewer: ProviderViewer,
+        input: { provider: string; enabled: boolean },
+    ): Promise<{ provider: string; systemUseEnabled: boolean }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const provider = String(input.provider || "").trim();
+        if (!provider) throw new ProviderError("PROVIDER_INVALID", "A provider name is required.");
+        if (input.enabled === true) {
+            const rows = await store.listProviders(actor, isAdmin);
+            const row = rows.find((candidate) => candidate.name === provider);
+            if (!row || row.class !== "personal" || !row.usableByMe) {
+                throw new ProviderError("PROVIDER_NOT_FOUND", `There is no provider named "${provider}".`);
+            }
+            const first = row ? this._providerTypeModels(row.typeId)[0] : null;
+            const credential = await store.getCredential(provider, actor);
+            if (!row || !first || !credential || !this._modelProviders
+                || !resolveProviderCredential(this._modelProviders, credential, first.modelName)) {
+                throw new ProviderError("PROVIDER_INVALID", `Provider "${provider}" does not have a usable credential and endpoint.`);
+            }
+        }
+        const systemUseEnabled = await store.setSystemUse(provider, input.enabled === true, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "setProviderSystemUse", provider, { enabled: systemUseEnabled });
+        return { provider, systemUseEnabled };
+    }
+
+    async getLegacyProviderMigrationStatus(viewer: ProviderViewer) {
+        const { store, isAdmin } = await this._providerActor(viewer);
+        if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can read legacy provider migration status.");
+        return store.getLegacyKeyMigrationStatus();
+    }
+
+    async adoptLegacySystemGitHubCopilotKey(
+        viewer: ProviderViewer,
+        input: { name: string },
+    ) {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can adopt the legacy System key.");
+        const adopted = await store.adoptLegacySystemGitHubKey(
+            String(input.name || "").trim(), actor, isAdmin);
+        await this._auditProviderMutation(viewer, "adoptLegacySystemGitHubCopilotKey", adopted.name, {
+            class: "personal", systemUseEnabled: true,
+        });
+        return { provider: adopted, status: await store.getLegacyKeyMigrationStatus() };
+    }
+
+    async getModelDefaults(viewer: ProviderViewer): Promise<{
+        userSession: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null };
+        clusterSession: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null };
+        system: { configured: DefaultTuple; effective: ResolvedModelDefault | null; error: string | null; updatedBy: number | null; updatedAt: string | null };
+        systemOverrides: SystemAgentModelOverride[];
+    }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const [configured, credentials, systemOverrides] = await Promise.all([
+            store.getDefaults(actor),
+            store.allCredentials(),
+            store.listSystemAgentModels(),
+        ]);
+        const clusterFallback = this._firstAvailableTuple(credentials, (credential) => credential.class === "shared");
+        const userFallback = this._firstAvailableTuple(
+            credentials,
+            (credential) => credential.class === "shared" || (actor !== null && credential.ownerUserId === actor),
+        );
+        const systemFallback = this._firstAvailableTuple(
+            credentials,
+            (credential) => credential.class === "shared" || credential.systemUseEnabled === true,
+        );
+        const resolveConfigured = (
+            candidates: Array<{ tuple: DefaultTuple; source: "user_default" | "cluster_default" | "system_default" }>,
+            eligible: (credential: ProviderCredential) => boolean,
+            fallback: DefaultTuple | null,
+        ): { tuple: DefaultTuple | null; source: ResolvedModelDefault["source"]; error: string | null } => {
+            try {
+                if (candidates.some((candidate) => candidate.tuple.provider || candidate.tuple.model)) {
+                    const resolved = resolveRuntimeModelSelection(this._modelProviders!, credentials, {
+                        defaults: candidates,
+                        eligible,
+                    });
+                    return { tuple: resolved, source: resolved.source as ResolvedModelDefault["source"], error: null };
+                }
+                return { tuple: fallback, source: "first_available", error: null };
+            } catch (error: any) {
+                return { tuple: null, source: "first_available", error: error?.message || String(error) };
+            }
+        };
+        const clusterResolution = this._modelProviders
+            ? resolveConfigured(
+                [{ tuple: configured.cluster, source: "cluster_default" }],
+                (credential) => credential.class === "shared",
+                clusterFallback)
+            : { tuple: null, source: "first_available" as const, error: "Provider type catalog is unavailable." };
+        const userCandidates = configured.mine.provider || configured.mine.model
+            ? [{ tuple: configured.mine, source: "user_default" as const }]
+            : configured.cluster.provider || configured.cluster.model
+                ? [{ tuple: configured.cluster, source: "cluster_default" as const }]
+                : [];
+        const userResolution = this._modelProviders
+            ? resolveConfigured(
+                userCandidates,
+                (credential) => credential.class === "shared" || (actor !== null && credential.ownerUserId === actor),
+                userFallback)
+            : { tuple: null, source: "first_available" as const, error: "Provider type catalog is unavailable." };
+        const systemResolution = this._modelProviders
+            ? resolveConfigured(
+                [{ tuple: configured.system, source: "system_default" }],
+                (credential) => credential.class === "shared" || credential.systemUseEnabled === true,
+                systemFallback)
+            : { tuple: null, source: "first_available" as const, error: "Provider type catalog is unavailable." };
+        return {
+            userSession: {
+                configured: configured.mine,
+                effective: this._resolvedDefault(userResolution.tuple, userResolution.source),
+                error: userResolution.error,
+            },
+            clusterSession: {
+                configured: configured.cluster,
+                effective: this._resolvedDefault(clusterResolution.tuple, clusterResolution.source),
+                error: clusterResolution.error,
+            },
+            system: {
+                configured: isAdmin ? configured.system : normalizeDefaultTuple(null),
+                effective: isAdmin
+                    ? this._resolvedDefault(systemResolution.tuple, systemResolution.source)
+                    : null,
+                error: isAdmin ? systemResolution.error : null,
+                updatedBy: isAdmin ? configured.systemUpdatedBy : null,
+                updatedAt: isAdmin ? configured.systemUpdatedAt : null,
+            },
+            systemOverrides: isAdmin ? systemOverrides : [],
+        };
+    }
+
+    async setSystemModelDefault(
+        viewer: ProviderViewer,
+        input: SystemModelDefaultInput,
+    ): Promise<{
+        configured: DefaultTuple;
+        effective: ResolvedModelDefault | null;
+        restart: null | {
+            requested: true;
+            disposition: "complete" | "terminate" | "hard_delete";
+            affected: number;
+            restarted: number;
+            failures: Array<{ agentId: string; error: string }>;
+        };
+    }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set the system default.");
+        const requested = normalizeDefaultTuple({
+            provider: input.provider,
+            model: input.model,
+            reasoning: input.reasoningEffort ?? null,
+            context: input.contextTier ?? null,
+        });
+        const configured = await this._validatedDefaultTuple(store, actor, isAdmin, requested, "system");
+        const disposition = input.restartExisting
+            ? normalizeSystemRestartDisposition(input.restartExisting.disposition)
+            : null;
+        await store.setSystemDefault(actor, isAdmin, configured);
+        await this._auditProviderMutation(viewer, "setSystemModelDefault", configured.provider, {
+            model: configured.model,
+            cleared: configured.provider === null,
+            restartDisposition: disposition,
+        });
+        const defaults = await this.getModelDefaults(viewer);
+        if (!input.restartExisting) {
+            return { configured, effective: defaults.system.effective, restart: null };
+        }
+        if (!defaults.system.effective) {
+            throw new ProviderError("PROVIDER_INVALID", "No system-eligible provider is available for restart.");
+        }
+        const operationId = [
+            "system-default",
+            disposition,
+            defaults.system.effective.model,
+            defaults.system.effective.reasoningEffort ?? "",
+            defaults.system.effective.contextTier ?? "",
+        ].join(":");
+        const overridden = new Set(defaults.systemOverrides.map((override) => override.agentId));
+        const candidatePlans = this._getSystemAgentPlans().filter((plan) => !overridden.has(plan.agent.id));
+        const plans: SystemAgentSessionPlan[] = [];
+        for (const plan of candidatePlans) {
+            const row = await this._catalog!.getSession(plan.sessionId).catch(() => null);
+            const rollout = await store.getSystemRestart(plan.agent.id);
+            const retryingSameOperation = rollout?.operationId === operationId
+                && rollout.status !== "complete";
+            const live = Boolean(row && !row.deletedAt
+                && !["completed", "failed", "error", "cancelled"].includes(row.state));
+            if (!retryingSameOperation && !live) continue;
+            if (!retryingSameOperation && row!.orchestrationId && row!.state !== "pending"
+                && row!.model === defaults.system.effective.model
+                && (row!.reasoningEffort ?? null) === (defaults.system.effective.reasoningEffort ?? null)
+                && (row!.contextTier ?? null) === (defaults.system.effective.contextTier ?? null)) continue;
+            plans.push(plan);
+        }
+        const failures: Array<{ agentId: string; error: string }> = [];
+        let restarted = 0;
+        for (const plan of plans) {
+            try {
+                const outcome = await this.restartSystemSession(plan.agent.id, {
+                    disposition: disposition!,
+                    model: defaults.system.effective.model,
+                    reasoningEffort: defaults.system.effective.reasoningEffort,
+                    contextTier: defaults.system.effective.contextTier,
+                    modelResolutionSource: defaults.system.effective.source,
+                    operationId,
+                    reason: "Applying the configured system model default",
+                });
+                if (!outcome.skippedReason) restarted += 1;
+            } catch (error: any) {
+                failures.push({ agentId: plan.agent.id, error: error?.message || String(error) });
+            }
+        }
+        return {
+            configured,
+            effective: defaults.system.effective,
+            restart: { requested: true, disposition: disposition!, affected: plans.length, restarted, failures },
+        };
+    }
+
+    async setSystemSessionModel(
+        viewer: ProviderViewer,
+        input: { agentId: string; provider: string; model: string; reasoningEffort?: ReasoningEffort | null; contextTier?: ContextTier | null },
+    ): Promise<SystemAgentModelOverride> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can set a system-agent model.");
+        const plan = this._resolveSystemAgentPlan(input.agentId);
+        const next = await this._validatedDefaultTuple(store, actor, isAdmin, normalizeDefaultTuple({
+            provider: input.provider,
+            model: input.model,
+            reasoning: input.reasoningEffort ?? null,
+            context: input.contextTier ?? null,
+        }), "system");
+        await store.setSystemAgentModel(plan.agent.id, actor, isAdmin, next);
+        await this._auditProviderMutation(viewer, "setSystemSessionModel", plan.agent.id, {
+            provider: next.provider, model: next.model,
+        });
+        const row = await this._catalog!.getSession(plan.sessionId).catch(() => null);
+        if (row && !row.deletedAt && row.orchestrationId) {
+            await this.sendCommand(plan.sessionId, {
+                cmd: "set_model",
+                id: buildLifecycleCommandId("set-system-model"),
+                args: {
+                    model: next.model,
+                    reasoningEffort: next.reasoning,
+                    contextTier: next.context,
+                    source: "system_default",
+                },
+            });
+        }
+        return (await store.listSystemAgentModels()).find((override) => override.agentId === plan.agent.id)!;
+    }
+
+    async clearSystemSessionModel(viewer: ProviderViewer, agentId: string): Promise<{ agentId: string; cleared: boolean }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        if (!isAdmin) throw new ProviderError("PROVIDER_FORBIDDEN", "Only an administrator can clear a system-agent model.");
+        const plan = this._resolveSystemAgentPlan(agentId);
+        const cleared = await store.clearSystemAgentModel(plan.agent.id, actor, isAdmin);
+        if (cleared) await this._auditProviderMutation(viewer, "clearSystemSessionModel", plan.agent.id, { cleared: true });
+        if (cleared) {
+            const defaults = await this.getModelDefaults(viewer);
+            const row = await this._catalog!.getSession(plan.sessionId).catch(() => null);
+            if (row && !row.deletedAt && row.orchestrationId && defaults.system.effective) {
+                await this.sendCommand(plan.sessionId, {
+                    cmd: "set_model",
+                    id: buildLifecycleCommandId("clear-system-model"),
+                    args: {
+                        model: defaults.system.effective.model,
+                        reasoningEffort: defaults.system.effective.reasoningEffort,
+                        contextTier: defaults.system.effective.contextTier,
+                        source: "system_default",
+                    },
+                });
+            }
+        }
+        return { agentId: plan.agent.id, cleared };
+    }
+
+    /**
+     * Where the tokens went: totals, the daily chart, and one breakdown, over
+     * the same filters. Three reads because they group differently, one
+     * answer because a report that shows a total and a chart from different
+     * filters is a report nobody can act on.
+     *
+     * The breakdown asks for one row more than it returns, so `truncated`
+     * reports the cut rather than guessing at it.
+     */
+    async getProviderUsage(viewer: ProviderViewer, query: ProviderUsageQuery = {}): Promise<ProviderUsageReport> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const dimension = PROVIDER_USAGE_DIMENSIONS.includes(query.dimension as ProviderUsageDimension)
+            ? query.dimension as ProviderUsageDimension
+            : "provider";
+        const limit = clampInteger(query.limit ?? undefined, 40, 1, 200);
+        const filters: UsageFilters = {
+            days: clampInteger(query.days ?? undefined, 7, 1, 365),
+            // `mine` beats a supplied id: it is the one form that cannot name
+            // anybody but the caller.
+            ownerUserId: query.mine === true ? actor : (query.ownerUserId ?? null),
+            provider: query.provider ?? null,
+            model: query.model ?? null,
+            sessionId: query.sessionId ?? null,
+            chargeClass: query.chargeClass ?? null,
+        };
+        const [totals, daily, breakdown] = await Promise.all([
+            store.usageTotals(actor, isAdmin, filters),
+            store.usageDaily(actor, isAdmin, filters),
+            store.usageBreakdown(actor, isAdmin, dimension, filters, limit + 1),
+        ]);
+        return {
+            totals,
+            daily,
+            breakdown: breakdown.slice(0, limit),
+            dimension,
+            truncated: breakdown.length > limit,
+        };
+    }
+
+    /** Sessions waiting on a limit right now, with what is holding each one. */
+    async listPausedSessions(viewer: ProviderViewer): Promise<{ sessions: PausedSessionRow[] }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        return { sessions: await store.listPaused(actor, isAdmin) };
+    }
+
+    // ─── Agent packages / worker registry ────────────────────
+
+    private _agentPackagePrincipal(owner: AgentPrincipal | null | undefined, isAdmin: boolean): AgentPrincipal | null {
+        if (owner?.provider && owner?.subject) {
+            return { provider: owner.provider, subject: owner.subject };
+        }
+        if (isAdmin) return null;
+        const error: any = new Error("agent-package operations require an authenticated principal");
+        error.code = "FORBIDDEN";
+        throw error;
+    }
+
+    private _agentPackageSelector(selector?: any, isAdmin = false): AgentPackageSelector | null {
+        if (!selector || typeof selector !== "object") return null;
+        const scope = selector.scope === "shared" || selector.scope === "user" ? selector.scope : null;
+        const provider = String(selector.ownerProvider || selector.owner?.provider || "").trim();
+        const subject = String(selector.ownerSubject || selector.owner?.subject || "").trim();
+        const owner = isAdmin && provider && subject ? { provider, subject } : null;
+        if (!scope && !owner) return null;
+        return { ...(scope ? { scope } : {}), ...(owner ? { owner } : {}) };
+    }
+
+    private async _mapAgentPackageErrors<T>(run: () => Promise<T>): Promise<T> {
+        try {
+            return await run();
+        } catch (error: any) {
+            const message = String(error?.message || "");
+            if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*FORBIDDEN/.test(message)) error.code = "FORBIDDEN";
+            else if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*NOT_FOUND/.test(message)) error.code = "NOT_FOUND";
+            else if (/AGENT_PACKAGE_(?:SEMVER_CONFLICT|SCOPE_MISMATCH|NAME_TAKEN|AMBIGUOUS)/.test(message)) error.code = "CONFLICT";
+            else if (/AGENT_PACKAGE_(?:BAD_(?:SCOPE|NAME)|NO_OWNER|RESERVED_NAME)/.test(message)) error.code = "INVALID_REQUEST";
+            throw error;
+        }
+    }
+
+    private _requireAgentPackageArtifacts(): ArtifactStore {
+        if (!this._artifactStore) {
+            throw new Error("agent-package artifact operations require an artifact store in direct mode");
+        }
+        return this._artifactStore;
+    }
+
+    async listAgentPackages(owner: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
+        this._ensureStarted();
+        return this._catalog!.listAgentPackages(this._agentPackagePrincipal(owner, isAdmin), isAdmin);
+    }
+
+    async getAgentPackage(
+        name: string,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<AgentPackageDetail | null> {
+        this._ensureStarted();
+        return this._catalog!.getAgentPackage(
+            name,
+            this._agentPackagePrincipal(owner, isAdmin),
+            isAdmin,
+            this._agentPackageSelector(selector, isAdmin),
+        );
+    }
+
+    async listAgentWorkerState(): Promise<AgentWorkerStateRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listAgentWorkerState();
+    }
+
+    async listWorkers(): Promise<WorkerRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listWorkers();
+    }
+
+    async setAgentPackageScope(
+        name: string,
+        scope: AgentPackageScope,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        const targetScope = scope === "shared" ? "shared" : "user";
+        const principal = this._agentPackagePrincipal(owner, isAdmin);
+        const ownerOverride = this._agentPackageSelector(selector, isAdmin)?.owner ?? null;
+        let sourceSelector: AgentPackageSelector | null = null;
+        if (targetScope === "user") sourceSelector = { scope: "shared", ...(ownerOverride ? { owner: ownerOverride } : {}) };
+        else if (ownerOverride) sourceSelector = { scope: "user", owner: ownerOverride };
+        await this._mapAgentPackageErrors(() => this._catalog!.setAgentPackageScope(
+            name, targetScope, principal, isAdmin, sourceSelector,
+        ));
+        return { ok: true };
+    }
+
+    async setAgentPackageEnabled(
+        name: string,
+        enabled: boolean,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        await this._mapAgentPackageErrors(() => this._catalog!.setAgentPackageEnabled(
+            name, Boolean(enabled), this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+            this._agentPackageSelector(selector, isAdmin),
+        ));
+        return { ok: true };
+    }
+
+    async pinAgentPackageVersion(
+        name: string,
+        semver: string,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        await this._mapAgentPackageErrors(() => this._catalog!.pinAgentPackageVersion(
+            name, semver, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+            this._agentPackageSelector(selector, isAdmin),
+        ));
+        return { ok: true };
+    }
+
+    async deleteAgentPackage(
+        name: string,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        await this._mapAgentPackageErrors(() => deleteAgentPackageEverywhere(
+            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+            name,
+            this._agentPackagePrincipal(owner, isAdmin),
+            isAdmin,
+            this._agentPackageSelector(selector, isAdmin),
+        ));
+        return { ok: true };
+    }
+
+    async publishAgentPackageDirectory(
+        dir: string,
+        scope: AgentPackageScope,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        opts: { createdBy?: string | null; reservedAgentNames?: string[] } = {},
+    ) {
+        this._ensureStarted();
+        return this._mapAgentPackageErrors(() => publishAgentPackageDir(
+            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+            {
+                dir,
+                scope,
+                owner: this._agentPackagePrincipal(owner, isAdmin),
+                createdBy: opts.createdBy ?? null,
+                isAdmin,
+                ...(opts.reservedAgentNames?.length ? { validate: { reservedAgentNames: opts.reservedAgentNames } } : {}),
+            },
+        ));
+    }
+
+    async uploadAgentPackage(
+        files: Array<{ path: string; contentBase64: string }>,
+        scope: AgentPackageScope,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        opts: { createdBy?: string | null; reservedAgentNames?: string[] } = {},
+    ) {
+        const invalid = (message: string) => Object.assign(new Error(message), { code: "INVALID_REQUEST" });
+        const tooLarge = (message: string) => Object.assign(new Error(message), { code: "PAYLOAD_TOO_LARGE" });
+        if (!Array.isArray(files) || files.length === 0) throw invalid("upload requires files: [{ path, contentBase64 }]");
+        if (files.length > 2_000) throw tooLarge("upload exceeds 2000 files");
+        const normalizedPaths = files.map((file) => String(file?.path || ""));
+        const pathSet = new Set<string>();
+        for (const rel of normalizedPaths) {
+            if (pathSet.has(rel)) throw invalid(`upload contains duplicate file path: ${rel}`);
+            const parts = rel.split("/");
+            for (let index = 1; index < parts.length; index++) {
+                const parent = parts.slice(0, index).join("/");
+                if (pathSet.has(parent)) throw invalid(`upload path conflicts with file path: ${parent} and ${rel}`);
+            }
+            for (const existing of pathSet) {
+                if (existing.startsWith(`${rel}/`)) throw invalid(`upload path conflicts with file path: ${rel} and ${existing}`);
+            }
+            pathSet.add(rel);
+        }
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ps-agent-upload-"));
+        try {
+            let total = 0;
+            for (const file of files) {
+                const rel = String(file?.path || "");
+                if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.split("/").some((part) => part === "..")) {
+                    throw invalid(`upload file path is not a safe relative path: ${rel}`);
+                }
+                const encoded = String(file?.contentBase64 || "");
+                const remaining = 2 * 1024 * 1024 - total;
+                if (encoded.length > Math.ceil(remaining * 4 / 3) + 4) throw tooLarge("upload exceeds the 2 MB envelope");
+                const bytes = Buffer.from(encoded, "base64");
+                total += bytes.length;
+                if (total > 2 * 1024 * 1024) throw tooLarge("upload exceeds the 2 MB envelope");
+                const target = path.resolve(tmp, rel);
+                if (target === tmp || !target.startsWith(tmp + path.sep)) throw invalid(`upload file path escapes the package root: ${rel}`);
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.writeFileSync(target, bytes);
+            }
+            return await this.publishAgentPackageDirectory(tmp, scope, owner, isAdmin, opts);
+        } catch (error) {
+            if (error instanceof AgentPackageValidationError) {
+                const wrapped: any = new Error(error.message);
+                wrapped.code = "VALIDATION_FAILED";
+                wrapped.validation = error.validation;
+                throw wrapped;
+            }
+            throw error;
+        } finally {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        }
+    }
+
+    private async _agentPackageVersion(name: string, semver: string | null, owner: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null) {
+        this._ensureStarted();
+        return resolveAgentPackageVersion(
+            this._catalog!, name, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+            this._agentPackageSelector(selector, isAdmin), semver,
+        );
+    }
+
+    async getAgentPackageTree(name: string, semver: string | null, owner: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null) {
+        this._ensureStarted();
+        const { version, entries } = await readAgentPackageVersionEntries(
+            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+            name, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+            this._agentPackageSelector(selector, isAdmin), semver,
+        );
+        const dirs = new Set<string>();
+        const files = entries.map((entry) => {
+            const parts = entry.name.split("/");
+            for (let index = 1; index < parts.length; index++) dirs.add(parts.slice(0, index).join("/"));
+            return { path: entry.name, size: entry.body.length };
+        }).sort((left, right) => left.path.localeCompare(right.path));
+        return { name, semver: version.semver, sha256: version.sha256, dirs: [...dirs].sort(), files };
+    }
+
+    async getAgentPackageFile(name: string, semver: string | null, filePath: string, owner: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null) {
+        this._ensureStarted();
+        const { version, entries } = await readAgentPackageVersionEntries(
+            { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+            name, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+            this._agentPackageSelector(selector, isAdmin), semver,
+        );
+        const entry = entries.find((candidate) => candidate.name === filePath);
+        if (!entry) throw Object.assign(new Error(`"${filePath}" is not in ${name}@${version.semver}`), { code: "NOT_FOUND" });
+        const binary = entry.body.includes(0);
+        let body = entry.body.subarray(0, 256 * 1024);
+        let text = "";
+        if (!binary) {
+            const decoder = new TextDecoder("utf-8", { fatal: true });
+            for (let trim = 0; trim <= 4; trim++) {
+                try {
+                    text = decoder.decode(trim ? body.subarray(0, body.length - trim) : body);
+                    if (trim) body = body.subarray(0, body.length - trim);
+                    break;
+                } catch {
+                    if (trim === 4) text = body.toString("utf8");
+                }
+            }
+        }
+        return {
+            name, semver: version.semver, path: filePath, size: entry.body.length,
+            truncated: entry.body.length > body.length,
+            binary,
+            encoding: binary ? "base64" : "utf8",
+            content: binary ? body.toString("base64") : text,
+        };
+    }
+
+    async downloadAgentPackage(
+        name: string,
+        semver: string | null,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        selector?: AgentPackageSelector | null,
+    ): Promise<{
+        name: string;
+        semver: string;
+        sha256: string;
+        filename: string;
+        contentType: string;
+        body: Uint8Array;
+    }> {
+        this._ensureStarted();
+        const { version } = await this._agentPackageVersion(name, semver, owner, isAdmin, selector);
+        const body = await fetchAgentPackageTarGz(
+            this._requireAgentPackageArtifacts(), version.artifactFilename, version.sha256,
+        );
+        return {
+            name,
+            semver: version.semver,
+            sha256: version.sha256,
+            filename: `${name}@${version.semver}.tgz`,
+            contentType: "application/gzip",
+            body,
+        };
+    }
+
+    async republishAgentPackageVersion(
+        name: string,
+        semver: string | null,
+        targetScope: AgentPackageScope,
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+        opts: { createdBy?: string | null; selector?: AgentPackageSelector | null } = {},
+    ) {
+        this._ensureStarted();
+        const principal = this._agentPackagePrincipal(owner, isAdmin);
+        const target = targetScope === "shared" ? "shared" : "user";
+        const sourceScope: AgentPackageScope = target === "shared" ? "user" : "shared";
+        return this._mapAgentPackageErrors(async () => {
+            const selectedOwner = this._agentPackageSelector(opts.selector, isAdmin)?.owner ?? null;
+            const { detail, version } = await this._agentPackageVersion(name, semver, principal, isAdmin, {
+                scope: sourceScope,
+                ...(selectedOwner ? { owner: selectedOwner } : {}),
+            });
+            const targz = await fetchAgentPackageTarGz(this._requireAgentPackageArtifacts(), version.artifactFilename, version.sha256);
+            const outcome = await publishPackedAgentPackage(
+                { catalog: this._catalog!, artifactStore: this._requireAgentPackageArtifacts() },
+                {
+                    manifest: version.manifest as any,
+                    targz,
+                    sha256: version.sha256,
+                    scope: target,
+                    owner: principal,
+                    createdBy: `republish of ${sourceScope} ${name}@${version.semver}`
+                        + (opts.createdBy ? ` by ${opts.createdBy}` : ""),
+                    isAdmin,
+                    sourceId: detail.sourceId ?? null,
+                    commitSha: version.commitSha ?? null,
+                },
+            );
+            const { manifest: _manifest, ...summary } = outcome;
+            return summary;
+        });
+    }
+
     // ─── Models ──────────────────────────────────────────────
 
     /**
@@ -2618,6 +4116,7 @@ export class PilotSwarmManagementClient {
     listModels(): ModelSummary[] {
         if (!this._modelProviders) return [];
         return this._modelProviders.allModels.map((m: ModelDescriptor) => ({
+            catalogKind: "provider_type",
             qualifiedName: m.qualifiedName,
             providerId: m.providerId,
             providerType: m.providerType,
@@ -2633,12 +4132,41 @@ export class PilotSwarmManagementClient {
         }));
     }
 
+    async listRuntimeModels(viewer: ProviderViewer): Promise<ModelSummary[]> {
+        const typeModels = this.listModels();
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const [providers, credentials] = await Promise.all([
+            store.listProviders(actor, isAdmin),
+            store.allCredentials(),
+        ]);
+        const credentialByName = new Map(credentials.map((credential) => [credential.name, credential]));
+        const out: ModelSummary[] = [];
+        for (const provider of providers.filter((candidate) => candidate.usableByMe)) {
+            const credential = credentialByName.get(provider.name);
+            for (const model of typeModels.filter((candidate) => candidate.providerId === provider.typeId)) {
+                const credentialAvailable = Boolean(
+                    credential && this._modelProviders
+                    && resolveProviderCredential(this._modelProviders, credential, model.modelName),
+                );
+                out.push({
+                    ...model,
+                    catalogKind: "runtime_provider",
+                    providerId: provider.name,
+                    qualifiedName: `${provider.name}:${model.modelName}`,
+                    credentialAvailable,
+                });
+            }
+        }
+        return out;
+    }
+
     /**
      * Get models grouped by provider for display.
      */
-    getModelsByProvider(): Array<{ providerId: string; type: string; models: ModelSummary[] }> {
+    getModelsByProvider(): Array<{ catalogKind: "provider_type"; providerId: string; type: string; models: ModelSummary[] }> {
         if (!this._modelProviders) return [];
         return this._modelProviders.getModelsByProvider().map(g => ({
+            catalogKind: "provider_type" as const,
             providerId: g.providerId,
             type: g.type,
             models: g.models.map((m: ModelDescriptor) => ({

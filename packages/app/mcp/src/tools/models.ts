@@ -6,6 +6,7 @@ import {
     CommandTimeoutError,
     sendCommandAndWait,
 } from "../util/command.js";
+import { errorToResult } from "../util/respond.js";
 
 export function registerModelTools(server: McpServer, ctx: ServerContext) {
     // 1. list_models — List all available models
@@ -23,15 +24,15 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ group_by_provider }) => {
             try {
-                // Local registry (direct mode's --model-providers) or the
-                // deployment's models over the Web API — same grouped shape.
-                const byProvider = ctx.models
-                    ? ctx.models.getModelsByProvider()
-                    : await ctx.mgmt.getModelsByProvider();
-                if (!byProvider || byProvider.length === 0) {
+                // Runtime provider INSTANCES. Web mode derives the viewer from
+                // the MCP credential server-side; direct mode has no user
+                // principal and therefore sees shared providers only.
+                const viewer = { principal: null, isAdmin: ctx.admin };
+                const models = await ctx.mgmt.listRuntimeModels(viewer);
+                if (!models || models.length === 0) {
                     return {
                         content: [
-                            { type: "text" as const, text: JSON.stringify({ error: "no model providers configured" }) },
+                            { type: "text" as const, text: JSON.stringify({ error: "no usable model providers for this credential" }) },
                         ],
                         isError: true,
                     };
@@ -43,8 +44,20 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                 // `{ name: undefined, ... }` payloads, leaving callers no
                 // identifier to pass back into switch_model.
 
+                const groups = new Map<string, { providerId: string; type: string; models: any[] }>();
+                for (const model of models) {
+                    const providerId = model.providerId || String(model.qualifiedName || "").split(":", 1)[0];
+                    const group = groups.get(providerId) || {
+                        providerId,
+                        type: model.providerType || providerId,
+                        models: [],
+                    };
+                    group.models.push(model);
+                    groups.set(providerId, group);
+                }
+
                 if (group_by_provider) {
-                    const grouped = byProvider.map((p) => ({
+                    const grouped = [...groups.values()].map((p) => ({
                         provider_id: p.providerId,
                         type: p.type,
                         models: p.models.map((m) => ({
@@ -62,7 +75,7 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                 }
 
                 // Flat list
-                const models = byProvider.flatMap((p) =>
+                const flat = [...groups.values()].flatMap((p) =>
                     p.models.map((m) => ({
                         qualified_name: m.qualifiedName,
                         model_name: m.modelName,
@@ -71,21 +84,31 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         cost: m.cost,
                     })),
                 );
-                const defaultModel = ctx.models
-                    ? (ctx.models.defaultModel ?? null)
-                    : ((await ctx.mgmt.getDefaultModel()) ?? null);
+                const defaults = await ctx.mgmt.getModelDefaults(viewer).catch(() => null);
+                const defaultModel = defaults?.userSession?.effective?.model
+                    ?? defaults?.clusterSession?.effective?.model
+                    ?? ((await ctx.mgmt.getDefaultModel()) ?? null);
                 return {
                     content: [
                         {
                             type: "text" as const,
-                            text: JSON.stringify({ models, default_model: defaultModel, count: models.length }, null, 2),
+                            text: JSON.stringify({ models: flat, default_model: defaultModel, count: flat.length }, null, 2),
                         },
                     ],
                 };
             } catch (err: unknown) {
                 const msg = err instanceof Error ? err.message : String(err);
                 return {
-                    content: [{ type: "text" as const, text: `Error: ${msg}` }],
+                    content: [{
+                        type: "text" as const,
+                        text: (err as any)?.code === "MODEL_AMBIGUOUS"
+                            ? JSON.stringify({
+                                error: msg,
+                                code: "MODEL_AMBIGUOUS",
+                                candidates: Array.isArray((err as any)?.candidates) ? (err as any).candidates : [],
+                            })
+                            : `Error: ${msg}`,
+                    }],
                     isError: true,
                 };
             }
@@ -119,38 +142,10 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
         },
         async ({ session_id, model, reasoning_effort, context_tier, timeout_ms }) => {
             try {
-                if (ctx.webMode) {
-                    // Web API mode: the supported model-switch path (same one
-                    // the portal UI uses). The server validates the model and
-                    // enqueues the switch; rejections surface as API errors.
-                    await (ctx.mgmt.setSessionModel as any)(session_id, model, {
-                        ...(reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {}),
-                        ...(context_tier !== undefined ? { contextTier: context_tier } : {}),
-                    });
-                    return {
-                        content: [
-                            { type: "text" as const, text: JSON.stringify({ switched: true, model, ...(reasoning_effort ? { reasoning_effort } : {}), ...(context_tier ? { context_tier } : {}) }) },
-                        ],
-                    };
-                }
-                if (reasoning_effort !== undefined || context_tier !== undefined) {
-                    return {
-                        content: [
-                            { type: "text" as const, text: JSON.stringify({ switched: false, error: "reasoning_effort and context_tier are only supported in Web API mode" }) },
-                        ],
-                        isError: true,
-                    };
-                }
-                // Direct mode: wait for the orchestration's command response so
-                // we don't claim success when the orchestration rejects the
-                // command (e.g. unknown model, set_model not allowed mid-turn).
-                const response = await sendCommandAndWait(
-                    ctx.mgmt,
-                    session_id,
-                    "set_model",
-                    { model },
-                    { timeoutMs: timeout_ms },
-                );
+                await (ctx.mgmt.setSessionModel as any)(session_id, model, {
+                    ...(reasoning_effort !== undefined ? { reasoningEffort: reasoning_effort } : {}),
+                    ...(context_tier !== undefined ? { contextTier: context_tier } : {}),
+                });
                 return {
                     content: [
                         {
@@ -158,8 +153,8 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                             text: JSON.stringify({
                                 switched: true,
                                 model,
-                                command_id: response.id,
-                                ...(response.result !== undefined ? { result: response.result } : {}),
+                                ...(reasoning_effort ? { reasoning_effort } : {}),
+                                ...(context_tier ? { context_tier } : {}),
                             }),
                         },
                     ],
@@ -196,11 +191,7 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         isError: true,
                     };
                 }
-                const msg = err instanceof Error ? err.message : String(err);
-                return {
-                    content: [{ type: "text" as const, text: `Error: ${msg}` }],
-                    isError: true,
-                };
+                return errorToResult(err);
             }
         },
     );
@@ -244,6 +235,18 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                                 }),
                             },
                         ],
+                        isError: true,
+                    };
+                }
+                if (command === "set_model") {
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: JSON.stringify({
+                                sent: false,
+                                error: "Use switch_model for model changes; raw set_model bypass is disabled.",
+                            }),
+                        }],
                         isError: true,
                     };
                 }

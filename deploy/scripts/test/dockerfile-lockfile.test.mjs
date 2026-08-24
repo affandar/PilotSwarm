@@ -38,3 +38,19 @@ for (const file of ["Dockerfile.portal", "Dockerfile.worker"]) {
     );
   });
 }
+
+test("AKS images bake the checked-in deploy catalog, never the private local catalog", () => {
+  for (const file of ["Dockerfile.portal", "Dockerfile.worker"]) {
+    const source = readDockerfile(file);
+    assert.match(source, /COPY deploy\/config\/model_providers\.ghcp\.json \.\/\.model_providers\.json/);
+    assert.doesNotMatch(source, /COPY \.model_providers\.json/);
+  }
+});
+
+test("starter image stages every workspace manifest before npm ci", () => {
+  const source = readDockerfile("Dockerfile.starter");
+  assert.match(source, /COPY packages\/sdk\/package\.json \.\/packages\/sdk\//);
+  assert.match(source, /COPY packages\/horizon-store\/package\.json \.\/packages\/horizon-store\//);
+  assert.match(source, /COPY packages\/app\/package\.json \.\/packages\/app\//);
+  assert.match(stripComments(source), /RUN\s+npm\s+ci\b/);
+});

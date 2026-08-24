@@ -131,6 +131,36 @@ list. If the user has no stored selection/expansion profile yet, the main
 PilotSwarm system session is selected and all expandable group/parent rows start
 collapsed.
 
+### Admin model-provider flow
+
+```text
+listProviders + listModels + getModelDefaults
+                                │
+                                ▼
+           ui-core state.admin.modelProviders
+                                │
+                                ▼
+                   selectAdminConsole
+                                │
+                ┌─────────┴─────────┐
+                ▼                   ▼
+        native TUI          browser portal
+```
+
+The Admin Console is the shared owner of runtime provider lifecycle and model
+routing. Model Providers has two pages: **My Providers** (personal credentials
+and user default) and admin-only **Shared Providers** (shared credentials,
+cluster/system defaults, and system-agent overrides). Providers use their
+immutable name everywhere; there is no separate display label. Providers &
+Budgets owns usage, limits, allowances, holds, and paused-session diagnostics.
+Its user grid includes uncapped metered models; admins get a separate system
+spend total and per-model breakdown.
+
+Provider credentials are write-only. Neither provider/default reads nor shared
+view models carry saved credentials. The browser keeps a password draft local
+to the creation sheet; the native wizard masks its draft and removes it from
+shared state before awaiting the create call. Cancel and completion clear both.
+
 ### Chat/history flow
 
 ```text

@@ -436,11 +436,15 @@ The worker resolves these names against its tool registry at execution time. Thi
 
 ## 8. Model Providers
 
-Model providers configure which LLMs are available and how to authenticate with them.
+The model catalog declares provider **types** and model capabilities. Runtime
+provider instances carry identity, credentials, defaults, limits, allowances,
+and holds in CMS. Do not put live keys in the checked-in catalog.
 
 ### File Format (`.model_providers.json`)
 
-> **Easiest way to get started:** Add a `github-copilot` provider with your `GITHUB_TOKEN`. This gives you access to Claude, GPT-4.1, GPT-5.1, and more — no additional setup needed. Add BYOK providers later as needed.
+> **Easiest way to get started:** Keep the bundled GitHub Copilot type, start
+> the portal with a bootstrap key if needed, then create a shared or personal
+> provider instance in Admin Console → Model Providers.
 
 ```json
 {
@@ -448,7 +452,6 @@ Model providers configure which LLMs are available and how to authenticate with 
     {
       "id": "github-copilot",
       "type": "github",
-      "githubToken": "env:GITHUB_TOKEN",
       "models": [
         { "name": "claude-opus-4.6", "description": "Most capable. Deep reasoning.", "cost": "high" },
         { "name": "claude-sonnet-4.6", "description": "Strong all-rounder.", "cost": "medium" },
@@ -459,19 +462,19 @@ Model providers configure which LLMs are available and how to authenticate with 
       "id": "azure-openai",
       "type": "azure",
       "baseUrl": "https://my-resource.openai.azure.com/openai",
-      "apiKey": "env:AZURE_OPENAI_KEY",
       "apiVersion": "2024-04-01-preview",
       "models": [
         { "name": "gpt-4.1", "description": "GPT-4.1 full model.", "cost": "medium" },
         { "name": "gpt-4.1-mini", "description": "Fast, cost-effective variant.", "cost": "low" }
       ]
     }
-  ],
-  "defaultModel": "github-copilot:claude-sonnet-4.6"
+  ]
 }
 ```
 
-> **Automatic filtering:** Providers whose API key env var is not set are automatically excluded from the model list. Only providers with valid credentials appear in the TUI model picker and the `list_available_models` tool.
+> **Runtime filtering:** A catalog type is not selectable by itself. The model
+> picker and `list_available_models` show only shared/personal runtime provider
+> instances the viewer can use.
 
 ### Provider Types
 
@@ -482,22 +485,18 @@ Model providers configure which LLMs are available and how to authenticate with 
 | `openai` | `apiKey` | `https://api.openai.com/v1` |
 | `anthropic` | `apiKey` | `https://api.anthropic.com` |
 
-### Secret Syntax
+### Credentials
 
-API keys and tokens use `env:VAR_NAME` to reference environment variables:
-
-```json
-{
-  "githubToken": "env:GITHUB_TOKEN",
-  "apiKey": "env:AZURE_OPENAI_KEY"
-}
-```
-
-This keeps secrets in `.env` files while the provider config stays in version control.
+Credentials are write-only runtime provider data. Create shared/personal
+instances through Admin Console or `PilotSwarmManagementClient`; never check
+credentials into the model catalog. `env:VAR_NAME` references in legacy local
+catalogs remain bootstrap compatibility only.
 
 ### Qualified Model Names
 
-Models are identified by `provider:model` strings (e.g. `github-copilot:claude-opus-4`). The SDK also accepts bare model names and resolves them to the first matching provider.
+Models are identified by runtime `provider:model` strings (for example
+`team-copilot:claude-opus-4`). Bare model names resolve only when exactly one
+eligible provider serves them; ambiguous names are rejected with candidates.
 
 ### Discovery Order
 

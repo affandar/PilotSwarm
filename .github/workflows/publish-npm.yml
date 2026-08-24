@@ -45,6 +45,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify release tag matches package versions
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(node -p 'require("./packages/sdk/package.json").version')"
+          horizon="$(node -p 'require("./packages/horizon-store/package.json").version')"
+          app="$(node -p 'require("./packages/app/package.json").version')"
+          [[ "${sdk}" == "${horizon}" && "${sdk}" == "${app}" ]]
+          [[ "${GITHUB_REF_NAME}" == "v${sdk}" ]]
+
       - name: Build workspaces
         run: npm run build
 
@@ -55,7 +66,7 @@ jobs:
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" || {
-              if npm view pilotswarm-sdk version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
+              if npm view "pilotswarm-sdk@$(node -p 'require("./package.json").version')" version 2>/dev/null | grep -qx "$(node -p 'require("./package.json").version')"; then
                 echo "Version already published — skipping"
               else
                 exit 1
@@ -90,7 +101,7 @@ jobs:
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" || {
-              if npm view pilotswarm-horizon-store version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
+              if npm view "pilotswarm-horizon-store@$(node -p 'require("./package.json").version')" version 2>/dev/null | grep -qx "$(node -p 'require("./package.json").version')"; then
                 echo "Version already published — skipping"
               else
                 exit 1
@@ -125,7 +136,7 @@ jobs:
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" --dry-run
           else
             npm publish --access public --provenance --tag "${NPM_DIST_TAG}" || {
-              if npm view pilotswarm version 2>/dev/null | grep -q "$(node -p 'require("./package.json").version')"; then
+              if npm view "pilotswarm@$(node -p 'require("./package.json").version')" version 2>/dev/null | grep -qx "$(node -p 'require("./package.json").version')"; then
                 echo "Version already published — skipping"
               else
                 exit 1

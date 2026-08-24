@@ -63,7 +63,8 @@ my-app/
 Before generating files, ask:
 
 1. Should the app allow generic sessions under the default agent, or should usage be steered into named agents through a restrictive session policy?
-2. What should be used for `GITHUB_TOKEN` in `.env`?
+2. Should local startup use a bootstrap `GITHUB_TOKEN`, or will the first
+  runtime provider be created through Admin Console/management API?
 3. What should be used for `DATABASE_URL` in `.env`?
 4. What local database name should the scaffold use? If unspecified, default it explicitly to the workspace name.
 5. If the user has not specified the agent roster, what workflows should the app support so you can derive the first agent set?
@@ -80,17 +81,23 @@ Do not guess these answers when the user has not provided them. Offer the standa
   mode (embedded workers). Remote attach needs only the portal URL:
   `npx pilotswarm remote --api-url <url>` (auto Entra sign-in;
   `--device-code` for headless hosts).
-- If the app needs a non-default model catalog, check in `.model_providers.example.json`, create the real `.model_providers.json` locally from it, and keep provider keys in `.env` / `.env.remote`.
-- For local-first scaffolds, assume GitHub Copilot is the only model provider unless the user explicitly asks for another provider.
+- If the app needs a custom model catalog, check in a type-only
+  `.model_providers.example.json` and create the real `.model_providers.json`
+  locally from it. Add provider instances/credentials through Admin or
+  `PilotSwarmManagementClient`, and configure `setModelDefault` /
+  `setSystemModelDefault`; do not put credentials or `defaultModel` in new
+  catalogs.
+- For local-first scaffolds, offer GitHub Copilot as the first runtime provider
+  type unless the user asks for another; do not hard-code a provider instance
+  or credential into the catalog.
 - For local-first scaffolds, do not include `LLM_PROVIDER_TYPE`, `LLM_ENDPOINT`, `LLM_API_KEY`, or `LLM_API_VERSION` by default.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
 - Prefer a checked-in `.model_providers.example.json` plus a local gitignored `.model_providers.json`.
 - Add both `.env` and `.model_providers.json` to `.gitignore` in runnable scaffolds.
 - Align the variable set with the chosen topology rather than blindly copying every sample env field.
-- For local-first scaffolds, the default env surface should usually be:
-  - `DATABASE_URL`
-  - `GITHUB_TOKEN`
+- For local-first scaffolds, the default env surface should usually be
+  `DATABASE_URL`; add `GITHUB_TOKEN` only when using bootstrap compatibility.
 - Add optional storage or deployment variables only when the topology requires them.
 - Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
 

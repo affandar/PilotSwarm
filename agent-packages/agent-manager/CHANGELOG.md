@@ -1,5 +1,13 @@
 # Changelog — agent-manager
 
+## 1.0.9
+
+### Changed
+
+- Session verification now resolves model names through
+  `list_available_models`. When multiple providers expose the requested bare
+  model, Agent Manager asks which provider to use instead of choosing one.
+
 ## 1.0.8
 
 ### Added

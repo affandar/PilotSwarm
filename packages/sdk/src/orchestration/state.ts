@@ -22,6 +22,8 @@ export interface ActiveTimer {
     choices?: string[];
     allowFreeform?: boolean;
     agentIds?: string[];
+    /** Set by the provider-budget gate. See TurnResult's wait variant. */
+    budget?: boolean;
 }
 
 export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["mode"];
@@ -37,6 +39,8 @@ export interface InterruptedWaitTimer {
     shouldRehydrate: boolean;
     waitPlan?: ActiveTimer["waitPlan"];
     interruptKind?: "child" | "user";
+    /** A budget pause is re-derived by the next turn, never re-armed. */
+    budget?: boolean;
 }
 
 export interface InterruptedCronTimer {
@@ -47,6 +51,11 @@ export interface InterruptedCronTimer {
 }
 
 /** Mutable orchestration state — replaces the closure of `let`s in the prior monolith. */
+export interface BudgetStashedPrompt {
+    prompt: string;
+    clientMessageIds?: string[];
+}
+
 export interface DurableSessionState {
     config: SerializableSessionConfig;
     affinityKey: string;
@@ -93,6 +102,18 @@ export interface DurableSessionState {
     pendingInputQuestion: PendingInputQuestion | null;
     waitingForAgentIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
+    /**
+     * Prompts the budget gate refused before their turn could run.
+     *
+     * The turn is what records a prompt into the transcript, so a prompt
+     * whose turn the gate refuses was — before 1.0.70 — simply destroyed:
+     * consumed from the queue, never recorded, never replayed. Each entry
+     * here has already been written as a durable user.message (at stash
+     * time), and rides into the next turn attempt as `stashedPrompts` so
+     * the model finally sees it when the gate clears. Cleared the moment a
+     * turn actually runs.
+     */
+    budgetStash: BudgetStashedPrompt[] | null;
     interruptedCronTimer: InterruptedCronTimer | null;
     pendingChildDigest: PendingChildDigest | null;
     pendingShutdown: PendingShutdownState | null;
@@ -289,6 +310,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         pendingInputQuestion: input.pendingInputQuestion ?? null,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
+        budgetStash: input.budgetStash ?? null,
         interruptedCronTimer: input.interruptedCronTimer ?? null,
         pendingChildDigest: clonePendingChildDigest(input.pendingChildDigest),
         pendingShutdown: clonePendingShutdown(input.pendingShutdown),

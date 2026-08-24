@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.5.43 — 2026-08-23
+
+Runtime model providers become first-class managed resources, budgets enforce
+real token policy at turn boundaries, canvas apps gain a durable artifact
+lifecycle, and orchestration retry exhaustion stops hiding failed sessions.
+
+### Added
+
+- **Shared and personal runtime providers.** The checked-in model catalog now
+  describes provider types and model capabilities; CMS owns named provider
+  instances, credentials, user/cluster/system defaults, per-agent system
+  overrides, and exact `provider:model` routing. Admin Console, SDK, Web API,
+  MCP, portal, and native TUI expose the same management surface.
+
+- **Provider budgets and accounting.** Day/week/month and per-model token
+  limits, shared-provider allowances, administrative holds, exactly-once usage
+  accounting, paused-session diagnostics, and automatic wake-up when capacity
+  returns. The budget table keeps fixed meter windows; selected-provider charts
+  offer 14-, 30-, and 90-day user/system history ranges.
+
+- **Provider management agents and tools.** The Token Manager can inspect and
+  manage provider policy within its caller's authority. MCP gains provider,
+  default, budget, hold, usage, and paused-session operations. Ambiguous model
+  references return structured candidates instead of silently picking one.
+
+- **Reusable canvas apps.** Canvas documents can embed a normalized manifest
+  and response contract, save themselves server-side as artifacts, be browsed
+  cheaply by manifest, and redraw from verified artifact bytes. Transient
+  whole-state and merge-patch updates remain low-latency and non-durable.
+
+- **Full agent-package downloads.** Direct and Web management clients, the
+  portal route, HTTP transport, CLI, and MCP package inspection can retrieve
+  the verified package tarball, with copy selectors and provenance preserved.
+
+### Changed
+
+- **Orchestration `1.0.69`.** Returned errors count against the same retry
+  budget as thrown errors. Returned authentication failures stop immediately
+  with key-repair guidance, and retry exhaustion persists the final CMS error
+  rather than leaving an idle-looking session with a lost prompt.
+
+- **Management layering is contract-tested.** Agent-package and worker
+  operations now land on `PilotSwarmManagementClient` first, with matching Web
+  methods and an explicit ownership manifest for intentional non-management
+  operations. CLI, portal, TUI, and MCP no longer reach through the client to
+  raw catalogs.
+
+- **Provider type/runtime semantics are explicit.** Type templates and
+  viewer-usable runtime instances carry distinct `catalogKind` values; model
+  discovery, creation, switching, spawning, regeneration, and Agent Manager
+  verification share owner-scoped resolution.
+
+### Fixed
+
+- Provider deletion dependencies, invalid fractional limits, stale or missing
+  provider references, legacy credential adoption, system-session accounting,
+  per-user privacy, and ledger lifetime boundaries now fail closed with typed,
+  actionable errors.
+
+- Session hard deletion no longer threatens accounting history, and provider
+  deletion removes current rules/meters while retaining historical usage under
+  the provider name.
+
+- Concurrent full test matrices no longer delete each other's live PostgreSQL
+  schemas or session-state directories during stale-state cleanup.
+
+- Agent Manager enforces staged package identity/version, reserved agent names,
+  explicit provider choice, and actor/source provenance when publishing.
+
+### Docs And Verification
+
+- Updated canonical API, local setup, plugin, builder-agent, DevOps sample,
+  canvas, TUI/portal, and MCP guidance for runtime providers and shipped canvas
+  behavior.
+
+- The release gate covers baseline PostgreSQL and HorizonDB provider matrices,
+  Horizon-store live integration, package/API parity, responsive budget charts,
+  and npm/starter-image packaging.
+
 ## 0.5.42 — 2026-08-15
 
 The phone keyboard stops burying the conversation, share links become

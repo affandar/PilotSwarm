@@ -63,7 +63,9 @@ my-sdk-app/
 Before generating files, ask:
 
 1. Should the app allow generic sessions under the default agent, or should usage be steered into named agents through a restrictive session policy?
-2. Which values should be plugged into `.env` now, especially `GITHUB_TOKEN` and `DATABASE_URL`?
+2. Which worker connection values should be plugged into `.env` now?
+  `DATABASE_URL` is required; `GITHUB_TOKEN` is optional bootstrap
+  compatibility because provider credentials are runtime CMS state.
 3. If the user has not specified the agent roster, what workflows should the app support so you can derive the first agent set?
 4. Which topology should the scaffold target?
 	 - local-only, using Docker Postgres
@@ -91,19 +93,21 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Treat `DATABASE_URL` as the canonical runtime PostgreSQL connection input. Do not repurpose it as the HorizonDB facts/graph connection in hybrid apps.
 - For hybrid apps, document optional `HORIZON_DATABASE_URL`, `HORIZON_FACTS_SCHEMA`, `HORIZON_GRAPH_DATABASE_URL`, `HORIZON_GRAPH_SCHEMA`, and `HORIZON_EMBED_*` vars in a separate HorizonDB block or `.env.horizondb.example`.
 - The starter/local Docker path should continue to run with stock PostgreSQL by default; HorizonDB is an opt-in provider configuration, not a Docker image requirement.
-- If the app needs a non-default model catalog, check in `.model_providers.example.json`, create the real `.model_providers.json` locally from it, and keep provider keys in `.env` / `.env.remote`.
+- If the app needs a custom model catalog, check in a type-only
+  `.model_providers.example.json` and create the real `.model_providers.json`
+  locally from it. Do not put credentials or `defaultModel` in new catalogs.
+  Provision shared/personal runtime providers through the management API or
+  Admin Console, then call `setModelDefault` and `setSystemModelDefault` as
+  needed. Env-backed catalog credentials are legacy bootstrap compatibility.
 - Do not generate redundant `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, or `PGDATABASE` entries unless the user explicitly needs them.
 - Prefer a checked-in `.env.example` plus a local gitignored `.env`.
-- Prefer a checked-in `.model_providers.example.json` plus a local gitignored `.model_providers.json`.
+- Prefer a checked-in type-only `.model_providers.example.json` plus a local
+  gitignored `.model_providers.json` containing endpoint/type metadata only.
 - Add both `.env` and `.model_providers.json` to `.gitignore` in runnable scaffolds.
-- Align the variable set with the PilotSwarm sample env shape, typically including:
-	- `DATABASE_URL`
-	- `GITHUB_TOKEN`
-	- `LLM_PROVIDER_TYPE`
-	- `LLM_ENDPOINT`
-	- `LLM_API_KEY`
-	- `LLM_API_VERSION`
-	- optional storage or deployment variables for the chosen topology
+- Align the variable set with the chosen topology: `DATABASE_URL`, optional
+  bootstrap `GITHUB_TOKEN`, optional Horizon/storage/deployment variables.
+  Do not scaffold `LLM_PROVIDER_TYPE`, `LLM_ENDPOINT`, `LLM_API_KEY`, or
+  `LLM_API_VERSION`; runtime provider instances own those concerns.
 - Only copy secrets from another repo or local file after the user explicitly asks for that behavior.
 
 ## Validation Guidance

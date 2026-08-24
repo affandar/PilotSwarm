@@ -206,7 +206,7 @@ export class ModelProviderRegistry {
     private _defaultModel: string | undefined;
     private _allDescriptors: ModelDescriptor[] = [];
 
-    constructor(config: ModelProvidersFile) {
+    constructor(config: ModelProvidersFile, opts: { keepUncredentialed?: boolean } = {}) {
         const configuredDefaultModel = config.defaultModel;
         this._defaultModel = configuredDefaultModel;
 
@@ -215,12 +215,21 @@ export class ModelProviderRegistry {
         // per-user key may be supplied later from CMS, and the UX should
         // still show configured GitHub models. GitHub credential enforcement
         // happens when creating/resuming a GitHub-backed session.
-        this.providers = config.providers.filter(p => {
-            if (p.type === "github") {
-                return true;
-            }
-            return !!resolveEnvValue(p.apiKey);
-        });
+        //
+        // `keepUncredentialed` is how provider budgets read this file: there
+        // an entry is a TYPE — a template describing what an instance of it
+        // offers — and the credentials live on the instances in the database,
+        // not here. Dropping a type because the file carries no key for it
+        // would hide every model a runtime-created provider of that type can
+        // serve. See docs/proposals/providers-and-budgets.md.
+        this.providers = opts.keepUncredentialed
+            ? config.providers.slice()
+            : config.providers.filter(p => {
+                if (p.type === "github") {
+                    return true;
+                }
+                return !!resolveEnvValue(p.apiKey);
+            });
 
         // Build lookups
         for (const p of this.providers) {
@@ -374,10 +383,11 @@ export class ModelProviderRegistry {
         }));
     }
 
-    /** Get a summary of all models suitable for LLM tool consumption. */
-    getModelSummaryForLLM(): string {
+    /** Get a summary of models suitable for LLM tool consumption. */
+    getModelSummaryForLLM(allowedProviderIds?: ReadonlySet<string>): string {
         const lines: string[] = ["Available models (use the qualified name to select):"];
         for (const group of this.getModelsByProvider()) {
+            if (allowedProviderIds && !allowedProviderIds.has(group.providerId)) continue;
             lines.push(`\n## ${group.providerId} (${group.type})`);
             for (const m of group.models) {
                 const costLabel = m.cost ? ` [cost: ${m.cost}]` : "";
@@ -391,7 +401,9 @@ export class ModelProviderRegistry {
                 lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${contextTierLabel}${desc}`);
             }
         }
-        lines.push(`\nDefault: ${this._defaultModel || "none"}`);
+        const defaultAllowed = this._defaultModel
+            && (!allowedProviderIds || allowedProviderIds.has(this._defaultModel.split(":", 1)[0]));
+        lines.push(`\nDefault: ${defaultAllowed ? this._defaultModel : "none"}`);
         return lines.join("\n");
     }
 }
@@ -524,6 +536,20 @@ export function loadModelProviders(filePath?: string): ModelProviderRegistry | n
 }
 
 /**
+ * Load the provider TYPE catalog without requiring credentials in the file.
+ * Runtime provider instances carry credentials; management uses this catalog
+ * to validate which models an instance of each type may serve.
+ */
+export function loadModelProviderTypes(filePath?: string): ModelProviderRegistry | null {
+    const resolvedPath = resolveModelProvidersPath(filePath);
+    if (resolvedPath) {
+        const raw = fs.readFileSync(resolvedPath, "utf-8");
+        return new ModelProviderRegistry(JSON.parse(raw), { keepUncredentialed: true });
+    }
+    return buildFromEnv();
+}
+
+/**
  * Resolve the model_providers.json path `loadModelProviders` would read:
  * explicit file path > PS_MODEL_PROVIDERS_PATH/MODEL_PROVIDERS_PATH env >
  * auto-discovery. Returns null when no file exists (env-var fallback case).
@@ -568,6 +594,7 @@ export function resolveModelProvidersPath(filePath?: string): string | null {
  */
 export function createModelProvidersReloader(filePath?: string): {
     current: ModelProviderRegistry | null;
+    types: ModelProviderRegistry | null;
     readonly path: string | null;
     checkAndReload(): boolean;
 } {
@@ -577,8 +604,17 @@ export function createModelProvidersReloader(filePath?: string): {
         try { return fs.statSync(resolved).mtimeMs; } catch { return 0; }
     };
     let lastMtimeMs = statMtime();
+    const initialConfig = resolved
+        ? JSON.parse(fs.readFileSync(resolved, "utf-8")) as ModelProvidersFile
+        : null;
+    const initialCurrent = initialConfig
+        ? new ModelProviderRegistry(initialConfig)
+        : loadModelProviders(filePath);
     const state = {
-        current: loadModelProviders(filePath),
+        current: initialCurrent,
+        types: initialConfig
+            ? new ModelProviderRegistry(initialConfig, { keepUncredentialed: true })
+            : initialCurrent,
         path: resolved,
         checkAndReload(): boolean {
             if (!resolved) return false;
@@ -589,7 +625,9 @@ export function createModelProvidersReloader(filePath?: string): {
             lastMtimeMs = mtimeMs;
             try {
                 const raw = fs.readFileSync(resolved, "utf-8");
-                state.current = new ModelProviderRegistry(JSON.parse(raw));
+                const config = JSON.parse(raw) as ModelProvidersFile;
+                state.current = new ModelProviderRegistry(config);
+                state.types = new ModelProviderRegistry(config, { keepUncredentialed: true });
                 return true;
             } catch {
                 return false;
@@ -679,7 +717,7 @@ function normalizeContextWindowSizes(
     return out;
 }
 
-function resolveEnvValue(value?: string): string | undefined {
+export function resolveEnvValue(value?: string): string | undefined {
     if (!value) return undefined;
     if (value.startsWith("env:")) {
         return process.env[value.slice(4)] || undefined;

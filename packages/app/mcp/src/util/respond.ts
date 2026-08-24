@@ -31,6 +31,12 @@ export function errorResult(message: string, extra?: Record<string, unknown>): T
 export function errorToResult(err: unknown): ToolResult {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as any)?.status ?? (err as any)?.statusCode;
+    if ((err as any)?.code === "MODEL_AMBIGUOUS") {
+        return errorResult(message, {
+            code: "MODEL_AMBIGUOUS",
+            candidates: Array.isArray((err as any)?.candidates) ? (err as any).candidates : [],
+        });
+    }
     if (status === 403 || /\b403\b|forbidden/i.test(message)) {
         return errorResult(
             "forbidden: this operation requires the deployment's admin role. "

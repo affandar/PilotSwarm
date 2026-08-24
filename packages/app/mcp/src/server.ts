@@ -5,6 +5,7 @@ import { registerSessionTools } from "./tools/sessions.js";
 import { registerAgentTools } from "./tools/agents.js";
 import { registerFactsTools } from "./tools/facts.js";
 import { registerModelTools } from "./tools/models.js";
+import { registerProviderTools } from "./tools/providers.js";
 import { registerCapabilityTools } from "./tools/capabilities.js";
 import { registerEnhancedFactTools } from "./tools/facts-enhanced.js";
 import { registerGraphTools } from "./tools/graph.js";
@@ -82,6 +83,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerAgentTools(server, ctx);
     registerFactsTools(server, ctx);
     registerModelTools(server, ctx);
+    registerProviderTools(server, ctx);
     registerCapabilityTools(server, ctx);
     registerTurnControlTools(server, ctx);
     registerGroupTools(server, ctx);

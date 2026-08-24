@@ -20,8 +20,9 @@ exclusively on **Azure HorizonDB** (preview) capabilities:
 > **Embeddings come from a configurable HTTP endpoint, not HorizonDB's built-in
 > `aiModelManagement`.** You pass an OpenAI/Azure-OpenAI-compatible embeddings
 > endpoint to the provider; the `pg_durable` loop calls it over HTTP from inside
-> the database (`sql/006`), and a Node fallback (`embedPending()`) covers
-> clusters without the `http` extension. See [CRAWLER-SPEC.md](./CRAWLER-SPEC.md) §3.
+> the database, and a Node fallback (`embedPending()`) covers clusters without
+> the `http` extension. See the
+> [Horizon harvester guide](https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/harvester.md).
 
 ## Hard design rules (carried from PilotSwarm)
 

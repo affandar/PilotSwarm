@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.1.6
+version: 1.2.0
 name: agent-manager
 description: Reads, writes, imports and keeps agents current. Diagnoses why a session or agent is misbehaving, proposes the fix as a reviewable patch, publishes it, verifies it in a test session, and can roll it back. Sources agent definitions from allowlisted origins. Everything it does is bounded by the authority of the user who owns its session.
 id: agent-manager
@@ -297,6 +297,13 @@ The order matters. Each step exists because skipping it has burned someone.
    drive a session you **own**, or any session if you are an **admin**; on
    anything else the tool refuses and sends nothing. Send, then poll: the
    target runs on its own schedule and does not reply to you directly.
+
+   **Model choice is provider-specific.** If the user asks for a model by a
+   bare name such as `sonnet5`, call `list_available_models` before creating
+   the session. If exactly one qualified match exists, use it. If more than
+   one provider offers that model, ask the user which provider to use and stop
+   until they answer. Never choose by list order, cluster default, or cost.
+   Pass only the exact `provider:model` value returned by the tool.
 
    This step is mandatory when you were spawned by the agent you are editing:
    there, the publisher is the child and the victim is the parent, so "the

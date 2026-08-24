@@ -28,7 +28,13 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
-import { normalizeArtifactEntries } from "./state.js";
+import {
+    BUDGET_PERIODS,
+    BUDGET_SERIES_DAYS,
+    BUDGET_SERIES_RANGES,
+    normalizeArtifactEntries,
+    normalizeSessionPause,
+} from "./state.js";
 import { isRecoverableTransportErrorText } from "./session-errors.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
@@ -82,6 +88,13 @@ function getSessionVisualStatus(session) {
     if (!session) return "unknown";
     const status = session.status || "unknown";
     const dormant = status === "waiting" || status === "idle" || status === "unknown";
+    // A budget pause outranks every other dormant reading — see the same
+    // branch in the reducer's computeRawSessionVisualStatus, which the two
+    // must agree on. The session is not "waiting" in the sense the list means
+    // it: nothing happens until a person changes a number.
+    if (dormant && normalizeSessionPause(session)) {
+        return "budget_paused";
+    }
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -96,7 +109,115 @@ function getSessionVisualStatus(session) {
     return status;
 }
 
+// ── Budget pauses: the words a paused session is described in ──────────
+//
+// The canonical sentences live in packages/sdk/src/provider-budgets.ts
+// (`budgetWaitReason`) and are what the server writes into the wait itself.
+// These are the SHORT forms — a list row has a few characters, not a
+// sentence — plus a matching long form for the surface's "Paused now" band,
+// which has to say which of the four reasons it is because each has a
+// different remedy.
+
+const BUDGET_PERIOD_WORD = { day: "daily", week: "weekly", month: "monthly" };
+
+/** "paused · limit" — what fits beside a title. */
+function budgetPauseLabel(pause) {
+    // The row status is debounced (see mergeSessionRowVisualStatus), so it can
+    // outlive by a few seconds the record that produced it. Name the state
+    // without inventing a reason for it.
+    if (!pause) return "paused";
+    switch (pause.kind) {
+        case "no_provider": return "no provider";
+        case "hold": return "paused · hold";
+        case "allowance": return "paused · allowance";
+        case "limit":
+        default: return "paused · limit";
+    }
+}
+
+/** The sentence the band and the selected row show. Names the remedy. */
+function budgetPauseSentence(pause, nowMs = Date.now()) {
+    const provider = pause?.provider || "this session's provider";
+    // One reset spelling for the whole surface — see formatUntilLabel. The
+    // server writes the same sentence with a raw timestamp; this is the only
+    // clause that differs, because a bare UTC stamp is not something a reader
+    // can subtract from their own clock.
+    const until = pause?.resetsAtUtc ? formatUntilLabel(pause.resetsAtUtc, nowMs) : null;
+    const when = until ? ` Resets ${until}.` : "";
+    switch (pause?.kind) {
+        case "no_provider":
+            return pause?.provider
+                ? `No provider named ${pause.provider}. This session waits until that name exists again, or until it is switched to another provider and model.`
+                : "This session's model does not name a provider, so nothing can pay for it. Switch it to a provider and model.";
+        case "hold":
+            return pause?.resetsAtUtc
+                ? `${provider} is on hold.${when}`
+                : `${provider} is on hold until an administrator releases it.`;
+        case "allowance": {
+            // A record that names no period still reads as a sentence: the
+            // word is dropped, not left as a gap.
+            const period = BUDGET_PERIOD_WORD[pause?.period];
+            return `Your ${period ? `${period} ` : ""}allowance on ${provider} is used up. `
+                + `The provider has room; your share of it does not.${when}`;
+        }
+        case "limit":
+        default: {
+            const period = BUDGET_PERIOD_WORD[pause?.period];
+            const scope = pause?.modelQualified ? ` for ${pause.modelQualified}` : "";
+            return `${provider} has reached its ${period ? `${period} ` : ""}limit${scope}.${when}`;
+        }
+    }
+}
+
+/**
+ * The pause record for one session, from whichever place holds it.
+ *
+ * A session row carries `pauseState` on deployments that publish it. Where it
+ * does not, the row arrives with a bare status of "waiting" and the reason
+ * lives only in `listPausedSessions` — which is read into `state.budget.paused`
+ * — so three sessions stopped for three different reasons render identically.
+ * Joining the two here means the list, the detail box and the "Paused now"
+ * band all describe the same pause in the same words.
+ */
+function budgetPauseForSession(session, state) {
+    const own = normalizeSessionPause(session);
+    if (own) return own;
+    const sessionId = session?.sessionId;
+    if (!sessionId) return null;
+    const rows = Array.isArray(state?.budget?.paused) ? state.budget.paused : [];
+    const row = rows.find((entry) => entry?.sessionId === sessionId);
+    // listPausedSessions calls the record `pause`; a session row calls it
+    // `pauseState`. One normalizer reads both.
+    return row ? normalizeSessionPause({ pauseState: row.pause }) : null;
+}
+
+/**
+ * The pause a session row draws, or null.
+ *
+ * Colour: RED, for every kind. A pause is a full stop that only a person can
+ * clear — the limits in this model are hard and there is no warn-only one —
+ * and yellow already means "waiting, nothing to do". The row still says
+ * "paused", not "failed", so the colour is the alarm and the label is the
+ * fact.
+ */
+function sessionPauseMark(session, state = null) {
+    const pause = budgetPauseForSession(session, state);
+    if (!pause) return null;
+    return {
+        kind: pause.kind,
+        provider: pause.provider,
+        period: pause.period,
+        // A vanished provider never counts down — see budgetClearsLabel.
+        resetsAtUtc: pause.kind === "no_provider" ? null : pause.resetsAtUtc,
+        label: budgetPauseLabel(pause),
+        reason: budgetPauseSentence(pause),
+        clears: budgetClearsLabel(pause),
+        color: "red",
+    };
+}
+
 function sessionStatusLabelForVisualStatus(session, status) {
+    if (status === "budget_paused") return budgetPauseLabel(normalizeSessionPause(session));
     if (status === "cron_waiting") return "waiting";
     if (status === "awaiting_children") {
         // The row status is debounced (see mergeSessionRowVisualStatus), so it
@@ -209,6 +330,8 @@ function getSessionRowVisualKind(session, mode = "local") {
 function sessionStatusColor(session, mode = "local") {
     switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "green";
+        // See sessionPauseMark for why a pause is red rather than yellow.
+        case "budget_paused": return "red";
         case "cron_waiting": return "yellow";
         // Distinct from both running (this session is not doing the work) and
         // waiting (nothing is happening) — something IS running, one level down.
@@ -228,6 +351,9 @@ function sessionStatusColor(session, mode = "local") {
 function sessionStatusIcon(session, mode = "local") {
     switch (getSessionRowVisualKind(session, mode)) {
         case "running": return "*";
+        // Pause bars. One cell wide, like every other glyph in this column —
+        // the portal draws a coloured dot instead and ignores the character.
+        case "budget_paused": return "‖";
         case "cron_waiting": return "~";
         case "awaiting_children": return ">";
         case "waiting": return "~";
@@ -913,6 +1039,28 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     if (collapseBadge) {
         titleRuns.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold });
     }
+    // A budget pause rides on the TITLE line, not only in the selected-row
+    // detail: a session that will not move again until someone raises a limit
+    // has to say so from the list, or the only symptom is a session that has
+    // been quiet for a suspiciously long time.
+    //
+    // Two ways in, and they are gated differently on purpose:
+    //
+    //   the session's own `pauseState`  — this is what the reducer debounces
+    //     into the row status, so the label rides the SAME debounced kind the
+    //     dot and the glyph read and the three cannot disagree. A pause that
+    //     has just been released leaves the dot red for a few seconds with no
+    //     label, exactly as every other status change here does.
+    //   the paused list (state.budget.paused) — not debounced, and the only
+    //     place the reason exists on a deployment whose session rows carry a
+    //     bare "waiting". Shown whenever the row is waiting, or three sessions
+    //     stopped for three different reasons all read the same.
+    const pauseMark = (getSessionRowVisualKind(session, mode) === "budget_paused" || session?.status === "waiting")
+        ? sessionPauseMark(session, state)
+        : null;
+    if (pauseMark) {
+        titleRuns.push({ text: ` ${pauseMark.label}`, color: pauseMark.color });
+    }
     // Scheduled sessions keep a compact clock glyph on the title; the full
     // cron cadence rides in the detail line.
     const cronBadge = getCronBadge(session);
@@ -965,6 +1113,13 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         const childCount = totalDescendantCounts?.[session?.sessionId];
         if (childCount) { pushSep(); detailRuns.push({ text: `${childCount} child${childCount === 1 ? "" : "ren"}`, color: "gray" }); }
         if (cronBadge) { pushSep(); detailRuns.push({ text: cronBadge.text, color: cronBadge.color }); }
+        // Why this session is parked, on the selected row. The reason names
+        // the remedy, and the four reasons have four different ones, so the
+        // detail line carries the sentence rather than the short label.
+        if (pauseMark) {
+            pushSep();
+            detailRuns.push({ text: pauseMark.reason, color: pauseMark.color });
+        }
         // Shared-session marker (security model): private needs no marker;
         // shared_read/shared_write surface here in the selected-row details.
         if (session?.visibility === "shared_read" || session?.visibility === "shared_write") {
@@ -1025,6 +1180,10 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
                 }
                 : null,
             childBadge: collapseBadge ? { text: collapseBadge.text, color: collapseBadge.color } : null,
+            // The pause as a CHIP: the portal draws one, the TUI already has
+            // the same words in titleRuns above and ignores this.
+            // { kind, label, reason, provider, period, resetsAtUtc, color } or null.
+            pause: pauseMark,
             cron: Boolean(cronBadge),
             age: relTime || null,
             model: modelLabel || null,
@@ -1130,6 +1289,17 @@ export function selectSessionRows(state) {
             // back a row built before the draw and the marker never appears.
             state.canvas?.bySessionId?.[entry.sessionId],
             state.canvas?.prefs?.[entry.sessionId],
+            // Why the session is parked, if it is. `session` above changes
+            // identity whenever this does, so this entry is belt and braces —
+            // but a row's inputs should be readable off this list, and a
+            // paused row that never repaints is a session nobody can see is
+            // stuck.
+            session?.pauseState,
+            // The other half of the same answer: on a deployment that does not
+            // publish `pauseState` on a session row, the reason is only in the
+            // paused list. Omit this and the memo hands back a row built before
+            // that list arrived, and the row says "waiting" forever.
+            state.budget?.paused,
         ];
         const cached = memo.get(entry.sessionId);
         if (cached && sameRowDeps(cached.deps, deps)) return cached.row;
@@ -1174,6 +1344,10 @@ export function selectSessionRows(state) {
             //   "canvas"  a canvas exists and nothing is new
             //   "unseen"  it changed since this user last looked at it
             canvasMark: sessionCanvasMark(state, entry.sessionId),
+            // Why this session is parked on a budget, or null. Lifted out of
+            // `chrome` as well so a host that draws its own row (the phone's
+            // list) can act on it without reading the portal's descriptor.
+            pause: rowView.chrome?.pause || null,
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
@@ -3682,6 +3856,125 @@ export function selectAdminConsole(state) {
 
     const systemGhcpKey = admin.systemGhcpKey || { supported: false, loading: false, configured: false, changedBy: null, changedAt: null, error: null };
     const isAdmin = Boolean(profile?.isAdmin);
+    const modelProviderState = admin.modelProviders || {};
+    const providerRows = Array.isArray(modelProviderState.providers) ? modelProviderState.providers : [];
+    const modelRows = Array.isArray(modelProviderState.models) ? modelProviderState.models : [];
+    const ownProviderRows = providerRows.filter((provider) => provider?.class !== "shared"
+        && (provider?.mine === true || provider?.usableByMe === true));
+    const sharedProviderRows = providerRows.filter((provider) => provider?.class === "shared");
+    const choiceRows = (providers) => providers.flatMap((provider) => modelRows
+        .filter((model) => model?.providerId === provider.name || model?.providerId === provider.typeId)
+        .map((model) => {
+            const modelName = model?.modelName || model?.name || String(model?.qualifiedName || "").split(":").pop();
+            const qualifiedName = model?.providerId === provider.name && model?.qualifiedName
+                ? model.qualifiedName
+                : `${provider.name}:${modelName}`;
+            return {
+                provider: provider.name,
+                providerClass: provider.class,
+                model: modelName,
+                qualifiedName,
+                supportedReasoningEfforts: Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [],
+                defaultReasoningEffort: model?.defaultReasoningEffort || null,
+                supportedContextTiers: Array.isArray(model?.supportedContextTiers) ? model.supportedContextTiers : [],
+                defaultContextTier: model?.defaultContextTier || null,
+            };
+        }));
+    const defaults = modelProviderState.defaults || {};
+    const providerTypeMap = new Map();
+    for (const model of modelRows) {
+        if (!model?.providerId || providerTypeMap.has(model.providerId)) continue;
+        providerTypeMap.set(model.providerId, {
+            id: model.providerId,
+            label: model.providerType || model.providerId,
+        });
+    }
+    const providerSummary = (provider) => ({
+        name: provider.name,
+        typeId: provider.typeId || provider.type || null,
+        class: provider.class === "shared" ? "shared" : "personal",
+        hasCredential: Boolean(provider.hasCredential),
+        usableByMe: provider.usableByMe !== false,
+        systemUseEnabled: Boolean(provider.systemUseEnabled),
+        systemEligible: Boolean(provider.systemEligible),
+        isClusterDefault: Boolean(provider.isClusterDefault),
+        isMyDefault: Boolean(provider.isMyDefault),
+        isSystemDefault: Boolean(provider.isSystemDefault),
+    });
+    const overrides = isAdmin && Array.isArray(defaults.systemOverrides) ? defaults.systemOverrides : [];
+    const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
+    const systemAgentsById = new Map();
+    for (const session of Object.values(state.sessions?.byId || {})) {
+        if (!session?.isSystem || !session?.agentId) continue;
+        if (!systemAgentsById.has(session.agentId)) {
+            systemAgentsById.set(session.agentId, {
+                agentId: session.agentId,
+                title: canonicalSystemTitle(session, state.branding?.title || "PilotSwarm"),
+            });
+        }
+    }
+    for (const override of overrides) {
+        if (!systemAgentsById.has(override.agentId)) {
+            systemAgentsById.set(override.agentId, { agentId: override.agentId, title: override.agentId });
+        }
+    }
+    const effectiveSystemDefault = defaults.system?.effective || null;
+    const systemAgentRoutes = [...systemAgentsById.values()]
+        .sort((left, right) => left.title.localeCompare(right.title))
+        .map((agent) => {
+            const override = overrideByAgent.get(agent.agentId) || null;
+            const effective = override || effectiveSystemDefault;
+            return {
+                ...agent,
+                effectiveModel: effective?.model || null,
+                source: override ? "agent_override" : (effectiveSystemDefault?.source || "system_default"),
+                override,
+            };
+        });
+    const providerSelection = modelProviderState.selection || {};
+    const providerPage = modelProviderState.page === "shared" && isAdmin ? "shared" : "mine";
+    const modelProviders = {
+        loading: Boolean(modelProviderState.loading),
+        error: modelProviderState.error || null,
+        page: providerPage,
+        providerTypes: [...providerTypeMap.values()].sort((left, right) => left.id.localeCompare(right.id)),
+        myProviders: ownProviderRows.map((provider) => ({
+            ...providerSummary(provider),
+            selected: provider.name === providerSelection.providerName,
+        })),
+        sharedProviders: sharedProviderRows.map((provider) => ({
+            ...providerSummary(provider),
+            selected: provider.name === providerSelection.providerName,
+        })),
+        userChoices: choiceRows([
+            ...sharedProviderRows.filter((provider) => provider.usableByMe !== false),
+            ...ownProviderRows.filter((provider) => provider.usableByMe !== false),
+        ]),
+        clusterChoices: isAdmin ? choiceRows(sharedProviderRows) : [],
+        systemChoices: isAdmin ? choiceRows([
+            ...sharedProviderRows,
+            ...ownProviderRows.filter((provider) => provider.systemUseEnabled === true),
+        ]) : [],
+        mySessionDefault: defaults.userSession || { configured: null, effective: null },
+        clusterSessionDefault: isAdmin ? (defaults.clusterSession || { configured: null, effective: null }) : null,
+        systemSessionDefault: isAdmin ? (defaults.system || { configured: null, effective: null }) : null,
+        systemAgentOverrides: overrides,
+        systemAgentRoutes: isAdmin ? systemAgentRoutes.map((route) => ({
+            ...route,
+            selected: route.agentId === providerSelection.agentId,
+        })) : [],
+        selection: {
+            focus: providerSelection.focus === "agents" ? "agents" : "providers",
+            providerName: providerSelection.providerName
+                || (providerPage === "shared" ? sharedProviderRows[0]?.name : ownProviderRows[0]?.name)
+                || null,
+            agentId: providerSelection.agentId || systemAgentRoutes[0]?.agentId || null,
+        },
+        mutation: {
+            pending: modelProviderState.mutation?.pending || null,
+            error: modelProviderState.mutation?.error || null,
+        },
+    };
     // Admin-only target switch: when on, Set/Replace/Clear act on the
     // SYSTEM user's key (ownerless system sessions run on it).
     const storeAsSystem = isAdmin && Boolean(ghcpKey.storeAsSystem);
@@ -3804,9 +4097,11 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = ["packages", "workers"].includes(admin.section) ? admin.section : "ghcp";
+    const section = ["providers", "packages", "workers"].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
-        { id: "ghcp", kind: "section", depth: 0, label: "GitHub Keys", selected: section === "ghcp" },
+        { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
+        { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
+        ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
         { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
         { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
         ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
@@ -4069,7 +4364,7 @@ export function selectAdminConsole(state) {
     if (section === "workers") {
         actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
         actions.push({ id: "showPackages", label: "Agents", key: "a" });
-        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "showProviders", label: "Model Providers", key: "m" });
         actions.push({ id: "close", label: "Close console", key: "Esc" });
         return {
             visible: Boolean(admin.visible),
@@ -4081,6 +4376,7 @@ export function selectAdminConsole(state) {
             settingsTree,
             packages: packagesView,
             workers: workersView,
+            modelProviders,
             ghcpKey: {
                 configured: Boolean(profile?.githubCopilotKeySet),
                 targetConfigured,
@@ -4107,7 +4403,7 @@ export function selectAdminConsole(state) {
         actions.push({ id: "packagesRefresh", label: "Refresh packages", key: "r" });
         actions.push({ id: "packagesNext", label: "Next package", key: "j" });
         actions.push({ id: "packagesPrev", label: "Previous package", key: "k" });
-        actions.push({ id: "showGhcp", label: "GitHub Keys", key: "g" });
+        actions.push({ id: "showProviders", label: "Model Providers", key: "m" });
         actions.push({ id: "close", label: "Close console", key: "Esc" });
         return {
             visible: Boolean(admin.visible),
@@ -4119,6 +4415,52 @@ export function selectAdminConsole(state) {
             settingsTree,
             packages: packagesView,
             workers: workersView,
+            modelProviders,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
+    if (section === "providers") {
+        actions.push({ id: "addProvider", label: "Add GitHub provider", key: "e" });
+        actions.push({ id: "cycleUserDefault", label: "Cycle my default", key: "u" });
+        if (isAdmin) {
+            actions.push({ id: "cycleClusterDefault", label: "Cycle cluster default", key: "l" });
+            actions.push({ id: "cycleSystemDefault", label: "Cycle system default", key: "s" });
+            actions.push({ id: "toggleSystemUse", label: "Toggle system use", key: "t" });
+            actions.push({ id: "cycleSystemOverride", label: "Cycle system-agent override", key: "o" });
+        }
+        actions.push({ id: "refreshProviders", label: "Refresh", key: "r" });
+        actions.push({ id: "showPackages", label: "Agents", key: "a" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            section,
+            settingsTree,
+            packages: packagesView,
+            workers: workersView,
+            modelProviders,
             ghcpKey: {
                 configured: Boolean(profile?.githubCopilotKeySet),
                 targetConfigured,
@@ -4166,6 +4508,7 @@ export function selectAdminConsole(state) {
         settingsTree,
         packages: packagesView,
         workers: workersView,
+        modelProviders,
         ghcpKey: {
             configured: Boolean(profile?.githubCopilotKeySet),
             targetConfigured,
@@ -4254,6 +4597,548 @@ export function selectAdminGhcpKeyEditorModal(state, maxWidth = 76) {
         saving: Boolean(ghcpKey.saving),
         error: ghcpKey.error || null,
         idealWidth: Math.min(72, Math.max(56, maxWidth)),
+    };
+}
+
+export function selectAdminProviderCreateModal(state, maxWidth = 76) {
+    const admin = state.admin || {};
+    const create = admin.modelProviders?.create || {};
+    if (!admin.visible || !create.editing) return null;
+    const credentialStage = create.stage === "credential";
+    const shared = create.shared === true;
+    const ownTitle = /github/i.test(create.typeId || "")
+        ? "Add GitHub Copilot provider"
+        : `Add ${create.typeId || "model"} provider`;
+    const value = String(create.draft || "");
+    return {
+        type: "adminProviderCreate",
+        title: credentialStage
+            ? (shared ? "Add shared model provider" : ownTitle)
+            : (shared ? "Name the shared provider" : ownTitle),
+        label: credentialStage ? "credential" : "provider name",
+        displayValue: credentialStage && value ? "•".repeat(value.length) : value,
+        cursorIndex: Math.max(0, Math.min(Number(create.cursorIndex) || 0, value.length)),
+        placeholder: credentialStage ? "Paste token" : "my-ghcp",
+        saving: Boolean(create.saving),
+        error: create.error || null,
+        idealWidth: Math.max(56, Math.min(maxWidth, 76)),
+        detailsLines: credentialStage
+            ? [
+                { text: `Provider  ${create.name}`, color: "white", bold: true },
+                { text: `Type      ${create.typeId}`, color: "cyan" },
+                { text: shared ? "Shared" : "Only you", color: "gray" },
+            ]
+            : [
+                { text: `Type  ${create.typeId}  [Tab cycles]`, color: "cyan", bold: true },
+                { text: "Permanent. Used in provider:model.", color: "gray" },
+                { text: "Letters, numbers, dot, dash, and underscore only.", color: "gray" },
+            ],
+        helpLines: credentialStage
+            ? ["Type/paste credential", "Enter  create provider", "Esc  cancel and clear"]
+            : ["Type provider name", "Tab  next provider type", "Enter  continue to credential", "Esc  cancel"],
+    };
+}
+
+// ── Providers & Budgets ────────────────────────────────────────────────
+//
+// The view-model for the one table in
+// docs/proposals/providers-and-budgets-meters.md.
+//
+// `state.budget.grid` is what `getProviderUsageGrid` sent, in the order it
+// sent it: shared providers first, then the viewer's own, each immediately
+// followed by its model rows. Everything below turns that into rows already
+// carrying the numbers the CURRENT toggle prints, so the component does no
+// arithmetic and cannot print a number the selector did not mean.
+//
+// The vocabulary is binding: provider, limit, allowance, hold, paused,
+// period, your usage vs everyone's usage. Never pool, payer, grant, quota
+// rule, or bind mode.
+
+const BUDGET_PERIOD_TITLE = { day: "Day", week: "Week", month: "Month" };
+
+/** Is the person looking at this an administrator? */
+function viewerIsAdmin(state) {
+    const role = state.auth?.authorization?.role;
+    // "anonymous" is the single-user local deployment: no login, no one to be
+    // less privileged than.
+    return role === "admin" || role === "anonymous" || Boolean(state.admin?.profile?.isAdmin);
+}
+
+/** "00:00 UTC" — the clock every period in this model turns over on. */
+function formatUtcClock(iso) {
+    const match = /T(\d{2}:\d{2})/.exec(String(iso || ""));
+    return match ? `${match[1]} UTC` : null;
+}
+
+/**
+ * "in 2h 10m (00:00 UTC)" — the ONE way this surface writes a reset.
+ *
+ * Both halves, every time: the relative half answers "how long do I wait",
+ * the absolute half answers "when", and nobody should do UTC arithmetic at
+ * 02:00 local to get from one to the other. Three spellings of one instant is
+ * how the same reset came to read as three different facts.
+ */
+function formatUntilLabel(iso, nowMs = Date.now()) {
+    const at = iso ? Date.parse(iso) : NaN;
+    if (!Number.isFinite(at)) return null;
+    const clock = formatUtcClock(iso);
+    const suffix = clock ? ` (${clock})` : "";
+    const ms = at - nowMs;
+    if (ms <= 0) return `now${suffix}`;
+    const minutes = Math.floor(ms / 60_000);
+    if (minutes < 60) return `in ${Math.max(1, minutes)}m${suffix}`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `in ${hours}h ${String(minutes % 60).padStart(2, "0")}m${suffix}`;
+    return `in ${Math.floor(hours / 24)}d ${String(hours % 24).padStart(2, "0")}h${suffix}`;
+}
+
+/**
+ * When a pause ends, as one short phrase — or null.
+ *
+ * Null whenever the pause SENTENCE already answers it, which it does for
+ * anything with a clock ("Resets in 2h 10m (00:00 UTC)."), for a hold ("until
+ * an administrator releases it") and for a provider that is gone ("until that
+ * name exists again"). Printing both put the same fact on the screen twice in
+ * two different spellings, which is what made one reset read as two.
+ *
+ * A provider that no longer exists is also the ONE reason with no automatic
+ * recovery, so it never gets a clock here under any circumstances.
+ */
+function budgetClearsLabel(pause) {
+    if (pause?.kind === "no_provider" || pause?.kind === "hold") return null;
+    if (pause?.resetsAtUtc) return null;
+    return "waits until someone changes it";
+}
+
+/** The UTC day key ("2026-08-20") N days back from now. */
+function utcDayKey(nowMs, back) {
+    return new Date(nowMs - back * 86_400_000).toISOString().slice(0, 10);
+}
+
+function budgetPlural(n, one, many) {
+    return n === 1 ? one : many;
+}
+
+/**
+ * One cell of the table: a used figure over a quota.
+ *
+ * The two pairs are never mixed. Unticked prints the viewer's own spend
+ * against their share of the limit; ticked prints everyone's spend against
+ * the limit itself. On a shared provider with an allowance the two are
+ * usually very different, so which pair is on screen is a fact the table
+ * carries rather than something the component guesses at.
+ *
+ * A null quota is no limit for that period — and the used figure beside it is
+ * still real, because the meter runs whether or not anybody capped it.
+ *
+ * A null used figure means nobody is signed in. It stays unknown rather than
+ * becoming a zero: "we do not know who you are" and "you spent nothing" are
+ * different facts.
+ */
+function budgetCell(raw, overall, nowMs) {
+    const rawQuota = overall ? raw?.quotaTokens : raw?.yourQuotaTokens;
+    const rawUsed = overall ? raw?.usedTokens : raw?.yourUsedTokens;
+    const quotaTokens = rawQuota == null ? null : Number(rawQuota);
+    const usedTokens = rawUsed == null ? null : Number(rawUsed);
+    const known = Number.isFinite(usedTokens);
+    const capped = Number.isFinite(quotaTokens) && quotaTokens > 0;
+    const pct = known && capped ? Math.round((usedTokens / quotaTokens) * 100) : null;
+    const usedLabel = known ? formatCompactNumber(usedTokens) : "—";
+    const quotaLabel = Number.isFinite(quotaTokens) ? formatCompactNumber(quotaTokens) : "∞";
+    // Whether the PROVIDER's own limit is spent, whichever pair is on screen.
+    // With an allowance this is the case that stops you while your share
+    // still shows room: a limit caps everyone TOGETHER, and a cell showing
+    // 13% of your slice was drawn plain on a provider that had nothing left.
+    const totalQuota = Number(raw?.quotaTokens);
+    const totalUsed = Number(raw?.usedTokens);
+    const providerExhausted = Number.isFinite(totalQuota) && totalQuota > 0
+        && Number.isFinite(totalUsed) && totalUsed >= totalQuota;
+    // Only worth marking when the cell's OWN pair does not already say it.
+    // At 100/100 the two numbers are the story; the case this exists for is a
+    // cell reading 13% of your share on a provider that has nothing left.
+    const blockedButLooksFine = !overall && providerExhausted && (pct == null || pct < 100);
+    return {
+        providerExhausted: blockedButLooksFine,
+        ruleId: raw?.ruleId || null,
+        usedTokens: known ? usedTokens : null,
+        quotaTokens: Number.isFinite(quotaTokens) ? quotaTokens : null,
+        usedLabel,
+        quotaLabel,
+        // The whole cell, already written: "480.0K / 500.0K", "1.2M / ∞".
+        text: `${usedLabel} / ${quotaLabel}`,
+        // False = nobody is signed in, so there is no "your" number to print.
+        known,
+        // True = this period is uncapped. The used figure is still real.
+        uncapped: !Number.isFinite(quotaTokens),
+        // The real percentage, which CAN exceed 100: the turn that crosses a
+        // limit completes and is charged, and only the next one pauses.
+        pct,
+        // What a meter may draw without overflowing its track.
+        meterPct: pct == null ? null : Math.max(0, Math.min(100, pct)),
+        // Plain under 90%, amber to 100%, red over. Never the only signal —
+        // the two numbers beside it already say it.
+        // Plain under 90%, amber to 100%, red over — and red as well when the
+        // PROVIDER's limit is spent while your own share still reads low,
+        // because nothing runs then either.
+        tone: pct == null ? (blockedButLooksFine ? "red" : "idle")
+            : pct > 100 ? "red"
+                : blockedButLooksFine ? "red"
+                    : pct >= 90 ? "amber" : "plain",
+        windowStartUtc: raw?.windowStartUtc || null,
+        resetsAtUtc: raw?.resetsAtUtc || null,
+        resetsLabel: formatUntilLabel(raw?.resetsAtUtc, nowMs),
+    };
+}
+
+/**
+ * One row of the table — a provider, or one model-scoped limit under it.
+ *
+ * A model row is read exactly like the provider row above it, in the same
+ * three columns, because a model limit can bite while the provider still has
+ * room and one grid is what makes that visible.
+ */
+function budgetTableRow(raw, { overall, selectedProvider, selectedScope = "*", nowMs, overModels = 0 }) {
+    const providerName = String(raw?.providerName || "");
+    const kind = raw?.rowKind === "model" ? "model" : "provider";
+    const scope = String(raw?.scope || "*");
+    const shared = raw?.class === "shared";
+    const allowancePct = Number.isFinite(Number(raw?.allowancePct)) ? Number(raw.allowancePct) : 100;
+    const holdUntilUtc = raw?.holdUntilUtc || null;
+    const holdIndefinite = raw?.holdIndefinite === true;
+    const held = holdIndefinite || (holdUntilUtc ? Date.parse(holdUntilUtc) > nowMs : false);
+    const modelRowCount = kind === "provider" ? Number(raw?.modelRowCount) || 0 : 0;
+    // Whose row this is, and whether you may change it. Both come from the
+    // database, which is the thing that will actually decide — a client that
+    // guessed armed Edit and Remove on providers the server then refused.
+    const ownedByMe = raw?.ownedByMe !== false;
+    const manageable = raw?.manageable === true;
+    // Whose it is. On an administrator's screen a bare "USER" chip told two
+    // people's providers apart only by whatever they happened to name them.
+    const ownerLabel = typeof raw?.ownerLabel === "string" && raw.ownerLabel ? raw.ownerLabel : null;
+    // A model row is selectable in its own right — its limit is a different
+    // number from the provider's, so it gets its own chart.
+    const selected = providerName === selectedProvider
+        && (kind === "provider" ? selectedScope === "*" : scope === selectedScope);
+    const periods = raw?.periods || {};
+    return {
+        // Unique across the table: one provider row plus one row per model
+        // scope under it.
+        key: `${providerName}${scope}`,
+        providerName,
+        kind,
+        scope,
+        // A provider row prints the provider's name; a model row prints just
+        // the model, because the provider is the row directly above it and
+        // "azure-research:gpt-5.4" under "azure-research" says it twice. The
+        // full scope stays on `scope` for anything that needs to name it.
+        label: kind === "provider"
+            ? providerName
+            : (scope.startsWith(`${providerName}:`) ? scope.slice(providerName.length + 1) : scope),
+        // What this row is ABOUT, written out. A model row's own name is only
+        // unambiguous while the provider is directly above it, so anything
+        // that names the row away from the table — the chart heading, a
+        // tooltip — uses this instead.
+        subject: kind === "provider"
+            ? (ownerLabel ? `${providerName} (${ownerLabel})` : providerName)
+            : `${providerName} · ${(scope.startsWith(`${providerName}:`)
+                ? scope.slice(providerName.length + 1) : scope)}`,
+        class: shared ? "shared" : "personal",
+        ownedByMe,
+        manageable,
+        ownerLabel: kind === "provider" ? ownerLabel : null,
+        // The provider's CLASS, named the way the model names it. Both are
+        // marked: an unmarked row is a row whose kind the reader has to
+        // infer, and the two behave differently enough that guessing is
+        // worse than a second chip.
+        classLabel: kind !== "provider" ? null : (shared ? "Shared" : "User"),
+        allowancePct,
+        // A fact about how the TOTAL is divided, so it belongs beside the
+        // total and nowhere else. 100 means there is no per-person ceiling.
+        // A share of nothing is nothing: printed beside three ∞ cells the
+        // label implied a cap that does not exist.
+        allowanceLabel: kind === "provider" && overall && allowancePct < 100 && ownedByMe
+            ? (["day", "week", "month"].some((p) => raw?.periods?.[p]?.quotaTokens != null)
+                ? `Per-user allowance: ${allowancePct}% of each limit`
+                : `Per-user allowance: ${allowancePct}%, but no limit is set to divide`)
+            : null,
+        hold: held
+            ? {
+                indefinite: holdIndefinite || !holdUntilUtc,
+                untilUtc: holdUntilUtc,
+                // Reads as the end of "It …", and carries the same reset
+                // spelling as every other clock on this surface.
+                label: holdIndefinite || !holdUntilUtc
+                    ? "lifts when an administrator releases it"
+                    : `lifts ${formatUntilLabel(holdUntilUtc, nowMs)}`,
+            }
+            : null,
+        modelRowCount,
+        selected,
+        // Expansion follows the PROVIDER, not the exact row: standing on one
+        // of its model rows must not make the teaser offer to expand rows
+        // that are already on screen.
+        expanded: providerName === selectedProvider && modelRowCount > 0,
+        // The affordance, already worded. Its model rows are already in the
+        // array — expanding shows rows the table has, it fetches nothing.
+        expandLabel: modelRowCount === 0 ? null
+            : providerName === selectedProvider
+                ? `hide ${modelRowCount} ${budgetPlural(modelRowCount, "model", "models")}`
+                : overModels > 0
+                    ? `show ${modelRowCount} ${budgetPlural(modelRowCount, "model", "models")} — ${overModels} over limit`
+                    : `show ${modelRowCount} ${budgetPlural(modelRowCount, "model", "models")}`,
+        overModels: kind === "provider" ? overModels : 0,
+        cells: {
+            day: budgetCell(periods.day, overall, nowMs),
+            week: budgetCell(periods.week, overall, nowMs),
+            month: budgetCell(periods.month, overall, nowMs),
+        },
+    };
+}
+
+/**
+ * The provider table: every row it draws, already carrying the six numbers
+ * (used and quota, for day, week and month) that the current toggle prints.
+ *
+ * Rows are NOT sorted here. The server returns them in render order and a
+ * sort would move a model row out from under the provider it belongs to.
+ */
+export function selectProviderTable(state) {
+    const budget = state.budget || {};
+    const nowMs = Date.now();
+    const isAdmin = viewerIsAdmin(state);
+    const overall = budget.overall === true;
+    const rangeDays = BUDGET_SERIES_RANGES.includes(Number(budget.rangeDays))
+        ? Number(budget.rangeDays)
+        : BUDGET_SERIES_DAYS;
+    const grid = Array.isArray(budget.grid) ? budget.grid : [];
+    const error = budget.error || null;
+    const loaded = budget.loaded === true;
+    const selectedProvider = budget.selectedProvider || null;
+    // Which row under it: '*' is the provider itself, a qualified model
+    // reference is one of its per-model limits.
+    const selectedScope = budget.selectedScope || "*";
+
+    const providerCount = grid.reduce((n, raw) => n + (raw?.rowKind === "model" ? 0 : 1), 0);
+
+    // Provider rows always; a provider's model rows only while it is the
+    // selected one. Selecting is what expands it.
+    const rows = [];
+    // How many of a provider's model limits are over, whether or not its rows
+    // are on screen. A collapsed teaser that said only "2 per-model limits"
+    // hid the one fact worth expanding for.
+    const overModelsByProvider = new Map();
+    for (const raw of grid) {
+        if (raw?.rowKind !== "model") continue;
+        const over = ["day", "week", "month"].some((period) => {
+            const cell = raw?.periods?.[period];
+            const quota = Number(cell?.quotaTokens);
+            const used = Number(overall ? cell?.usedTokens : cell?.yourUsedTokens);
+            return Number.isFinite(quota) && quota > 0 && Number.isFinite(used) && used > quota;
+        });
+        if (over) {
+            overModelsByProvider.set(raw.providerName, (overModelsByProvider.get(raw.providerName) || 0) + 1);
+        }
+    }
+    for (const raw of grid) {
+        if (raw?.rowKind === "model" && raw?.providerName !== selectedProvider) continue;
+        rows.push(budgetTableRow(raw, {
+            overall, selectedProvider, selectedScope, nowMs,
+            overModels: overModelsByProvider.get(raw?.providerName) || 0,
+        }));
+    }
+    // The row the actions and the chart are about. A model row can be it: its
+    // limit is a different number from the provider's and deserves its own
+    // days. The PROVIDER row stays findable for the things that are still
+    // about the provider — Edit, Remove, and what the buttons name.
+    const selected = rows.find((row) => row.selected)
+        || rows.find((row) => row.kind === "provider" && row.providerName === selectedProvider)
+        || null;
+    const selectedProviderRow = rows.find(
+        (row) => row.kind === "provider" && row.providerName === selectedProvider,
+    ) || null;
+
+    // ── The one line above the table ───────────────────────────────────
+    //
+    // Not the old band. An administrator's fleet-wide "is anything stopped
+    // right now" is the only thing the band was uniquely good at, and one
+    // sentence with a link keeps it. WHY a particular session is stopped is
+    // said on the session itself, which is where the remedy is.
+    const pausedRaw = Array.isArray(budget.paused) ? budget.paused : [];
+    const pausedByProvider = new Map();
+    for (const row of pausedRaw) {
+        const pause = normalizeSessionPause({ pauseState: row?.pause });
+        const name = pause?.provider || null;
+        if (!name) continue;
+        pausedByProvider.set(name, (pausedByProvider.get(name) || 0) + 1);
+    }
+    const topPaused = [...pausedByProvider.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0] || null;
+    const pausedCount = pausedRaw.length;
+    // Named only when that one provider accounts for every waiting session.
+    // Naming one of two causes sends the reader to the wrong row.
+    const pausedName = topPaused && topPaused[1] === pausedCount ? topPaused[0] : null;
+    const pausedError = budget.pausedError || null;
+    const paused = {
+        count: pausedCount,
+        // The waiting list is the half that failed. Said on the line itself,
+        // because the numbers above it were read fine and marking THEM stale
+        // is the opposite of the truth.
+        error: pausedError,
+        stale: Boolean(pausedError) && pausedCount > 0,
+        // Where the link goes: the provider stopping the most sessions.
+        provider: topPaused ? topPaused[0] : null,
+        sentence: pausedCount === 0
+            ? null
+            : `${pausedCount} ${budgetPlural(pausedCount, "session is", "sessions are")} waiting`
+                + `${pausedName ? ` on ${pausedName}` : ""}.`,
+    };
+
+    // ── A name that is waited on and does not exist ────────────────────
+    //
+    // Only when sessions are actually stopped on it. A provider deleted with
+    // nothing riding on it just leaves the table, which is correct and needs
+    // no announcement; a name that sessions are stuck on has one remedy —
+    // create it again — and this is the only screen that offers it.
+    const missingName = budget.missingProvider || null;
+    const missingWaiting = missingName ? (pausedByProvider.get(missingName) || 0) : 0;
+    const missing = missingWaiting > 0
+        ? {
+            provider: missingName,
+            count: missingWaiting,
+            sentence: `No provider is named ${missingName}, and `
+                + `${missingWaiting} ${budgetPlural(missingWaiting, "session waits", "sessions wait")} on it. `
+                + "They run again as soon as a provider takes that name.",
+        }
+        : null;
+
+    // ── The chart under the selected provider ──────────────────────────
+    //
+    // The range is drawn in full, one bar per day, filled from the report. A
+    // day the report omits is a day with no usage — not a missing axis.
+    const seriesState = budget.series || {};
+    const seriesDaily = new Map(
+        (Array.isArray(seriesState.days) ? seriesState.days : [])
+            .map((row) => [String(row?.dayUtc || "").slice(0, 10), row]),
+    );
+    const chartDays = [];
+    for (let back = rangeDays - 1; back >= 0; back -= 1) {
+        const dayUtc = utcDayKey(nowMs, back);
+        const row = seriesDaily.get(dayUtc);
+        chartDays.push({
+            dayUtc,
+            label: dayUtc.slice(5),
+            tokens: Number(row?.tokensTotal) || 0,
+            turns: Number(row?.turns) || 0,
+        });
+    }
+    const peak = chartDays.reduce((max, day) => Math.max(max, day.tokens), 0);
+    // The dashed line is the very number the Day cell just printed, so the
+    // chart and the row it belongs to cannot disagree.
+    const dayCell = selected?.cells?.day || null;
+    const quotaTokens = dayCell?.quotaTokens ?? null;
+    // The axis has to hold both the tallest bar and the line, or a provider
+    // well under its limit draws a line off the top of the plot.
+    const scaleMax = Math.max(peak, quotaTokens || 0);
+    for (const day of chartDays) {
+        day.pct = scaleMax > 0 ? Math.round((day.tokens / scaleMax) * 100) : 0;
+    }
+    const seriesError = seriesState.error || null;
+    const seriesLoaded = seriesState.loaded === true;
+    const series = {
+        provider: seriesState.provider || null,
+        days: chartDays,
+        peak,
+        peakLabel: formatCompactNumber(peak),
+        scaleMax,
+        quotaTokens,
+        quotaLabel: dayCell?.quotaLabel ?? "∞",
+        // Where to draw the line, as a percentage of the plot height. Null
+        // when the day is uncapped: there is no line to draw.
+        quotaPct: quotaTokens != null && scaleMax > 0
+            ? Math.round((quotaTokens / scaleMax) * 100)
+            : null,
+        rangeDays,
+        rangeLabel: `Last ${rangeDays} days`,
+        loading: seriesState.loading === true,
+        loaded: seriesLoaded,
+        error: seriesError,
+        // The read failed and there is nothing behind it. Distinct from a
+        // range that really had no usage in it.
+        failed: Boolean(seriesError) && !seriesLoaded,
+        stale: Boolean(seriesError) && seriesLoaded,
+        // Nothing to draw. The view says so instead of drawing an empty axis.
+        empty: seriesLoaded && !seriesError && peak === 0,
+        // The bars and the dashed line are now the SAME scope in both
+        // states — the request carries `mine` when the tick is off — so there
+        // is nothing left to warn about. Kept as a field because the view
+        // reads it; it is false because the mismatch it named is fixed.
+        mixedScope: false,
+    };
+
+    const systemState = budget.systemUsage || {};
+    const systemMatches = isAdmin && selected
+        && systemState.provider === selectedProvider
+        && (systemState.scope || "*") === selectedScope
+        && (systemState.rangeDays || BUDGET_SERIES_DAYS) === rangeDays;
+    const systemSpend = !isAdmin || !selected ? null : {
+        loading: systemMatches && systemState.loading === true,
+        loaded: systemMatches && systemState.loaded === true,
+        error: systemMatches ? (systemState.error || null) : null,
+        stale: systemMatches && Boolean(systemState.error) && systemState.loaded === true,
+        rangeDays,
+        rangeLabel: `Last ${rangeDays} days`,
+        tokens: Number(systemMatches ? systemState.totals?.tokensTotal : 0) || 0,
+        tokensLabel: formatCompactNumber(Number(systemMatches ? systemState.totals?.tokensTotal : 0) || 0),
+        turns: Number(systemMatches ? systemState.totals?.turns : 0) || 0,
+        models: (systemMatches && Array.isArray(systemState.breakdown) ? systemState.breakdown : [])
+            .map((row) => ({
+                key: String(row?.key || row?.label || "unknown"),
+                label: String(row?.label || row?.key || "Unknown model"),
+                tokens: Number(row?.tokensTotal) || 0,
+                tokensLabel: formatCompactNumber(Number(row?.tokensTotal) || 0),
+                turns: Number(row?.turns) || 0,
+            }))
+            .sort((left, right) => right.tokens - left.tokens || left.label.localeCompare(right.label)),
+    };
+
+    return {
+        open: Boolean(state.ui?.budgetOpen),
+        isAdmin,
+        loading: Boolean(budget.loading),
+        refreshing: Boolean(budget.refreshing),
+        loaded,
+        error,
+        fetchedAt: Number(budget.fetchedAt) || 0,
+        // The read failed and there is nothing trustworthy behind it. The two
+        // must never look alike: "no limits" and "could not load the limits"
+        // are different facts and only one of them is safe to act on.
+        failed: Boolean(error) && !loaded,
+        // The read failed but earlier numbers are still on screen. Say they
+        // are old rather than passing them off as current.
+        stale: Boolean(error) && loaded,
+        // A namespace that really is empty, which is a state with its own
+        // remedy (create a provider) — and only ever reported after a
+        // SUCCESSFUL read.
+        empty: loaded && !error && providerCount === 0,
+        // Which pair of numbers the cells are printing.
+        overall,
+        rangeDays,
+        rangeOptions: BUDGET_SERIES_RANGES.map((days) => ({ value: days, label: `${days}d` })),
+        overallLabel: "Show all user spend",
+        usageHeading: overall ? "All user spend" : "My spend",
+        columns: BUDGET_PERIODS.map((period) => ({ id: period, label: BUDGET_PERIOD_TITLE[period] })),
+        rows,
+        providerCount,
+        selectedProvider,
+        selectedScope,
+        selected,
+        // Edit and Remove always act on the provider, even while a model row
+        // under it is the one being read.
+        selectedProviderRow,
+        paused,
+        missing,
+        series,
+        systemSpend,
     };
 }
 
@@ -5514,7 +6399,7 @@ export function selectModelPickerModal(state, maxWidth = 72) {
                 : []),
             ...(defaultReasoning ? [[{ text: `Default reasoning: ${defaultReasoning}`, color: "gray" }]] : []),
             ...(selectedItem.disabled
-                ? [[{ text: "Unavailable: requires a GitHub Copilot key. Add yours in the Admin console, then reopen this picker.", color: "yellow" }]]
+                ? [[{ text: "Unavailable: add a personal provider in Admin Console, then reopen this picker.", color: "yellow" }]]
                 : []),
             [{ text: "", color: "gray" }],
             [{

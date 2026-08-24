@@ -1,5 +1,5 @@
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
-import { canvasKey as canvasPrefKey } from "./state.js";
+import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
@@ -44,6 +44,7 @@ import {
     selectFilesView,
     selectInspector,
     selectOutboxOverlayLines,
+    selectAdminConsole,
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
@@ -209,6 +210,19 @@ function groupModelsByProvider(models = []) {
     }
 
     return groups;
+}
+
+/**
+ * Where the model picker lands.
+ *
+ * Never on a model that cannot run: when the preferred one (usually the
+ * default) is blocked, land on the first usable model instead, so the very
+ * first Enter does something.
+ */
+function pickerSelectedIndex(items, preferredModel) {
+    let index = items.findIndex((item) => item.qualifiedName === preferredModel && !item.disabled);
+    if (index < 0) index = items.findIndex((item) => !item.disabled);
+    return index < 0 ? 0 : index;
 }
 
 function normalizeReasoningEfforts(values) {
@@ -1370,6 +1384,93 @@ const SESSION_NAV_SETTLE_MS = 140;
 // still expands freely while you are in the session; re-entering starts bounded.
 const HISTORY_REENTRY_MAX_EVENTS = 1_500;
 
+// ── Provider budgets ────────────────────────────────────────────────
+//
+// The model: docs/proposals/providers-and-budgets.md. A provider is a name
+// with a credential and a budget; a session runs `provider:model` and that
+// provider is charged. There are no pools, no payers and no access lists —
+// what a person may spend is decided by QUANTITY (limits, and an allowance
+// that divides each limit), never by identity.
+//
+// The surface reads this out of `state.budget` through
+// `selectProviderTable`. The one helper here is for the model PICKER, which
+// cannot: it reads the namespace fresh when it opens, because a provider
+// created a minute ago has to be offerable without a page load.
+
+const PICKER_PERIOD_TITLE = { day: "Daily", week: "Weekly", month: "Monthly" };
+
+/**
+ * The message the server wrote, unchanged.
+ *
+ * A provider refusal is written for the person who hit it and names the
+ * remedy — "the cluster default must be a shared provider", "there is no
+ * provider named carol-ghcp". Replacing it with a generic sentence throws
+ * away the only part of the answer anyone can act on. Only a failure with
+ * nothing to say at all gets a fallback.
+ */
+function budgetRefusalMessage(error) {
+    const message = typeof error?.message === "string" ? error.message.trim() : "";
+    if (message) return message;
+    const raw = String(error ?? "").trim();
+    return raw || "The request failed.";
+}
+
+/**
+ * What the model picker prints beside a provider, so the choice is made
+ * knowing. The state names are the ones `selectProviderTable` uses, so a
+ * component can style both from one set of classes.
+ *
+ * A provider with no STATUS row gets "unknown", never a confident "no
+ * limits": one is a claim about the budget and the other is an admission
+ * that it was not read, and only one of them is safe to act on.
+ */
+function providerPickerNote(provider, statusRow, now = Date.now()) {
+    if (provider?.hasCredential === false) {
+        return { state: "no_credential", text: "no credential — nothing can run on it" };
+    }
+    const held = provider?.holdIndefinite === true
+        || (provider?.holdUntilUtc ? Date.parse(provider.holdUntilUtc) > now : false);
+    if (held) {
+        return { state: "hold", text: "on hold — new turns wait until it is released" };
+    }
+    if (!statusRow) return { state: "unknown", text: "budget unknown" };
+    const rules = Array.isArray(statusRow.rules) ? statusRow.rules : [];
+    if (rules.length === 0) return { state: "no_limits", text: "no limit" };
+    // The binding one: what is already stopping turns, else what is nearest
+    // to stopping them. Ranking by percentage alone put a comfortable weekly
+    // limit above a daily one that was already full.
+    const scored = rules.map((rule) => {
+        const limitTokens = Number(rule?.limitTokens) || 0;
+        const usedTokens = Number(rule?.usedTokens) || 0;
+        const ceilingTokens = rule?.ceilingTokens == null ? null : Number(rule.ceilingTokens);
+        const yourUsedTokens = Number(rule?.yourUsedTokens) || 0;
+        return {
+            periodLabel: PICKER_PERIOD_TITLE[rule?.period] || String(rule?.period || ""),
+            pct: limitTokens > 0 ? Math.floor((usedTokens / limitTokens) * 100) : 0,
+            atLimit: limitTokens > 0 && usedTokens >= limitTokens,
+            atCeiling: ceilingTokens != null && ceilingTokens > 0 && yourUsedTokens >= ceilingTokens,
+        };
+    });
+    const worst = [...scored].sort((a, b) => (
+        ((a.atLimit || a.atCeiling) ? 0 : 1) - ((b.atLimit || b.atCeiling) ? 0 : 1) || b.pct - a.pct
+    ))[0];
+    if (worst.atLimit) {
+        return {
+            state: "at_limit",
+            text: `at its ${worst.periodLabel.toLowerCase()} limit — a session here waits for the reset`,
+        };
+    }
+    // The provider still has room; this person does not. Different remedy,
+    // so different words: raising the limit changes nothing here.
+    if (worst.atCeiling) {
+        return {
+            state: "at_limit",
+            text: `your share of its ${worst.periodLabel.toLowerCase()} limit is used up`,
+        };
+    }
+    return { state: "under_limit", text: `${worst.pct}% of its ${worst.periodLabel.toLowerCase()} limit used` };
+}
+
 export class PilotSwarmUiController {
     constructor({ store, transport }) {
         this.store = store;
@@ -2443,6 +2544,10 @@ export class PilotSwarmUiController {
         }
         if (canvasSeed.length) this.dispatch({ type: "canvas/seed", entries: canvasSeed });
         this.dispatch({ type: "sessions/loaded", sessions });
+        // A row that says only "waiting" says nothing anyone can act on. Which
+        // limit, whose allowance, which hold, which missing name — that lives
+        // in the provider reads, so take them while the list holds a wait.
+        this.refreshBudgetPausesIfStale(sessions).catch(() => {});
         this.refreshOpenSessionOwnerFilterModal();
         const selected = this.getState().sessions.activeSessionId;
         const syncedIds = new Set();
@@ -2940,6 +3045,7 @@ export class PilotSwarmUiController {
     async openAdminConsole() {
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
+        void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
     }
 
@@ -3010,10 +3116,328 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/ghcpKey/setSystemTarget", value: Boolean(value) });
     }
 
+    async refreshAdminModelProviders() {
+        const required = ["listProviders", "getModelDefaults"];
+        if (required.some((name) => typeof this.transport[name] !== "function")) {
+            this.dispatch({ type: "admin/modelProviders/loadFailed", error: "Model provider management is not available on this transport." });
+            return null;
+        }
+        this.dispatch({ type: "admin/modelProviders/loading" });
+        try {
+            const [providerResult, modelResult, defaults] = await Promise.all([
+                this.transport.listProviders(),
+                typeof this.transport.getModelsByProvider === "function"
+                    ? this.transport.getModelsByProvider()
+                    : this.transport.listModels(),
+                this.transport.getModelDefaults(),
+            ]);
+            const models = Array.isArray(modelResult)
+                && modelResult.some((entry) => Array.isArray(entry?.models))
+                ? modelResult.flatMap((group) => (group.models || []).map((model) => ({
+                    ...model,
+                    providerId: group.providerId,
+                    providerType: group.type || model.providerType,
+                })))
+                : modelResult;
+            const providers = Array.isArray(providerResult)
+                ? providerResult
+                : (Array.isArray(providerResult?.providers) ? providerResult.providers : []);
+            this.dispatch({
+                type: "admin/modelProviders/loaded",
+                providers,
+                models: Array.isArray(models) ? models : [],
+                defaults,
+            });
+            return { providers, models, defaults };
+        } catch (error) {
+            this.dispatch({ type: "admin/modelProviders/loadFailed", error: error?.message || String(error) });
+            return null;
+        }
+    }
+
+    async _runAdminModelProviderMutation(pending, run) {
+        this.dispatch({ type: "admin/modelProviders/mutationPending", pending });
+        try {
+            const result = await run();
+            this.dispatch({ type: "admin/modelProviders/mutationDone" });
+            await this.refreshAdminModelProviders();
+            return { ok: true, result: result ?? null, error: null };
+        } catch (error) {
+            const message = error?.message || String(error);
+            this.dispatch({ type: "admin/modelProviders/mutationFailed", error: message });
+            return { ok: false, result: null, error: message };
+        }
+    }
+
+    async createAdminProvider({ name, type, credentials, baseUrl = null, shared = false } = {}) {
+        const op = shared ? "createProvider" : "createMyProvider";
+        if (typeof this.transport[op] !== "function") {
+            this.dispatch({ type: "admin/modelProviders/mutationFailed", error: "Provider creation is not available on this transport." });
+            return { ok: false, result: null, error: "Provider creation is not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("create", () => this.transport[op]({
+            name, type, credentials, baseUrl,
+        }));
+    }
+
+    async deleteAdminProvider(name, { shared = false } = {}) {
+        const op = shared ? "deleteProvider" : "deleteMyProvider";
+        if (typeof this.transport[op] !== "function") {
+            return { ok: false, result: null, error: "Provider deletion is not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("delete", () => this.transport[op](name));
+    }
+
+    async setAdminProviderSystemUse(provider, enabled) {
+        if (typeof this.transport.setProviderSystemUse !== "function") {
+            return { ok: false, result: null, error: "System-use controls are not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("systemUse", () => this.transport.setProviderSystemUse({
+            provider, enabled: enabled === true,
+        }));
+    }
+
+    async setAdminModelDefault(scope, choice = null) {
+        if (typeof this.transport.setModelDefault !== "function") {
+            return { ok: false, result: null, error: "Model defaults are not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation(`${scope}Default`, () => this.transport.setModelDefault({
+            scope,
+            provider: choice?.provider ?? null,
+            model: choice?.qualifiedName ?? choice?.model ?? null,
+            reasoningEffort: choice?.reasoningEffort ?? choice?.defaultReasoningEffort ?? null,
+            contextTier: choice?.contextTier ?? choice?.defaultContextTier ?? null,
+        }));
+    }
+
+    async setAdminSystemModelDefault(choice = null, { restartDisposition = null } = {}) {
+        if (typeof this.transport.setSystemModelDefault !== "function") {
+            return { ok: false, result: null, error: "The system model default is not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("systemDefault", () => this.transport.setSystemModelDefault({
+            provider: choice?.provider ?? null,
+            model: choice?.qualifiedName ?? choice?.model ?? null,
+            reasoningEffort: choice?.reasoningEffort ?? choice?.defaultReasoningEffort ?? null,
+            contextTier: choice?.contextTier ?? choice?.defaultContextTier ?? null,
+            restartExisting: restartDisposition ? { disposition: restartDisposition } : false,
+        }));
+    }
+
+    async setAdminSystemAgentModel(agentId, choice) {
+        if (typeof this.transport.setSystemSessionModel !== "function") {
+            return { ok: false, result: null, error: "System-agent overrides are not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("systemOverride", () => this.transport.setSystemSessionModel({
+            agentId,
+            provider: choice?.provider,
+            model: choice?.qualifiedName ?? choice?.model,
+            reasoningEffort: choice?.reasoningEffort ?? choice?.defaultReasoningEffort ?? null,
+            contextTier: choice?.contextTier ?? choice?.defaultContextTier ?? null,
+        }));
+    }
+
+    async clearAdminSystemAgentModel(agentId) {
+        if (typeof this.transport.clearSystemSessionModel !== "function") {
+            return { ok: false, result: null, error: "System-agent overrides are not available on this transport." };
+        }
+        return this._runAdminModelProviderMutation("systemOverride", () => this.transport.clearSystemSessionModel(agentId));
+    }
+
+    beginAdminCreateProvider({ shared = false } = {}) {
+        const providers = this.getState().admin?.modelProviders || {};
+        const typeId = (providers.models || []).find((model) => /github/i.test(model?.providerId || ""))?.providerId
+            || providers.models?.[0]?.providerId
+            || "github-copilot";
+        const taken = new Set((providers.providers || []).map((provider) => String(provider?.name || "").toLowerCase()));
+        const subject = String(this.getState().admin?.profile?.subject || "").replace(/[^A-Za-z0-9]/gu, "").slice(-10).toLowerCase();
+        const base = subject ? `ghcp-${subject}` : "my-ghcp";
+        let name = base;
+        let suffix = 2;
+        while (taken.has(name.toLowerCase())) {
+            name = `${base}-${suffix}`;
+            suffix += 1;
+        }
+        this.dispatch({ type: "admin/modelProviders/createBegin", name, typeId, shared });
+    }
+
+    beginAdminCreateGithubProvider() {
+        this.beginAdminCreateProvider({ shared: false });
+    }
+
+    cycleAdminProviderCreateType() {
+        const providers = selectAdminConsole(this.getState()).modelProviders;
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving || create.stage !== "name") return;
+        const types = providers.providerTypes || [];
+        if (!types.length) return;
+        const index = Math.max(0, types.findIndex((type) => type.id === create.typeId));
+        this.dispatch({ type: "admin/modelProviders/createType", typeId: types[(index + 1) % types.length].id });
+    }
+
+    setAdminProviderCreateDraft(draft, cursorIndex = String(draft || "").length) {
+        this.dispatch({ type: "admin/modelProviders/createDraft", draft, cursorIndex });
+    }
+
+    insertAdminProviderCreateText(text) {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving) return;
+        const sanitized = String(text || "").replace(/\r?\n/gu, "");
+        const next = insertPromptTextAtCursor(create.draft || "", create.cursorIndex || 0, sanitized);
+        this.setAdminProviderCreateDraft(next.prompt, next.cursor);
+    }
+
+    deleteAdminProviderCreateChar() {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving) return;
+        const next = deletePromptCharBackward(create.draft || "", create.cursorIndex || 0);
+        this.setAdminProviderCreateDraft(next.prompt, next.cursor);
+    }
+
+    moveAdminProviderCreateCursor(delta) {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving) return;
+        const draft = create.draft || "";
+        this.setAdminProviderCreateDraft(draft, clampPromptCursor(draft, (create.cursorIndex || 0) + delta));
+    }
+
+    moveAdminProviderCreateCursorToBoundary(kind) {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving) return;
+        const draft = create.draft || "";
+        this.setAdminProviderCreateDraft(draft, kind === "start" ? 0 : draft.length);
+    }
+
+    advanceAdminProviderCreate() {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving || create.stage !== "name") return;
+        const name = String(create.draft || "").trim();
+        if (!name || name.length > 64 || !/^[A-Za-z0-9._-]+$/u.test(name)) {
+            this.dispatch({ type: "admin/modelProviders/createFailed", error: "Use 1-64 letters, numbers, dots, dashes, or underscores for the provider name." });
+            return;
+        }
+        this.dispatch({ type: "admin/modelProviders/createCredential", name });
+    }
+
+    async saveAdminProviderCreate() {
+        const create = this.getState().admin?.modelProviders?.create;
+        if (!create?.editing || create.saving || create.stage !== "credential") return;
+        const credential = String(create.draft || "").trim();
+        if (!credential) {
+            this.dispatch({ type: "admin/modelProviders/createFailed", error: "Enter a provider credential." });
+            return;
+        }
+        const input = {
+            name: create.name,
+            type: create.typeId,
+            credentials: /github/i.test(create.typeId) ? { githubToken: credential } : { apiKey: credential },
+            shared: create.shared === true,
+        };
+        // Clear the credential from shared state before any network await.
+        this.dispatch({ type: "admin/modelProviders/createSaving" });
+        const outcome = await this.createAdminProvider(input);
+        this.dispatch(outcome?.ok
+            ? { type: "admin/modelProviders/createEnd" }
+            : { type: "admin/modelProviders/createFailed", error: outcome?.error });
+    }
+
+    cancelAdminProviderCreate() {
+        this.dispatch({ type: "admin/modelProviders/createEnd" });
+    }
+
+    setAdminModelProviderSelection({ focus, providerName, agentId } = {}) {
+        this.dispatch({ type: "admin/modelProviders/select", focus, providerName, agentId });
+    }
+
+    setAdminModelProviderPage(page) {
+        if (page === "shared" && !this.getState().admin?.profile?.isAdmin) return;
+        this.dispatch({ type: "admin/modelProviders/page", page });
+    }
+
+    stepAdminModelProviderSelection(delta) {
+        const view = selectAdminConsole(this.getState()).modelProviders;
+        const focus = view.selection?.focus === "agents" ? "agents" : "providers";
+        const rows = focus === "agents"
+            ? view.systemAgentRoutes
+            : (view.page === "shared" ? view.sharedProviders : view.myProviders);
+        if (!rows.length) return;
+        const selectedId = focus === "agents" ? view.selection?.agentId : view.selection?.providerName;
+        let index = rows.findIndex((row) => (focus === "agents" ? row.agentId : row.name) === selectedId);
+        if (index < 0) index = 0;
+        const next = rows[(index + delta + rows.length) % rows.length];
+        this.setAdminModelProviderSelection(focus === "agents"
+            ? { focus, agentId: next.agentId }
+            : { focus, providerName: next.name });
+    }
+
+    async toggleSelectedAdminProviderSystemUse() {
+        const view = selectAdminConsole(this.getState()).modelProviders;
+        const provider = view.myProviders.find((row) => row.name === view.selection?.providerName);
+        if (!provider || !this.getState().admin?.profile?.isAdmin) return;
+        return this.setAdminProviderSystemUse(provider.name, !provider.systemUseEnabled);
+    }
+
+    async deleteSelectedAdminProvider() {
+        const providers = selectAdminConsole(this.getState()).modelProviders;
+        const selected = [...providers.myProviders, ...providers.sharedProviders]
+            .find((provider) => provider.name === providers.selection?.providerName);
+        if (!selected) return;
+        return this.deleteAdminProvider(selected.name, { shared: selected.class === "shared" });
+    }
+
+    requestDeleteSelectedAdminProvider() {
+        const providers = selectAdminConsole(this.getState()).modelProviders;
+        const selected = [...providers.myProviders, ...providers.sharedProviders]
+            .find((provider) => provider.name === providers.selection?.providerName);
+        if (!selected) return;
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "confirm",
+                title: "Delete Model Provider",
+                message: `Delete ${selected.name}? Sessions using it will wait until that provider name exists again.`,
+                confirmLabel: "Delete Provider",
+                action: "deleteAdminProvider",
+                previousFocus: FOCUS_REGIONS.ADMIN,
+            },
+        });
+    }
+
+    async cycleAdminModelDefault(scope, { restartDisposition = null } = {}) {
+        const providers = selectAdminConsole(this.getState()).modelProviders;
+        const choices = scope === "user" ? providers.userChoices
+            : scope === "cluster" ? providers.clusterChoices : providers.systemChoices;
+        const current = scope === "user" ? providers.mySessionDefault?.configured?.model
+            : scope === "cluster" ? providers.clusterSessionDefault?.configured?.model
+                : providers.systemSessionDefault?.configured?.model;
+        const values = [null, ...choices];
+        const index = Math.max(0, values.findIndex((choice) => choice?.qualifiedName === current));
+        const next = values[(index + 1) % values.length];
+        if (scope === "system") return this.setAdminSystemModelDefault(next, { restartDisposition });
+        return this.setAdminModelDefault(scope, next);
+    }
+
+    async cycleSelectedAdminSystemAgentOverride() {
+        const providers = selectAdminConsole(this.getState()).modelProviders;
+        const route = providers.systemAgentRoutes.find((row) => row.agentId === providers.selection?.agentId)
+            || providers.systemAgentRoutes[0];
+        if (!route) return;
+        const values = [null, ...providers.systemChoices];
+        const current = route.override?.model || null;
+        const index = Math.max(0, values.findIndex((choice) => choice?.qualifiedName === current));
+        const next = values[(index + 1) % values.length];
+        return next
+            ? this.setAdminSystemAgentModel(route.agentId, next)
+            : this.clearAdminSystemAgentModel(route.agentId);
+    }
+
     // ── Agent packages (Admin → Agents) ──────────────────────────
 
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
+        if (section === "providers") {
+            const providers = this.getState().admin?.modelProviders;
+            if (!providers?.fetchedAt) void this.refreshAdminModelProviders().catch(() => {});
+        }
         if (section === "packages") {
             const pkgs = this.getState().admin?.packages;
             if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
@@ -3217,6 +3641,7 @@ export class PilotSwarmUiController {
                 case "republish":
                     await this.transport.republishAgentPackageVersion(
                         name, arg, selector?.scope === "shared" ? "user" : "shared",
+                        selector,
                     );
                     break;
                 case "pin":
@@ -3471,6 +3896,468 @@ export class PilotSwarmUiController {
         }
     }
 
+    // ─── Providers & Budgets (the coin button) ─────────────────
+    //
+    // docs/proposals/providers-and-budgets-meters.md is the build spec: one
+    // table over one read, plus the day-by-day chart under the row someone
+    // selected. Nothing here asks whether the viewer may do a thing. Every
+    // call carries the signed-in person down to the `cms_provider_*`
+    // procedures, the DATABASE refuses what they may not do, and it writes the
+    // refusal in words meant for them — which are passed straight through,
+    // because they name the remedy and nothing this file could invent would.
+
+    /**
+     * Open the surface and load it.
+     *
+     * `provider` lets one call land on the provider that stopped something —
+     * the paused line's link, where the sentence is above the table and the
+     * row it names is in it.
+     */
+    async openBudget({ provider = undefined } = {}) {
+        this.dispatch({
+            type: "ui/budgetOpen",
+            open: true,
+            ...(provider === undefined ? {} : { provider }),
+        });
+        await this.loadProviderTable();
+        // A provider opened AT a name shows that name's chart straight away.
+        const opened = this.getState().budget || {};
+        if (opened.selectedProvider) {
+            await Promise.all([
+                this.loadProviderSeries(opened.selectedProvider, opened.selectedScope || "*"),
+                this.loadProviderSystemUsage(opened.selectedProvider, opened.selectedScope || "*"),
+            ]);
+        }
+    }
+
+    /** Close the surface and return to the standard workspace. */
+    closeBudget() {
+        this.dispatch({ type: "ui/budgetOpen", open: false });
+    }
+
+    /**
+     * The "show overall usage" tick.
+     *
+     * Both pairs of numbers are already in the grid, so this changes what the
+     * cells print and costs no request. Omit `overall` to flip it.
+     */
+    setBudgetOverall(overall) {
+        const before = this.getState().budget?.overall === true;
+        this.dispatch({ type: "budget/overall", ...(typeof overall === "boolean" ? { overall } : {}) });
+        const budget = this.getState().budget || {};
+        // The cells already hold both pairs, so the TABLE costs no request.
+        // The chart does: its bars are one scope or the other, and leaving
+        // the old ones up relabels one person's spend as everyone's.
+        if (budget.overall === before || !budget.selectedProvider) return undefined;
+        return this.loadProviderSeries(budget.selectedProvider, budget.selectedScope || "*");
+    }
+
+    async setBudgetRangeDays(days) {
+        const rangeDays = Number(days);
+        if (!BUDGET_SERIES_RANGES.includes(rangeDays)) return;
+        const before = this.getState().budget?.rangeDays ?? BUDGET_SERIES_DAYS;
+        this.dispatch({ type: "budget/rangeDays", rangeDays });
+        const budget = this.getState().budget || {};
+        if (rangeDays === before || !budget.selectedProvider) return;
+        await Promise.all([
+            this.loadProviderSeries(budget.selectedProvider, budget.selectedScope || "*"),
+            this.loadProviderSystemUsage(budget.selectedProvider, budget.selectedScope || "*"),
+        ]);
+    }
+
+    /**
+     * Select a row: a provider, or one of its per-model limits.
+     *
+     * `scope` is '*' for the provider itself, or a qualified model reference
+     * for a model row — and the chart follows it, so standing on a model row
+     * shows that model's days rather than the whole provider's. Selecting the
+     * row you are already on clears it: a provider collapses, a model row
+     * falls back to the provider above it.
+     *
+     * The model rows are already in state — expanding shows rows the table
+     * has. Only the chart is a read.
+     */
+    async selectBudgetProvider(provider, scope = "*") {
+        this.dispatch({ type: "budget/selectProvider", provider, scope });
+        const budget = this.getState().budget || {};
+        if (!budget.selectedProvider) return;
+        await Promise.all([
+            this.loadProviderSeries(budget.selectedProvider, budget.selectedScope || "*"),
+            this.loadProviderSystemUsage(budget.selectedProvider, budget.selectedScope || "*"),
+        ]);
+    }
+
+    /**
+     * The table: every provider in the viewer's namespace with its used and
+     * quota figures for all three periods, plus what is waiting.
+     *
+     * Two reads, not five. The grid is one call by design — the numbers in a
+     * row and the numbers in the row under it come from the same statement, so
+     * they cannot be a refresh apart. The paused list is separate because it
+     * also feeds the session rows, which say why a session stopped whether or
+     * not this surface is open.
+     *
+     * A read that FAILS is recorded as a failure, never as empty data. The two
+     * look identical on screen if you let them — "this provider has no limits"
+     * and "we could not find out what its limits are" — and only one of them
+     * is safe to act on. Whatever was already on screen stays there
+     * underneath, marked old, rather than being blanked.
+     */
+    async loadProviderTable() {
+        if (!this._budgetReadable()) return;
+        this.dispatch({ type: "budget/loading" });
+        const [grid, paused] = await Promise.all([
+            this._readBudgetPart(() => this.transport.getProviderUsageGrid()),
+            this._readBudgetPart(() => this.transport.listPausedSessions()),
+        ]);
+        this._settleBudgetRead([
+            ["grid", "the provider table", grid, (v) => v?.rows || []],
+            ["paused", "the paused sessions", paused, (v) => v?.sessions || []],
+        ]);
+    }
+
+    /**
+     * The day-by-day chart under one provider.
+     *
+     * Kept apart from the table's read so a failed chart never blanks the
+     * numbers above it, and so selecting a row does not re-read every
+     * provider's meters.
+     */
+    /**
+     * Re-read the table AND the chart under it.
+     *
+     * They are two requests, and re-reading only the first left the chart
+     * saying "No token usage" beside a row reporting usage — which is the
+     * no-data-versus-not-looked-again confusion this screen exists to
+     * prevent. Both the Refresh button and the background poll come here.
+     */
+    async refreshProviderTable() {
+        await this.loadProviderTable();
+        const budget = this.getState().budget || {};
+        if (budget.selectedProvider) {
+            await Promise.all([
+                this.loadProviderSeries(budget.selectedProvider, budget.selectedScope || "*"),
+                this.loadProviderSystemUsage(budget.selectedProvider, budget.selectedScope || "*"),
+            ]);
+        }
+    }
+
+    async loadProviderSeries(provider, scope = "*") {
+        const name = String(provider ?? "").trim();
+        if (!name || typeof this.transport.getProviderUsage !== "function") return;
+        // '*' means the whole provider. Anything else is one model, and the
+        // report is filtered to it — the same filter the model row's own
+        // numbers came from, so the chart and the row agree.
+        const model = scope && scope !== "*" ? scope : null;
+        // The chart must be drawn from the SAME slice of spend as the row
+        // above it, or the two contradict each other under one heading. Two
+        // filters do that, and both were missing:
+        //
+        //   chargeClass "user" — the meters a cell reads are never moved for
+        //   system spend, so a chart that summed every class drew a provider
+        //   as over its limit while the cell said 15%.
+        //
+        //   mine — with the tick off a cell holds YOUR spend against YOUR
+        //   share, so an unfiltered chart put the whole fleet's bars under a
+        //   heading that said "your usage", above a line that was your
+        //   personal share of the limit.
+        const overall = this.getState().budget?.overall === true;
+        const rangeDays = this.getState().budget?.rangeDays ?? BUDGET_SERIES_DAYS;
+        this.dispatch({ type: "budget/series/loading", provider: name, scope, rangeDays });
+        try {
+            const report = await this.transport.getProviderUsage({
+            days: rangeDays,
+                provider: name,
+                ...(model ? { model } : {}),
+                chargeClass: "user",
+                ...(overall ? {} : { mine: true }),
+                dimension: "provider",
+            });
+            this.dispatch({
+                type: "budget/series/loaded",
+                provider: name,
+                scope,
+                rangeDays,
+                days: Array.isArray(report?.daily) ? report.daily : [],
+            });
+        } catch (error) {
+            this.dispatch({
+                type: "budget/series/failed",
+                provider: name, scope, rangeDays, error: budgetRefusalMessage(error),
+            });
+        }
+    }
+
+    /** Admin-only machinery spend, kept separate from user limits. */
+    async loadProviderSystemUsage(provider, scope = "*") {
+        const role = this.getState().auth?.authorization?.role;
+        const isAdmin = role === "admin" || role === "anonymous"
+            || this.getState().admin?.profile?.isAdmin === true;
+        const name = String(provider ?? "").trim();
+        if (!isAdmin || !name || typeof this.transport.getProviderUsage !== "function") return;
+        const model = scope && scope !== "*" ? scope : null;
+        const rangeDays = this.getState().budget?.rangeDays ?? BUDGET_SERIES_DAYS;
+        this.dispatch({ type: "budget/systemUsage/loading", provider: name, scope, rangeDays });
+        try {
+            const report = await this.transport.getProviderUsage({
+            days: rangeDays,
+                provider: name,
+                ...(model ? { model } : {}),
+                chargeClass: "system",
+                dimension: "model",
+                limit: 100,
+            });
+            this.dispatch({ type: "budget/systemUsage/loaded", provider: name, scope, rangeDays, report });
+        } catch (error) {
+            this.dispatch({
+                type: "budget/systemUsage/failed",
+                provider: name, scope, rangeDays, error: budgetRefusalMessage(error),
+            });
+        }
+    }
+
+    /**
+     * Why the waiting sessions are waiting, for the session list.
+     *
+     * The catalog row carries a status of "waiting" and nothing else; the
+     * reason is published by `listPausedSessions`, and the session list joins
+     * the two (see budgetPauseForSession). So take them while a wait is on
+     * screen — once a minute, and never while the Budget surface is open,
+     * which runs its own refresh on the same cadence.
+     *
+     * A failure is no news: the reasons already on screen stay as they are.
+     */
+    async refreshBudgetPausesIfStale(sessions) {
+        if (typeof this.transport.listPausedSessions !== "function") return;
+        const state = this.getState();
+        if (state.ui?.budgetOpen) return;
+        // A scheduled session is "waiting" on its own clock, not on a budget,
+        // and on a busy fleet those are most of the waits. Skipping them keeps
+        // this from becoming a permanent background poll on a portal where
+        // nothing is actually stopped.
+        const waiting = (Array.isArray(sessions) ? sessions : [])
+            .some((row) => row && !row.isGroup && row.status === "waiting" && row.cronActive !== true);
+        // Nothing is waiting, and there is nothing on screen left to clear.
+        if (!waiting && (state.budget?.paused || []).length === 0) return;
+        const now = Date.now();
+        if (now - (this.budgetPauseReadAt || 0) < 60_000) return;
+        this.budgetPauseReadAt = now;
+        await this.refreshPausedSessions({ quiet: true }).catch(() => {});
+    }
+
+    /**
+     * The paused list alone. One call, because the session rows need the
+     * reasons whether or not the table is on screen.
+     *
+     * `quiet` is for the background poll: a minute-by-minute read that nobody
+     * asked for must not put an error banner on a table the reader is not even
+     * looking at. The reasons already on screen stay as they are, and the next
+     * poll tries again.
+     */
+    async refreshPausedSessions({ quiet = false } = {}) {
+        if (typeof this.transport.listPausedSessions !== "function") {
+            if (quiet) return;
+            this.dispatch({
+                type: "budget/loadFailed",
+                error: "Providers and budgets are not available on this deployment.",
+            });
+            return;
+        }
+        const paused = await this._readBudgetPart(() => this.transport.listPausedSessions());
+        if (paused.error && quiet) return;
+        this._settleBudgetRead([
+            ["paused", "the paused sessions", paused, (v) => v?.sessions || []],
+        ]);
+    }
+
+    /** An older server has none of these routes. Say so; do not draw zeros. */
+    _budgetReadable() {
+        if (typeof this.transport.getProviderUsageGrid === "function") return true;
+        this.dispatch({
+            type: "budget/loadFailed",
+            error: "Providers and budgets are not available on this deployment.",
+        });
+        return false;
+    }
+
+    /** One read, kept apart from its siblings so one failure cannot take them all. */
+    async _readBudgetPart(run) {
+        try {
+            return { value: await run(), error: null };
+        } catch (error) {
+            return { value: null, error: budgetRefusalMessage(error) };
+        }
+    }
+
+    /**
+     * Turn the reads into state.
+     *
+     * Whatever came back is written; whatever failed is named. A partial
+     * failure is worth the two dispatches: the parts that arrived are worth
+     * having, and the part that did not arrive has to say so rather than
+     * showing the last numbers as if they were current.
+     */
+    _settleBudgetRead(parts) {
+        const loaded = {};
+        const failures = [];
+        for (const [key, label, read, pick] of parts) {
+            if (read.error) failures.push({ label, error: read.error });
+            else loaded[key] = pick(read.value);
+        }
+        if (Object.keys(loaded).length === 0) {
+            // Everything failed, which nearly always means one cause — signed
+            // out, server down. Two copies of one sentence is not two facts,
+            // so the server's own words go up once.
+            this.dispatch({ type: "budget/loadFailed", error: failures[0]?.error || "The read failed." });
+            return;
+        }
+        this.dispatch({ type: "budget/loaded", ...loaded });
+        if (failures.length === 0) return;
+        const message = failures.map((f) => `${f.label} could not be read: ${f.error}`).join(" ");
+        // WHICH half failed decides what is marked. `budget/loadFailed` sets
+        // the TABLE's error, and firing it when the paused list alone failed
+        // put a red "these numbers are from an earlier read" over numbers
+        // that had just been read successfully — while the genuinely old
+        // waiting line underneath carried no mark at all. Exactly backwards.
+        const gridFailed = parts.some(([key, , read]) => key === "grid" && read.error);
+        this.dispatch(gridFailed
+            ? { type: "budget/loadFailed", error: message }
+            : { type: "budget/pausedFailed", error: message });
+    }
+
+    /**
+     * Every change to a provider, in one shape: run it, re-read the table, and
+     * hand the caller back what happened.
+     *
+     * Nothing throws. A sheet gets `{ok, error, code, result}` and renders the
+     * refusal where the person is looking; the same message also goes to the
+     * status line for anyone who has already closed the sheet.
+     */
+    async _runBudgetChange(run) {
+        try {
+            const result = await run();
+            await this.loadProviderTable();
+            const after = this.getState().budget || {};
+            // A limit that changed moves the chart's dashed line, so the chart
+            // is re-read with the table rather than left describing the old one.
+            if (after.selectedProvider) {
+                await this.loadProviderSeries(after.selectedProvider, after.selectedScope || "*");
+            }
+            return { ok: true, error: null, code: null, result: result ?? null };
+        } catch (error) {
+            const message = budgetRefusalMessage(error);
+            this.dispatch({ type: "ui/status", text: message });
+            // A refusal is often the world having moved — the provider was
+            // already deleted, the limit already gone. Re-reading here is
+            // what stops the table keeping a row the server says is not
+            // there, with a chart under it saying "no usage".
+            await this.loadProviderTable().catch(() => {});
+            return { ok: false, error: message, code: error?.code || null, result: null };
+        }
+    }
+
+    /** A change this deployment cannot make at all, reported like any other refusal. */
+    _refuseBudgetChange(message) {
+        this.dispatch({ type: "ui/status", text: message });
+        return { ok: false, error: message, code: "UNSUPPORTED", result: null };
+    }
+
+    /**
+     * Create a provider. `shared` makes one anyone may spend from (admins
+     * only); otherwise it is the caller's own, on their own credentials, and
+     * nobody else sees it. The name is permanent — sessions refer to it.
+     */
+    async createProvider({ name, type, credentials, baseUrl = null, shared = false } = {}) {
+        const op = shared ? "createProvider" : "createMyProvider";
+        if (typeof this.transport[op] !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport[op]({ name, type, credentials, baseUrl }));
+    }
+
+    /**
+     * Delete a provider. Which door it goes through follows the provider's
+     * own class, read from the table already on screen: a shared provider is
+     * an admin's to remove, a personal one is its owner's. The result carries
+     * `waitingSessions` — how many sessions now wait on a name that no longer
+     * resolves — which the sheet says out loud before it is confirmed.
+     */
+    async deleteProvider(name, { shared = null } = {}) {
+        const known = (this.getState().budget?.grid || [])
+            .find((row) => row?.providerName === name && row?.rowKind !== "model");
+        const isShared = shared === null ? known?.class === "shared" : shared === true;
+        const op = isShared ? "deleteProvider" : "deleteMyProvider";
+        if (typeof this.transport[op] !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport[op](name));
+    }
+
+    /**
+     * Save one limit. The same (period, scope) replaces what was there, and
+     * the limit counts from what the period has ALREADY spent — it never
+     * resets anything. The result's `seededTokens` is that already-counted
+     * number, which the editor uses to warn that saving pauses sessions now.
+     */
+    async setProviderLimit({ provider, period, model = null, tokens } = {}) {
+        if (typeof this.transport.setProviderLimit !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.setProviderLimit({ name: provider, period, model, tokens }));
+    }
+
+    /** Drop one limit. Removing one only ever grants room; usage history is kept. */
+    async removeProviderLimit({ provider, period, model = null } = {}) {
+        if (typeof this.transport.removeProviderLimit !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.removeProviderLimit({ name: provider, period, model }));
+    }
+
+    /**
+     * The share of each of a shared provider's limits one person may use.
+     * 100 means no per-person ceiling. It is derived live from the limit as
+     * it stands, so there is nothing to re-stamp when a limit changes.
+     */
+    async setProviderAllowance({ provider, pct } = {}) {
+        if (typeof this.transport.setProviderAllowance !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.setProviderAllowance({ name: provider, pct }));
+    }
+
+    /**
+     * Place or release a hold. A hold stops new turns against a provider
+     * until it is released, independently of every limit. With neither an end
+     * time nor `release` it has no end.
+     */
+    async setProviderHold({ provider, untilUtc = null, release = false } = {}) {
+        if (typeof this.transport.setProviderHold !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.setProviderHold({ name: provider, untilUtc, release }));
+    }
+
+    /**
+     * The cluster default tuple: what system sessions run, and what anyone
+     * who set no default of their own gets. It must name a SHARED provider,
+     * and the model half must belong to it — the database refuses anything
+     * else, in words.
+     */
+    async setClusterDefault(tuple) {
+        if (typeof this.transport.setClusterDefault !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.setClusterDefault(tuple));
+    }
+
+    /** The caller's own prefill for new sessions. A null tuple clears it. */
+    async setMyDefault(tuple) {
+        if (typeof this.transport.setMyDefault !== "function") {
+            return this._refuseBudgetChange("Providers and budgets are not available on this deployment.");
+        }
+        return this._runBudgetChange(() => this.transport.setMyDefault(tuple));
+    }
     async ensureExecutionHistory(sessionId, { force = false } = {}) {
         if (!sessionId || typeof this.transport.getExecutionHistory !== "function") return null;
         const current = this.getState().executionHistory?.bySessionId?.[sessionId] || null;
@@ -5350,6 +6237,21 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Select a context window and press Enter" });
     }
 
+    /**
+     * The model step of the create flow.
+     *
+     * What it lists is PROVIDERS, one group each, with the models their type
+     * offers — so a provider an admin or a user created a minute ago is on
+     * the list without anyone restarting anything, and the entry carries its
+     * budget state inline ("42% of its Daily limit used", "AT ITS DAILY
+     * LIMIT") so the choice is made knowing.
+     *
+     * An empty namespace REFUSES rather than falling back to the whole
+     * catalog: a list of models nothing can pay for is a list of dead ends.
+     * A deployment that has no provider operations at all — or one whose
+     * provider read failed, which is not the same thing as having none — is
+     * a different case and keeps exactly today's behaviour.
+     */
     async openModelPicker(sessionOptions = {}) {
         if (typeof this.transport.listModels !== "function") {
             await this.openSessionAgentPicker(sessionOptions);
@@ -5362,6 +6264,170 @@ export class PilotSwarmUiController {
             return;
         }
 
+        const namespace = await this._resolveProviderNamespace();
+        const built = namespace?.error
+            ? { refusal: namespace.error }
+            : namespace
+            ? this._buildProviderPickerGroups(namespace, models, sessionOptions)
+            : await this._buildCatalogPickerGroups(models, sessionOptions);
+        if (built.refusal) {
+            this.dispatch({ type: "ui/status", text: built.refusal });
+            return;
+        }
+        const { items, groups, selectedIndex } = built;
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "modelPicker",
+                title: sessionOptions?.mode === "switchModel" ? "Switch model for session" : "Select model for new session",
+                items,
+                groups,
+                selectedIndex,
+                previousFocus: this.getState().ui.focusRegion,
+                sessionOptions,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
+    }
+
+    /**
+    * The providers this viewer can spend from, with their limits and the
+    * default tuples. Null means the deployment predates runtime-provider
+    * APIs. Once those APIs exist, a failed namespace read is authoritative:
+    * fail closed rather than offering static type names with no proven
+    * credential or ownership.
+     */
+    async _resolveProviderNamespace() {
+        if (typeof this.transport.listProviders !== "function") return null;
+        try {
+            const [list, status, defaults] = await Promise.all([
+                this.transport.listProviders(),
+                typeof this.transport.getProviderStatus === "function"
+                    ? this.transport.getProviderStatus().catch(() => null)
+                    : null,
+                typeof this.transport.getDefaults === "function"
+                    ? this.transport.getDefaults().catch(() => null)
+                    : null,
+            ]);
+            const providers = Array.isArray(list?.providers) ? list.providers : null;
+            if (!providers) return { error: "Runtime provider availability could not be verified. Refresh and try again." };
+            return {
+                providers,
+                status: Array.isArray(status?.providers) ? status.providers : [],
+                statusKnown: Array.isArray(status?.providers),
+                defaults: defaults || null,
+            };
+        } catch {
+            return { error: "Runtime provider availability could not be verified. Refresh and try again." };
+        }
+    }
+
+    /**
+     * One group per provider, models re-qualified under the provider's own
+     * name.
+     *
+     * The catalog's `providerId` is the TYPE ("azure-openai"); a provider is
+     * an instance of that type with a name of its own ("azure-prod"), and a
+     * session runs `<provider>:<model>`. A deployment that never created a
+     * second instance sees no change at all, because the seed names each
+     * provider after the config entry it came from.
+     */
+    _buildProviderPickerGroups(namespace, models, sessionOptions) {
+        const usable = namespace.providers.filter((row) => row.usableByMe !== false);
+        if (usable.length === 0) {
+            return {
+                refusal: "No provider can pay for a session yet — add one of your own, or ask an admin for a shared one.",
+            };
+        }
+        const modelsByType = new Map();
+        for (const model of models) {
+            const typeId = model?.providerId;
+            if (!typeId) continue;
+            if (!modelsByType.has(typeId)) modelsByType.set(typeId, []);
+            modelsByType.get(typeId).push(model);
+        }
+        const statusByName = new Map(namespace.status.map((row) => [row.name, row]));
+        const now = Date.now();
+        // Your own default first, then the cluster's, then your own
+        // providers, then the shared ones: what a plain Enter charges should
+        // be what the deployment would have chosen anyway.
+        const ranked = [...usable].sort((a, b) => {
+            const rank = (row) => (row.isMyDefault === true ? 0
+                : row.isClusterDefault === true ? 1
+                : row.class === "personal" ? 2 : 3);
+            return rank(a) - rank(b) || String(a.name).localeCompare(String(b.name));
+        });
+        const preferredModel = sessionOptions?.model
+            || namespace.defaults?.mine?.model
+            || namespace.defaults?.cluster?.model
+            || (typeof this.transport.getDefaultModel === "function" ? this.transport.getDefaultModel() : undefined);
+
+        const items = [];
+        const groups = ranked
+            .map((provider) => {
+                const room = providerPickerNote(provider, statusByName.get(provider.name) || null, now);
+                // A provider with no credential cannot pay for anything. Say
+                // so on the row rather than hiding it: the person who has to
+                // fix it is often the one looking at the list.
+                const disabledReason = provider.hasCredential === false
+                    ? `${provider.name} has no credential`
+                    : null;
+                return {
+                    providerId: provider.name,
+                    providerType: provider.typeId,
+                    providerClass: provider.class,
+                    isClusterDefault: provider.isClusterDefault === true,
+                    isMyDefault: provider.isMyDefault === true,
+                    hasCredential: provider.hasCredential !== false,
+                    budgetState: room.state,
+                    budgetNote: room.text,
+                    models: (modelsByType.get(provider.name) || modelsByType.get(provider.typeId) || []).map((model) => {
+                        const qualifiedName = model.providerId === provider.name && model.qualifiedName
+                            ? model.qualifiedName
+                            : `${provider.name}:${model.modelName}`;
+                        const modelDisabledReason = disabledReason
+                            || (model.credentialAvailable === false
+                                ? `${provider.name} has no usable credential or endpoint`
+                                : null);
+                        const item = {
+                            id: qualifiedName,
+                            qualifiedName,
+                            modelName: model.modelName || qualifiedName,
+                            providerId: provider.name,
+                            providerType: provider.typeId,
+                            providerClass: provider.class,
+                            description: model.description || "",
+                            cost: model.cost || null,
+                            supportedReasoningEfforts: normalizeReasoningEfforts(model.supportedReasoningEfforts),
+                            defaultReasoningEffort: model.defaultReasoningEffort || null,
+                            supportedContextTiers: normalizeContextTiers(model.supportedContextTiers),
+                            defaultContextTier: model.defaultContextTier || null,
+                            contextWindowSizes: model.contextWindowSizes || null,
+                            isDefault: preferredModel === qualifiedName,
+                            budgetState: room.state,
+                            budgetNote: room.text,
+                            disabledReason: modelDisabledReason,
+                            disabled: Boolean(modelDisabledReason),
+                        };
+                        items.push(item);
+                        return item;
+                    }),
+                };
+            })
+            .filter((group) => group.models.length > 0);
+
+        if (items.length === 0) {
+            return { refusal: "No provider in your namespace offers a model to run." };
+        }
+        return { items, groups, selectedIndex: pickerSelectedIndex(items, preferredModel) };
+    }
+
+    /**
+     * The catalog list, exactly as it was before providers existed. Kept for
+    * deployments whose server predates the provider operations. Provider API
+    * failures never take this path.
+     */
+    async _buildCatalogPickerGroups(models, sessionOptions) {
         const defaultModel = typeof this.transport.getDefaultModel === "function"
             ? this.transport.getDefaultModel()
             : undefined;
@@ -5399,6 +6465,7 @@ export class PilotSwarmUiController {
                         contextWindowSizes: model.contextWindowSizes || null,
                         isDefault: defaultModel === model.qualifiedName,
                         ghcpKeyMissing,
+                        disabledReason: ghcpKeyMissing ? "needs GitHub key" : null,
                         disabled: ghcpKeyMissing,
                     };
                     items.push(item);
@@ -5407,26 +6474,11 @@ export class PilotSwarmUiController {
             }))
             .filter((group) => group.models.length > 0);
 
-        const preferredModel = sessionOptions?.model || defaultModel;
-        // Never preselect a key-blocked Copilot model: when the preferred
-        // model (often the catalog default) is unusable, land on the first
-        // usable model instead.
-        let selectedIndex = items.findIndex((model) => model.qualifiedName === preferredModel && !model.disabled);
-        if (selectedIndex < 0) selectedIndex = items.findIndex((model) => !model.disabled);
-        if (selectedIndex < 0) selectedIndex = 0;
-        this.dispatch({
-            type: "ui/modal",
-            modal: {
-                type: "modelPicker",
-            title: sessionOptions?.mode === "switchModel" ? "Switch model for session" : "Select model for new session",
-                items,
-                groups,
-                selectedIndex,
-                previousFocus: this.getState().ui.focusRegion,
-                sessionOptions,
-            },
-        });
-        this.dispatch({ type: "ui/status", text: "Select a model and press Enter" });
+        return {
+            items,
+            groups,
+            selectedIndex: pickerSelectedIndex(items, sessionOptions?.model || defaultModel),
+        };
     }
 
     async _resolveGhcpUserKeySet() {
@@ -6767,6 +7819,8 @@ export class PilotSwarmUiController {
                 await this.deleteSelectedArtifact({ confirmed: true });
             } else if (modal.action === "deleteMarkedArtifacts") {
                 await this.deleteMarkedArtifacts({ confirmed: true });
+            } else if (modal.action === "deleteAdminProvider") {
+                await this.deleteSelectedAdminProvider();
             }
             return;
         }
@@ -6822,7 +7876,7 @@ export class PilotSwarmUiController {
                 this.dispatch({
                     type: "ui/status",
                     text: item.ghcpKeyMissing
-                        ? "This model needs a GitHub Copilot key — add yours in the Admin console first"
+                        ? "This model needs a GitHub Copilot provider — add your own in Admin Console first"
                         : "This model is not available",
                 });
                 return;
@@ -9113,7 +10167,9 @@ export class PilotSwarmUiController {
                 await this.refreshAdminProfile();
                 return;
             case UI_COMMANDS.ADMIN_SHOW_GHCP:
-                this.setAdminSection("ghcp");
+                // Compatibility command retained for older hosts; the visible
+                // destination is now Model Providers.
+                this.setAdminSection("providers");
                 return;
             case UI_COMMANDS.ADMIN_SHOW_PACKAGES:
                 this.setAdminSection("packages");

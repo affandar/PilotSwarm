@@ -46,4 +46,5 @@ Common docs:
 - Configuration: `https://github.com/affandar/PilotSwarm/blob/main/docs/developer/reference/configuration.md`
 - Architecture: `https://github.com/affandar/PilotSwarm/blob/main/docs/architecture/system.md`
 
-If you want the shipped terminal UI, install `pilotswarm-cli`.
+If you want the shipped terminal UI, portal, and MCP server, install
+`pilotswarm` (`pilotswarm-cli` is only a bin alias inside that package).

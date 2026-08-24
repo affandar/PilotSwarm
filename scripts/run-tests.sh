@@ -420,6 +420,41 @@ run_mcp_server_tests() {
     record_run_phase "mcp-server unit tests" "PASS"
 }
 
+# The node --test suites: packages/sdk/test/unit and the packages/app
+# workspaces (tui, web, ui). They were reachable ONLY through their own npm
+# scripts, so a full local pass reported green without ever running 500+
+# tests — including the surface-parity guard, which exists precisely to fail
+# when the HTTP, MCP and agent-tool surfaces drift apart.
+#
+# --env-file=.env is load-bearing, not decoration. These suites construct a
+# worker, which reads the repo-root .model_providers.json, whose defaultModel
+# names a provider whose key lives in .env. Without it the registry drops the
+# provider, the default becomes invalid, and six unrelated tests fail with a
+# message about model configuration.
+run_sdk_unit_tests() {
+    if [ "${SKIP_SDK_UNIT_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping SDK unit tests (SKIP_SDK_UNIT_TESTS=1)."
+        record_run_phase "SDK unit tests" "SKIPPED"
+        return 0
+    fi
+    echo "🧪 Running SDK unit tests (node --test)..."
+    (cd "$REPO_ROOT" && node --env-file=.env --test packages/sdk/test/unit/*.test.mjs) \
+        || { echo "❌ SDK unit tests failed"; exit 1; }
+    record_run_phase "SDK unit tests" "PASS"
+}
+
+run_app_tests() {
+    if [ "${SKIP_APP_TESTS:-0}" = "1" ]; then
+        echo "⏭  Skipping packages/app tests (SKIP_APP_TESTS=1)."
+        record_run_phase "packages/app tests" "SKIPPED"
+        return 0
+    fi
+    echo "🧪 Running packages/app tests (tui + web + ui)..."
+    (cd "$REPO_ROOT" && npm test --prefix packages/app) \
+        || { echo "❌ packages/app tests failed"; exit 1; }
+    record_run_phase "packages/app tests" "PASS"
+}
+
 # Run the @pilotswarm/horizon-store LIVE integration suite (the provider-level
 # graph / ACL / crawl / harvester / embedder scenarios the SDK gating tests
 # stub out) only when a provider overlay is explicitly enabled. OPT-IN: skipped
@@ -828,6 +863,8 @@ elif [ ${#HORIZON_TARGET_FILES[@]} -gt 0 ]; then
 else
     run_deploy_scripts_tests
     run_mcp_server_tests
+    run_sdk_unit_tests
+    run_app_tests
     run_horizon_store_tests
     if [ -n "${PILOTSWARM_TEST_PHASE:-}" ]; then
         echo "🧪 SDK Vitest phase [$PILOTSWARM_TEST_PHASE]: ${PILOTSWARM_TEST_PHASE_LABEL:-provider pass}"

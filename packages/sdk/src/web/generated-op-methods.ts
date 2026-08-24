@@ -7,13 +7,18 @@
 
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
+    "adoptLegacySystemGitHubCopilotKey",
     "assignSessionsToGroup",
     "cancelPendingMessage",
     "cancelSession",
     "cancelSessionGroup",
+    "clearProviderRoutingDependencies",
+    "clearSystemSessionModel",
     "completeSession",
     "completeSessionGroup",
     "copyArtifact",
+    "createMyProvider",
+    "createProvider",
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
@@ -23,6 +28,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteGraphEdge",
     "deleteGraphNamespace",
     "deleteGraphNode",
+    "deleteMyProvider",
+    "deleteProvider",
     "deleteSession",
     "deleteSessionGroup",
     "downloadArtifact",
@@ -38,6 +45,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getChildOutcome",
     "getCurrentUserProfile",
     "getDefaultModel",
+    "getDefaults",
     "getEmbedderStatus",
     "getExecutionHistory",
     "getFactsTombstoneStats",
@@ -47,9 +55,14 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getFleetStats",
     "getGraphNamespace",
     "getLatestResponse",
+    "getLegacyProviderMigrationStatus",
     "getLogConfig",
+    "getModelDefaults",
     "getModelsByProvider",
     "getOrchestrationStats",
+    "getProviderStatus",
+    "getProviderUsage",
+    "getProviderUsageGrid",
     "getSession",
     "getSessionAccess",
     "getSessionCreationPolicy",
@@ -86,6 +99,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listGraphNamespaces",
     "listKnownUsers",
     "listModels",
+    "listPausedSessions",
+    "listProviders",
     "listSessionGroups",
     "listSessions",
     "listSessionShares",
@@ -99,6 +114,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readFacts",
     "regenerateSession",
     "removeCanvasShareLink",
+    "removeProviderLimit",
     "renameSession",
     "republishAgentPackageVersion",
     "resetCanvasShareLink",
@@ -113,11 +129,20 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setAgentPackageEnabled",
     "setAgentPackageScope",
     "setArtifactPinned",
+    "setClusterDefault",
     "setCurrentUserGitHubCopilotKey",
     "setCurrentUserProfileSettings",
+    "setModelDefault",
+    "setMyDefault",
+    "setProviderAllowance",
+    "setProviderHold",
+    "setProviderLimit",
+    "setProviderSystemUse",
     "setSessionModel",
     "setSessionVisibility",
     "setSystemGitHubCopilotKey",
+    "setSystemModelDefault",
+    "setSystemSessionModel",
     "similarFacts",
     "startFactsEmbedder",
     "stopFactsEmbedder",
@@ -142,6 +167,14 @@ export const GENERATED_OP_NAMES: readonly string[] = [
  * the server generates its routes from.
  */
 export interface ManagementOps {
+    /**
+     * Adopt the legacy synthetic System GHCP key into the calling admin's private, system-enabled provider. [admin]
+     * @remarks `POST /management/providers/adopt-system-github-key` — access: `fleet:admin`
+     */
+    adoptLegacySystemGitHubCopilotKey(params: {
+        name?: any;
+    }): Promise<any>;
+
     /**
      * Deprecated alias of placeSessionsInGroup.
      * @remarks `POST /management/session-groups/:groupId/assign` — access: `authed`
@@ -178,6 +211,22 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Explicitly clear defaults and system-agent overrides that reference a provider. Shared providers require admin.
+     * @remarks `POST /providers/:name/clear-routing` — access: `authed`
+     */
+    clearProviderRoutingDependencies(params: {
+        name: string;
+    }): Promise<any>;
+
+    /**
+     * Clear one persistent system-agent model override. [admin]
+     * @remarks `DELETE /management/system-sessions/:agentId/model` — access: `fleet:admin`
+     */
+    clearSystemSessionModel(params: {
+        agentId: string;
+    }): Promise<any>;
+
+    /**
      * Mark a session completed.
      * @remarks `POST /management/sessions/:sessionId/complete` — access: `session:manage`
      */
@@ -204,6 +253,28 @@ export interface ManagementOps {
         fromFilename?: any;
         toSessionId?: any;
         toFilename?: any;
+    }): Promise<any>;
+
+    /**
+     * Create a provider of your own, on your own credentials. Nobody else sees it.
+     * @remarks `POST /me/providers` — access: `authed`
+     */
+    createMyProvider(params: {
+        name?: any;
+        type?: any;
+        credentials?: any;
+        baseUrl?: any;
+    }): Promise<any>;
+
+    /**
+     * Create a shared provider — one anyone may spend from. [admin]
+     * @remarks `POST /management/providers` — access: `fleet:admin`
+     */
+    createProvider(params: {
+        name?: any;
+        type?: any;
+        credentials?: any;
+        baseUrl?: any;
     }): Promise<any>;
 
     /**
@@ -297,6 +368,22 @@ export interface ManagementOps {
     deleteGraphNode(params: {
         nodeKey?: any;
         namespace?: any;
+    }): Promise<any>;
+
+    /**
+     * Remove one of your own providers. Returns how many sessions are now waiting on the name.
+     * @remarks `DELETE /me/providers/:name` — access: `authed`
+     */
+    deleteMyProvider(params: {
+        name: string;
+    }): Promise<any>;
+
+    /**
+     * Remove a shared provider. Returns how many sessions are now waiting on the name. [admin]
+     * @remarks `DELETE /management/providers/:name` — access: `fleet:admin`
+     */
+    deleteProvider(params: {
+        name: string;
     }): Promise<any>;
 
     /**
@@ -429,6 +516,12 @@ export interface ManagementOps {
     getDefaultModel(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Compatibility view of configured cluster, user and system model tuples.
+     * @remarks `GET /defaults` — access: `authed`
+     */
+    getDefaults(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Durable embedder status. [enhanced]
      * @remarks `GET /facts/embedder` — access: `authed`
      */
@@ -507,13 +600,25 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Aggregate legacy GHCP migration status; never returns credentials. [admin]
+     * @remarks `GET /management/providers/legacy-key-migration` — access: `fleet:admin`
+     */
+    getLegacyProviderMigrationStatus(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Log tail availability.
      * @remarks `GET /system/log-config` — access: `authed`
      */
     getLogConfig(params?: Record<string, never>): Promise<any>;
 
     /**
-     * Models grouped by provider.
+     * Configured and effective user, cluster and system defaults plus per-system-agent overrides.
+     * @remarks `GET /model-defaults` — access: `authed`
+     */
+    getModelDefaults(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Model templates grouped by provider type (catalogKind=provider_type); use listModels for viewer-usable runtime provider instances.
      * @remarks `GET /models/by-provider` — access: `authed`
      */
     getModelsByProvider(params?: Record<string, never>): Promise<any>;
@@ -525,6 +630,36 @@ export interface ManagementOps {
     getOrchestrationStats(params: {
         sessionId: string;
     }): Promise<any>;
+
+    /**
+     * Limits, usage against them, reset times, and the caller's own ceiling where an allowance applies. `names` is a comma-separated list; omit it for all of them.
+     * @remarks `GET /providers/status` — access: `authed`
+     */
+    getProviderStatus(params: {
+        names?: string;
+    }): Promise<any>;
+
+    /**
+     * Where the tokens went: { totals, daily[], breakdown[] } over one filter set. dimension: session | user | provider | model | agent. Non-admins see only their own rows. `mine` narrows to the caller's own spend, resolved server-side — it carries no id, so it cannot name anybody else.
+     * @remarks `GET /providers/usage` — access: `authed`
+     */
+    getProviderUsage(params: {
+        days?: number;
+        mine?: boolean;
+        ownerUserId?: number;
+        provider?: string;
+        model?: string;
+        sessionId?: string;
+        chargeClass?: string;
+        dimension?: string;
+        limit?: number;
+    }): Promise<any>;
+
+    /**
+     * Every provider in the caller's namespace, each followed by its model-scoped limits, with used and quota figures for day, week and month — the caller's own and everyone's. A period with no limit reports its usage against an unlimited quota.
+     * @remarks `GET /providers/usage-grid` — access: `authed`
+     */
+    getProviderUsageGrid(params?: Record<string, never>): Promise<any>;
 
     /**
      * Get one session view (live orchestration status).
@@ -819,10 +954,22 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * All available models.
+     * Viewer-usable runtime provider instances (`catalogKind=runtime_provider`). Direct PilotSwarmManagementClient.listModels() is the provider-type template catalog (`catalogKind=provider_type`); use listRuntimeModels(viewer) for direct parity.
      * @remarks `GET /models` — access: `authed`
      */
     listModels(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own.
+     * @remarks `GET /providers/paused` — access: `authed`
+     */
+    listPausedSessions(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Providers the caller can use: every shared one plus their own. Admins also see other people's, marked usableByMe:false.
+     * @remarks `GET /providers` — access: `authed`
+     */
+    listProviders(params?: Record<string, never>): Promise<any>;
 
     /**
      * List session groups.
@@ -941,6 +1088,16 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Drop one limit. Returns whether there was one.
+     * @remarks `DELETE /providers/:name/limit` — access: `authed`
+     */
+    removeProviderLimit(params: {
+        name: string;
+        period?: string;
+        model?: string;
+    }): Promise<any>;
+
+    /**
      * Rename a session.
      * @remarks `PATCH /management/sessions/:sessionId` — access: `session:manage`
      */
@@ -957,6 +1114,8 @@ export interface ManagementOps {
         name: string;
         semver?: any;
         targetScope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
     }): Promise<any>;
 
     /**
@@ -1074,6 +1233,17 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Deprecated alias for setModelDefault(scope=cluster). [admin]
+     * @remarks `PUT /management/defaults` — access: `fleet:admin`
+     */
+    setClusterDefault(params: {
+        provider?: any;
+        model?: any;
+        reasoning?: any;
+        context?: any;
+    }): Promise<any>;
+
+    /**
      * Set (or clear with null) the per-user GitHub Copilot key.
      * @remarks `PUT /me/github-copilot-key` — access: `authed`
      */
@@ -1087,6 +1257,68 @@ export interface ManagementOps {
      */
     setCurrentUserProfileSettings(params: {
         settings?: any;
+    }): Promise<any>;
+
+    /**
+     * Set or clear the user or cluster ordinary-session default. Cluster scope requires admin.
+     * @remarks `PUT /model-defaults` — access: `authed`
+     */
+    setModelDefault(params: {
+        scope?: any;
+        provider?: any;
+        model?: any;
+        reasoningEffort?: any;
+        contextTier?: any;
+    }): Promise<any>;
+
+    /**
+     * The caller's prefill for new sessions. A null provider clears it.
+     * @remarks `PUT /me/default` — access: `authed`
+     */
+    setMyDefault(params: {
+        provider?: any;
+        model?: any;
+        reasoning?: any;
+        context?: any;
+    }): Promise<any>;
+
+    /**
+     * The share of each limit one person may use, 1..100. 100 means no per-person ceiling. Shared providers only. [admin]
+     * @remarks `PUT /management/providers/:name/allowance` — access: `fleet:admin`
+     */
+    setProviderAllowance(params: {
+        name: string;
+        pct?: any;
+    }): Promise<any>;
+
+    /**
+     * Pause new turns against a provider. Neither untilUtc nor release = a hold with no end. [admin]
+     * @remarks `PUT /management/providers/:name/hold` — access: `fleet:admin`
+     */
+    setProviderHold(params: {
+        name: string;
+        untilUtc?: any;
+        release?: any;
+    }): Promise<any>;
+
+    /**
+     * Save one limit (day | week | month, all models or one). The same combination replaces what was there. Admin on a shared provider, owner on a personal one.
+     * @remarks `PUT /providers/:name/limit` — access: `authed`
+     */
+    setProviderLimit(params: {
+        name: string;
+        period?: any;
+        model?: any;
+        tokens?: any;
+    }): Promise<any>;
+
+    /**
+     * Allow or refuse system-session use of the calling admin's personal provider. [admin]
+     * @remarks `PUT /management/providers/:name/system-use` — access: `fleet:admin`
+     */
+    setProviderSystemUse(params: {
+        name: string;
+        enabled?: any;
     }): Promise<any>;
 
     /**
@@ -1113,6 +1345,30 @@ export interface ManagementOps {
      */
     setSystemGitHubCopilotKey(params: {
         key?: any;
+    }): Promise<any>;
+
+    /**
+     * Set or clear the system-session default and optionally restart inheriting sessions. [admin]
+     * @remarks `PUT /management/system-model-default` — access: `fleet:admin`
+     */
+    setSystemModelDefault(params: {
+        provider?: any;
+        model?: any;
+        reasoningEffort?: any;
+        contextTier?: any;
+        restartExisting?: any;
+    }): Promise<any>;
+
+    /**
+     * Set one persistent system-agent model override. [admin]
+     * @remarks `PUT /management/system-sessions/:agentId/model` — access: `fleet:admin`
+     */
+    setSystemSessionModel(params: {
+        agentId: string;
+        provider?: any;
+        model?: any;
+        reasoningEffort?: any;
+        contextTier?: any;
     }): Promise<any>;
 
     /**
@@ -1232,13 +1488,18 @@ export function createManagementOps(
     callOp: (name: string, params: Record<string, unknown>) => Promise<any>,
 ): ManagementOps {
     return {
+        adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
         cancelSession: (params: Record<string, unknown> = {}) => callOp("cancelSession", params),
         cancelSessionGroup: (params: Record<string, unknown> = {}) => callOp("cancelSessionGroup", params),
+        clearProviderRoutingDependencies: (params: Record<string, unknown> = {}) => callOp("clearProviderRoutingDependencies", params),
+        clearSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("clearSystemSessionModel", params),
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
+        createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
+        createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
@@ -1248,6 +1509,8 @@ export function createManagementOps(
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
         deleteGraphNode: (params: Record<string, unknown> = {}) => callOp("deleteGraphNode", params),
+        deleteMyProvider: (params: Record<string, unknown> = {}) => callOp("deleteMyProvider", params),
+        deleteProvider: (params: Record<string, unknown> = {}) => callOp("deleteProvider", params),
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
         deleteSessionGroup: (params: Record<string, unknown> = {}) => callOp("deleteSessionGroup", params),
         downloadArtifact: (params: Record<string, unknown> = {}) => callOp("downloadArtifact", params),
@@ -1263,6 +1526,7 @@ export function createManagementOps(
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
         getDefaultModel: (params: Record<string, unknown> = {}) => callOp("getDefaultModel", params),
+        getDefaults: (params: Record<string, unknown> = {}) => callOp("getDefaults", params),
         getEmbedderStatus: (params: Record<string, unknown> = {}) => callOp("getEmbedderStatus", params),
         getExecutionHistory: (params: Record<string, unknown> = {}) => callOp("getExecutionHistory", params),
         getFactsTombstoneStats: (params: Record<string, unknown> = {}) => callOp("getFactsTombstoneStats", params),
@@ -1272,9 +1536,14 @@ export function createManagementOps(
         getFleetStats: (params: Record<string, unknown> = {}) => callOp("getFleetStats", params),
         getGraphNamespace: (params: Record<string, unknown> = {}) => callOp("getGraphNamespace", params),
         getLatestResponse: (params: Record<string, unknown> = {}) => callOp("getLatestResponse", params),
+        getLegacyProviderMigrationStatus: (params: Record<string, unknown> = {}) => callOp("getLegacyProviderMigrationStatus", params),
         getLogConfig: (params: Record<string, unknown> = {}) => callOp("getLogConfig", params),
+        getModelDefaults: (params: Record<string, unknown> = {}) => callOp("getModelDefaults", params),
         getModelsByProvider: (params: Record<string, unknown> = {}) => callOp("getModelsByProvider", params),
         getOrchestrationStats: (params: Record<string, unknown> = {}) => callOp("getOrchestrationStats", params),
+        getProviderStatus: (params: Record<string, unknown> = {}) => callOp("getProviderStatus", params),
+        getProviderUsage: (params: Record<string, unknown> = {}) => callOp("getProviderUsage", params),
+        getProviderUsageGrid: (params: Record<string, unknown> = {}) => callOp("getProviderUsageGrid", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
@@ -1311,6 +1580,8 @@ export function createManagementOps(
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
+        listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
+        listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),
@@ -1324,6 +1595,7 @@ export function createManagementOps(
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
+        removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
@@ -1338,11 +1610,20 @@ export function createManagementOps(
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),
         setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),
+        setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
         setCurrentUserProfileSettings: (params: Record<string, unknown> = {}) => callOp("setCurrentUserProfileSettings", params),
+        setModelDefault: (params: Record<string, unknown> = {}) => callOp("setModelDefault", params),
+        setMyDefault: (params: Record<string, unknown> = {}) => callOp("setMyDefault", params),
+        setProviderAllowance: (params: Record<string, unknown> = {}) => callOp("setProviderAllowance", params),
+        setProviderHold: (params: Record<string, unknown> = {}) => callOp("setProviderHold", params),
+        setProviderLimit: (params: Record<string, unknown> = {}) => callOp("setProviderLimit", params),
+        setProviderSystemUse: (params: Record<string, unknown> = {}) => callOp("setProviderSystemUse", params),
         setSessionModel: (params: Record<string, unknown> = {}) => callOp("setSessionModel", params),
         setSessionVisibility: (params: Record<string, unknown> = {}) => callOp("setSessionVisibility", params),
         setSystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setSystemGitHubCopilotKey", params),
+        setSystemModelDefault: (params: Record<string, unknown> = {}) => callOp("setSystemModelDefault", params),
+        setSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("setSystemSessionModel", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),

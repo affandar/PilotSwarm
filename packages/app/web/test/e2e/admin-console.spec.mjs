@@ -7,6 +7,7 @@
 // for any theme rather than pinning one theme's hexes.
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
+import { startProviderBudgetStub } from "./providers-budget-stub.mjs";
 
 const token = (page, name) => page.evaluate(
     (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(),
@@ -66,3 +67,47 @@ for (const themeId of ["workspace-dark", "github-light"]) {
         });
     });
 }
+
+test("Model Providers owns provider onboarding and all default routing controls", async ({ page }) => {
+    const stub = await startProviderBudgetStub({ admin: true });
+    try {
+        await page.goto(`http://127.0.0.1:${stub.port}`, { waitUntil: "networkidle" });
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await page.locator('button[aria-label="Admin console"]').click();
+
+        await expect(page.locator(".ps-admin-model-providers h3").first()).toHaveText("Model Providers");
+        await expect(page.getByText("GitHub Keys", { exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Refresh model providers" })).toBeVisible();
+        await expect(page.getByRole("combobox", { name: "My Session Default" }))
+            .toHaveValue("my-sandbox:gpt-5.4");
+        await expect(page.getByRole("checkbox", { name: "Allow system sessions" })).toBeChecked();
+        await expect(page.getByRole("combobox", { name: "Cluster Session Default" })).toHaveCount(0);
+
+        const add = page.getByRole("button", { name: "Add personal provider" });
+        await add.click();
+        await expect(page.locator(".ps-budget-sheet-title")).toHaveText("Add GitHub Copilot provider");
+        await expect(page.getByRole("textbox", { name: "Provider display name" })).toHaveCount(0);
+        const secret = page.locator('.ps-budget-sheet input[type="password"]');
+        await expect(secret).toHaveAttribute("placeholder", "Paste token");
+        await secret.fill("not-a-real-secret");
+        await page.getByRole("button", { name: "Cancel" }).click();
+        await add.click();
+        await expect(page.locator('.ps-budget-sheet input[type="password"]')).toHaveValue("");
+        await page.getByRole("button", { name: "Cancel" }).click();
+
+        await page.getByRole("button", { name: "Shared Providers" }).click();
+        await expect(page.getByRole("combobox", { name: "My Session Default" })).toHaveCount(0);
+        const cluster = page.getByRole("combobox", { name: "Cluster Session Default" });
+        await expect(cluster).toHaveValue("copilot-shared:claude-sonnet-5");
+        await expect(cluster.locator('option[value="my-sandbox:gpt-5.4"]')).toHaveCount(0);
+
+        const system = page.getByRole("combobox", { name: "Model", exact: true });
+        await expect(system.locator('option[value="my-sandbox:gpt-5.4"]')).toHaveCount(1);
+        await expect(page.locator('.ps-budget-seg[aria-label="Existing system sessions"] button'))
+            .toHaveText(["Future only", "Complete & restart", "Terminate & restart", "Hard delete & restart"]);
+        await expect(page.getByRole("combobox", { name: "Model override for sweeper" }))
+            .toHaveValue("copilot-shared:claude-sonnet-5");
+    } finally {
+        await stub.close();
+    }
+});

@@ -22,12 +22,12 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.68, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.68");
+    it("latest is 1.0.69, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.69");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_68");
-        expect(dispatcher.durableSessionOrchestration_1_0_68).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_69");
+        expect(dispatcher.durableSessionOrchestration_1_0_69).toBeTypeOf("function");
     });
 
     it("freezes 1.0.65, 1.0.66 and 1.0.67 as distinct registered handlers", () => {

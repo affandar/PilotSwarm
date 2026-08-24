@@ -19,6 +19,36 @@ function toIso(value) {
     return value instanceof Date ? value.toISOString() : value;
 }
 
+/**
+ * `getProviderStatus` takes its names as one comma-separated query value,
+ * and no names at all means every provider in the caller's namespace.
+ *
+ * There is no way to ask for NOTHING: the server drops empty names and then
+ * reads an empty list as "all of them". So an empty array is sent as no
+ * parameter rather than as `names=`, which would read in a log like a filter
+ * that matched nothing when the answer coming back is everything.
+ */
+function providerNamesParam(names) {
+    if (names === undefined || names === null) return undefined;
+    if (Array.isArray(names)) return names.length ? names.join(",") : undefined;
+    return String(names) || undefined;
+}
+
+/**
+ * A default is one tuple: provider + model + reasoning + context. A null
+ * tuple clears it, and clearing has to reach the server as explicit nulls —
+ * an omitted body field is dropped before it gets there, which would read as
+ * "leave it alone" instead of "I want no default".
+ */
+function defaultTupleParams(tuple) {
+    return {
+        provider: tuple?.provider ?? null,
+        model: tuple?.model ?? null,
+        reasoning: tuple?.reasoning ?? null,
+        context: tuple?.context ?? null,
+    };
+}
+
 function unsupported(name, hint) {
     return () => {
         throw new Error(`${name} is not available on this client${hint ? ` (${hint})` : ""}`);
@@ -105,7 +135,13 @@ export class HttpApiTransport {
     setAgentPackageEnabled(name, enabled, selector) { return this.api.call("setAgentPackageEnabled", { name, enabled, ...selectorParams(selector) }); }
     pinAgentPackageVersion(name, semver, selector) { return this.api.call("pinAgentPackageVersion", { name, semver, ...selectorParams(selector) }); }
     deleteAgentPackage(name, selector) { return this.api.call("deleteAgentPackage", { name, ...selectorParams(selector) }); }
-    republishAgentPackageVersion(name, semver, targetScope) { return this.api.call("republishAgentPackageVersion", { name, semver, targetScope }); }
+    republishAgentPackageVersion(name, semver, targetScope, selector) { return this.api.call("republishAgentPackageVersion", { name, semver, targetScope, ...selectorParams(selector) }); }
+    downloadAgentPackage(name, semver, selector) {
+        return this.api.downloadAgentPackageResponse(name, {
+            ...(semver ? { semver } : {}),
+            ...selectorParams(selector),
+        });
+    }
 
     getSessionCreationPolicy() {
         return this.bootstrap?.sessionCreationPolicy || null;
@@ -373,6 +409,59 @@ export class HttpApiTransport {
         return this.api.call("listModels");
     }
 
+    // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────
+    // One method per capability in
+    // docs/proposals/providers-and-budgets-surface.md. Nothing here decides
+    // who may do what: every call carries the signed-in person to the
+    // `cms_provider_*` procedures, and the database refuses what they may
+    // not do. A refusal arrives as an ApiError with a PROVIDER_* code and a
+    // message already written for a person — pass it on, do not rewrite it.
+    //
+    // The wire calls the provider `name` (it is a path segment); the
+    // capability list calls it `provider`. These methods take the wire name
+    // so a reader can line them up against the table.
+
+    listProviders() { return this.api.call("listProviders"); }
+    getProviderStatus(names) { return this.api.call("getProviderStatus", { names: providerNamesParam(names) }); }
+    getProviderUsageGrid() { return this.api.call("getProviderUsageGrid"); }
+    createProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createProvider", { name, type, credentials, baseUrl, displayName }); }
+    deleteProvider(name) { return this.api.call("deleteProvider", { name }); }
+    createMyProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createMyProvider", { name, type, credentials, baseUrl, displayName }); }
+    deleteMyProvider(name) { return this.api.call("deleteMyProvider", { name }); }
+    clearProviderRoutingDependencies(name) { return this.api.call("clearProviderRoutingDependencies", { name }); }
+    setProviderLimit({ name, period, model, tokens } = {}) { return this.api.call("setProviderLimit", { name, period, model: model ?? null, tokens }); }
+    removeProviderLimit({ name, period, model } = {}) { return this.api.call("removeProviderLimit", { name, period, model: model ?? undefined }); }
+    setProviderAllowance({ name, pct } = {}) { return this.api.call("setProviderAllowance", { name, pct }); }
+    setProviderHold({ name, untilUtc, release } = {}) { return this.api.call("setProviderHold", { name, untilUtc: untilUtc ?? null, release: release === true }); }
+    getDefaults() { return this.api.call("getDefaults"); }
+    getModelDefaults() { return this.api.call("getModelDefaults"); }
+    setModelDefault(input) { return this.api.call("setModelDefault", input || {}); }
+    setProviderSystemUse({ provider, enabled } = {}) { return this.api.call("setProviderSystemUse", { name: provider, enabled }); }
+    getLegacyProviderMigrationStatus() { return this.api.call("getLegacyProviderMigrationStatus"); }
+    adoptLegacySystemGitHubCopilotKey({ name, displayName } = {}) { return this.api.call("adoptLegacySystemGitHubCopilotKey", { name, displayName }); }
+    setSystemModelDefault(input) { return this.api.call("setSystemModelDefault", input || {}); }
+    setSystemSessionModel(input) { return this.api.call("setSystemSessionModel", input || {}); }
+    clearSystemSessionModel(agentId) { return this.api.call("clearSystemSessionModel", { agentId }); }
+    setClusterDefault(tuple) { return this.api.call("setClusterDefault", defaultTupleParams(tuple)); }
+    setMyDefault(tuple) { return this.api.call("setMyDefault", defaultTupleParams(tuple)); }
+    getProviderUsage(filters = {}) {
+        return this.api.call("getProviderUsage", {
+            days: filters.days,
+            // "Only my own", resolved server-side from the authenticated
+            // caller. A boolean cannot name anybody else, which is why the
+            // chart asks this way rather than sending an id.
+            mine: filters.mine === true ? true : undefined,
+            ownerUserId: filters.ownerUserId ?? undefined,
+            provider: filters.provider ?? undefined,
+            model: filters.model ?? undefined,
+            sessionId: filters.sessionId ?? undefined,
+            chargeClass: filters.chargeClass ?? undefined,
+            dimension: filters.dimension ?? undefined,
+            limit: filters.limit,
+        });
+    }
+    listPausedSessions() { return this.api.call("listPausedSessions"); }
+
     // ── Events / history ────────────────────────────────────────────────
 
     async getSessionEvents(sessionId, afterSeq, limit, eventTypes) {
@@ -427,6 +516,18 @@ export class HttpApiTransport {
 
     async uploadArtifactContent(sessionId, filename, content, contentType, contentEncoding) {
         return this.api.call("uploadArtifact", { sessionId, filename, content, contentType, contentEncoding });
+    }
+
+    async readArtifactBase64(sessionId, filename, maxBytes) {
+        return this.api.call("readArtifactBase64", { sessionId, filename, maxBytes });
+    }
+
+    async copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename) {
+        return this.api.call("copyArtifact", { fromSessionId, fromFilename, toSessionId, toFilename });
+    }
+
+    async setArtifactPinned(sessionId, filename, pinned) {
+        return this.api.call("setArtifactPinned", { sessionId, filename, pinned });
     }
 
     getArtifactExportDirectory() {

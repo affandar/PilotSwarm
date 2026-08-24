@@ -22,51 +22,36 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { packAgentPackage, agentPackageTarSha256 } from "pilotswarm-sdk";
-import { directTree, directFile, collectUploadFiles, buildUploadPayload } from "../src/agents-cli.js";
+import {
+    directTree, directFile, collectUploadFiles, buildUploadPayload,
+    packageFileForCli, reservedAgentNamesForCli,
+} from "../src/agents-cli.js";
 
-/** A minimal convention-mode package: one agent, one extra file. */
-function writeConventionPackage(root) {
-    fs.mkdirSync(path.join(root, "agents"), { recursive: true });
-    fs.writeFileSync(path.join(root, "plugin.json"), JSON.stringify({
-        name: "cli-read-test",
-        version: "0.1.0",
-        description: "fixture",
-    }, null, 2));
-    fs.writeFileSync(path.join(root, "agents", "probe.agent.md"),
-        "---\nname: probe\ndescription: fixture agent\n---\n\nBody.\n");
-    fs.writeFileSync(path.join(root, "README.md"), "# fixture\n");
-    return root;
-}
-
-/** ctx stub: the two fields loadDirectPackageEntries touches. */
-function directCtxFor(targz, sha256) {
+/** ctx stub: direct reads must route through the management client. */
+function directCtxFor() {
     return {
-        catalog: {
-            async getAgentPackage() {
+        client: {
+            async getAgentPackageTree() {
                 return {
                     name: "cli-read-test",
-                    activeVersionId: "v1",
-                    versions: [{ versionId: "v1", semver: "0.1.0", sha256, artifactFilename: "pkg.tar.gz" }],
+                    files: [
+                        { path: "plugin.json", size: 42 },
+                        { path: "agents/probe.agent.md", size: 64 },
+                    ],
                 };
             },
-        },
-        artifactStore: {
-            async downloadArtifact() { return { body: targz }; },
+            async getAgentPackageFile(_name, _semver, filePath) {
+                if (filePath !== "plugin.json") {
+                    throw Object.assign(new Error(`${filePath} not found`), { code: "NOT_FOUND" });
+                }
+                return { encoding: "utf8", content: '{"name": "cli-read-test"}', size: 25 };
+            },
         },
     };
 }
 
-function packFixture() {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-cli-read-"));
-    writeConventionPackage(root);
-    const packed = packAgentPackage(root);
-    return { root, targz: packed.targz, sha256: packed.sha256 ?? agentPackageTarSha256(packed.targz) };
-}
-
 test("tree lists real file names, never undefined", async () => {
-    const { targz, sha256 } = packFixture();
-    const ctx = directCtxFor(targz, sha256);
+    const ctx = directCtxFor();
 
     const tree = await directTree(ctx, "cli-read-test", undefined, null, true);
 
@@ -81,8 +66,7 @@ test("tree lists real file names, never undefined", async () => {
 });
 
 test("cat finds a file that exists and reports its contents", async () => {
-    const { targz, sha256 } = packFixture();
-    const ctx = directCtxFor(targz, sha256);
+    const ctx = directCtxFor();
 
     const file = await directFile(ctx, "cli-read-test", undefined, "plugin.json", null, true);
 
@@ -91,13 +75,25 @@ test("cat finds a file that exists and reports its contents", async () => {
 });
 
 test("cat still reports a genuinely missing file as NOT_FOUND", async () => {
-    const { targz, sha256 } = packFixture();
-    const ctx = directCtxFor(targz, sha256);
+    const ctx = directCtxFor();
 
     await assert.rejects(
         () => directFile(ctx, "cli-read-test", undefined, "nope.txt", null, true),
         (error) => error?.code === "NOT_FOUND",
     );
+});
+
+test("cat refuses base64 package files instead of printing them as text", () => {
+    const formatted = packageFileForCli({ encoding: "base64", content: "AAEC", size: 3 });
+    assert.equal(formatted.binary, true);
+    assert.equal(formatted.size, 3);
+    assert.equal(formatted.text, "");
+});
+
+test("direct push reserves bundled system agent names", () => {
+    const names = reservedAgentNamesForCli().map((name) => String(name).toLowerCase());
+    assert.ok(names.includes("sweeper"));
+    assert.ok(names.includes("pilotswarm"));
 });
 
 test("the upload payload comes from the staged tree, not the surrounding directory", async () => {

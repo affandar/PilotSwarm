@@ -25,6 +25,7 @@ import {
     agentPackagesArtifactSessionId,
     agentPackageTarSha256,
     packAgentPackage,
+    readAgentPackageTarGz,
     stageAgentPackageDir,
     validateAgentPackageDir,
     type AgentPackageManifest,
@@ -70,6 +71,11 @@ export interface PublishOutcome extends PublishAgentPackageResult {
     manifest: AgentPackageManifest;
     warnings: AgentPackageValidation["warnings"];
 }
+
+const packageEntryCache = new Map<string, ReturnType<typeof readAgentPackageTarGz>>();
+let packageEntryCacheBytes = 0;
+const PACKAGE_ENTRY_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const PACKAGE_ENTRY_CACHE_MAX_ITEMS = 8;
 
 /** Validate + pack + publish a package directory. */
 export async function publishAgentPackageDir(
@@ -139,7 +145,10 @@ export async function publishPackedAgentPackage(
         throw new Error(`AGENT_PACKAGE_BAD_NAME: "${name}" is a reserved name — pick another package name`);
     }
     if (targz.length > AGENT_PACKAGE_MAX_COMPRESSED_BYTES) {
-        throw new Error(`package exceeds compressed size limit: ${targz.length} bytes`);
+        throw Object.assign(
+            new Error(`package exceeds compressed size limit: ${targz.length} bytes`),
+            { code: "PAYLOAD_TOO_LARGE" },
+        );
     }
     const artifactSessionId = agentPackagesArtifactSessionId();
     const artifactFilename = agentPackageArtifactFilename(name, semver, sha256);
@@ -320,6 +329,63 @@ export async function fetchAgentPackageTarGz(
         );
     }
     return body;
+}
+
+export async function resolveAgentPackageVersion(
+    catalog: SessionCatalog,
+    name: string,
+    actor: AgentPrincipal | null,
+    isAdmin: boolean,
+    selector?: import("./cms.js").AgentPackageSelector | null,
+    semver?: string | null,
+) {
+    const detail = await catalog.getAgentPackage(name, actor, isAdmin, selector);
+    if (!detail) throw Object.assign(new Error(`package "${name}" not found`), { code: "NOT_FOUND" });
+    const version = semver
+        ? detail.versions.find((candidate) => candidate.semver === semver)
+        : detail.versions.find((candidate) => candidate.versionId === detail.activeVersionId) ?? detail.versions[0];
+    if (!version) {
+        throw Object.assign(
+            new Error(`package "${name}" has no ${semver ? `version ${semver}` : "versions"}`),
+            { code: "NOT_FOUND" },
+        );
+    }
+    return { detail, version };
+}
+
+export async function readAgentPackageVersionEntries(
+    ctx: AgentPackagePublishContext,
+    name: string,
+    actor: AgentPrincipal | null,
+    isAdmin: boolean,
+    selector?: import("./cms.js").AgentPackageSelector | null,
+    semver?: string | null,
+) {
+    const resolved = await resolveAgentPackageVersion(catalogOrThrow(ctx), name, actor, isAdmin, selector, semver);
+    const cacheKey = `${resolved.version.artifactFilename}:${resolved.version.sha256}`;
+    let entries = packageEntryCache.get(cacheKey);
+    if (entries) {
+        packageEntryCache.delete(cacheKey);
+        packageEntryCache.set(cacheKey, entries);
+    } else {
+        const targz = await fetchAgentPackageTarGz(ctx.artifactStore, resolved.version.artifactFilename, resolved.version.sha256);
+        entries = readAgentPackageTarGz(targz);
+        packageEntryCache.set(cacheKey, entries);
+        packageEntryCacheBytes += entries.reduce((sum, entry) => sum + entry.body.length, 0);
+        while ((packageEntryCache.size > PACKAGE_ENTRY_CACHE_MAX_ITEMS
+            || packageEntryCacheBytes > PACKAGE_ENTRY_CACHE_MAX_BYTES) && packageEntryCache.size > 1) {
+            const oldestKey = packageEntryCache.keys().next().value as string;
+            const oldest = packageEntryCache.get(oldestKey) ?? [];
+            packageEntryCacheBytes -= oldest.reduce((sum, entry) => sum + entry.body.length, 0);
+            packageEntryCache.delete(oldestKey);
+        }
+    }
+    return { ...resolved, entries };
+}
+
+function catalogOrThrow(ctx: AgentPackagePublishContext): SessionCatalog {
+    if (!ctx.catalog) throw new Error("agent package catalog is unavailable");
+    return ctx.catalog;
 }
 
 /** Delete a package's registry rows and then its blobs (post-commit cleanup). */

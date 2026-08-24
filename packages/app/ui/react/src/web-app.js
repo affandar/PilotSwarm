@@ -46,6 +46,7 @@ import {
     selectLogFilterModal,
     selectModelPickerModal,
     selectNavigationError,
+    selectProviderTable,
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
@@ -4003,7 +4004,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
  */
 const SESSION_DETAIL_NONE = "—";
 
-function SessionDetailBox({ session, childCount = 0 }) {
+function SessionDetailBox({ session, childCount = 0, pause = null, controller = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
     // height — a box that grew and shrank would shove the list under the
@@ -4060,6 +4061,37 @@ function SessionDetailBox({ session, childCount = 0 }) {
 
     const statusSummary = selectSessionStatusSummary(session);
 
+    // Why this session is stopped, where the person is standing.
+    //
+    // "(waiting)" is a state, not a reason, and the four reasons have four
+    // different remedies — so the sentence is the server's own, the same one
+    // the "Paused now" band shows, with a way through to the provider that
+    // caused it. `waitReason` covers every OTHER kind of wait (a scheduled
+    // one, an agent asking to sleep), which is a different fact and says so.
+    const waitReason = typeof session?.waitReason === "string" && session.waitReason.trim()
+        ? session.waitReason.trim()
+        : null;
+    const pauseBlock = (!pause && !waitReason) ? null : React.createElement("div", {
+        className: `ps-session-detail-pause${pause ? " is-paused" : ""}`,
+    },
+    React.createElement("span", { className: "ps-session-detail-label" }, pause ? "Paused" : "Waiting"),
+    React.createElement("span", { className: "ps-session-detail-why" },
+        // The sentence already says when it clears wherever it can; `clears`
+        // only fills the gap where it cannot.
+        pause ? pause.reason : waitReason,
+        pause && pause.clears
+            ? React.createElement("span", { className: "ps-session-detail-clears" }, pause.clears)
+            : null,
+        pause && controller ? React.createElement("button", {
+            type: "button", className: "ps-budget-link",
+            title: pause.provider
+                ? `Open ${pause.provider} in Providers & Budgets`
+                : "Open providers and budgets",
+            onClick: () => controller.openBudget(
+                pause.provider ? { provider: pause.provider } : {},
+            ).catch(() => {}),
+        }, pause.provider ? `Open ${pause.provider}` : "Open providers and budgets") : null));
+
     return React.createElement("div", { className: "ps-session-detail-box" },
         // The row above ellipsizes to one line, so this is the only place the
         // whole name is legible. Two lines are RESERVED whether or not they are
@@ -4076,7 +4108,10 @@ function SessionDetailBox({ session, childCount = 0 }) {
         // selectSessionStatusSummary for why raw made this flip idle/waiting.
         field("Updated", statusSummary ? `${statusSummary.relative} (${statusSummary.status})` : null),
         field("Children", children),
-        field("Access", access));
+        field("Access", access),
+        // Outside the fixed grid above: this one is a sentence, and the grid's
+        // whole point is that every row is one clamped line.
+        pauseBlock);
 }
 
 /**
@@ -4477,6 +4512,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // every row until these two lines existed.
         canvasBySessionId: state.canvas?.bySessionId,
         canvasPrefs: state.canvas?.prefs,
+        // Why a waiting session is waiting. Same trap as the canvas slices
+        // above: omit it and every row computes as if nothing were paused, and
+        // three sessions stopped for three different reasons all read
+        // "waiting".
+        budgetPaused: state.budget?.paused,
     }), shallowEqualObject);
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
@@ -4504,7 +4544,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             bySessionId: viewState.canvasBySessionId,
             prefs: viewState.canvasPrefs,
         },
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+        budget: { paused: viewState.budgetPaused },
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const activeSession = viewState.activeSessionId
@@ -5237,6 +5278,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ? React.createElement(SessionDetailBox, {
             session: activeSession,
             childCount: activeRow?.childCount || 0,
+            // Why it is stopped, and a way through to the surface that can
+            // change it. The row already carries the joined pause record.
+            pause: activeRow?.pause || null,
+            controller,
         })
         : null),
     (manageOpen && activeSession && !activeSession.isGroup)
@@ -5341,6 +5386,15 @@ function PlusGlyph() {
     React.createElement("line", { x1: "5", y1: "12", x2: "19", y2: "12" }));
 }
 
+function TrashGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("path", { d: "M3 6h18" }),
+    React.createElement("path", { d: "M8 6V4h8v2" }),
+    React.createElement("path", { d: "M19 6l-1 15H6L5 6" }),
+    React.createElement("path", { d: "M10 11v5" }),
+    React.createElement("path", { d: "M14 11v5" }));
+}
+
 // Theme picker. Deliberately a contrast disc rather than a sun/moon: the picker
 // offers DOOM, WinAMP, win95 and friends, not a light/dark binary.
 function ContrastGlyph() {
@@ -5369,6 +5423,17 @@ function CogGlyph() {
     return React.createElement(Glyph, null,
     React.createElement("circle", { cx: "12", cy: "12", r: "3" }),
     React.createElement("path", { d: "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" }));
+}
+
+// Providers & Budgets. A coin, not a chart or a gauge: the surface is about
+// what a turn COSTS and who is paying, and a chart glyph would collide with
+// the inspector's stats mark.
+function CoinGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("circle", { cx: "12", cy: "12", r: "9" }),
+    React.createElement("path", { d: "M14.5 9.2a2.6 2.6 0 0 0-2.5-1.6c-1.5 0-2.6.8-2.6 2s1 1.7 2.6 2 2.6.8 2.6 2-1.1 2-2.6 2a2.6 2.6 0 0 1-2.5-1.6" }),
+    React.createElement("path", { d: "M12 6v1.6" }),
+    React.createElement("path", { d: "M12 16.4V18" }));
 }
 
 // Restart a system session. Was "↻" — the one text codepoint in an otherwise
@@ -8452,6 +8517,7 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
+    const budgetOpen = useControllerSelector(controller, (state) => Boolean(state.ui?.budgetOpen));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
     const canvasMaximized = useControllerSelector(controller, (s) => s?.ui?.canvasMaximized === true);
@@ -8520,6 +8586,19 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             // Three states: plain outline (empty), green dot bottom-left
             // (loaded), green + yellow (loaded with unseen changes).
             loadedDot: canvasView.exists,
+        },
+        // Providers & Budgets. Both device classes: what a turn costs, and
+        // what stopped a session, are answers a person needs wherever they
+        // are — and unlike the admin console the surface reflows to a phone.
+        {
+            key: "budget",
+            icon: React.createElement(CoinGlyph),
+            label: budgetOpen ? "Close budget" : "Budget — providers, limits and usage",
+            onClick: () => {
+                if (budgetOpen) controller.closeBudget();
+                else controller.openBudget().catch(() => {});
+            },
+            active: budgetOpen,
         },
         // Diagnostics — Inspector + Activity as one column, desktop only.
         //
@@ -8613,10 +8692,10 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         );
     }
 
-    // Two groups. Diagnostics and the admin console are TOOLS — they act on
-    // the app rather than on the conversation — so they sit apart from the
-    // session controls, hard right. Everything else keeps its order.
-    const RIGHT_GROUP = new Set(["diagnostics", "admin"]);
+    // Two groups. Budget, Diagnostics and the admin console are TOOLS — they
+    // act on the app rather than on the conversation — so they sit apart from
+    // the session controls, hard right. Everything else keeps its order.
+    const RIGHT_GROUP = new Set(["budget", "diagnostics", "admin"]);
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
@@ -9260,6 +9339,1364 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
 }
 
 
+
+// ── Providers & Budgets ─────────────────────────────────────────────────────
+//
+// One table. docs/proposals/providers-and-budgets-meters.md is the build spec:
+// every provider the viewer can use, with what has been spent against what may
+// be spent, for the day, the week and the month. Selecting a row expands its
+// per-model limits and opens its day-by-day chart underneath.
+//
+// A cell is `used / quota`. A period with no limit shows ∞, and the figure
+// beside it is still real usage — the meter runs whether or not anybody capped
+// it.
+//
+// TWO PAIRS OF NUMBERS, AND THEY ARE NEVER MIXED. Unticked, every cell is the
+// viewer's own spend against their share of the limit. Ticked, every cell is
+// everyone's spend against the limit itself. The selector decides which pair a
+// cell holds; the heading over the three columns says which one is on screen;
+// nothing in this file recomputes either.
+//
+// Nothing here decides who may do what. Every change goes through the
+// controller to the `cms_provider_*` procedures, the DATABASE refuses what the
+// viewer may not do, and its refusal — already written for a person, and
+// naming the remedy — is printed unchanged.
+//
+// The vocabulary is binding: provider, limit, allowance, hold, paused, period.
+// Never pool, payer, grant, quota rule, or bind mode.
+
+const BUDGET_PERIOD_OPTIONS = [
+    { value: "day", label: "Daily" },
+    { value: "week", label: "Weekly" },
+    { value: "month", label: "Monthly" },
+];
+const BUDGET_PERIOD_TITLES = { day: "Daily", week: "Weekly", month: "Monthly" };
+
+// Plain under 90%, amber to 100%, red over. Colour is never the only signal —
+// the two numbers in the cell already say it — so this only tints the used
+// figure and nothing depends on being able to see the tint.
+const BUDGET_TONE_CLASS = { plain: "", amber: " warn", red: " over", idle: "" };
+
+/**
+ * One number format for a WHOLE axis, chosen from its top value.
+ *
+ * A per-value formatter is right for a table and wrong for a scale: the same
+ * y-axis printed 18.4M, 13.8M, 9.21M and 4.60M, and four precisions down one
+ * ruler read as four different units.
+ */
+function fixedScaleFormatter(max) {
+    const top = Math.abs(Number(max) || 0);
+    const [unit, div] = top >= 1e9 ? ["B", 1e9]
+        : top >= 1e6 ? ["M", 1e6]
+            : top >= 1e3 ? ["K", 1e3]
+                : ["", 1];
+    const scaled = top / div;
+    const decimals = unit === "" ? 0 : scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+    return (value) => {
+        const v = Number(value);
+        if (!Number.isFinite(v)) return "—";
+        // Zero is zero in every unit; "0.00M" is noise on the baseline.
+        if (v === 0) return "0";
+        return `${(v / div).toFixed(decimals)}${unit}`;
+    };
+}
+
+/** Parse "20,000,000" / "20M" / "20000000" to a whole number of tokens, or null. */
+function parseTokenCount(raw) {
+    const s = String(raw ?? "").trim().replace(/[,_\s]/g, "").toUpperCase();
+    if (!s) return null;
+    const m = /^(\d+(?:\.\d+)?)([KMB])?$/.exec(s);
+    if (!m) return null;
+    const mult = m[2] === "K" ? 1e3 : m[2] === "M" ? 1e6 : m[2] === "B" ? 1e9 : 1;
+    // A whole number of tokens, as the field says. "1.5" used to round to 2 —
+    // one of a bare decimal and "2.5M" is a typo and the other is meant, and
+    // guessing between them is how a limit lands ten times off.
+    if (!m[2] && /\./.test(m[1])) return null;
+    const n = Math.round(Number(m[1]) * mult);
+    // Above 2^53 a JS number stops being the integer that was typed, so the
+    // value SAVED is not the value shown — and past bigint it fails deep in
+    // the database as a bare "Internal server error". Refused here, where the
+    // field can say so, exactly like 0 and a negative already are.
+    if (!Number.isSafeInteger(n)) return null;
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * "resets in 2h 31m (00:00 UTC)".
+ *
+ * The clock is formatted ONCE, in the selector (formatUntilLabel), so every
+ * reset on this surface is spelled the same way. This only puts the verb in
+ * front of it. It used to be a second formatter here, which is how one instant
+ * came to read three ways.
+ */
+function budgetResetPhrase(resetsLabel) {
+    return resetsLabel ? `resets ${resetsLabel}` : "no reset recorded";
+}
+
+/** "3 sessions" / "1 session". */
+function budgetPlural(n, one, many) {
+    return `${n} ${n === 1 ? one : many}`;
+}
+
+/**
+ * A model reference a session can run: `<provider>:<model>`.
+ *
+ * The catalog's `providerId` is the TYPE ("azure-openai"); a provider is an
+ * instance of that type with a name of its own, and both a model-scoped limit
+ * and a default tuple are refused by the database unless the model half names
+ * the provider it belongs to.
+ */
+function budgetModelsForProvider(models, provider) {
+    if (!provider?.typeId) return [];
+    return models
+        .filter((model) => model.providerId === provider.typeId)
+        .map((model) => ({
+            qualifiedName: `${provider.name}:${model.modelName}`,
+            modelName: model.modelName,
+        }));
+}
+
+/** The provider TYPES this deployment can instantiate, from its model catalog. */
+function budgetProviderTypes(models) {
+    const seen = new Map();
+    for (const model of models) {
+        if (!model.providerId || seen.has(model.providerId)) continue;
+        seen.set(model.providerId, { id: model.providerId, type: model.providerType || model.providerId });
+    }
+    return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** listModels() is flat on the web transport and grouped on the direct one. */
+function budgetNormalizeModels(raw) {
+    const top = Array.isArray(raw)
+        ? raw
+        : (Array.isArray(raw?.providers) ? raw.providers : (Array.isArray(raw?.models) ? raw.models : []));
+    const flat = top.flatMap((entry) => (
+        Array.isArray(entry?.models)
+            ? entry.models.map((model) => ({ ...model, providerId: model.providerId || entry.providerId }))
+            : [entry]
+    ));
+    return flat
+        .filter((model) => model && (model.modelName || model.qualifiedName))
+        .map((model) => ({
+            modelName: model.modelName || String(model.qualifiedName).split(":").pop(),
+            providerId: model.providerId || "",
+            providerType: model.providerType || model.providerId || "",
+        }));
+}
+
+/**
+ * One sheet for every change on this surface. Local state, no shared slot: a
+ * refused write is READ where the person is looking rather than dismissed, and
+ * the sheet stays open so the value that was refused is still on screen.
+ */
+function BudgetSheet({ title, subtitle, children, footNote, confirmLabel, danger = false, busy = false,
+    disabled = false, error = null, onCancel, onConfirm = null, cancelLabel = "Cancel" }) {
+    // aria-modal promises focus stays inside. Keep the promise: Tab cycles
+    // within the sheet, and a sheet with no input (Delete, Remove) takes focus
+    // itself so the first Tab does not land behind the backdrop.
+    const sheetRef = React.useRef(null);
+    React.useEffect(() => {
+        const root = sheetRef.current;
+        if (!root) return undefined;
+        const focusables = () => [...root.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+        if (!root.contains(document.activeElement)) { const f = focusables(); (f[0] || root).focus(); }
+        const onKey = (event) => {
+            if (event.key !== "Tab") return;
+            const f = focusables();
+            if (!f.length) return;
+            const first = f[0];
+            const last = f[f.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        };
+        root.addEventListener("keydown", onKey);
+        return () => root.removeEventListener("keydown", onKey);
+    }, []);
+    // Capture phase, and stopPropagation: the surface's own Escape handler is
+    // ALSO on capture and closes the whole workspace. It exempts INPUT/SELECT
+    // targets, so a sheet whose focus sat on a button let Escape fall through
+    // to it — the sheet AND the surface vanished together.
+    React.useEffect(() => {
+        const onKey = (event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            onCancel();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [onCancel]);
+    return React.createElement("div", {
+        className: "ps-budget-sheet-backdrop",
+        // preventDefault, or the browser's own default action for this same
+        // mousedown moves focus AFTER the close handler has restored it —
+        // and it lands on <body>, because a backdrop is a div nothing can
+        // focus. Cancel and Escape never hit this, which is why the backdrop
+        // was the one close path that still stranded a keyboard user.
+        onMouseDown: (event) => {
+            if (event.target !== event.currentTarget) return;
+            event.preventDefault();
+            onCancel();
+        },
+    },
+    React.createElement("div", {
+        className: "ps-budget-sheet", role: "dialog", "aria-modal": "true", "aria-label": title,
+        ref: sheetRef, tabIndex: -1,
+    },
+    React.createElement("div", { className: "ps-budget-sheet-top" },
+        React.createElement("div", { className: "ps-budget-sheet-title" }, title),
+        subtitle ? React.createElement("div", { className: "ps-budget-sheet-sub" }, subtitle) : null),
+    React.createElement("div", { className: "ps-budget-sheet-body" }, children,
+        error ? React.createElement("div", { className: "ps-budget-sheet-error", role: "alert" }, error) : null),
+    React.createElement("div", { className: "ps-budget-sheet-foot" },
+        React.createElement("span", { className: "ps-budget-sheet-note" }, footNote || ""),
+        React.createElement("div", { className: "ps-budget-sheet-actions" },
+            React.createElement("button", { type: "button", className: "ps-mini-button", onClick: onCancel, disabled: busy }, cancelLabel),
+            // `busy` is a change in flight (the label becomes "…"); `disabled`
+            // is a form that is not yet valid, where the label stays so the
+            // button still says what it will do.
+            onConfirm ? React.createElement("button", {
+                type: "button",
+                className: `ps-mini-button ${danger ? "is-danger" : "is-primary"}`,
+                onClick: onConfirm, disabled: busy || disabled,
+            }, busy ? "…" : confirmLabel) : null))));
+}
+
+/**
+ * A labelled field inside a sheet. A <div>, not a <label>: a <label> wrapping a
+ * segmented control gives its FIRST button an accessible name that swallows
+ * every sibling's text ("Period Daily Weekly Monthly"), so a screen reader
+ * cannot tell the options apart.
+ */
+function SheetField({ label, hint, children }) {
+    return React.createElement("div", { className: "ps-budget-field", role: "group", "aria-label": label },
+        React.createElement("span", { className: "ps-budget-label" }, label),
+        children,
+        hint ? React.createElement("span", { className: "ps-budget-field-hint" }, hint) : null);
+}
+
+/**
+ * A segmented control: one of N words.
+ *
+ * Pressed buttons, not radios. A radiogroup promises the arrow keys move
+ * between the options and that only one of them is a tab stop; neither is true
+ * here, so this claims no contract it does not keep.
+ */
+function Segmented({ value, options, onChange, label = null }) {
+    return React.createElement("div", {
+        className: "ps-budget-seg", role: "group", "aria-label": label || undefined,
+    },
+    options.map((option) => React.createElement("button", {
+        key: option.value, type: "button", "aria-pressed": value === option.value ? "true" : "false",
+        className: `ps-budget-seg-btn${value === option.value ? " is-on" : ""}`,
+        onClick: () => onChange(option.value),
+    }, option.label)));
+}
+
+/**
+ * One cell: the used figure, then the quota beside it.
+ *
+ * The two halves are marked apart. Printed as one string they read as one
+ * number, and "480.0K / 500.0K" is a fact about two.
+ */
+function budgetCellEl(cell) {
+    // Nobody signed in: the used figure is UNKNOWN, and unknown is not zero.
+    const tone = cell.known ? (BUDGET_TONE_CLASS[cell.tone] || "") : " idle";
+    return React.createElement(React.Fragment, null,
+        React.createElement("span", { className: `ps-budget-pct${tone}` }, cell.usedLabel),
+        // The provider's limit is spent even though your share is not. Marked
+        // in the cell, because a plain number here means "you may spend this"
+        // and you may not.
+        cell.providerExhausted
+            ? React.createElement("span", { className: "ps-budget-blocked", title: "The provider's own limit is spent." }, " ⏻")
+            : null,
+        " ",
+        React.createElement("span", {
+            className: `ps-budget-q ps-budget-sub${cell.uncapped ? " is-inf" : ""}`,
+        }, `/ ${cell.quotaLabel}`));
+}
+
+/** What a cell says on hover: the period, its reset, and whether it is capped. */
+function budgetCellTitle(row, column, cell) {
+    const who = row.kind === "model" ? `${row.providerName} · ${row.label}` : row.providerName;
+    const cap = cell.uncapped
+        ? "no limit for this period"
+        : `${cell.usedLabel} of ${cell.quotaLabel}${cell.pct == null ? "" : ` (${cell.pct}%)`}`;
+    // Your share can have room while the limit it is a share OF is spent, and
+    // then nothing runs. The tint alone would not say which of the two it is.
+    const blocked = cell.providerExhausted
+        ? " The provider's own limit for this period is spent, so nothing runs against it whatever your share says."
+        : "";
+    return `${who} · ${column.label} — ${cap}. It ${budgetResetPhrase(cell.resetsLabel)}.${blocked}`;
+}
+
+/**
+ * The table, and the tick that decides which pair of numbers is in it.
+ *
+ * Rows arrive in draw order — shared providers, then the viewer's own, each
+ * followed by its model rows while it is selected. They are not sorted here: a
+ * sort would move a model row out from under the provider it belongs to.
+ */
+function ProviderTable({ controller, view, defaults = null }) {
+    const select = React.useCallback((name, scope = "*") => {
+        controller.selectBudgetProvider(name, scope).catch(() => {});
+    }, [controller]);
+
+    const nameCell = (row) => {
+        if (row.kind === "model") {
+            // Selectable in its own right: usage and any limit belong to this
+            // model, so the chart follows it.
+            return React.createElement("td", { className: "ps-budget-grid-name is-model" },
+                React.createElement("button", {
+                    type: "button", className: "ps-budget-grid-pick",
+                    "aria-pressed": row.selected ? "true" : "false",
+                    onClick: () => select(row.providerName, row.scope),
+                },
+                React.createElement("span", { className: "ps-budget-grid-mname" }, row.label),
+                React.createElement("span", { className: "ps-budget-sub" }, " · model")));
+        }
+        return React.createElement("td", { className: "ps-budget-grid-name" },
+            // ONE control for the whole cell. Selecting a provider and
+            // expanding its per-model limits are the same act, so they are the
+            // same button rather than two that do the same thing.
+            React.createElement("button", {
+                type: "button", className: "ps-budget-grid-pick",
+                "aria-pressed": row.selected ? "true" : "false",
+                "aria-expanded": row.modelRowCount > 0 ? (row.expanded ? "true" : "false") : undefined,
+                onClick: () => select(row.providerName),
+            },
+            React.createElement("span", { className: "ps-budget-grid-pname" }, row.label),
+            // Whose it is, for a provider that has an owner. Beside the name
+            // rather than in the chip: the chip says WHAT kind of provider it
+            // is, and this says whose — two different facts.
+            row.ownerLabel
+                ? React.createElement("span", { className: "ps-budget-grid-owner" }, `(${row.ownerLabel})`)
+                : null,
+            // The class, named. Shared and User look different because they
+            // behave differently: one is everyone's and an administrator's to
+            // change, the other is a single person's.
+            row.classLabel
+                ? React.createElement("span", {
+                    className: `ps-budget-chip is-${row.class}`,
+                    title: row.class === "shared"
+                        ? "Shared: anyone may spend from it. An administrator manages its limits."
+                        : (row.ownedByMe === false
+                            ? "A user provider belonging to another user."
+                            : "Your own provider. Only you see it or spend from it."),
+                }, row.classLabel)
+                : null,
+            defaults?.mine?.provider === row.providerName
+                ? React.createElement("span", { className: "ps-budget-chip" }, "my default")
+                : null,
+            defaults?.cluster?.provider === row.providerName
+                ? React.createElement("span", { className: "ps-budget-chip" }, "cluster default")
+                : null,
+            defaults?.system?.provider === row.providerName
+                ? React.createElement("span", { className: "ps-budget-chip" }, "system default")
+                : null,
+            // Not a class mark: a hold stops every turn against this provider
+            // right now, and a screen that hides that is lying about the row.
+            row.hold
+                ? React.createElement("span", {
+                    className: "ps-budget-chip is-hold", title: `It ${row.hold.label}.`,
+                }, "on hold")
+                : null,
+            // A fact about how the TOTAL is divided, so it appears only where
+            // the total is on screen.
+            row.allowanceLabel
+                ? React.createElement("span", { className: "ps-budget-grid-allow" }, row.allowanceLabel)
+                : null,
+            row.expandLabel
+                ? React.createElement("span", { className: "ps-budget-grid-teaser" }, row.expandLabel)
+                : null));
+    };
+
+    const bodyRow = (row) => React.createElement("tr", {
+        key: row.key,
+        className: `ps-budget-grid-row${row.kind === "model" ? " is-model" : ""}${row.selected ? " is-on" : ""}`,
+        // The numbers are part of the row too. A click that started on the name
+        // button is already handled there, so it is let through rather than
+        // toggling the selection twice.
+        onClick: (event) => {
+            if (event.target?.closest?.("button")) return;
+            select(row.providerName, row.kind === "model" ? row.scope : "*");
+        },
+    },
+    nameCell(row),
+    view.columns.map((column) => React.createElement("td", {
+        key: column.id, className: "ps-budget-grid-num",
+        // On a phone the column headings are gone and each number prints its
+        // own period from this. It comes from the column rather than from the
+        // stylesheet counting cells, so the two cannot drift apart.
+        "data-period": column.label,
+        title: budgetCellTitle(row, column, row.cells[column.id]),
+    }, budgetCellEl(row.cells[column.id]))));
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-budget-table-head" },
+            React.createElement("span", { className: "ps-budget-label" },
+                `Providers${view.providerCount > 0 ? ` · ${view.providerCount}` : ""}`),
+            React.createElement("label", { className: "ps-budget-toggle" },
+                React.createElement("input", {
+                    type: "checkbox", checked: view.overall,
+                    onChange: () => controller.setBudgetOverall(),
+                }),
+                React.createElement("span", null, view.overallLabel))),
+        // A namespace that really is empty, reported only after a read that
+        // SUCCEEDED. A failed read is handled above this component.
+        view.empty
+            ? React.createElement("div", { className: "ps-budget-empty" },
+                "No provider exists yet. Add one in Admin Console → Model Providers to start spending.")
+            : React.createElement("table", { className: "ps-budget-grid" },
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        React.createElement("th", {
+                            className: "ps-budget-grid-h is-name", rowSpan: 2, scope: "col",
+                        }, "Provider"),
+                        // Which pair of numbers the three columns hold. It is
+                        // the heading, not a footnote, because every figure
+                        // under it means something different when the tick
+                        // changes.
+                        React.createElement("th", {
+                            className: "ps-budget-grid-h is-span", colSpan: 3, scope: "colgroup",
+                        }, view.usageHeading)),
+                    React.createElement("tr", null,
+                        view.columns.map((column) => React.createElement("th", {
+                            key: column.id, className: "ps-budget-grid-h is-num", scope: "col",
+                        }, column.label)))),
+                React.createElement("tbody", null, view.rows.map(bodyRow))));
+}
+
+/**
+ * The selected provider's days, with the dashed line at whatever quota the Day
+ * cell just showed. The chart is drawn from the same number as the row, so the
+ * two cannot disagree.
+ */
+function ProviderDayChart({ controller, view }) {
+    const series = view.series;
+    const row = view.selected;
+    const paneProps = {
+        className: "ps-budget-chart-pane",
+        "data-range-days": String(view.rangeDays),
+    };
+
+    // How many dates the x-axis can print is MEASURED, not assumed. "About
+    // seven" is right at 1440px and wrong at 390px, where each slot is 15px,
+    // "08-16" needs 26px, and every date came out clipped to "08-".
+    const [axisNode, setAxisNode] = React.useState(null);
+    const [axisWidth, setAxisWidth] = React.useState(0);
+    React.useEffect(() => {
+        if (!axisNode || typeof ResizeObserver === "undefined") return undefined;
+        const measure = () => {
+            const next = Math.round(axisNode.getBoundingClientRect().width);
+            setAxisWidth((current) => (Math.abs(next - current) < 1 ? current : next));
+        };
+        const observer = new ResizeObserver(measure);
+        observer.observe(axisNode);
+        measure();
+        return () => observer.disconnect();
+    }, [axisNode]);
+
+    const days = series.days;
+    const dayCount = days.length;
+    const xTicks = React.useMemo(() => {
+        const GAP_PX = 5;    // .ps-budget-tl-x gap
+        const DATE_PX = 30;  // "08-16" plus a little air, at either axis font size
+        const room = axisWidth - ((dayCount - 1) * GAP_PX);
+        const fits = axisWidth > 0 ? Math.floor(room / DATE_PX) : 7;
+        const maxTicks = Math.max(1, Math.min(7, fits));
+        const every = Math.max(1, Math.ceil(dayCount / maxTicks));
+        const out = new Set();
+        // Anchored on the LAST day, so today is always named and the spacing
+        // runs evenly back from it.
+        for (let i = dayCount - 1; i >= 0; i -= every) out.add(i);
+        return out;
+    }, [axisWidth, dayCount]);
+
+    const head = React.createElement("div", { className: "ps-budget-chart-head" },
+        React.createElement("span", { className: "ps-budget-chart-title" },
+            React.createElement("strong", null, row.subject),
+            React.createElement("span", { className: "ps-budget-sub" },
+                ` · ${view.usageHeading.toLowerCase()}, by day`)),
+        React.createElement("div", { className: "ps-budget-chart-range" },
+            React.createElement(Segmented, {
+                value: view.rangeDays,
+                options: view.rangeOptions,
+                label: "Chart range",
+                onChange: (days) => controller.setBudgetRangeDays(days).catch(() => {}),
+            }),
+            React.createElement("span", { className: "ps-budget-sub" }, series.rangeLabel)));
+
+    // A failed read is a failure, never an empty chart: "no usage" and "we could
+    // not find out" are different facts and only one is safe to act on.
+    if (series.failed) {
+        return React.createElement("div", paneProps, head,
+            React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+                React.createElement("div", null, `The daily usage for ${row.subject} could not be read.`),
+                React.createElement("div", { className: "ps-budget-sub" }, series.error)));
+    }
+    if (series.loading && !series.loaded) {
+        return React.createElement("div", paneProps, head,
+            React.createElement("div", { className: "ps-budget-empty" }, "Reading the daily usage…"));
+    }
+
+    const scaleMax = series.scaleMax;
+    const ticks = [1, 0.75, 0.5, 0.25, 0];
+    const tickText = fixedScaleFormatter(scaleMax);
+    const activeDays = days.filter((day) => day.tokens > 0).length;
+    const quotaTop = series.quotaPct == null ? null : Math.max(0, Math.min(96, 100 - series.quotaPct));
+
+    const axisEl = React.createElement("div", { className: "ps-budget-xaxis" },
+        React.createElement("div", { className: "ps-budget-xaxis-spacer" }),
+        // ONE span per column, blank ones included, so a label always sits on
+        // its own bar.
+        React.createElement("div", { className: "ps-budget-tl-x", ref: setAxisNode },
+            days.map((day, index) => React.createElement("span", {
+                key: day.dayUtc,
+                className: xTicks.has(index) ? "is-tick" : undefined,
+            }, xTicks.has(index) ? day.label : ""))));
+
+    return React.createElement("div", paneProps, head,
+        // An administrator reading their own share sees a chart of two
+        // different subjects. Say which is which, or one reads as the other.
+        series.mixedScope ? React.createElement("div", { className: "ps-budget-note is-warn" },
+            "The bars are what the whole fleet spent on this provider each day. "
+            + "The dashed line is YOUR share of the daily limit, not the limit itself. "
+            + "Tick “Show overall usage” to read both as the provider's.") : null,
+        series.stale ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+            React.createElement("div", null, "These figures are from an earlier read. The most recent read failed."),
+            React.createElement("div", { className: "ps-budget-sub" }, series.error)) : null,
+        React.createElement("div", { className: "ps-budget-chart" },
+            React.createElement("div", { className: "ps-budget-yaxis-title" }, "tokens"),
+            React.createElement("div", { className: "ps-budget-plotwrap" },
+                React.createElement("div", { className: "ps-budget-yaxis" },
+                    // A range with nothing in it and no limit gets no ruler:
+                    // every tick on it would be a number nobody spent.
+                    scaleMax > 0
+                        ? ticks.map((frac) => React.createElement("div", {
+                            key: `t${frac}`, className: "ps-budget-ytick", style: { top: `${(1 - frac) * 100}%` },
+                        }, tickText(scaleMax * frac)))
+                        : null),
+                React.createElement("div", { className: "ps-budget-plot" },
+                    scaleMax > 0
+                        ? ticks.map((frac) => React.createElement("div", {
+                            key: `g${frac}`, className: "ps-budget-gridline", style: { top: `${(1 - frac) * 100}%` },
+                        }))
+                        : null,
+                    // The dashed line IS the Day cell's quota, the same object
+                    // the row printed. There is nothing to draw when the day is
+                    // uncapped.
+                    quotaTop == null ? null : React.createElement("div", {
+                        className: "ps-budget-tl-median", style: { top: `${quotaTop}%` },
+                    }, React.createElement("span", null, `the Day limit · ${series.quotaLabel} a day`)),
+                    React.createElement("div", { className: "ps-budget-bars" },
+                        days.map((day) => React.createElement("div", {
+                            key: day.dayUtc,
+                            className: `ps-budget-tl-col${day.tokens === 0 ? " is-idle" : ""}`
+                                + `${series.quotaTokens != null && day.tokens > series.quotaTokens ? " is-over" : ""}`,
+                            title: `${day.label} · ${day.tokens
+                                ? `${day.tokens.toLocaleString("en-US")} tokens · ${budgetPlural(day.turns, "turn", "turns")}`
+                                : "no usage"}`,
+                        },
+                        React.createElement("div", {
+                            className: "ps-budget-tl-bar",
+                            // An idle day keeps a hairline so the column is
+                            // visibly a day that happened, not a gap.
+                            style: { height: day.tokens === 0 ? "2px" : `${Math.max(1, day.pct)}%` },
+                        })))),
+                    series.empty
+                        ? React.createElement("div", { className: "ps-budget-noaxis" },
+                            `No token usage on ${row.subject} in this range.`)
+                        : null)),
+            axisEl,
+            React.createElement("div", { className: "ps-budget-xaxis-title" },
+                `Daily totals · UTC · ${series.rangeLabel.toLowerCase()}`),
+            React.createElement("div", { className: "ps-budget-legend" },
+                React.createElement("span", null, `Peak ${series.peakLabel} tokens/day`),
+                React.createElement("span", null, `${activeDays} of ${dayCount} days used`),
+                series.quotaTokens != null
+                    ? React.createElement("span", null, `Dashed line: ${series.quotaLabel} a day`)
+                    : React.createElement("span", null, "No daily limit, so no line"))));
+}
+
+function ProviderSystemSpend({ view }) {
+    const spend = view.systemSpend;
+    if (!spend) return null;
+    const modelLabel = (label) => String(label || "").startsWith(`${view.selectedProvider}:`)
+        ? String(label).slice(view.selectedProvider.length + 1)
+        : String(label || "Unknown model");
+    return React.createElement("section", { className: "ps-budget-system-spend", "aria-label": "System spend" },
+        React.createElement("div", { className: "ps-budget-chart-head" },
+            React.createElement("span", { className: "ps-budget-chart-title" },
+                React.createElement("strong", null, "System spend")),
+            React.createElement("span", { className: "ps-budget-sub" }, spend.rangeLabel)),
+        spend.loading && !spend.loaded
+            ? React.createElement("div", { className: "ps-budget-empty" }, "Reading system spend…")
+            : null,
+        spend.error
+            ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" }, spend.error)
+            : null,
+        spend.loaded ? React.createElement(React.Fragment, null,
+            React.createElement("div", { className: "ps-budget-system-total" },
+                React.createElement("strong", null, `${spend.tokensLabel} tokens`),
+                React.createElement("span", { className: "ps-budget-sub" }, ` · ${budgetPlural(spend.turns, "turn", "turns")}`)),
+            spend.models.length
+                ? React.createElement("div", { className: "ps-budget-system-models" },
+                    spend.models.map((model) => React.createElement("div", { key: model.key, className: "ps-budget-system-model" },
+                        React.createElement("span", null, modelLabel(model.label)),
+                        React.createElement("strong", null, `${model.tokensLabel} · ${budgetPlural(model.turns, "turn", "turns")}`))))
+                : React.createElement("div", { className: "ps-budget-sub" }, "No system spend in this range.")) : null);
+}
+
+/**
+ * Everything one provider can be changed to: its limits, its allowance, its
+ * hold, and whether it is a default.
+ *
+ * One sheet, because they are all edits to the row that is already named at the
+ * top of it. Each section states what saving will do before the confirm is
+ * reachable.
+ */
+function EditProviderSheet({
+    row, rawRows, models, isAdmin, busy, error, onCancel, onRun,
+    initialPeriod = "day", initialScope = "*",
+}) {
+    const shared = row.class === "shared";
+    // A limit is a CHANGE, and the database refuses it from anyone who is not
+    // an admin on a shared provider or the owner of a personal one. Offering
+    // the section anyway meant filling in a form, pressing the button and
+    // only then being told — so it is gated the way Allowance and Hold
+    // already were.
+    const mayManage = row.manageable === true;
+    const sections = [
+        ...(mayManage ? [{ value: "limit", label: "Limits" }] : []),
+        ...(mayManage && isAdmin && shared ? [{ value: "allowance", label: "Allowance" }] : []),
+        ...(mayManage && isAdmin ? [{ value: "hold", label: "Hold" }] : []),
+    ];
+    const [section, setSection] = React.useState("limit");
+
+    // ── the limit being edited ─────────────────────────────────────────
+    // Opened on the row the reader was standing on: a per-model limit row
+    // means they were looking at THAT limit, and landing them on "Daily · all
+    // models" makes them re-find it.
+    const [period, setPeriod] = React.useState(initialPeriod);
+    const [scopeKind, setScopeKind] = React.useState(initialScope === "*" ? "all" : "model");
+    const [model, setModel] = React.useState(initialScope === "*" ? "" : initialScope);
+    const [tokens, setTokens] = React.useState("");
+    React.useEffect(() => {
+        if (!model && models[0]) setModel(models[0].qualifiedName);
+    }, [models, model]);
+
+    const providerRaw = rawRows.find((raw) => raw.providerName === row.providerName && raw.rowKind !== "model") || null;
+    const chosenModel = scopeKind === "model" ? (model || models[0]?.qualifiedName || "") : null;
+    const targetRaw = scopeKind === "model"
+        ? rawRows.find((raw) => raw.providerName === row.providerName && raw.rowKind === "model" && raw.scope === chosenModel) || null
+        : providerRaw;
+    // These are the PROVIDER's figures, never the viewer's share: a limit caps
+    // everyone, so the sentence about it has to be about everyone.
+    const targetCell = targetRaw?.periods?.[period] || null;
+    const existingTokens = targetCell?.quotaTokens ?? null;
+    // NULL is "not known", and it is not zero. A model row exists in the grid
+    // only once that model HAS a limit, so the first limit on a model had no
+    // row to read and reported 0 spent — which withheld the "this blocks now"
+    // warning at exactly the moment it mattered and paused people who had
+    // been told the period was empty.
+    const spentTokens = targetRaw ? (Number(targetCell?.usedTokens) || 0) : null;
+    const spendKnown = spentTokens != null;
+    const resetsLabel = row.cells[period]?.resetsLabel || null;
+    const periodLabel = BUDGET_PERIOD_TITLES[period] || period;
+    const scopeLabel = chosenModel || "all models";
+
+    // The field follows the (period, scope) being pointed at, so it always
+    // shows the limit that is actually there rather than the last one typed.
+    React.useEffect(() => {
+        setTokens(existingTokens == null ? "" : Number(existingTokens).toLocaleString("en-US"));
+    }, [existingTokens, period, chosenModel]);
+
+    const parsed = parseTokenCount(tokens);
+    const limitValid = Boolean(parsed) && (scopeKind !== "model" || Boolean(chosenModel));
+    const replaces = existingTokens != null;
+    // An allowance divides every limit, so what actually stops a person is
+    // their SHARE of the new number, not the number. Comparing against the
+    // raw limit said "nobody is blocked" while saving paused everyone whose
+    // own spend was already past their slice of it.
+    const allowancePctNow = Number.isFinite(row.allowancePct) ? row.allowancePct : 100;
+    const newCeiling = parsed == null || allowancePctNow >= 100
+        ? parsed
+        : Math.max(1, Math.floor((parsed * allowancePctNow) / 100));
+    const yourSpent = Number(targetCell?.yourUsedTokens);
+    const wouldPause = spendKnown && parsed !== null && spentTokens >= parsed;
+    const wouldPauseSomeone = !wouldPause && parsed !== null && newCeiling !== parsed
+        && Number.isFinite(yourSpent) && yourSpent >= newCeiling;
+
+    // ── the allowance ──────────────────────────────────────────────────
+    const currentPct = Number.isFinite(row.allowancePct) ? row.allowancePct : 100;
+    const [pctRaw, setPctRaw] = React.useState(String(currentPct));
+    const pct = Number(String(pctRaw).trim());
+    const pctValid = Number.isFinite(pct) && pct >= 1 && pct <= 100 && Math.floor(pct) === pct;
+    const providerLimits = ["day", "week", "month"]
+        .map((id) => ({ id, label: BUDGET_PERIOD_TITLES[id], tokens: providerRaw?.periods?.[id]?.quotaTokens ?? null }))
+        .filter((entry) => entry.tokens != null);
+
+    // ── the hold ───────────────────────────────────────────────────────
+    const held = Boolean(row.hold);
+    const [holdMode, setHoldMode] = React.useState(held ? "release" : "forever");
+    const [until, setUntil] = React.useState("");
+    // A datetime-local value is wall-clock with no zone. Read it as local time
+    // and send the instant, so a hold set for 18:00 ends at the reader's 18:00.
+    const untilIso = (() => {
+        if (holdMode !== "until" || !until) return null;
+        const at = new Date(until);
+        return Number.isNaN(at.getTime()) ? null : at.toISOString();
+    })();
+    // An instant that has already passed stops nothing. The server accepts it
+    // and stores it, so nothing downstream catches it — and the screen then
+    // confirmed in words that the provider was stopped when it was not.
+    const untilIsPast = Boolean(untilIso) && Date.parse(untilIso) <= Date.now();
+    const holdValid = holdMode !== "until" || (Boolean(untilIso) && !untilIsPast);
+    const holdHint = holdMode !== "until" ? null
+        : untilIsPast ? "That time has already passed. A hold has to end in the future."
+            : (until && !untilIso ? "That is not a time this can read." : null);
+
+    const titles = { limit: "Limits", allowance: "Allowance", hold: "Hold" };
+    const confirms = {
+        limit: replaces ? "Replace limit" : "Save limit",
+        allowance: "Save allowance",
+        hold: holdMode === "release" ? "Release hold" : "Place hold",
+    };
+    const foots = {
+        limit: "Limits are enforced.",
+        allowance: "Applies to everyone.",
+        hold: "Stops new turns.",
+    };
+    const valid = section === "limit" ? limitValid
+        : section === "allowance" ? pctValid
+            : section === "hold" ? holdValid : true;
+
+    const submit = () => {
+        if (section === "limit") {
+            if (limitValid) onRun("limit", { period, model: chosenModel, tokens: parsed });
+        } else if (section === "allowance") {
+            if (pctValid) onRun("allowance", { pct });
+        } else if (section === "hold") {
+            onRun("hold", holdMode === "release"
+                ? { release: true, untilUtc: null }
+                : { release: false, untilUtc: untilIso });
+        }
+    };
+
+    const limitBody = React.createElement(React.Fragment, null,
+        React.createElement(SheetField, {
+            label: "Time period",
+            hint: "One limit per period and scope.",
+        },
+        React.createElement(Segmented, {
+            value: period, onChange: setPeriod, options: BUDGET_PERIOD_OPTIONS, label: "Time period",
+        })),
+        React.createElement(SheetField, { label: "Applies to" },
+            React.createElement(Segmented, {
+                value: scopeKind, onChange: setScopeKind, label: "Applies to",
+                options: [{ value: "all", label: "all models" }, { value: "model", label: "one model" }],
+            }),
+            scopeKind === "model" ? React.createElement("select", {
+                className: "ps-budget-input", "aria-label": "Model this limit applies to",
+                value: model, onChange: (event) => setModel(event.target.value),
+            }, models.length === 0
+                ? React.createElement("option", { value: "" }, "No models are listed for this provider's type")
+                : models.map((option) => React.createElement("option", {
+                    key: option.qualifiedName, value: option.qualifiedName,
+                }, option.qualifiedName))) : null),
+        React.createElement(SheetField, {
+            label: "Tokens",
+            hint: parsed
+                ? `= ${parsed.toLocaleString("en-US")} tokens.`
+                : tokens.trim()
+                    ? "A whole number of tokens: 20,000,000 or 20M."
+                    : "Remove the limit to uncap.",
+        },
+        React.createElement("input", {
+            className: `ps-budget-input${tokens && !parsed ? " is-invalid" : ""}`, value: tokens,
+            "aria-label": "Tokens",
+            // No inputMode="numeric": the field accepts "20M", and a numeric
+            // keypad cannot type the M.
+            placeholder: "20,000,000  or  20M",
+            onChange: (event) => setTokens(event.target.value),
+            onKeyDown: (event) => { if (event.key === "Enter") submit(); },
+        })),
+        // What this period has already spent, said out loud rather than alluded
+        // to. It is the provider's own figure — the one the limit measures.
+        React.createElement("div", { className: "ps-budget-consequences" },
+            React.createElement("div", null,
+                `${periodLabel} · ${scopeLabel} — `,
+                spendKnown
+                    ? React.createElement(React.Fragment, null,
+                        React.createElement("strong", null, `${spentTokens.toLocaleString("en-US")} tokens`),
+                        shared ? " spent by users this period." : " spent this period.")
+                    // Said plainly rather than guessed at zero: this period may
+                    // already be spent past the number about to be saved.
+                    : React.createElement(React.Fragment, null,
+                        React.createElement("strong", null, "not measured yet"),
+                        ". Current spend will count.")),
+            resetsLabel ? React.createElement("div", { className: "ps-budget-sub" },
+                `Resets ${resetsLabel}.`) : null),
+        replaces ? React.createElement("div", { className: "ps-budget-note is-warn" },
+            `Replaces the existing ${formatCompactNumber(existingTokens)} token limit.`) : null,
+        React.createElement("div", { className: `ps-budget-note${wouldPause || wouldPauseSomeone ? " is-warn" : ""}` },
+            "Current spend counts. Saving does not reset usage.",
+            wouldPause
+                ? ` ${spentTokens.toLocaleString("en-US")} already meets ${parsed.toLocaleString("en-US")}, so sessions on ${row.providerName} pause on their next turn${resetsLabel ? ` — until this period ${budgetResetPhrase(resetsLabel)}` : ""}.`
+                : wouldPauseSomeone
+                    // The provider has room and a PERSON does not. With an
+                    // allowance that is the common case, and the limit alone
+                    // never showed it.
+                    ? ` At ${allowancePctNow}% each that is ${newCeiling.toLocaleString("en-US")} per person, which you have already spent — so sessions pause on their next turn${resetsLabel ? ` — until this period ${budgetResetPhrase(resetsLabel)}` : ""}.`
+                    : ""),
+        replaces ? React.createElement("div", null,
+            React.createElement("button", {
+                type: "button", className: "ps-mini-button is-danger", disabled: busy,
+                onClick: () => onRun("removeLimit", { period, model: chosenModel }),
+            }, `Remove the ${periodLabel} · ${scopeLabel} limit`),
+            React.createElement("div", { className: "ps-budget-note" },
+                "Usage history is kept.")) : null);
+
+    const allowanceBody = React.createElement(React.Fragment, null,
+        React.createElement(SheetField, {
+            label: "Share per person",
+            hint: pctValid
+                ? (pct >= 100
+                    ? "100% removes the per-person ceiling."
+                    : `Each person may use up to ${pct}% of each limit, per period.`)
+                : "A whole number from 1 to 100.",
+        },
+        React.createElement("input", {
+            className: `ps-budget-input${pctRaw && !pctValid ? " is-invalid" : ""}`, value: pctRaw,
+            // Its own name. A group label is not reliably announced when focus
+            // lands straight on the field, and "edit text, blank" is not a field.
+            "aria-label": "Share per person, as a percentage",
+            inputMode: "numeric", placeholder: "20",
+            onChange: (event) => setPctRaw(event.target.value),
+            onKeyDown: (event) => { if (event.key === "Enter" && pctValid) submit(); },
+        })),
+        React.createElement("div", { className: "ps-budget-consequences" },
+            providerLimits.length === 0
+                ? React.createElement("div", { className: "ps-budget-note is-warn" },
+                    "No limits yet. The allowance applies when one is added.")
+                : React.createElement(React.Fragment, null,
+                    providerLimits.map((entry) => React.createElement("div", { key: entry.id },
+                        `${entry.label} · ${formatCompactNumber(entry.tokens)} → `,
+                        React.createElement("strong", null,
+                            pctValid ? `${formatCompactNumber(Math.floor(entry.tokens * pct / 100))} per person` : "—"))),
+                    React.createElement("div", { className: "ps-budget-note" },
+                        "The provider limit still caps total spend.")),
+            pctValid && pct < currentPct ? React.createElement("div", { className: "ps-budget-note is-warn" },
+                "Users already past the new ceiling pause on their next turn.") : null));
+
+    const holdBody = React.createElement(React.Fragment, null,
+        React.createElement(SheetField, { label: "What to do" },
+            React.createElement(Segmented, {
+                value: holdMode, onChange: setHoldMode, label: "What to do",
+                options: [
+                    ...(held ? [{ value: "release", label: "release it" }] : []),
+                    { value: "forever", label: "hold until released" },
+                    { value: "until", label: "hold until a time" },
+                ],
+            })),
+        holdMode === "until" ? React.createElement(SheetField, {
+            label: "Ends at",
+            hint: holdHint || "Sessions resume at this time.",
+        },
+        React.createElement("input", {
+            className: `ps-budget-input${until && !holdValid ? " is-invalid" : ""}`,
+            "aria-label": "The hold ends at",
+            type: "datetime-local", value: until,
+            onChange: (event) => setUntil(event.target.value),
+        })) : null,
+        held ? React.createElement("div", { className: "ps-budget-consequences" },
+            React.createElement("div", null, `This provider is on hold: it ${row.hold.label}.`)) : null,
+        React.createElement("div", { className: `ps-budget-note${holdMode === "release" ? "" : " is-warn"}` },
+            holdMode === "release"
+                ? `Releasing wakes every session waiting on ${row.providerName}. A session still over a limit stays paused for that reason instead.`
+                : `Every session on ${row.providerName} pauses on its next turn. Messages sent to them are kept and answered when the hold lifts.`));
+
+    return React.createElement(BudgetSheet, {
+        title: titles[section], subtitle: `${row.providerName}${shared ? " · shared" : ""}`,
+        confirmLabel: confirms[section] || "",
+        danger: section === "hold" && holdMode === "release",
+        busy, disabled: !valid, error, onCancel,
+        onConfirm: confirms[section] ? submit : null,
+        cancelLabel: confirms[section] ? "Cancel" : "Done",
+        footNote: foots[section],
+    },
+    sections.length > 1 ? React.createElement(SheetField, { label: "What to change" },
+        React.createElement(Segmented, {
+            value: section, onChange: setSection, options: sections, label: "What to change",
+        })) : null,
+    section === "limit" ? limitBody : null,
+    section === "allowance" ? allowanceBody : null,
+    section === "hold" ? holdBody : null);
+}
+
+/**
+ * Add a provider. The name is permanent — sessions refer to it — and the
+ * credential is the key itself, never a pointer to one.
+ */
+function CreateProviderSheet({
+    types, existingNames, isAdmin, busy, error, onCancel, onConfirm,
+    initialName = "", initialShared = false, initialType = "",
+}) {
+    const [name, setName] = React.useState(initialName);
+    const [type, setType] = React.useState(initialType || types[0]?.id || "");
+    const [credential, setCredential] = React.useState("");
+    const [baseUrl, setBaseUrl] = React.useState("");
+    const [shared, setShared] = React.useState(isAdmin && initialShared);
+    const ref = React.useRef(null);
+    React.useEffect(() => { ref.current?.focus(); }, []);
+    React.useEffect(() => { if (!type && types[0]) setType(types[0].id); }, [types, type]);
+
+    const trimmed = name.trim();
+    // A name is unique across the cluster and immutable, so a clash is
+    // permanent. The database refuses it too; refusing here saves the trip.
+    const taken = existingNames.some((existing) => existing.toLowerCase() === trimmed.toLowerCase());
+    // MAJOR 16: the database's own check constraint allows only these, and it
+    // reports every violation with one fixed sentence — so a name refused for
+    // its LENGTH was told to use letters and numbers, which it already did.
+    // Bounded and named here instead, where the rule can be said precisely.
+    const badChars = trimmed !== "" && !/^[A-Za-z0-9._-]+$/.test(trimmed);
+    const tooLong = trimmed.length > 64;
+    const valid = Boolean(trimmed) && !taken && !badChars && !tooLong
+        && Boolean(type) && Boolean(credential.trim());
+    const isGithub = /github/i.test(type);
+    const submit = () => {
+        if (!valid) return;
+        const input = {
+            name: trimmed, type, shared,
+            credentials: isGithub ? { githubToken: credential.trim() } : { apiKey: credential.trim() },
+            baseUrl: baseUrl.trim() || null,
+        };
+        setCredential("");
+        onConfirm(input);
+    };
+    const cancel = () => {
+        setCredential("");
+        onCancel();
+    };
+
+    return React.createElement(BudgetSheet, {
+        title: isGithub ? "Add GitHub Copilot provider" : "Add model provider",
+        subtitle: shared ? "Shared" : "Personal",
+        confirmLabel: "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
+        footNote: "",
+    },
+    React.createElement(SheetField, {
+        label: "Name",
+        hint: taken ? "A provider with that name already exists, and names are unique across the cluster."
+            : tooLong ? `Too long: ${trimmed.length} characters, and a name may be at most 64.`
+                : badChars ? "Letters, numbers, dot, dash and underscore only — no colon, no spaces, no accents: a session refers to it as \"<provider>:<model>\"."
+                    : "Permanent. Used in provider:model.",
+    },
+    React.createElement("input", {
+        ref, className: `ps-budget-input${(taken || badChars || tooLong) && trimmed ? " is-invalid" : ""}`,
+        "aria-label": "Provider name",
+        value: name, placeholder: "azure-prod",
+        onChange: (event) => setName(event.target.value),
+        onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
+    })),
+    React.createElement(SheetField, {
+        label: "Type",
+        hint: "Backend and model catalog.",
+    },
+    React.createElement("select", {
+        className: "ps-budget-input", "aria-label": "Provider type",
+        value: type, onChange: (event) => setType(event.target.value),
+    }, types.length === 0
+        ? React.createElement("option", { value: "" }, "No provider types are listed on this deployment")
+        : types.map((option) => React.createElement("option", { key: option.id, value: option.id }, option.id)))),
+    React.createElement(SheetField, {
+        label: isGithub ? "GitHub Copilot token" : "API key",
+        hint: "Paste the token value.",
+    },
+    React.createElement("input", {
+        className: "ps-budget-input", type: "password", autoComplete: "off",
+        "aria-label": isGithub ? "GitHub Copilot token" : "API key",
+        value: credential, placeholder: "Paste token",
+        onChange: (event) => setCredential(event.target.value),
+    })),
+    React.createElement(SheetField, { label: "Base URL", hint: "Optional." },
+        React.createElement("input", {
+            className: "ps-budget-input", value: baseUrl, placeholder: "https://…",
+            "aria-label": "Base URL",
+            onChange: (event) => setBaseUrl(event.target.value),
+        })),
+    isAdmin ? React.createElement(SheetField, { label: "Access" },
+        React.createElement(Segmented, {
+            value: shared ? "shared" : "mine", onChange: (value) => setShared(value === "shared"),
+            label: "Access",
+            options: [{ value: "shared", label: "Shared" }, { value: "mine", label: "Only me" }],
+        })) : null);
+}
+
+/** Delete a provider. Its sessions are not moved anywhere — they wait. */
+function DeleteProviderSheet({ row, limitCount, defaults, busy, error, onCancel, onConfirm }) {
+    const isClusterDefault = defaults?.cluster?.provider === row.providerName;
+    const isMyDefault = defaults?.mine?.provider === row.providerName;
+    return React.createElement(BudgetSheet, {
+        title: `Delete ${row.providerName}?`,
+        subtitle: row.class === "shared" ? "Shared provider"
+            : (row.ownedByMe === false ? "User provider · owned by another user" : "User provider"),
+        confirmLabel: "Delete provider", danger: true, busy, error, onCancel, onConfirm,
+        // Not "undoes this": re-creating the name only lets the waiting
+        // sessions resolve again, against a fresh budget. The limits do not
+        // come back.
+        footNote: "Creating the name again lets waiting sessions resume, on a fresh budget.",
+    },
+    // One line per consequence. Each is a fact somebody could be surprised by;
+    // none of them needs a paragraph.
+    React.createElement("div", { className: "ps-budget-consequences" },
+        React.createElement("div", null,
+            "Sessions on it ", React.createElement("strong", null, "wait indefinitely"), "."),
+        limitCount > 0 ? React.createElement("div", null,
+            // budgetPlural already prints the count. Prefixing it printed
+            // "2 2 limits".
+            React.createElement("strong", null, budgetPlural(limitCount, "limit", "limits")),
+            " deleted with it, and they do not come back.") : null,
+        isClusterDefault ? React.createElement("div", null,
+            React.createElement("strong", null, "It is the cluster default."),
+            " The cluster is left with none.") : null,
+        isMyDefault ? React.createElement("div", null,
+            React.createElement("strong", null, "It is your default."),
+            " Yours is cleared.") : null,
+        React.createElement("div", { className: "ps-budget-sub" }, "Usage history is retained under this name.")));
+}
+
+/**
+ * What the surface needs out of the store. selectProviderTable builds fresh
+ * arrays on every call, so subscribing to it directly would re-render on every
+ * unrelated dispatch — and a streaming session dispatches per token. These are
+ * the raw references it actually reads, compared by identity.
+ */
+function budgetViewDeps(state) {
+    const budget = state.budget || {};
+    return [
+        Boolean(state.ui?.budgetOpen), budget.loading, budget.refreshing, budget.loaded,
+        budget.error, budget.grid, budget.paused, budget.overall, budget.selectedProvider,
+        budget.selectedScope, budget.missingProvider, budget.series,
+        state.auth?.authorization?.role, state.admin?.profile,
+    ];
+}
+
+/**
+ * The whole surface: a head, one table, and the selected provider's days.
+ *
+ * No device prop: the stylesheet reflows the table into cards on its own, so
+ * there is nothing here for a phone to decide.
+ */
+function ProviderBudgetView({ controller }) {
+    const deps = useControllerSelector(controller, budgetViewDeps, shallowEqualObject);
+    const view = React.useMemo(() => selectProviderTable(controller.getState()), [controller, deps]);
+    // The grid as the server sent it. The sheets need the PROVIDER's own
+    // figures — a limit caps everyone — and the table's cells hold whichever
+    // pair the tick is showing, which is the viewer's own half the time.
+    const rawRows = React.useMemo(() => controller.getState().budget?.grid || [], [controller, deps]);
+
+    // What the sheets need and the table does not: which type each provider is
+    // an instance of, and what the two defaults currently name. Read once, and
+    // a failure is not fatal — the controls that need it say they have nothing
+    // to offer.
+    const [models, setModels] = React.useState([]);
+    const [providerTypes, setProviderTypes] = React.useState(new Map());
+    const [defaults, setDefaults] = React.useState(null);
+    const readDefaults = React.useCallback(() => {
+        if (typeof controller.transport.getDefaults !== "function") return;
+        Promise.resolve(controller.transport.getDefaults())
+            .then((rows) => setDefaults(rows || null))
+            .catch(() => {});
+    }, [controller]);
+    React.useEffect(() => {
+        let live = true;
+        if (typeof controller.transport.listModels === "function") {
+            Promise.resolve(controller.transport.listModels())
+                .then((rows) => { if (live) setModels(budgetNormalizeModels(rows)); })
+                .catch(() => {});
+        }
+        if (typeof controller.transport.listProviders === "function") {
+            Promise.resolve(controller.transport.listProviders())
+                .then((rows) => {
+                    if (!live) return;
+                    const map = new Map();
+                    for (const provider of (rows?.providers || [])) map.set(provider.name, provider.typeId || "");
+                    setProviderTypes(map);
+                })
+                .catch(() => {});
+        }
+        readDefaults();
+        return () => { live = false; };
+    }, [controller, readDefaults]);
+
+    // Opened by the toolbar, which loads it. Mounting with nothing behind it —
+    // a restored state, a second mount — reads once rather than showing zeros.
+    React.useEffect(() => {
+        const budget = controller.getState().budget || {};
+        if (!budget.loaded && !budget.loading && !budget.error) {
+            controller.loadProviderTable().catch(() => {});
+        }
+    }, [controller]);
+
+    // Limits reset, administrators raise them, sessions resume — and nothing
+    // here would notice.
+    React.useEffect(() => {
+        const id = setInterval(() => { controller.refreshProviderTable().catch(() => {}); }, 60_000);
+        return () => clearInterval(id);
+    }, [controller]);
+
+    // Escape closes the surface — the key every full-screen thing in this app
+    // answers to. Not while a <select> or an input has focus, not under a
+    // modal, and not while a sheet is open: Escape belongs to whatever is
+    // nearest the person.
+    React.useEffect(() => {
+        const onKey = (event) => {
+            if (event.key !== "Escape") return;
+            const target = event.target;
+            const tag = target && target.tagName;
+            if (tag === "SELECT" || tag === "INPUT" || tag === "TEXTAREA") return;
+            if (controller.getState().ui.modal) return;
+            if (document.querySelector(".ps-budget-sheet")) return;
+            event.preventDefault();
+            event.stopPropagation();
+            controller.closeBudget();
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+    }, [controller]);
+
+    // ── the sheets ─────────────────────────────────────────────────────
+    const [sheet, setSheet] = React.useState(null);
+    const [sheetBusy, setSheetBusy] = React.useState(false);
+    const [sheetError, setSheetError] = React.useState(null);
+    // The control the sheet was opened FROM. A sheet that closes without
+    // handing focus back drops it on <body>, and the next Tab restarts at the
+    // top of the document — nineteen presses from where the person was.
+    const openerRef = React.useRef(null);
+    const openSheet = (spec) => {
+        openerRef.current = typeof document !== "undefined" ? document.activeElement : null;
+        setSheetError(null); setSheetBusy(false); setSheet(spec);
+    };
+    const closeSheet = React.useCallback(() => {
+        setSheet(null); setSheetError(null); setSheetBusy(false);
+        const opener = openerRef.current;
+        openerRef.current = null;
+        // A control the change itself removed (Delete) is skipped rather than
+        // focused into a detached node.
+        if (opener && typeof opener.focus === "function" && document.contains(opener)) {
+            opener.focus();
+        }
+    }, []);
+    // Every change comes back as {ok, error, code, result} — nothing throws. A
+    // refusal stays in the sheet, in the server's own words, because they name
+    // the remedy and nothing this file could invent would.
+    const runChange = async (run, { keepOpen = false, onDone = null } = {}) => {
+        setSheetBusy(true);
+        setSheetError(null);
+        const outcome = await run();
+        setSheetBusy(false);
+        if (!outcome || outcome.ok !== true) {
+            setSheetError(outcome?.error || "The change was refused.");
+            return;
+        }
+        if (!keepOpen) closeSheet();
+        if (onDone) onDone(outcome.result || null);
+    };
+    const say = (text) => controller.dispatch({ type: "ui/status", text });
+
+    const selected = view.selected;
+    // Edit and Remove are about the PROVIDER even while one of its model rows
+    // is the row being read: a limit is edited on the provider, and there is
+    // no such thing as deleting a model.
+    const selectedProvider = view.selectedProviderRow;
+    const modelsForSelected = selected
+        ? budgetModelsForProvider(models, {
+            name: selected.providerName, typeId: providerTypes.get(selected.providerName) || "",
+        })
+        : [];
+
+    let sheetEl = null;
+    if (sheet?.kind === "edit" && selectedProvider) {
+        sheetEl = React.createElement(EditProviderSheet, {
+            row: selectedProvider, rawRows, models: modelsForSelected, isAdmin: view.isAdmin,
+            // MAJOR 17: the sheet opens on the limit the reader was standing
+            // on, rather than always on Daily / all models.
+            initialPeriod: sheet.period || "day",
+            initialScope: sheet.scope || "*",
+            busy: sheetBusy, error: sheetError, onCancel: closeSheet,
+            onRun: (kind, payload) => {
+                const name = selected.providerName;
+                if (kind === "limit") {
+                    return runChange(() => controller.setProviderLimit({ provider: name, ...payload }), {
+                        onDone: (result) => {
+                            const seeded = Number(result?.seededTokens) || 0;
+                            say(seeded > 0
+                                ? `Limit saved. This period had already spent ${formatCompactNumber(seeded)} tokens, and they count against it.`
+                                : "Limit saved. This period has spent nothing against it yet.");
+                        },
+                    });
+                }
+                if (kind === "removeLimit") {
+                    return runChange(() => controller.removeProviderLimit({ provider: name, ...payload }), {
+                        onDone: () => say(`That period no longer caps ${name}.`),
+                    });
+                }
+                if (kind === "allowance") {
+                    return runChange(() => controller.setProviderAllowance({ provider: name, pct: payload.pct }), {
+                        onDone: () => say(payload.pct >= 100
+                            ? `Everyone shares the whole of ${name} again.`
+                            : `Each person may now use up to ${payload.pct}% of each of ${name}'s limits.`),
+                    });
+                }
+                if (kind === "hold") {
+                    return runChange(() => controller.setProviderHold({ provider: name, ...payload }), {
+                        // Reported from what the row says AFTER the read, not
+                        // from what was sent: a hold that is not live must
+                        // never be confirmed as one.
+                        onDone: () => {
+                            if (payload.release) {
+                                say(`The hold on ${name} is released. Sessions waiting on it wake up.`);
+                                return;
+                            }
+                            // From the STATE, which the change already
+                            // re-read — `view` here is the render that opened
+                            // the sheet and predates the write.
+                            const raw = (controller.getState().budget?.grid || []).find(
+                                (r) => r.providerName === name && r.rowKind !== "model");
+                            const live = raw?.holdIndefinite === true
+                                || (raw?.holdUntilUtc ? Date.parse(raw.holdUntilUtc) > Date.now() : false);
+                            say(live
+                                ? `${name} is on hold. No new turn runs against it until it is released.`
+                                : `${name} is NOT on hold: the time given has already passed.`);
+                        },
+                    });
+                }
+                return undefined;
+            },
+        });
+    }
+
+    // ── the head ───────────────────────────────────────────────────────
+    const head = React.createElement("div", { className: "ps-budget-head" },
+        React.createElement("div", { className: "ps-budget-headline" },
+            React.createElement("span", { className: "ps-budget-coin", "aria-hidden": "true" }, "◎"),
+            React.createElement("h2", { className: "ps-budget-h" }, "Providers & Budgets"),
+            React.createElement("span", { className: "ps-budget-sub" }, "Usage and limits")),
+        React.createElement("div", { className: "ps-budget-head-actions" },
+            React.createElement(IconButton, {
+                icon: React.createElement(CogGlyph),
+                label: "Model providers",
+                className: "ps-mini-button",
+                onClick: () => { controller.closeBudget(); void controller.openAdminConsole(); },
+            }),
+            React.createElement(IconButton, {
+                icon: "↻",
+                label: "Refresh providers and budgets",
+                className: "ps-mini-button",
+                disabled: view.loading || view.refreshing,
+                onClick: () => controller.refreshProviderTable().catch(() => {}),
+            }),
+            React.createElement("button", {
+                type: "button", className: "ps-budget-close", onClick: () => controller.closeBudget(),
+                "aria-label": "Close providers and budgets", title: "Close (Esc)",
+            }, "✕")));
+
+    // A read that FAILED is never dressed up as an empty one: "no providers"
+    // and "we could not find out" are different facts, and only one of them is
+    // safe to act on.
+    let body;
+    if (view.failed) {
+        body = React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+            React.createElement("div", null, "Providers and budgets could not be read. ",
+                React.createElement("button", {
+                    type: "button", className: "ps-budget-link",
+                    onClick: () => controller.loadProviderTable().catch(() => {}),
+                }, "Try again")),
+            React.createElement("div", { className: "ps-budget-sub" }, view.error));
+    } else if (view.loading && !view.loaded) {
+        body = React.createElement("div", { className: "ps-budget-empty" }, "Reading providers and budgets…");
+    } else {
+        body = React.createElement(React.Fragment, null,
+            // Numbers are still on screen but the last read failed. Say they
+            // are old rather than passing them off as current.
+            view.stale ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+                React.createElement("div", null, "These figures are from an earlier read. The most recent read failed."),
+                React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
+            // One line, not a band. WHY a particular session is stopped is said
+            // on the session itself, which is where the remedy is; this only
+            // answers "is anything waiting right now".
+            view.paused.count > 0 ? React.createElement("div", {
+                className: `ps-budget-waiting${view.paused.stale ? " is-stale" : ""}`, role: "status",
+            },
+            view.paused.sentence,
+            " ",
+            view.paused.provider ? React.createElement("button", {
+                type: "button", className: "ps-budget-link",
+                onClick: () => {
+                    // The link OPENS the row; it does not toggle it shut when
+                    // the reader is already standing on it.
+                    if (view.selectedProvider === view.paused.provider) return;
+                    controller.selectBudgetProvider(view.paused.provider).catch(() => {});
+                },
+            }, `Open ${view.paused.provider}`) : null,
+            // The numbers above were read fine; THIS line is the old one.
+            view.paused.stale ? React.createElement("span", { className: "ps-budget-sub" },
+                " This line is from an earlier read — the last one failed.") : null) : null,
+            // The waiting list failed and there is nothing behind it, so there
+            // is no line to mark. Say the read failed rather than nothing.
+            view.paused.count === 0 && view.paused.error ? React.createElement("div", {
+                className: "ps-budget-waiting is-stale", role: "status",
+            }, "The list of waiting sessions could not be read. The figures below were read successfully.") : null,
+            // Somebody arrived here by clicking a provider name on a stopped
+            // session, and no such provider exists. Without this the selection
+            // is cleared and they are left on a table with nothing selected
+            // and no sign that the name they clicked is the missing thing.
+            // Creating it again is the whole remedy, but provider lifecycle
+            // belongs to Admin Console rather than this usage-policy surface.
+            view.missing ? React.createElement("div", {
+                className: "ps-budget-waiting is-missing", role: "status",
+            },
+            view.missing.sentence,
+            " ",
+            React.createElement("button", {
+                type: "button", className: "ps-budget-link",
+                onClick: () => { controller.closeBudget(); void controller.openAdminConsole(); },
+            }, "Open Model Providers")) : null,
+            React.createElement("div", {
+                className: `ps-budget-body${view.refreshing ? " is-refreshing" : ""}`,
+            },
+            React.createElement(ProviderTable, { controller, view, defaults }),
+            React.createElement("div", { className: "ps-budget-actions" },
+                React.createElement(IconButton, {
+                    icon: React.createElement(ManageGlyph),
+                    label: "Edit usage policy",
+                    className: "ps-mini-button",
+                    disabled: !selectedProvider || !selectedProvider.manageable,
+                    onClick: () => openSheet({
+                        kind: "edit",
+                        // Open on the row the reader is standing on: a model
+                        // row means they were looking at THAT limit.
+                        scope: selected?.kind === "model" ? selected.scope : "*",
+                    }),
+                }),
+                React.createElement("span", { className: "ps-budget-sub" },
+                    selected ? selected.providerName : "No provider selected")),
+            React.createElement("div", { className: "ps-budget-foot ps-budget-sub" },
+                "Manage providers and defaults in Admin Console."),
+            // Selecting a row opens its days, with the dashed line at whatever
+            // quota the Day cell just showed.
+            selected ? React.createElement(ProviderDayChart, { controller, view }) : null,
+            selected ? React.createElement(ProviderSystemSpend, { view }) : null));
+    }
+
+    return React.createElement("div", { className: "ps-budget-surface" },
+        head,
+        React.createElement("div", { className: "ps-budget" }, body),
+        sheetEl);
+}
 
 function ModalLayer({ controller }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
@@ -10214,10 +11651,12 @@ function formatAdminPrincipalLabel(principal) {
 
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
-    const draftRef = React.useRef(null);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
+    const [providerSheet, setProviderSheet] = React.useState(null);
+    const [providerSheetBusy, setProviderSheetBusy] = React.useState(false);
+    const [providerSheetError, setProviderSheetError] = React.useState(null);
     // Workspace pane geometry: user-resizable (drag the pane's left edge for
     // width, the Preview header for the tree/preview split), persisted.
     const [wsLayout, setWsLayout] = React.useState(() => {
@@ -10257,39 +11696,25 @@ function AdminConsolePanel({ controller, mobile = false }) {
         window.addEventListener("pointercancel", onUp);
     }, [wsLayout.navWidth, updateWsLayout]);
 
-    React.useEffect(() => {
-        if (view.ghcpKey.editing) {
-            // Defer focus to next tick so the input has mounted.
-            const handle = window.requestAnimationFrame(() => {
-                if (draftRef.current) draftRef.current.focus();
-            });
-            return () => window.cancelAnimationFrame(handle);
-        }
-        return undefined;
-    }, [view.ghcpKey.editing]);
-
     const onClose = React.useCallback(() => {
         controller.closeAdminConsole();
     }, [controller]);
-    const onRefresh = React.useCallback(() => {
-        controller.refreshAdminProfile().catch(() => {});
-    }, [controller]);
-    const onBeginEdit = React.useCallback(() => {
-        controller.beginAdminEditGhcpKey();
-    }, [controller]);
-    const onCancelEdit = React.useCallback(() => {
-        controller.cancelAdminEditGhcpKey();
-    }, [controller]);
-    const onClear = React.useCallback(() => {
-        controller.clearAdminGhcpKey().catch(() => {});
-    }, [controller]);
-    const onSubmit = React.useCallback((event) => {
-        event.preventDefault();
-        controller.saveAdminGhcpKey().catch(() => {});
-    }, [controller]);
-    const onDraftChange = React.useCallback((event) => {
-        controller.setAdminGhcpKeyDraft(event.target.value);
-    }, [controller]);
+    const closeProviderSheet = React.useCallback(() => {
+        setProviderSheet(null);
+        setProviderSheetBusy(false);
+        setProviderSheetError(null);
+    }, []);
+    const submitProvider = React.useCallback(async (input) => {
+        setProviderSheetBusy(true);
+        setProviderSheetError(null);
+        const outcome = await controller.createAdminProvider(input);
+        setProviderSheetBusy(false);
+        if (!outcome?.ok) {
+            setProviderSheetError(outcome?.error || "The provider could not be created.");
+            return;
+        }
+        closeProviderSheet();
+    }, [closeProviderSheet, controller]);
 
     const principalLabel = formatAdminPrincipalLabel(view.principal);
 
@@ -10304,8 +11729,11 @@ function AdminConsolePanel({ controller, mobile = false }) {
             "aria-label": "Close the admin console",
         }, "\u2715"));
 
-    const ghcpSection = React.createElement(AdminGhcpSection, {
-        view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller,
+    const providerSection = React.createElement(AdminModelProvidersSection, {
+        controller,
+        view,
+        onAddPersonal: () => setProviderSheet({ shared: false, github: true }),
+        onAddShared: () => setProviderSheet({ shared: true, github: false }),
     });
 
     const tree = React.createElement(AdminSettingsTree, { controller, view });
@@ -10315,6 +11743,24 @@ function AdminConsolePanel({ controller, mobile = false }) {
         : null;
     const dialog = packages.addDialog?.open
         ? React.createElement(AdminAddPackageDialog, { controller, dialog: packages.addDialog })
+        : null;
+    const createProviderDialog = providerSheet
+        ? React.createElement(CreateProviderSheet, {
+            types: view.modelProviders?.providerTypes || [],
+            existingNames: [
+                ...(view.modelProviders?.sharedProviders || []),
+                ...(view.modelProviders?.myProviders || []),
+            ].map((provider) => provider.name),
+            isAdmin: view.isAdmin,
+            initialShared: providerSheet.shared,
+            initialType: providerSheet.github
+                ? (view.modelProviders?.providerTypes || []).find((type) => /github/i.test(type.id))?.id || ""
+                : "",
+            busy: providerSheetBusy,
+            error: providerSheetError,
+            onCancel: closeProviderSheet,
+            onConfirm: submitProvider,
+        })
         : null;
 
     if (mobile) {
@@ -10335,13 +11781,14 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, ghcpSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
             view.loadError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, view.loadError) : null,
             body,
-            dialog);
+            dialog,
+            createProviderDialog);
     }
 
     return React.createElement("div", { className: "ps-admin-console is-workspace" },
@@ -10363,9 +11810,10 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : ghcpSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : providerSection),
             workspacePane),
-        dialog);
+        dialog,
+        createProviderDialog);
 }
 
 function AdminWorkersPane({ controller, view }) {
@@ -10449,7 +11897,17 @@ function AdminSettingsTree({ controller, view }) {
                         ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
                         : {}),
                 })
-                : () => controller.setAdminSection(row.id === "agents" ? "packages" : row.id === "workers" ? "workers" : "ghcp");
+                : () => {
+                    if (row.id === "providers" || row.id === "myProviders") {
+                        controller.setAdminSection("providers");
+                        controller.setAdminModelProviderPage("mine");
+                    } else if (row.id === "sharedProviders") {
+                        controller.setAdminSection("providers");
+                        controller.setAdminModelProviderPage("shared");
+                    } else {
+                        controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
+                    }
+                };
             return React.createElement("button", {
                 key: row.id,
                 type: "button",
@@ -10475,11 +11933,11 @@ function AdminSettingsTree({ controller, view }) {
         }),
         packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
         packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
-        React.createElement("button", {
+        view.section === "packages" ? React.createElement("button", {
             type: "button",
             className: "ps-admin-tree__add",
             onClick: () => controller.openAdminAddPackage(),
-        }, "+ Add package"));
+        }, "+ Add package") : null);
 }
 
 function AdminPackageDetailPane({ controller, view }) {
@@ -10891,6 +12349,218 @@ function AdminAddPackageDialog({ controller, dialog }) {
                             : dialog.updateName ? "Import & update" : "Import & publish"))));
 }
 
+function adminDefaultModel(defaultView) {
+    return defaultView?.configured?.model || "";
+}
+
+function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel, onChange }) {
+    return React.createElement("label", { className: "ps-admin-provider-default" },
+        React.createElement("span", { className: "ps-admin-detail__label" }, label),
+        React.createElement("select", {
+            className: "ps-budget-input",
+            value,
+            disabled,
+            "aria-label": label,
+            onChange: (event) => onChange(event.target.value),
+        },
+        React.createElement("option", { value: "" }, emptyLabel),
+        value && !choices.some((choice) => choice.qualifiedName === value)
+            ? React.createElement("option", { value }, `${value} (currently configured)`)
+            : null,
+        choices.map((choice) => React.createElement("option", {
+            key: choice.qualifiedName,
+            value: choice.qualifiedName,
+        }, `${choice.provider} · ${choice.model}`))),
+        hint ? React.createElement("span", { className: "ps-admin-console__hint" }, hint) : null);
+}
+
+function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, onDelete }) {
+    if (!providers.length) {
+        return React.createElement("p", { className: "ps-admin-console__hint" },
+            personal ? "No personal providers yet." : "No shared providers are configured.");
+    }
+    return React.createElement("div", { className: "ps-admin-provider-list" },
+        providers.map((provider) => React.createElement("div", {
+            key: provider.name,
+            className: "ps-admin-provider-row",
+        },
+        React.createElement("div", { className: "ps-admin-provider-row__identity" },
+            React.createElement("strong", null, provider.name),
+            React.createElement("span", { className: `ps-scope-badge is-${provider.class === "shared" ? "shared" : "user"}` }, provider.class),
+            provider.isMyDefault ? React.createElement("span", { className: "ps-scope-badge is-off" }, "my default") : null,
+            provider.isClusterDefault ? React.createElement("span", { className: "ps-scope-badge is-off" }, "cluster default") : null,
+            provider.isSystemDefault ? React.createElement("span", { className: "ps-scope-badge is-off" }, "system default") : null),
+        React.createElement("div", { className: "ps-admin-provider-row__actions" },
+            personal && isAdmin ? React.createElement("label", { className: "ps-admin-console__system-toggle" },
+                React.createElement("input", {
+                    type: "checkbox",
+                    checked: provider.systemUseEnabled,
+                    disabled: busy,
+                    onChange: (event) => onSystemUse(provider.name, event.target.checked),
+                }),
+                "Allow system sessions") : null,
+            React.createElement(IconButton, {
+                icon: React.createElement(TrashGlyph),
+                label: `Delete ${provider.name}`,
+                className: "ps-mini-button is-danger",
+                disabled: busy,
+                onClick: () => onDelete(provider),
+            })))));
+}
+
+function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared }) {
+    const providers = view.modelProviders || {};
+    const pending = Boolean(providers.mutation?.pending);
+    const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
+    const [systemDraft, setSystemDraft] = React.useState(systemConfigured);
+    const [restartDisposition, setRestartDisposition] = React.useState("");
+    const [restartResult, setRestartResult] = React.useState(null);
+
+    React.useEffect(() => {
+        setSystemDraft(systemConfigured);
+    }, [systemConfigured]);
+
+    const choiceFor = (choices, qualifiedName) => choices.find((choice) => choice.qualifiedName === qualifiedName) || null;
+    const setDefault = (scope, choices, qualifiedName) => {
+        void controller.setAdminModelDefault(scope, choiceFor(choices, qualifiedName));
+    };
+    const deleteProvider = (provider) => {
+        if (!window.confirm(`Delete ${provider.name}? Sessions using it will wait until that provider name exists again.`)) return;
+        void controller.deleteAdminProvider(provider.name, { shared: provider.class === "shared" });
+    };
+    const applySystemDefault = async () => {
+        setRestartResult(null);
+        const outcome = await controller.setAdminSystemModelDefault(
+            choiceFor(providers.systemChoices || [], systemDraft),
+            { restartDisposition: restartDisposition || null },
+        );
+        if (outcome?.ok) setRestartResult(outcome.result?.restart || { requested: false });
+    };
+    const inheritingAgents = (providers.systemAgentRoutes || []).filter((route) => !route.override);
+    const sharedPage = providers.page === "shared" && view.isAdmin;
+
+    const pageHeader = React.createElement("div", { className: "ps-admin-provider-heading" },
+        React.createElement("h3", null, "Model Providers"),
+        React.createElement(IconButton, {
+            icon: "↻",
+            label: "Refresh model providers",
+            className: "ps-mini-button",
+            disabled: providers.loading,
+            onClick: () => controller.refreshAdminModelProviders(),
+        }));
+
+    const myPage = React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement("div", { className: "ps-admin-provider-block__head" },
+                React.createElement("h4", null, "My Providers"),
+                React.createElement(IconButton, {
+                    icon: React.createElement(PlusGlyph), label: "Add personal provider",
+                    className: "ps-primary-button", onClick: onAddPersonal, disabled: pending,
+                })),
+            React.createElement(AdminProviderRows, {
+                providers: providers.myProviders || [], isAdmin: view.isAdmin, personal: true, busy: pending,
+                onSystemUse: (name, enabled) => controller.setAdminProviderSystemUse(name, enabled),
+                onDelete: deleteProvider,
+            })),
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement(AdminDefaultSelect, {
+                label: "My Session Default",
+                hint: `Effective: ${providers.mySessionDefault?.effective?.model || "none"}.`,
+                value: adminDefaultModel(providers.mySessionDefault),
+                choices: providers.userChoices || [],
+                disabled: pending,
+                emptyLabel: "Use cluster default",
+                onChange: (value) => setDefault("user", providers.userChoices || [], value),
+            })));
+
+    const sharedProvidersPage = React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement("div", { className: "ps-admin-provider-block__head" },
+                React.createElement("h4", null, "Shared Providers"),
+                React.createElement(IconButton, {
+                    icon: React.createElement(PlusGlyph), label: "Add shared provider",
+                    className: "ps-primary-button", onClick: onAddShared, disabled: pending,
+                })),
+            React.createElement(AdminProviderRows, {
+                providers: providers.sharedProviders || [], isAdmin: true, personal: false, busy: pending,
+                onSystemUse: () => {}, onDelete: deleteProvider,
+            })),
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement(AdminDefaultSelect, {
+                label: "Cluster Session Default",
+                hint: `Effective: ${providers.clusterSessionDefault?.effective?.model || "none"}.`,
+                value: adminDefaultModel(providers.clusterSessionDefault),
+                choices: providers.clusterChoices || [],
+                disabled: pending,
+                emptyLabel: "Use first shared provider",
+                onChange: (value) => setDefault("cluster", providers.clusterChoices || [], value),
+            })),
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement("h4", null, "System Session Default"),
+            React.createElement(AdminDefaultSelect, {
+                label: "Model",
+                hint: "Shared and system-enabled personal providers.",
+                value: systemDraft,
+                choices: providers.systemChoices || [],
+                disabled: pending,
+                emptyLabel: "Use first eligible provider",
+                onChange: setSystemDraft,
+            }),
+            React.createElement("div", { className: "ps-admin-detail__label" }, "Existing system sessions"),
+            React.createElement(Segmented, {
+                value: restartDisposition,
+                onChange: setRestartDisposition,
+                label: "Existing system sessions",
+                options: [
+                    { value: "", label: "Future only" },
+                    { value: "complete", label: "Complete & restart" },
+                    { value: "terminate", label: "Terminate & restart" },
+                    { value: "hard_delete", label: "Hard delete & restart" },
+                ],
+            }),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                `${inheritingAgents.length} agent${inheritingAgents.length === 1 ? "" : "s"} inherit this default.`),
+            React.createElement("button", {
+                type: "button", className: "ps-primary-button", disabled: pending, onClick: applySystemDefault,
+            }, pending && providers.mutation?.pending === "systemDefault" ? "Applying…" : "Apply"),
+            restartResult?.requested ? React.createElement("p", { className: "ps-admin-console__status" },
+                `${restartResult.restarted}/${restartResult.affected} restarted${restartResult.failures?.length ? ` · ${restartResult.failures.length} failed` : ""}.`) : null),
+        React.createElement("div", { className: "ps-admin-provider-block" },
+            React.createElement("h4", null, "System Agent Overrides"),
+            (providers.systemAgentRoutes || []).length === 0
+                ? React.createElement("p", { className: "ps-admin-console__hint" }, "No system agents.")
+                : React.createElement("div", { className: "ps-admin-override-table" },
+                    (providers.systemAgentRoutes || []).map((route) => React.createElement("div", {
+                        key: route.agentId, className: "ps-admin-override-row",
+                    },
+                    React.createElement("div", null,
+                        React.createElement("strong", null, route.title),
+                        React.createElement("span", null, route.effectiveModel || "blocked"),
+                        React.createElement("small", null, route.override ? "override" : "system default")),
+                    React.createElement("select", {
+                        className: "ps-budget-input",
+                        value: route.override?.model || "",
+                        disabled: pending,
+                        "aria-label": `Model override for ${route.title}`,
+                        onChange: (event) => {
+                            const choice = choiceFor(providers.systemChoices || [], event.target.value);
+                            if (choice) void controller.setAdminSystemAgentModel(route.agentId, choice);
+                            else void controller.clearAdminSystemAgentModel(route.agentId);
+                        },
+                    },
+                    React.createElement("option", { value: "" }, "Inherit system default"),
+                    (providers.systemChoices || []).map((choice) => React.createElement("option", {
+                        key: choice.qualifiedName, value: choice.qualifiedName,
+                    }, `${choice.provider} · ${choice.model}`))))))));
+
+    return React.createElement("section", { className: "ps-admin-detail ps-admin-model-providers" },
+        pageHeader,
+        providers.error || providers.mutation?.error
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, providers.mutation?.error || providers.error)
+            : null,
+        sharedPage ? sharedProvidersPage : myPage);
+}
+
 function AdminGhcpSection({ view, draftRef, onBeginEdit, onCancelEdit, onClear, onSubmit, onDraftChange, onRefresh, controller }) {
         return React.createElement("section", { className: "ps-admin-console__section" },
             React.createElement("h3", null, "GitHub Copilot key"),
@@ -11084,6 +12754,10 @@ export function PilotSwarmWebApp({ controller }) {
         selectedArtifactId: rootState.files.selectedArtifactId || null,
         artifactPaneOpen: Boolean(rootState.files.paneOpen),
         adminVisible: Boolean(rootState.admin?.visible),
+        // Providers & Budgets takes the workspace, like the admin console. The
+        // reducer keeps the two apart — opening either closes the other — so
+        // this only decides which one is drawn.
+        budgetOpen: Boolean(rootState.ui?.budgetOpen),
     }), shallowEqualObject);
     const profileSettingsHydratedRef = React.useRef(false);
     const lastProfileSettingsJsonRef = React.useRef(null);
@@ -11716,6 +13390,11 @@ export function PilotSwarmWebApp({ controller }) {
                         current === "split" ? "chat" : current === "chat" ? "sessions" : "split"
                     ));
                 }
+                // The budget surface REPLACES the workspace, so a pane the
+                // phone switches to would render behind it and the tap would
+                // look dead. Picking a pane puts it away. Already closed, the
+                // reducer returns the same state and nothing re-renders.
+                controller.closeBudget();
                 setMobilePane(paneId);
                 if (focus) controller.setFocus(focus);
             },
@@ -11723,9 +13402,11 @@ export function PilotSwarmWebApp({ controller }) {
         React.createElement("div", { className: "ps-workspace" },
             state.adminVisible
                 ? React.createElement(AdminConsolePanel, { controller, mobile })
-                : (filesFullscreenActive
-                    ? fullscreenWorkspace
-                    : (mobile ? mobileContent : desktopWorkspace)),
+                : state.budgetOpen
+                    ? React.createElement(ProviderBudgetView, { controller })
+                    : (filesFullscreenActive
+                        ? fullscreenWorkspace
+                        : (mobile ? mobileContent : desktopWorkspace)),
             mobileCanvasLayer),
         mobile && filesFullscreenActive
             ? React.createElement(MobileArtifactOverlay, { controller })
