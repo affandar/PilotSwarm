@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.43** — Runtime providers and token budgets are managed across SDK, portal, TUI, and MCP; reusable canvas apps ship through artifacts; and orchestration retry exhaustion now fails visibly and durably.
+> **Latest release: v0.5.44** — The Admin Console's Model Providers pages become readable: styled provider rows, default-selector grids, and a real System Agent Overrides table.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

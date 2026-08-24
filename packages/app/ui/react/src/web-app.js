@@ -12453,10 +12453,10 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
         React.createElement("div", { className: "ps-admin-provider-block" },
             React.createElement("div", { className: "ps-admin-provider-block__head" },
                 React.createElement("h4", null, "My Providers"),
-                React.createElement(IconButton, {
-                    icon: React.createElement(PlusGlyph), label: "Add personal provider",
-                    className: "ps-primary-button", onClick: onAddPersonal, disabled: pending,
-                })),
+                React.createElement("button", {
+                    type: "button", className: "ps-primary-button",
+                    onClick: onAddPersonal, disabled: pending,
+                }, "Add provider")),
             React.createElement(AdminProviderRows, {
                 providers: providers.myProviders || [], isAdmin: view.isAdmin, personal: true, busy: pending,
                 onSystemUse: (name, enabled) => controller.setAdminProviderSystemUse(name, enabled),
@@ -12477,10 +12477,10 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
         React.createElement("div", { className: "ps-admin-provider-block" },
             React.createElement("div", { className: "ps-admin-provider-block__head" },
                 React.createElement("h4", null, "Shared Providers"),
-                React.createElement(IconButton, {
-                    icon: React.createElement(PlusGlyph), label: "Add shared provider",
-                    className: "ps-primary-button", onClick: onAddShared, disabled: pending,
-                })),
+                React.createElement("button", {
+                    type: "button", className: "ps-primary-button",
+                    onClick: onAddShared, disabled: pending,
+                }, "Add provider")),
             React.createElement(AdminProviderRows, {
                 providers: providers.sharedProviders || [], isAdmin: true, personal: false, busy: pending,
                 onSystemUse: () => {}, onDelete: deleteProvider,
@@ -12518,11 +12518,12 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
                     { value: "hard_delete", label: "Hard delete & restart" },
                 ],
             }),
-            React.createElement("p", { className: "ps-admin-console__hint" },
-                `${inheritingAgents.length} agent${inheritingAgents.length === 1 ? "" : "s"} inherit this default.`),
-            React.createElement("button", {
-                type: "button", className: "ps-primary-button", disabled: pending, onClick: applySystemDefault,
-            }, pending && providers.mutation?.pending === "systemDefault" ? "Applying…" : "Apply"),
+            React.createElement("div", { className: "ps-admin-provider-apply" },
+                React.createElement("p", { className: "ps-admin-console__hint" },
+                    `${inheritingAgents.length} agent${inheritingAgents.length === 1 ? "" : "s"} inherit this default.`),
+                React.createElement("button", {
+                    type: "button", className: "ps-primary-button", disabled: pending, onClick: applySystemDefault,
+                }, pending && providers.mutation?.pending === "systemDefault" ? "Applying…" : "Apply")),
             restartResult?.requested ? React.createElement("p", { className: "ps-admin-console__status" },
                 `${restartResult.restarted}/${restartResult.affected} restarted${restartResult.failures?.length ? ` · ${restartResult.failures.length} failed` : ""}.`) : null),
         React.createElement("div", { className: "ps-admin-provider-block" },
@@ -12533,7 +12534,7 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
                     (providers.systemAgentRoutes || []).map((route) => React.createElement("div", {
                         key: route.agentId, className: "ps-admin-override-row",
                     },
-                    React.createElement("div", null,
+                    React.createElement("div", { className: "ps-admin-override-row__agent" },
                         React.createElement("strong", null, route.title),
                         React.createElement("span", null, route.effectiveModel || "blocked"),
                         React.createElement("small", null, route.override ? "override" : "system default")),

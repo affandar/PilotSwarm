@@ -8467,3 +8467,50 @@ textarea.ps-link-input {
   }
   .ps-budget-sheet { max-height: 82svh; }
 }
+
+/* ── Admin console · Model Providers ─────────────────────────────────
+   The section shipped with structured markup and no styles at all —
+   every block collapsed into an unreadable stack (2026-08-24). */
+.ps-admin-model-providers { display: flex; flex-direction: column; gap: 16px; max-width: 660px; }
+.ps-admin-provider-heading { display: flex; align-items: center; gap: 10px; }
+.ps-admin-provider-heading h3 { margin: 0; font-size: 1.11rem; flex: 1; }
+.ps-admin-provider-block {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--ps-border); border-radius: 6px; padding: 14px 16px;
+}
+.ps-admin-provider-block__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ps-admin-provider-block h4 { margin: 0; font-size: 1rem; }
+.ps-admin-provider-list { display: flex; flex-direction: column; }
+.ps-admin-provider-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 2px; border-top: 1px solid var(--ps-border);
+}
+.ps-admin-provider-row:first-child { border-top: 0; padding-top: 2px; }
+.ps-admin-provider-row__identity { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ps-admin-provider-row__identity strong { font-size: 0.98rem; }
+.ps-admin-provider-row__actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+.ps-admin-provider-default {
+  display: grid; grid-template-columns: auto minmax(240px, 340px);
+  align-items: center; column-gap: 14px; row-gap: 5px;
+}
+.ps-admin-provider-default .ps-admin-detail__label { margin: 0; }
+.ps-admin-provider-default select { width: 100%; }
+.ps-admin-provider-default .ps-admin-console__hint { grid-column: 2; }
+.ps-admin-override-table { display: flex; flex-direction: column; }
+.ps-admin-override-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 260px);
+  gap: 2px 14px; align-items: center;
+  padding: 10px 2px; border-top: 1px solid var(--ps-border);
+}
+.ps-admin-override-row:first-child { border-top: 0; padding-top: 2px; }
+.ps-admin-override-row__agent { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ps-admin-override-row__agent strong { font-size: 0.98rem; }
+.ps-admin-override-row__agent span {
+  color: var(--ps-muted); font-size: 0.9rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ps-admin-override-row__agent small {
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ps-muted);
+}
+.ps-admin-provider-apply { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+.ps-admin-provider-apply .ps-admin-console__hint { flex: 1; }

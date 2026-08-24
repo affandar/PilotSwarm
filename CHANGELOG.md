@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.44 — 2026-08-24
+
+### Portal
+
+- The Admin Console's Model Providers pages (My Providers, Shared Providers)
+  get their missing styles: provider rows with aligned badges and actions,
+  labeled Add provider buttons, proper label/control grids for the session
+  default selectors, a readable System Agent Overrides table, and an apply
+  row that no longer strands its hint. The section previously rendered as an
+  unstyled stack.
+
 ## 0.5.43 — 2026-08-23
 
 Runtime model providers become first-class managed resources, budgets enforce
