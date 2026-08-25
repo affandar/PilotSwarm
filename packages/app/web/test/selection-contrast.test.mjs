@@ -127,3 +127,25 @@ test("no rule paints the selection fill and then uses a fill colour as its text"
         "a fill colour is being used as the text on top of that same fill:\n  " + offenders.join("\n  "),
     );
 });
+
+test("every rule that paints the selection fill also states its text colour", () => {
+    // Setting the fill and NOT setting `color` is the same bug wearing a
+    // different hat: the inherited colour was chosen to sit on the PANEL, and
+    // nothing checked it against a fill that can be any colour a theme likes.
+    // All seven such rules comply today; this keeps the eighth honest.
+    const silent = [];
+
+    for (const match of css.matchAll(/([^{}]+)\{([^{}]*--ps-modal-selected-background[^{}]*)\}/g)) {
+        const selector = match[1].trim().split("\n").pop().trim();
+        const body = match[2];
+        if (!/background:\s*var\(\s*--ps-modal-selected-background\s*\)/.test(body)) continue;
+        const setsColour = body.split(";").some((d) => /^color:/.test(d.trim()));
+        if (!setsColour) silent.push(selector);
+    }
+
+    assert.deepEqual(
+        silent,
+        [],
+        "these rules paint a selection fill but inherit their text colour:\n  " + silent.join("\n  "),
+    );
+});
