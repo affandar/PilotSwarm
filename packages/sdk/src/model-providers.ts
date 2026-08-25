@@ -773,6 +773,56 @@ function normalizeContextWindowSizes(
     return out;
 }
 
+/**
+ * Resolve the concrete prompt-token window for a model at a given context tier.
+ *
+ * Used to inject a window onto BYOK provider sessions: the Copilot runtime has
+ * no model catalog to consult for BYOK, so unless we supply a number its
+ * "Context: X/Y" meter silently pins Y to DEFAULT_TOKEN_LIMIT (128000) even when
+ * the deployment serves far more. Returns the tier's declared
+ * window, or `undefined` when the model declares none (caller must degrade
+ * gracefully — i.e. leave the runtime to its own fallback rather than guess).
+ *
+ * The tier defaults to the descriptor's `defaultContextTier`, then "default".
+ */
+export function resolveContextWindowTokens(
+    descriptor: Pick<ModelDescriptor, "contextWindowSizes" | "defaultContextTier"> | undefined,
+    contextTier?: ContextTier,
+): number | undefined {
+    const sizes = descriptor?.contextWindowSizes;
+    if (!sizes) return undefined;
+    const tier: ContextTier = contextTier ?? descriptor?.defaultContextTier ?? "default";
+    const window = sizes[tier];
+    return typeof window === "number" && window > 0 ? window : undefined;
+}
+
+/**
+ * Pin the resolved context window onto a BYOK provider config so the Copilot
+ * runtime reports the correct context-window max — the "Context: X/Y" meter's Y
+ * (`session.usage_info.tokenLimit`). The runtime resolves that as
+ * `maxPromptTokens || maxContextWindowTokens || DEFAULT_TOKEN_LIMIT (128000)`,
+ * so without an injected window a BYOK session pins to 128000 regardless of the
+ * model's true window. `maxPromptTokens` carries top precedence (it is the
+ * prompt budget the meter's Y should show and the compaction threshold);
+ * `maxContextWindowTokens` is kept consistent as the fallback.
+ *
+ * No-op for GitHub Copilot providers (their window comes from the model catalog at
+ * runtime) and when the model declares no window for the resolved tier. Existing
+ * caller-supplied values are preserved. Mutates `providerConfig` in place.
+ */
+export function applyByokContextWindow(
+    providerConfig: Record<string, unknown> | undefined,
+    providerType: string | undefined,
+    descriptor: Pick<ModelDescriptor, "contextWindowSizes" | "defaultContextTier"> | undefined,
+    contextTier?: ContextTier,
+): void {
+    if (!providerConfig || !providerType || providerType === "github") return;
+    const tierWindow = resolveContextWindowTokens(descriptor, contextTier);
+    if (typeof tierWindow !== "number" || tierWindow <= 0) return;
+    if (providerConfig.maxPromptTokens === undefined) providerConfig.maxPromptTokens = tierWindow;
+    if (providerConfig.maxContextWindowTokens === undefined) providerConfig.maxContextWindowTokens = tierWindow;
+}
+
 export function resolveEnvValue(value?: string): string | undefined {
     if (!value) return undefined;
     if (value.startsWith("env:")) {

@@ -118,7 +118,11 @@
                         "default",
                         "long_context"
                     ],
-                    "defaultContextTier": "default"
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 922000
+                    }
                 },
                 {
                     "name": "gpt-5.6-luna",
@@ -183,7 +187,16 @@
                 {
                     "name": "gpt-5.6-sol",
                     "description": "GPT-5.6 Sol via Azure AI Foundry. High-capability GPT-5.6 variant for advanced reasoning and coding. Deployment must be created on the Foundry account (deploy/envs/local/<env>/foundry-deployments.json).",
-                    "cost": "high"
+                    "cost": "high",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 922000
+                    }
                 },
                 {
                     "name": "gpt-5.4",

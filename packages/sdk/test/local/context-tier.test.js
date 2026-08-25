@@ -5,7 +5,7 @@
 // picked in a dedicated step of the new-session flow, threaded through
 // createSession options, and defaulted to "default" (the smaller window).
 import { describe, it } from "vitest";
-import { ModelProviderRegistry } from "../../src/model-providers.ts";
+import { ModelProviderRegistry, resolveContextWindowTokens, applyByokContextWindow } from "../../src/model-providers.ts";
 import { UI_COMMANDS } from "../../../app/ui/core/src/commands.js";
 import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
 import { appReducer } from "../../../app/ui/core/src/reducer.js";
@@ -53,6 +53,96 @@ describe("context tier config parsing", () => {
         const plain = registry.getDescriptor("github-copilot:plain");
         assertEqual(plain.supportedContextTiers, undefined, "tier-less model carries no supportedContextTiers");
         assertEqual(plain.defaultContextTier, undefined, "tier-less model carries no defaultContextTier");
+    });
+});
+
+// ─── BYOK window resolution (resolveContextWindowTokens) ─────────
+//
+// The Copilot runtime has no catalog for BYOK (singular `provider`) sessions,
+// so its "Context: X/Y" meter falls back to DEFAULT_TOKEN_LIMIT (128000) unless
+// we pin a window on the provider object. resolveContextWindowTokens turns a
+// descriptor + selected tier into the concrete number to inject.
+
+describe("resolveContextWindowTokens (BYOK window injection)", () => {
+    const tiered = {
+        contextWindowSizes: { default: 272_000, long_context: 922_000 },
+        defaultContextTier: "default",
+    };
+
+    it("resolves the selected tier's window", () => {
+        assertEqual(resolveContextWindowTokens(tiered, "long_context"), 922_000);
+        assertEqual(resolveContextWindowTokens(tiered, "default"), 272_000);
+    });
+
+    it("falls back to defaultContextTier, then 'default', when no tier is passed", () => {
+        assertEqual(resolveContextWindowTokens(tiered), 272_000, "uses defaultContextTier");
+        assertEqual(
+            resolveContextWindowTokens({ contextWindowSizes: { default: 128_000 } }),
+            128_000,
+            "no defaultContextTier → 'default'",
+        );
+    });
+
+    it("returns undefined when the model declares no sizes or none for the tier", () => {
+        assertEqual(resolveContextWindowTokens(undefined), undefined, "no descriptor");
+        assertEqual(resolveContextWindowTokens({}), undefined, "no contextWindowSizes");
+        assertEqual(
+            resolveContextWindowTokens({ contextWindowSizes: { default: 272_000 } }, "long_context"),
+            undefined,
+            "tier absent from sizes",
+        );
+        assertEqual(
+            resolveContextWindowTokens({ contextWindowSizes: { default: 0 } }, "default"),
+            undefined,
+            "non-positive window rejected",
+        );
+    });
+});
+
+// ─── Worker-side BYOK injection (applyByokContextWindow) ─────────
+//
+// The worker pins the resolved window onto the BYOK provider object so the
+// runtime emits the correct usage_info.tokenLimit (Y). maxPromptTokens carries
+// top precedence; maxContextWindowTokens is kept consistent. GitHub Copilot
+// providers must be left untouched (their window comes from the live catalog).
+
+describe("applyByokContextWindow (worker Y injection)", () => {
+    const tiered = {
+        contextWindowSizes: { default: 272_000, long_context: 922_000 },
+        defaultContextTier: "default",
+    };
+
+    it("pins maxPromptTokens + maxContextWindowTokens for a BYOK provider at the resolved tier", () => {
+        const azure = {};
+        applyByokContextWindow(azure, "azure", tiered, "long_context");
+        assertEqual(azure.maxPromptTokens, 922_000, "prompt budget (Y) pinned");
+        assertEqual(azure.maxContextWindowTokens, 922_000, "context window kept consistent");
+
+        const openai = {};
+        applyByokContextWindow(openai, "openai", tiered, undefined);
+        assertEqual(openai.maxPromptTokens, 272_000, "defaults to defaultContextTier");
+    });
+
+    it("is a no-op for GitHub Copilot providers", () => {
+        const github = {};
+        applyByokContextWindow(github, "github", tiered, "long_context");
+        assertEqual(github.maxPromptTokens, undefined, "GitHub Copilot window comes from the catalog, not injection");
+        assertEqual(github.maxContextWindowTokens, undefined);
+    });
+
+    it("is a no-op when the model declares no window or the provider is absent", () => {
+        const noSizes = {};
+        applyByokContextWindow(noSizes, "azure", { }, "default");
+        assertEqual(noSizes.maxPromptTokens, undefined, "no contextWindowSizes → leave runtime fallback");
+        // Absent provider object must not throw.
+        applyByokContextWindow(undefined, "azure", tiered, "default");
+    });
+
+    it("preserves caller-supplied window values", () => {
+        const preset = { maxPromptTokens: 500_000 };
+        applyByokContextWindow(preset, "azure", tiered, "long_context");
+        assertEqual(preset.maxPromptTokens, 500_000, "explicit maxPromptTokens wins");
+        assertEqual(preset.maxContextWindowTokens, 922_000, "unset field still filled");
     });
 });
 
