@@ -5559,7 +5559,12 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree__row.is-selected {
     background: var(--ps-modal-selected-background);
     border-color: var(--ps-modal-selected-border);
-    color: var(--ps-selection-background);
+    /* Text on the selection fill takes the selection FOREGROUND. This was
+       --ps-selection-background — a fill colour — and 9 of 20 themes set that
+       to the very colour behind it, so the selected row rendered as a solid
+       bar with the label invisible inside it. Same mistake as
+       .ps-admin-add__tab.is-on below. */
+    color: var(--ps-modal-selected-foreground);
 }
 .ps-admin-tree__row.is-disabled .ps-admin-tree__name { color: var(--ps-muted); }
 .ps-admin-tree__name { overflow: hidden; text-overflow: ellipsis; }
@@ -5837,7 +5842,11 @@ body.is-resizing-pane-y iframe {
 .ps-admin-ws__row.is-selected {
     background: var(--ps-modal-selected-background);
     border-color: var(--ps-modal-selected-border);
-    color: var(--ps-selection-background);
+    /* See .ps-admin-tree__row.is-selected — a fill colour cannot also be the
+       text colour on top of that fill. This rule also has to win over
+       .ps-admin-ws__row.is-dir above, which paints directory names in the
+       accent; equal specificity, so source order decides and this comes last. */
+    color: var(--ps-modal-selected-foreground);
 }
 .ps-admin-ws__caret { width: 12px; color: var(--ps-muted); flex: none; }
 .ps-admin-ws__name { overflow: hidden; text-overflow: ellipsis; }
