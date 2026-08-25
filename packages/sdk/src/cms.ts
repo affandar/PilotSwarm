@@ -828,14 +828,31 @@ export interface AgentPackageSummary {
      * packages" and "you have one package with a fallback" is worth showing.
      */
     shadowed: boolean;
+    /**
+     * The viewer may change this package's contents and rollout: admin,
+     * owner, or a granted editor. Scope changes, delete and the editor list
+     * stay with the owner/admin — see `owner` for that.
+     */
+    canEdit: boolean;
     /** Active version join; null only for a package with no versions (shouldn't happen). */
     active: AgentPackageVersionRow | null;
+}
+
+export interface AgentPackageEditorInfo {
+    provider: string;
+    subject: string;
+    email: string | null;
+    displayName: string | null;
+    grantedAt: Date;
+    grantedByDisplay: string | null;
 }
 
 export interface AgentPackageDetail extends Omit<AgentPackageSummary, "active"> {
     activeVersionId: string | null;
     /** Full version history, newest first. */
     versions: AgentPackageVersionRow[];
+    /** Granted editors. Always empty for a user-scope copy. */
+    editors: AgentPackageEditorInfo[];
 }
 
 export interface AgentPackageInstallEntry {
@@ -977,6 +994,20 @@ export interface SessionCatalog {
     /** The token door: hash lookup → which canvas this token views, or null. */
     resolveCanvasShareToken?(tokenHash: string): Promise<{ sessionId: string; slot: number } | null>;
 
+    /**
+     * The canvas KV store (migration 0064): per-key shared state for canvas
+     * apps, plus the per-canvas write policy. All optional; absent on older
+     * catalogs, and the doors answer "unavailable" when so. The rules live in
+     * canvas-kv.ts — these are the raw rows.
+     */
+    getCanvasKvSettings?(sessionId: string, slot: number): Promise<{ kvAccess: "owner" | "readers" | "link"; kvManifest: unknown; latestRev: number } | null>;
+    setCanvasKvAccess?(sessionId: string, slot: number, access: "owner" | "readers" | "link"): Promise<void>;
+    setCanvasKvManifest?(sessionId: string, slot: number, manifest: unknown | null): Promise<void>;
+    canvasKvGet?(sessionId: string, slot: number, key: string): Promise<{ key: string; value: any; rev: number; updatedAt: string } | null>;
+    canvasKvList?(sessionId: string, slot: number, prefix: string | null, limit: number, afterKey: string | null): Promise<Array<{ key: string; value: any; rev: number; updatedAt: string }>>;
+    canvasKvWrite?(sessionId: string, slot: number, key: string, value: unknown | null, ifMatch: number | null, limits: { maxKeys: number; maxBytes: number; maxValueBytes: number }): Promise<{ status: string; rev: number; sizeBytes: number | null }>;
+    canvasKvStats?(sessionId: string, slot: number): Promise<{ keys: number; bytes: number }>;
+
     /** Create schema and tables if they don't exist. */
     initialize(): Promise<void>;
 
@@ -1055,6 +1086,17 @@ export interface SessionCatalog {
     pinAgentPackageVersion(name: string, semver: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<void>;
     /** Returns artifact filenames of deleted versions for post-commit artifact cleanup. */
     deleteAgentPackage(name: string, actor: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<string[]>;
+    /**
+     * Editors: write access on a SHARED package for named users (publish,
+     * republish into it, pin, enable/disable — never scope, delete, or the
+     * editor list). Grant/revoke are owner-or-admin. Demoting the package to
+     * user scope deletes every grant.
+     */
+    isAgentPackageEditor(packageId: string, principal: AgentPrincipal | null): Promise<boolean>;
+    grantAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    revokeAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void>;
+    /** Editors of the shared copy of `name`. Visible to anyone who can see the package. */
+    listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]>;
     /** How many published versions reference this content-addressed blob (>0 ⇒ never delete it). */
     countAgentPackageArtifactRefs(artifactFilename: string): Promise<number>;
 
@@ -1463,6 +1505,10 @@ function sqlForSchema(schema: string) {
             setAgentPackageEnabled:     `${s}.cms_set_agent_package_enabled`,
             pinAgentPackageVersion:     `${s}.cms_pin_agent_package_version`,
             deleteAgentPackage:         `${s}.cms_delete_agent_package`,
+            isAgentPackageEditor:       `${s}.cms_agent_package_is_editor`,
+            grantAgentPackageEditor:    `${s}.cms_grant_agent_package_editor`,
+            revokeAgentPackageEditor:   `${s}.cms_revoke_agent_package_editor`,
+            listAgentPackageEditors:    `${s}.cms_list_agent_package_editors`,
             upsertAgentWorkerState:     `${s}.cms_upsert_agent_worker_state`,
             listAgentWorkerState:       `${s}.cms_list_agent_worker_state`,
             workerHeartbeat:            `${s}.cms_worker_heartbeat`,
@@ -2329,6 +2375,75 @@ export class PgSessionCatalog implements SessionCatalog {
             updatedBy: String(r.updated_by || ""),
             updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
         }));
+    }
+
+    // ── The canvas KV store (migration 0064) ───────────────────────────
+    async getCanvasKvSettings(sessionId: string, slot: number): Promise<{ kvAccess: "owner" | "readers" | "link"; kvManifest: unknown; latestRev: number } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".cms_get_canvas_kv_settings($1, $2)`,
+            [sessionId, slot],
+        );
+        if (rows.length === 0) return null;
+        const access = rows[0].kv_access;
+        return {
+            kvAccess: access === "readers" ? "readers" : access === "link" ? "link" : "owner",
+            kvManifest: rows[0].kv_manifest ?? null,
+            latestRev: Number(rows[0].latest_rev) || 0,
+        };
+    }
+
+    async setCanvasKvAccess(sessionId: string, slot: number, access: "owner" | "readers" | "link"): Promise<void> {
+        await this.pool.query(
+            `SELECT "${this.sql.schema}".cms_set_canvas_kv_access($1, $2, $3)`,
+            [sessionId, slot, access],
+        );
+    }
+
+    async setCanvasKvManifest(sessionId: string, slot: number, manifest: unknown | null): Promise<void> {
+        await this.pool.query(
+            `SELECT "${this.sql.schema}".cms_set_canvas_kv_manifest($1, $2, $3)`,
+            [sessionId, slot, manifest == null ? null : JSON.stringify(manifest)],
+        );
+    }
+
+    async canvasKvGet(sessionId: string, slot: number, key: string): Promise<{ key: string; value: any; rev: number; updatedAt: string } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".cms_canvas_kv_get($1, $2, $3)`,
+            [sessionId, slot, key],
+        );
+        return rows.length > 0 ? rowToCanvasKv(rows[0]) : null;
+    }
+
+    async canvasKvList(sessionId: string, slot: number, prefix: string | null, limit: number, afterKey: string | null): Promise<Array<{ key: string; value: any; rev: number; updatedAt: string }>> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".cms_canvas_kv_list($1, $2, $3, $4, $5)`,
+            [sessionId, slot, prefix, limit, afterKey],
+        );
+        return rows.map(rowToCanvasKv);
+    }
+
+    async canvasKvWrite(
+        sessionId: string,
+        slot: number,
+        key: string,
+        value: unknown | null,
+        ifMatch: number | null,
+        limits: { maxKeys: number; maxBytes: number; maxValueBytes: number },
+    ): Promise<{ status: string; rev: number; sizeBytes: number | null }> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".cms_canvas_kv_write($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [sessionId, slot, key, value == null ? null : JSON.stringify(value), ifMatch, limits.maxKeys, limits.maxBytes, limits.maxValueBytes, this.sql.schema],
+        );
+        const row = rows[0] ?? {};
+        return { status: String(row.status ?? "error"), rev: Number(row.rev) || 0, sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes) };
+    }
+
+    async canvasKvStats(sessionId: string, slot: number): Promise<{ keys: number; bytes: number }> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".cms_canvas_kv_stats($1, $2)`,
+            [sessionId, slot],
+        );
+        return { keys: Number(rows[0]?.keys) || 0, bytes: Number(rows[0]?.bytes) || 0 };
     }
 
     // ── Canvas share links (migration 0048) ────────────────────────────
@@ -3298,11 +3413,14 @@ export class PgSessionCatalog implements SessionCatalog {
         const versions = rows
             .filter((r: any) => r.version_id != null)
             .map(rowToAgentPackageVersion);
+        const scope: AgentPackageScope = first.scope === "user" ? "user" : "shared";
+        // Editors exist only on the shared copy; the list function pins it.
+        const editors = scope === "shared" ? await this.listAgentPackageEditors(name) : [];
         return {
             packageId: first.package_id,
             sourceId: first.source_id ?? null,
             name: first.name,
-            scope: first.scope === "user" ? "user" : "shared",
+            scope,
             owner: rowToAgentPrincipal(first),
             enabled: Boolean(first.enabled),
             createdBy: first.created_by ?? null,
@@ -3310,8 +3428,10 @@ export class PgSessionCatalog implements SessionCatalog {
             // The single-package read is already selector-resolved, so it IS
             // the copy the viewer gets — nothing is shadowing it from here.
             shadowed: false,
+            canEdit: Boolean(first.can_edit),
             activeVersionId: first.active_version_id ?? null,
             versions,
+            editors,
         };
     }
 
@@ -3386,6 +3506,37 @@ export class PgSessionCatalog implements SessionCatalog {
             [name, actor?.provider ?? null, actor?.subject ?? null, isAdmin, ...selectorArgs(selector)],
         );
         return rows.map((r: any) => String(r.artifact_filename)).filter(Boolean);
+    }
+
+    async isAgentPackageEditor(packageId: string, principal: AgentPrincipal | null): Promise<boolean> {
+        if (!principal?.provider || !principal?.subject) return false;
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.isAgentPackageEditor}($1, $2, $3) AS is_editor`,
+            [packageId, principal.provider, principal.subject],
+        );
+        return Boolean(rows[0]?.is_editor);
+    }
+
+    async grantAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.grantAgentPackageEditor}($1, $2, $3, $4, $5, $6)`,
+            [name, grantee.provider, grantee.subject, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async revokeAgentPackageEditor(name: string, grantee: AgentPrincipal, actor: AgentPrincipal | null, isAdmin: boolean): Promise<void> {
+        await this.pool.query(
+            `SELECT ${this.sql.fn.revokeAgentPackageEditor}($1, $2, $3, $4, $5, $6)`,
+            [name, grantee.provider, grantee.subject, actor?.provider ?? null, actor?.subject ?? null, isAdmin],
+        );
+    }
+
+    async listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.listAgentPackageEditors}($1)`,
+            [name],
+        );
+        return rows.map(rowToAgentPackageEditor);
     }
 
     /**
@@ -3793,6 +3944,26 @@ function rowToAgentPackageVersion(row: any): AgentPackageVersionRow {
     };
 }
 
+function rowToCanvasKv(row: any): { key: string; value: any; rev: number; updatedAt: string } {
+    return {
+        key: String(row.key),
+        value: row.value ?? null,
+        rev: Number(row.rev) || 0,
+        updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at ?? ""),
+    };
+}
+
+function rowToAgentPackageEditor(row: any): AgentPackageEditorInfo {
+    return {
+        provider: row.provider,
+        subject: row.subject,
+        email: row.email ?? null,
+        displayName: row.display_name ?? null,
+        grantedAt: new Date(row.granted_at),
+        grantedByDisplay: row.granted_by_display ?? null,
+    };
+}
+
 function rowToAgentPackageSummary(row: any): AgentPackageSummary {
     return {
         packageId: row.package_id,
@@ -3804,6 +3975,7 @@ function rowToAgentPackageSummary(row: any): AgentPackageSummary {
         createdBy: row.created_by ?? null,
         createdAt: new Date(row.created_at),
         shadowed: Boolean(row.shadowed),
+        canEdit: Boolean(row.can_edit),
         active: row.semver
             ? {
                 versionId: row.active_version_id,

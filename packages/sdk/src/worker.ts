@@ -12,7 +12,15 @@ import { loadAgentFiles } from "./agent-loader.js";
 import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
-import { loadMcpConfig } from "./mcp-loader.js";
+import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+
+/** Cut a one-line description at a word boundary, with an ellipsis, never mid-word. */
+function clipDescription(text: string, max: number): string {
+    if (text.length <= max) return text;
+    const cut = text.slice(0, max - 1);
+    const at = cut.lastIndexOf(" ");
+    return `${(at > max / 2 ? cut.slice(0, at) : cut).replace(/[\s,;:—-]+$/, "")}…`;
+}
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
@@ -157,6 +165,8 @@ export class PilotSwarmWorker {
     private _loadedSkills = new Map<string, Skill>();
     /** Every loaded skill with provenance intact — the name-keyed map above collapses duplicates. */
     private _loadedSkillsAll: Skill[] = [];
+    /** Skills `load_skill` may return: everything but user-scope package skills. Refilled in place. */
+    private _loadableSkills: Skill[] = [];
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
     private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
@@ -169,6 +179,19 @@ export class PilotSwarmWorker {
     private _agentMcpServers: Record<string, Record<string, any>> = {};
     /** Names of catalog servers tagged `"default": true` — the deployment default MCP set. */
     private _defaultMcpServerNames: string[] = [];
+    /**
+     * Catalog servers restricted with `allowedAgents`: server name → the agent
+     * identities allowed to reference it. Filled by `_resolveAgentMcpServers`,
+     * which also strips the field from the catalog configs.
+     */
+    private _mcpAllowedAgents = new Map<string, Set<string>>();
+    /**
+     * Server names defined by the DEPLOYMENT (plugin dirs + direct config),
+     * as opposed to installed packages. A package may not redefine one: the
+     * catalog is flat, so it would swap the server every agent talks to.
+     * Cleared in place on reload; held by reference in workerDefaults.
+     */
+    private _deploymentMcpNames = new Set<string>();
     /** MCP declarations gathered from base (default) agents — resolved into the base map. */
     private _baseAgentMcpDecl: { refs: string[]; inherit: boolean } = { refs: [], inherit: false };
     /** Server names from direct worker-config `mcpServers` — legacy every-session semantics. */
@@ -308,9 +331,14 @@ export class PilotSwarmWorker {
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
+                // The `load_skill` catalog, BY REFERENCE (cleared and refilled
+                // in place on reload): deployment + shared-package skills.
+                skills: this._loadableSkills,
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
+                mcpAllowedAgents: this._mcpAllowedAgents,
+                deploymentMcpNames: this._deploymentMcpNames,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
@@ -471,6 +499,18 @@ export class PilotSwarmWorker {
     /** Names of catalog servers in the deployment default MCP set (`"default": true`). */
     get defaultMcpServerNames(): string[] {
         return this._defaultMcpServerNames;
+    }
+
+    /** Server names the deployment defines (plugin dirs + direct config) — names no package may redefine. */
+    get deploymentMcpServerNames(): string[] {
+        return [...this._deploymentMcpNames];
+    }
+
+    /** Catalog servers restricted with `allowedAgents`: server name → allowed agent identities. */
+    get restrictedMcpServers(): Record<string, string[]> {
+        const out: Record<string, string[]> = {};
+        for (const [name, allowed] of this._mcpAllowedAgents) out[name] = [...allowed];
+        return out;
     }
 
     /** Model provider registry (null if no providers configured). */
@@ -1048,6 +1088,8 @@ export class PilotSwarmWorker {
         for (const key of Object.keys(this._agentMcpServers)) delete this._agentMcpServers[key];
         for (const key of Object.keys(this._agentPromptLookup)) delete this._agentPromptLookup[key];
         this._defaultMcpServerNames.length = 0;
+        this._mcpAllowedAgents.clear();
+        this._deploymentMcpNames.clear();
         this._baseAgentMcpDecl = { refs: [], inherit: false };
         this._directConfigMcpNames = [];
         this._frameworkBasePrompt = null;
@@ -1329,6 +1371,7 @@ export class PilotSwarmWorker {
             // Direct worker-config servers keep their documented every-session
             // semantics (legacy): they join the catalog AND the base map.
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);
+            for (const name of this._directConfigMcpNames) this._deploymentMcpNames.add(name);
         }
         this._appDefaultPrompt = mergePromptSections([
             this._appDefaultPrompt,
@@ -1336,6 +1379,7 @@ export class PilotSwarmWorker {
         ]) ?? null;
         this._applyDeclaredAgentSkills();
         this._finalizeAgentPromptLookup();
+        this._composeSkillsIndex();
         this._resolveAgentMcpServers();
         // IN PLACE: SessionManager holds this exact array as
         // workerDefaults.customAgents — reassigning would strand it on the
@@ -1439,22 +1483,49 @@ export class PilotSwarmWorker {
      */
     private _resolveAgentMcpServers(): void {
         const defaults: Record<string, any> = {};
+        this._mcpAllowedAgents.clear();
         for (const [name, cfg] of Object.entries(this._loadedMcpServers)) {
             if (!cfg || typeof cfg !== "object") continue;
-            if (cfg.default === true) defaults[name] = cfg;
+            // `allowedAgents` — a restricted server. Remember who may use it,
+            // then strip the field: it must never reach the Copilot CLI.
+            if (Array.isArray(cfg.allowedAgents)) {
+                const allowed = new Set<string>(
+                    cfg.allowedAgents.map((v: unknown) => String(v ?? "").trim()).filter(Boolean),
+                );
+                this._mcpAllowedAgents.set(name, allowed);
+            }
+            if ("allowedAgents" in cfg) delete cfg.allowedAgents;
+            // A restricted server never joins the default set: "default": true
+            // would hand it to every agent that inherits defaults, which is
+            // exactly what the allowlist exists to prevent.
+            if (cfg.default === true) {
+                if (this._mcpAllowedAgents.has(name)) {
+                    console.warn(`[PilotSwarmWorker] MCP server "${name}" is tagged "default": true but restricted by allowedAgents; it is NOT part of the default set.`);
+                } else {
+                    defaults[name] = cfg;
+                }
+            }
             if ("default" in cfg) delete cfg.default;
         }
         this._defaultMcpServerNames = Object.keys(defaults);
 
-        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>) => {
+        // `agent` is the agent whose references are being resolved; null for
+        // the base map, which carries no agent identity and therefore never
+        // receives a restricted server.
+        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>, agent: McpAllowlistAgent | null = null) => {
             for (const ref of refs ?? []) {
                 if (typeof ref !== "string" || !ref) continue;
                 const server = this._loadedMcpServers[ref];
-                if (server) {
-                    into[ref] = server;
-                } else {
+                if (!server) {
                     console.warn(`[PilotSwarmWorker] ${owner}: MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
+                    continue;
                 }
+                const allowed = this._mcpAllowedAgents.get(ref);
+                if (allowed && !mcpAllowlistAdmits(allowed, agent)) {
+                    console.warn(`[PilotSwarmWorker] ${owner}: MCP server "${ref}" is restricted to ${[...allowed].join(", ")}; reference dropped.`);
+                    continue;
+                }
+                into[ref] = server;
             }
         };
 
@@ -1467,7 +1538,12 @@ export class PilotSwarmWorker {
         if (this._baseAgentMcpDecl.inherit) Object.assign(this._baseMcpServers, defaults);
         resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, this._baseMcpServers);
         for (const name of this._directConfigMcpNames) {
-            if (this._loadedMcpServers[name]) this._baseMcpServers[name] = this._loadedMcpServers[name];
+            if (!this._loadedMcpServers[name]) continue;
+            if (this._mcpAllowedAgents.has(name)) {
+                console.warn(`[PilotSwarmWorker] Direct worker-config MCP server "${name}" is restricted by allowedAgents and cannot apply to every session; dropped from the base map.`);
+                continue;
+            }
+            this._baseMcpServers[name] = this._loadedMcpServers[name];
         }
         if (this._directConfigMcpNames.length > 0) {
             console.warn(
@@ -1494,7 +1570,12 @@ export class PilotSwarmWorker {
             if (agent.inheritDefaultMcpServers === true) {
                 Object.assign(resolved, defaults);
             }
-            resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved);
+            resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved, {
+                name: agent.name,
+                namespace: agent.namespace ?? null,
+                packageId: (agent as any).packageId ?? null,
+                packageScope: (agent as any).packageScope ?? null,
+            });
             const key = (agent as any).packageId
                 ? packageAgentKey((agent as any).packageId, agent.name)
                 : agent.name;
@@ -1522,7 +1603,37 @@ export class PilotSwarmWorker {
         return null;
     }
 
+    /**
+     * Progressive discovery: append a one-line-per-skill index to the
+     * framework base prompt so every session knows which skills EXIST and
+     * can pull one with `load_skill`. The bodies stay out of context unless
+     * an agent declares them in `skills:`. Runs once per plugin load — the
+     * base prompt is re-read from disk on every reload, so it never stacks.
+     */
+    private _composeSkillsIndex(): void {
+        // The LOADABLE catalog (held by reference in workerDefaults.skills):
+        // deployment and shared-package skills only. A user-scope package's
+        // skills are private to its owner and reach a prompt only through
+        // that package's own `skills:` declarations — never through
+        // load_skill, which every session can call. Refilled in place.
+        this._loadableSkills.length = 0;
+        const seen = new Map<string, string>();
+        for (const skill of this._loadedSkillsAll) {
+            if (!skill?.name || seen.has(skill.name)) continue;
+            const prov = this._skillPackageOwner(skill);
+            if (prov && prov.scope === "user") continue;
+            this._loadableSkills.push(skill);
+            const description = clipDescription(String(skill.description || "").replace(/\s+/g, " ").trim(), 240);
+            seen.set(skill.name, description);
+        }
+        if (!this._frameworkBasePrompt || seen.size === 0) return;
+        const lines = [...seen.entries()].sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, description]) => `- \`${name}\`${description ? ` — ${description}` : ""}`);
+        this._frameworkBasePrompt += `\n\n## Skills available on demand\n\nCall \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
+    }
+
     private _applyDeclaredAgentSkills(): void {
+        // (see _composeSkillsIndex for the discovery half)
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             if (!agent.skills?.length) continue;
             // Resolved to match _packageDirOwners keys (see _skillPackageOwner).
@@ -1775,9 +1886,29 @@ export class PilotSwarmWorker {
             }
         }
 
-        // MCP
+        // MCP — merge into the deployment catalog. The catalog is FLAT, so a
+        // PACKAGE dir may not redefine any name the deployment defined (that
+        // would swap the server every agent in the fleet talks to, restricted
+        // or not), and may not restrict entries itself — `allowedAgents` is a
+        // deployment-catalog field. Deployment dirs load before package dirs,
+        // so every deployment name is known when a package tries to shadow it.
         const mcpConfig = loadMcpConfig(absDir);
-        Object.assign(this._loadedMcpServers, mcpConfig);
+        const mcpPackageProvenance = this._packageDirOwners.get(absDir);
+        for (const [name, cfg] of Object.entries(mcpConfig)) {
+            if (mcpPackageProvenance) {
+                if (this._deploymentMcpNames.has(name)) {
+                    console.warn(`[PilotSwarmWorker] Package MCP server "${name}" cannot override a deployment catalog entry; definition dropped.`);
+                    continue;
+                }
+                if (cfg && typeof cfg === "object" && "allowedAgents" in cfg) {
+                    console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "allowedAgents" is a deployment-catalog field; ignored.`);
+                    delete (cfg as any).allowedAgents;
+                }
+            } else {
+                this._deploymentMcpNames.add(name);
+            }
+            this._loadedMcpServers[name] = cfg;
+        }
 
         // Session policy — last one wins
         const policyPath = path.join(absDir, "session-policy.json");

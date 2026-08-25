@@ -807,6 +807,19 @@ function CanvasShareView({ token }) {
                     refetchDoc().then(() => refetchLive()).catch(() => setStatus("gone"));
                     return;
                 }
+                if (message.kind === "kv") {
+                    const frame = iframeRef.current;
+                    const deliver = (entry) => {
+                        try { frame?.contentWindow?.postMessage({ type: "canvas-kv-change", key: message.key, rev: message.rev, op: message.op, ...(entry ? { v: entry.v, by: entry.by, at: entry.at } : {}) }, "*"); } catch { /* frame mid-load */ }
+                    };
+                    if (message.op === "delete") { deliver(null); return; }
+                    if (message.value && typeof message.value === "object") { deliver({ v: message.value.v, by: message.value.by, at: message.value.at }); return; }
+                    fetch(`/api/canvas-share/kv?t=${encodeURIComponent(token)}&key=${encodeURIComponent(message.key)}`)
+                        .then((r) => (r.ok ? r.json() : null))
+                        .then((read) => deliver(read?.entries?.[0] ?? null))
+                        .catch(() => { /* the page's next list catches up */ });
+                    return;
+                }
                 const m = mirrorRef.current;
                 const seq = Number(message.seq);
                 if (message.patch && m.payload !== null && seq === m.seq + 1) {
@@ -828,6 +841,51 @@ function CanvasShareView({ token }) {
             try { socket?.close(); } catch { /* going away */ }
         };
     }, [status, token, refetchDoc, refetchLive, postState]);
+
+    // The KV bridge through the link door — READ ONLY (a read/write link is
+    // phase 4). The page asks (`canvas-kv` ready/get/list); writes are
+    // refused here so the page can lock its UI honestly. Live changes reach
+    // the page as `canvas-kv-change` off the same share socket.
+    React.useEffect(() => {
+        if (status !== "live") return undefined;
+        const post = (message) => {
+            try { iframeRef.current?.contentWindow?.postMessage(message, "*"); } catch { /* frame mid-load */ }
+        };
+        const onMessage = (event) => {
+            const frame = iframeRef.current;
+            if (!frame || !event.source || event.source !== frame.contentWindow) return;
+            const payload = event.data;
+            if (!payload || typeof payload !== "object" || payload.type !== "canvas-kv") return;
+            const id = payload.id;
+            const op = String(payload.op || "");
+            if (op === "put" || op === "delete") {
+                post({ type: "canvas-kv-result", id, ok: false, code: "FORBIDDEN", error: "this link is view-only" });
+                return;
+            }
+            const q = new URLSearchParams({ t: token });
+            if (op === "get" && payload.key) q.set("key", String(payload.key));
+            if ((op === "list" || op === "ready") && payload.prefix) q.set("prefix", String(payload.prefix));
+            if (payload.after) q.set("after", String(payload.after));
+            if (payload.limit) q.set("limit", String(payload.limit));
+            fetch(`/api/canvas-share/kv?${q.toString()}`)
+                .then((r) => (r.ok ? r.json() : Promise.reject(new Error("gone"))))
+                .then((read) => {
+                    if (op === "get") {
+                        post({ type: "canvas-kv-result", id, ok: true, entry: read?.entries?.[0] ?? null });
+                        return;
+                    }
+                    post({
+                        type: op === "ready" ? "canvas-kv-ready" : "canvas-kv-result",
+                        id, ok: true,
+                        entries: read?.entries ?? [], nextAfter: read?.nextAfter ?? null,
+                        me: read?.me ?? null, canWrite: false, policy: read?.policy ?? "owner",
+                    });
+                })
+                .catch(() => post({ type: "canvas-kv-result", id, ok: false, code: "UNAVAILABLE", error: "the canvas KV store is not available" }));
+        };
+        window.addEventListener("message", onMessage);
+        return () => window.removeEventListener("message", onMessage);
+    }, [status, token]);
 
     if (status === "gone") {
         return React.createElement("div", { className: "ps-share-view ps-share-view-gone" },

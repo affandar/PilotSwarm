@@ -18,6 +18,7 @@ import {
     ATTACHMENTS_MAX_COUNT,
     ATTACHMENTS_MAX_TOTAL_BYTES,
     listBundledAgentNames,
+    listDeploymentMcpServerNames,
     normalizeAgentName,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
@@ -779,6 +780,26 @@ export class NodeSdkTransport {
         return this.mgmt.setAgentPackageEnabled(name, enabled, owner, Boolean(isAdmin), selector);
     }
 
+    async grantAgentPackageEditor(name, grantee, owner, isAdmin) {
+        if (arguments.length <= 2) {
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.grantAgentPackageEditor(name, grantee, owner, Boolean(isAdmin));
+    }
+
+    async revokeAgentPackageEditor(name, grantee, owner, isAdmin) {
+        if (arguments.length <= 2) {
+            owner = this.currentUser;
+            isAdmin = true;
+        }
+        return this.mgmt.revokeAgentPackageEditor(name, grantee, owner, Boolean(isAdmin));
+    }
+
+    async listAgentPackageEditors(name) {
+        return this.mgmt.listAgentPackageEditors(name);
+    }
+
     async pinAgentPackageVersion(name, semver, owner, isAdmin, selector = null) {
         if (arguments.length <= 3) {
             selector = owner ?? null;
@@ -826,7 +847,22 @@ export class NodeSdkTransport {
         return this.mgmt.uploadAgentPackage(files, scope, owner, Boolean(isAdmin), {
             createdBy: owner?.email || owner?.displayName || undefined,
             reservedAgentNames: this._reservedAgentNames(),
+            reservedMcpServerNames: this._reservedMcpServerNames(),
         });
+    }
+
+    /**
+     * Deployment MCP catalog entries restricted with `allowedAgents`. A
+     * package defining one of these names would be dropped by every worker,
+     * so publish refuses it. Read from the same plugin dirs the workers load.
+     */
+    _reservedMcpServerNames() {
+        if (!this._reservedMcpNamesCache) {
+            this._reservedMcpNamesCache = (() => {
+                try { return listDeploymentMcpServerNames(this.pluginDirs ?? getPluginDirsFromEnv()); } catch { return []; }
+            })();
+        }
+        return this._reservedMcpNamesCache;
     }
 
     _reservedAgentNames() {
@@ -1917,6 +1953,24 @@ export class NodeSdkTransport {
     async getCanvasLive(sessionId) {
         if (typeof this.mgmt.getCanvasLive !== "function") return [];
         return this.mgmt.getCanvasLive(sessionId);
+    }
+
+    // The canvas KV store. The portal runtime hands a resolved principal
+    // (door 1); the native TUI has no canvas surface and never calls these.
+    async readCanvasKv(sessionId, slot, principal, query = {}) {
+        return this.mgmt.readCanvasKv(sessionId, slot, principal, query);
+    }
+
+    async writeCanvasKv(sessionId, slot, principal, ops) {
+        return this.mgmt.writeCanvasKv(sessionId, slot, principal, ops);
+    }
+
+    async readCanvasKvForLink(sessionId, slot, query = {}) {
+        return this.mgmt.readCanvasKvForLink(sessionId, slot, query);
+    }
+
+    async setCanvasKvAccess(sessionId, slot, access) {
+        return this.mgmt.setCanvasKvAccess(sessionId, slot, access);
     }
 
     async getCanvasShareLink(sessionId, slot) {

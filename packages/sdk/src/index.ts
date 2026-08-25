@@ -169,7 +169,18 @@ export {
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
-export { loadMcpConfig } from "./mcp-loader.js";
+export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames } from "./mcp-loader.js";
+export {
+    readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,
+    CanvasKvError, CANVAS_KV_KEY_MAX, CANVAS_KV_VALUE_MAX_BYTES, CANVAS_KV_MAX_KEYS, CANVAS_KV_MAX_BYTES, CANVAS_KV_LIST_PAGE,
+} from "./canvas-kv.js";
+export type { CanvasKvPrincipal, CanvasKvEntry, CanvasKvMe, CanvasKvBy, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvReadResult, CanvasKvStore } from "./canvas-kv.js";
+export { publishCanvasApp, findCanvasApp, rankCanvasAppHits, CANVAS_APP_DESCRIPTION_MIN } from "./canvas-app-catalog.js";
+export type { CanvasAppCatalogDeps, PublishCanvasAppArgs, CanvasAppHit } from "./canvas-app-catalog.js";
+export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
+export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
+export type { CanvasAppInterface } from "./canvas-app-manifest.js";
+export type { McpAllowlistAgent } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)
 export { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
@@ -312,6 +323,7 @@ export type {
     AgentPrincipal,
     AgentPackageSummary,
     AgentPackageDetail,
+    AgentPackageEditorInfo,
     AgentPackageVersionRow,
     AgentPackageInstallEntry,
     AgentWorkerStateRow,

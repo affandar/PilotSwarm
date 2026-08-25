@@ -130,6 +130,68 @@ the portal chat pane (the redraw is the visible half of the loop), visible to
 the agent, and excluded from auto-titling. Agents answer on the canvas, not
 in chat.
 
+## Shared state: the KV store
+
+An interactive app holds state that several people change at once. That
+state lives in the canvas KV store (migration 0064, `canvas_kv`): one row
+per `(session, slot, key)`, the value is an envelope `{ v, by, at }` stamped
+server-side, `rev` is the compare-and-swap token, deletes are tombstones.
+Every write fires one NOTIFY on the canvas plane (`kind: "kv"`), so every
+viewer sees the change in ~50 ms with no redraw and no agent turn.
+
+```
+Door 1  signed-in browser   readCanvasKv / writeCanvasKv   (canvas:read / canvas:write → session read)
+Door 2  link bearer         GET /api/canvas-share/kv?t=     (read only until phase 4)
+Door 3  the agent           canvas_kv { op: get|put|list|delete }
+
+all three → packages/sdk/src/canvas-kv.ts, the one place the rules live
+```
+
+Who may write is two switches, both owner-controlled: the canvas policy
+(`setCanvasKvAccess`: `owner` | `readers` | `link`, in the share dialog) and
+the app's manifest (`"kv": { "write": "viewers", "shared": ["app/task/*"] }`).
+Session writers always write (they could launder a write through the
+agent). Reserved prefixes: `cfg/` (owner + agent), `evt/` (agent → page),
+`ui/<writer>` (each viewer's own), `req/` (a collaborator's request is
+capped to `status: "suggested"`; only the owner or the agent queues). Other
+rows are author-bound unless the manifest shares the prefix. Limits: 200-char
+keys, 16 KB values, 1000 keys and 2 MB per canvas, 10 writes/s per viewer.
+
+The page talks to the host with `canvas-kv` (ops `ready | get | list | put |
+delete`) and receives `canvas-kv-ready`, `canvas-kv-result` and
+`canvas-kv-change`; the `canvas-apps` skill ships the `CanvasKV()` helper a
+page pastes. Nothing is injected into the document.
+
+## The app catalog: publish and find
+
+A published app is one every session in the deployment can find and draw.
+Two system tools, no schema:
+
+```
+publish_canvas_app({ name, description, tags?, slot? })
+   canvas bytes            → pinned artifact app-<name>.html on the session
+   manifest + armed contract + source → SHARED fact apps/<name>   (the card)
+find_canvas_app({ query })
+   enhanced store  → searchFacts(hybrid, namespace "apps", scope shared)
+   base store      → read apps/* and rank by term overlap
+read_facts({ key_pattern: "apps/<name>", scope: "shared" })  → the full card
+draw_canvas({ fromArtifact: card.source })                     → on screen
+```
+
+The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
+the model's memory of it, and **publish refuses a manifest without an
+`interface` block**: `keys` (which KV keys, who writes them, an example
+value), `requests` (which `req/*` ops the page queues, their args and the
+`result` it renders), `events` (which `evt/*` notes it shows). That block is
+what an agent that never read the HTML drives the app from. Code:
+`packages/sdk/src/canvas-app-catalog.ts`; manifest grammar and caps in
+`canvas-app-manifest.ts`.
+
+Publishing is a disclosure — the shared fact and the artifact are readable
+by every session — so the rule is *publish the shell, never the data*.
+Republishing a name replaces the card and the artifact. The facts stats
+views bucket the namespace as `apps` (facts migration 0012).
+
 ## Canvas apps: save and reuse
 
 A canvas worth drawing twice is an app. Convention: one comment immediately
@@ -157,9 +219,9 @@ The lifecycle, with no byte ever entering model context:
 ```
 draw_canvas(html: ...)                                  # build live, manifest embedded
 write_artifact({fromArtifact: {filename: "canvas.html"},
-                filename: "apps/<name>.html"})          # server-side save-as
+                filename: "app-<name>.html"})          # server-side save-as
 read_artifact({sessionId, filename, manifestOnly: true})  # browse candidates
-draw_canvas({fromArtifact: {filename: "apps/<name>.html"}})  # reuse; result = interface card
+draw_canvas({fromArtifact: {filename: "app-<name>.html"}})  # reuse; result = interface card
 ```
 
 Cross-session sources ride the platform's worker-trusted artifact layer, the

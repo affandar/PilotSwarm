@@ -199,52 +199,22 @@ The chk app took the only available option and curated: 97 lines for three PRs.
 For a 50-file PR that means Alice cannot open anything the AI did not flag —
 which is precisely the thing a reviewer needs to do.
 
-### The fix: a host-mediated read channel
+### Decision (2026-08-24): no bulk read channel
 
-The page cannot fetch. **The host can.** The portal page is same-origin with
-the API and already authenticated — it already fetches the canvas document
-itself this way, and the share view does the same with a token.
+A host-mediated read channel (`canvas-fetch`, a fourth postMessage type
+resolving manifest-scoped artifact reads) was drafted here and **removed by
+decision**. The gap above stands as evidence; the answer is not a new
+channel. What a PR workbench does instead:
 
-So add a fourth postMessage channel, read-only:
+- The agent bakes what a reviewer will open into the document, or writes it
+  into the KV as ≤16 KB values keyed per file, on request (`req/*` at
+  `queued`, owner-promoted). Large or rarely opened files are not on the
+  canvas.
+- Anything genuinely large links out (`<a target="_blank">` to the PR, the
+  file in the repo, or an artifact download the portal already serves to a
+  signed-in viewer).
 
-```
-page → host   { type:"canvas-fetch", id, path:"pr/2252148/3f9a1c/file/7.json" }
-host → page   { type:"canvas-fetch-result", id, ok:true, content:"…" }
-```
-
-The host resolves it as an artifact read on the canvas's session and returns
-the bytes. Properties:
-
-- **No agent turn.** The host reads the artifact store directly.
-- **No 16 KB ceiling.** Artifacts are up to 1 MiB of text, and binary artifacts
-  already exist for anything larger.
-- **Lazy.** Fetch file 7 when Alice opens file 7.
-- **Read-only.** No new write surface, no new mutation path to secure.
-- **Reuses existing authz.** Signed-in viewers go through the same
-  `downloadArtifact` path the portal already uses; link bearers go through the
-  token door that already serves the canvas document.
-
-This completes the storage story:
-
-```
-KV         small, mutable, collaborative     threads, findings, requests
-Artifacts  large, immutable, agent-written   the diff, file contents, evidence
-Host       bridges the page to both
-```
-
-### The rule that keeps it safe
-
-A canvas must not be able to read *arbitrary* session artifacts — that would
-let a link bearer walk every file the session ever produced. So the read set is
-**declared in the manifest and default-closed**, exactly like the response
-contract:
-
-```jsonc
-"reads": ["pr/2252148/*"]
-```
-
-The host refuses any path outside the declared prefixes. No declaration, no
-reads at all.
+See `interactive-canvas-apps.md` Part K for the rejection entry.
 
 ## 7. The other three gaps
 
@@ -296,14 +266,12 @@ pretend a thread addressed to a human is delivered.
 
 ## 8. What this changes in the main spec
 
-1. **Add the `canvas-fetch` read channel** (§6) — a fourth postMessage type,
-   `"reads"` in the manifest, host-side prefix enforcement. This is the single
-   biggest capability gap for any app whose subject is large.
-2. **Attribution for authenticated link bearers** (§7a) — small change to how
+1. **Attribution for authenticated link bearers** (§7a) — small change to how
    door 2 stamps `by`, with the authorization rule explicitly unchanged.
-3. **`cfg/policy.autoQueueFrom`** (§7b) — one config key, default closed.
-4. **Anchoring guidance** (§5) — threads carry `anchorSha`; never silently
+2. **`cfg/policy.autoQueueFrom`** (§7b) — one config key, default closed.
+3. **Anchoring guidance** (§5) — threads carry `anchorSha`; never silently
    move a comment.
 
-Nothing here contradicts the existing design; §6 is additive and the other
-three are refinements.
+Nothing here contradicts the existing design; all three are refinements. The
+bulk read channel that §6 once proposed was removed on 2026-08-24 (Part K of
+the main spec).

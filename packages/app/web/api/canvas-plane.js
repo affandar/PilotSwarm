@@ -54,12 +54,24 @@ export function createCanvasPlane({
             if (payload?.schema && payload.schema !== schema) return;
             const handlers = subscribers.get(payload?.sessionId);
             if (!handlers) return;
-            const update = {
-                slot: Number(payload.slot),
-                seq: Number(payload.seq),
-                kind: payload.kind === "doc" ? "doc" : "data",
-                ...(payload.patch && typeof payload.patch === "object" ? { patch: payload.patch } : {}),
-            };
+            // The KV branch is a separate dispatch path from doc/data: one
+            // `rev` per KEY (max-wins), never the slot's seq chain. Feeding
+            // per-key revs into seq would read as a gap and resync-storm.
+            const update = payload.kind === "kv"
+                ? {
+                    slot: Number(payload.slot),
+                    kind: "kv",
+                    key: String(payload.key ?? ""),
+                    rev: Number(payload.rev),
+                    op: payload.op === "delete" ? "delete" : "put",
+                    ...(payload.value !== undefined ? { value: payload.value } : {}),
+                }
+                : {
+                    slot: Number(payload.slot),
+                    seq: Number(payload.seq),
+                    kind: payload.kind === "doc" ? "doc" : "data",
+                    ...(payload.patch && typeof payload.patch === "object" ? { patch: payload.patch } : {}),
+                };
             for (const cb of handlers) {
                 try { cb(update); } catch { /* one bad socket must not stop the fan-out */ }
             }

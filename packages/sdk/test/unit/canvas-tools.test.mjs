@@ -29,6 +29,9 @@ import { CANVAS_ARTIFACT_FILENAME } from "../../dist/session-proxy.js";
 const MS = readFileSync(fileURLToPath(new URL("../../src/managed-session.ts", import.meta.url)), "utf8");
 const SP = readFileSync(fileURLToPath(new URL("../../src/session-proxy.ts", import.meta.url)), "utf8");
 const SM = readFileSync(fileURLToPath(new URL("../../src/session-manager.ts", import.meta.url)), "utf8");
+// Filenames, slot normalization and revision derivation moved to a module the
+// app catalog shares with the bridge (0.5.45).
+const CS = readFileSync(fileURLToPath(new URL("../../src/canvas-support.ts", import.meta.url)), "utf8");
 
 function declaredTool(name) {
     return ManagedSession.systemToolDefs().find((tool) => tool.name === name) || null;
@@ -41,7 +44,9 @@ test("both canvas tools are declared to the model", () => {
     // and the handler enforces exactly-one (schema XOR is not model-reliable).
     assert.deepEqual(draw.parameters.required, []);
     assert.match(draw.description, /slot 1-5/i, "the model learns about slots from the description");
-    assert.match(draw.description, /friendly name/i);
+    // The friendly-name guidance moved to the parameter it names; the
+    // description itself stays short (progressive discovery, 0.5.45).
+    assert.match(draw.parameters.properties.name.description, /friendly name/i);
     assert.match(draw.description, /do not paste canvas links/i);
     assert.ok(draw.parameters.properties.slot, "slot param missing");
     assert.ok(draw.parameters.properties.name, "name param missing");
@@ -69,8 +74,8 @@ test("sub-agents are NOT filtered out of the canvas declarations", () => {
 test("the HANDLER half is registered on every session and refuses instead of hanging", () => {
     // Per-turn registration is unconditional — a declared tool with no
     // handler is a silent drop in the CLI. The refusal is the guard.
-    assert.match(MS, /drawCanvasTool,\n\s*updateCanvasTool,\n\s*readCanvasTool,\n\s*showCanvasTool,\n\s*\]\.filter/,
-        "canvas tools must be unconditionally in systemToolsForTurn");
+    assert.match(MS, /drawCanvasTool,\n\s*updateCanvasTool,\n\s*readCanvasTool,\n\s*showCanvasTool,\n\s*canvasKvTool,\n\s*publishCanvasAppTool,\n\s*findCanvasAppTool,\n\s*loadSkillTool,\n\s*\]\.filter/,
+        "canvas tools (and canvas_kv / the catalog / load_skill) must be unconditionally in systemToolsForTurn");
     assert.ok(!/\(controlBridge as any\)\?\.drawCanvas \? \[drawCanvasTool/.test(MS),
         "the old bridge-conditional registration must be gone");
     // The refusal names the real condition (no bridge), not a root-only rule
@@ -138,12 +143,13 @@ test("every draw pins; there is no first-draw-only pin to be erased by the secon
 });
 
 test("rev derivation: table first, slot-filtered 30-event scan as the durable fallback", () => {
-    assert.match(SP, /async function latestCanvasRev/);
-    assert.match(SP, /getSessionCanvases\?\.\(sessionId\)/, "the 0045 table is the fast path");
-    assert.match(SP, /Number\.MAX_SAFE_INTEGER, 30, \["session\.canvas_updated"\]/,
+    assert.match(CS, /export async function latestCanvasRev/);
+    assert.match(CS, /getSessionCanvases\?\.\(sessionId\)/, "the 0045 table is the fast path");
+    assert.match(CS, /Number\.MAX_SAFE_INTEGER, 30, \["session\.canvas_updated"\]/,
         "a WIDE window — five interleaved slots push a slot's latest past five events");
-    assert.match(SP, /eventSlot\(row\) !== slot/, "the scan filters by slot");
-    assert.match(SP, /Number\.isFinite\(rev\) && rev > latest && Number\.isInteger\(rev\)/);
+    assert.match(CS, /eventSlot\(row\) !== slot/, "the scan filters by slot");
+    assert.match(CS, /Number\.isFinite\(rev\) && rev > latest && Number\.isInteger\(rev\)/);
+    assert.match(SP, /import \{[^}]*latestCanvasRev[^}]*\} from "\.\/canvas-support\.js"/, "the bridge uses the shared derivation, not a copy");
 });
 
 test("read_canvas is log-first: no event means no canvas, whatever bytes exist", () => {
@@ -230,7 +236,7 @@ test("update_canvas is declared, root-gated everywhere, and never interrupts", (
     assert.match(tool.description, /null DELETES a key/i, "null-means-delete must be taught loudly");
     assert.match(MS, /pass exactly one of data .*or patch/i, "handler enforces the XOR");
     assert.match(tool.description, /slot 1-5/i);
-    assert.match(tool.description, /no view\s+flip/i, "ticks must advertise they never steal the screen");
+    assert.match(tool.description, /never steal the screen/i, "ticks must advertise they never steal the screen");
     assert.match(tool.description, /DO mark the canvas unseen/i, "and that they light the badge");
     assert.ok(tool.parameters.properties.slot, "slot param missing");
     // Tuner may never tick; children never see it.
@@ -422,7 +428,7 @@ test("the bridge resolves targets through the parent chain and refuses non-ances
     // Every canvas bridge method resolves before acting.
     const canvasBlock = SP.slice(SP.indexOf("drawCanvas: async"), SP.indexOf("// Cooperative cancellation"));
     const resolves = canvasBlock.match(/await resolveCanvasTarget\(args\.session_id\)/g) || [];
-    assert.equal(resolves.length, 4, "draw, update, read, show all resolve the target");
+    assert.equal(resolves.length, 6, "draw, update, read, show, canvasKv, publishCanvasApp all resolve the target");
 });
 
 test("draw revs are minted atomically with the legacy seed floor", () => {

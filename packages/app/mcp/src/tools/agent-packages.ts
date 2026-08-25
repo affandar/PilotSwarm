@@ -208,4 +208,52 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             return jsonResult({ ok: true, deleted: name, ...(scope ? { scope } : {}) });
         }),
     );
+
+    // ── Editors: write grants on a SHARED package ──────────────────────
+    const editorUser = {
+        provider: z.string().min(1).describe("Grantee identity provider (as in list_known_users)"),
+        subject: z.string().min(1).describe("Grantee subject id (as in list_known_users)"),
+    };
+
+    server.registerTool(
+        "grant_agent_package_editor",
+        {
+            title: "Grant Agent Package Editor",
+            description:
+                "Give a user WRITE access to a SHARED package: publish new versions, republish into it, pin, "
+                + "enable/disable. Not scope changes, delete, or the editor list — those stay with the owner. "
+                + "Owner or admin. The grant is deleted when the package is demoted to user scope. "
+                + "Find the user with list_known_users.",
+            inputSchema: { name: z.string().min(1), ...editorUser },
+        },
+        withToolErrors(async ({ name, provider, subject }) => {
+            await ctx.mgmt.grantAgentPackageEditor(name, { provider, subject }, owner, ctx.admin);
+            return jsonResult({ ok: true, name, editor: { provider, subject } });
+        }),
+    );
+
+    server.registerTool(
+        "revoke_agent_package_editor",
+        {
+            title: "Revoke Agent Package Editor",
+            description: "Remove a user's editor grant on a shared package. Owner or admin; idempotent.",
+            inputSchema: { name: z.string().min(1), ...editorUser },
+        },
+        withToolErrors(async ({ name, provider, subject }) => {
+            await ctx.mgmt.revokeAgentPackageEditor(name, { provider, subject }, owner, ctx.admin);
+            return jsonResult({ ok: true, name, revoked: { provider, subject } });
+        }),
+    );
+
+    server.registerTool(
+        "list_agent_package_editors",
+        {
+            title: "List Agent Package Editors",
+            description: "Editors of the shared copy of a package. Visible to anyone who can see the package.",
+            inputSchema: { name: z.string().min(1) },
+        },
+        withToolErrors(async ({ name }) => {
+            return jsonResult({ name, editors: await ctx.mgmt.listAgentPackageEditors(name) });
+        }),
+    );
 }

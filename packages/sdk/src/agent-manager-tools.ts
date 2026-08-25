@@ -148,6 +148,8 @@ export interface CreateAgentManagerToolsOptions {
     sessionId?: string;
     /** Agent names a package may not shadow. Defaults to bundled agents. */
     reservedAgentNames?: string[];
+    /** Deployment MCP catalog names restricted with `allowedAgents`; a package may not define them. */
+    reservedMcpServerNames?: string[];
 }
 
 /** Turn an FQN into a registry selector, or explain why it cannot be one. */
@@ -660,7 +662,10 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                         // agent-authored version from a human `agents push`.
                         createdBy: `agent-manager (approved by ${args.approved_by})`,
                         isAdmin: viewer.isAdmin,
-                        validate: { reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames() },
+                        validate: {
+                            reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
+                            reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
+                        },
                     },
                 );
                 await artifactStore.deleteArtifact(opts.sessionId, STAGING_ARTIFACT).catch(() => {});

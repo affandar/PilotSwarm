@@ -87,9 +87,11 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getTopEventEmitters",
     "getUserStats",
     "getWorkerCount",
+    "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
     "graphStats",
+    "listAgentPackageEditors",
     "listAgentPackages",
     "listAgentWorkerState",
     "listArtifacts",
@@ -111,6 +113,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "placeSessionsInGroup",
     "pruneDeletedSummaries",
     "readArtifactBase64",
+    "readCanvasKv",
     "readFacts",
     "regenerateSession",
     "removeCanvasShareLink",
@@ -119,6 +122,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "republishAgentPackageVersion",
     "resetCanvasShareLink",
     "restartSystemSession",
+    "revokeAgentPackageEditor",
     "revokeSessionShare",
     "searchFacts",
     "searchGraphEdges",
@@ -129,6 +133,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setAgentPackageEnabled",
     "setAgentPackageScope",
     "setArtifactPinned",
+    "setCanvasKvAccess",
     "setClusterDefault",
     "setCurrentUserGitHubCopilotKey",
     "setCurrentUserProfileSettings",
@@ -155,6 +160,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "upsertGraphNamespace",
     "upsertGraphNode",
     "waitForStatusChange",
+    "writeCanvasKv",
 ];
 
 /**
@@ -865,6 +871,15 @@ export interface ManagementOps {
     getWorkerCount(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Grant a user write access to a SHARED package ({ user: { provider, subject } }): publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked when the package is demoted to user scope.
+     * @remarks `POST /agent-packages/:name/editors` — access: `authed`
+     */
+    grantAgentPackageEditor(params: {
+        name: string;
+        user?: any;
+    }): Promise<any>;
+
+    /**
      * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin.
      * @remarks `POST /sessions/:sessionId/shares` — access: `session:share`
      */
@@ -890,6 +905,14 @@ export interface ManagementOps {
      */
     graphStats(params: {
         namespace?: string;
+    }): Promise<any>;
+
+    /**
+     * Editors of the shared copy of a package. Visible to anyone who can see the package.
+     * @remarks `GET /agent-packages/:name/editors` — access: `authed`
+     */
+    listAgentPackageEditors(params: {
+        name: string;
     }): Promise<any>;
 
     /**
@@ -1056,6 +1079,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read the canvas KV store: entries under a prefix (cursor-paged, ≤200) or one key, plus `me` (relation, canWrite) and the canvas policy. The page's canvas-kv-ready payload.
+     * @remarks `GET /management/sessions/:sessionId/canvas-kv` — access: `canvas:read`
+     */
+    readCanvasKv(params: {
+        sessionId: string;
+        slot?: number;
+        prefix?: string;
+        limit?: number;
+        after?: string;
+        key?: string;
+    }): Promise<any>;
+
+    /**
      * Read facts (ReadFactsQuery params).
      * @remarks `GET /facts` — access: `facts:read`
      */
@@ -1134,6 +1170,15 @@ export interface ManagementOps {
     restartSystemSession(params: {
         agentIdOrSessionId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Revoke a user's editor grant on a shared package ({ user: { provider, subject } }). Owner or admin; idempotent.
+     * @remarks `POST /agent-packages/:name/editors/revoke` — access: `authed`
+     */
+    revokeAgentPackageEditor(params: {
+        name: string;
+        user?: any;
     }): Promise<any>;
 
     /**
@@ -1230,6 +1275,16 @@ export interface ManagementOps {
         sessionId: string;
         filename: string;
         pinned?: any;
+    }): Promise<any>;
+
+    /**
+     * Set who may write this canvas's KV: owner (default) | readers (anyone the session is read-shared with) | link. Owner or admin.
+     * @remarks `PUT /management/sessions/:sessionId/canvas-kv/access` — access: `session:share`
+     */
+    setCanvasKvAccess(params: {
+        sessionId: string;
+        slot?: any;
+        access?: any;
     }): Promise<any>;
 
     /**
@@ -1477,6 +1532,16 @@ export interface ManagementOps {
         afterVersion?: number;
         timeoutMs?: number;
     }): Promise<any>;
+
+    /**
+     * Write the canvas KV store: ops [{op: put|delete, key, value?, ifMatch?}] (≤50). Each op is answered individually; who may write is the canvas policy × the app's kv.write switch; req/* rows from collaborators are capped to status suggested.
+     * @remarks `POST /management/sessions/:sessionId/canvas-kv` — access: `canvas:write`
+     */
+    writeCanvasKv(params: {
+        sessionId: string;
+        slot?: any;
+        ops?: any;
+    }): Promise<any>;
 }
 
 /**
@@ -1568,9 +1633,11 @@ export function createManagementOps(
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
+        grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
         graphStats: (params: Record<string, unknown> = {}) => callOp("graphStats", params),
+        listAgentPackageEditors: (params: Record<string, unknown> = {}) => callOp("listAgentPackageEditors", params),
         listAgentPackages: (params: Record<string, unknown> = {}) => callOp("listAgentPackages", params),
         listAgentWorkerState: (params: Record<string, unknown> = {}) => callOp("listAgentWorkerState", params),
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
@@ -1592,6 +1659,7 @@ export function createManagementOps(
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
+        readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
@@ -1600,6 +1668,7 @@ export function createManagementOps(
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
+        revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),
         searchGraphEdges: (params: Record<string, unknown> = {}) => callOp("searchGraphEdges", params),
@@ -1610,6 +1679,7 @@ export function createManagementOps(
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),
         setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),
+        setCanvasKvAccess: (params: Record<string, unknown> = {}) => callOp("setCanvasKvAccess", params),
         setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
         setCurrentUserProfileSettings: (params: Record<string, unknown> = {}) => callOp("setCurrentUserProfileSettings", params),
@@ -1636,5 +1706,6 @@ export function createManagementOps(
         upsertGraphNamespace: (params: Record<string, unknown> = {}) => callOp("upsertGraphNamespace", params),
         upsertGraphNode: (params: Record<string, unknown> = {}) => callOp("upsertGraphNode", params),
         waitForStatusChange: (params: Record<string, unknown> = {}) => callOp("waitForStatusChange", params),
+        writeCanvasKv: (params: Record<string, unknown> = {}) => callOp("writeCanvasKv", params),
     };
 }

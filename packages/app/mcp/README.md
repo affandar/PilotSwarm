@@ -485,6 +485,17 @@ metadata is owner/admin only.
 | `get_agent_tree` | Discovery — recursive sub-agent subtree rooted at a session id, bounded by `max_depth` (default 5). |
 | `get_session_tree_stats` | Discovery — aggregated metrics for a session and all its descendants: token totals, session count, dehydration / hydration counts, per-model breakdown, cache hit ratio. |
 
+### Agent Packages *(web; gated by `--agent-mgmt off | read | full`, default `full`)*
+
+| Tool | Description |
+|------|-------------|
+| `list_agent_packages`, `get_agent_package`, `get_agent_package_file` | Read the package registry: shared packages plus your own user-scope copies (admins see all); file preview from the active version. *(`read` and `full`)* |
+| `push_agent_package` | Publish a package from inline files (`[{path, content_base64}]`, ≤ 2 MB) as your credential. Identical republish is a no-op; same semver with different bytes is rejected. |
+| `set_agent_package_scope`, `republish_agent_package_version`, `pin_agent_package_version`, `set_agent_package_enabled`, `delete_agent_package` | Promote/demote, publish a version into the other scope, pin the active version, enable/disable fleet-wide, delete. Creator, a granted editor (pin/enable/republish), or admin. |
+| `grant_agent_package_editor` | Give a user write access to a SHARED package: publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked automatically when the package is demoted. |
+| `revoke_agent_package_editor` | Remove an editor grant. Owner or admin; idempotent. |
+| `list_agent_package_editors` | Editors of a shared package. Visible to anyone who can see it. |
+
 ### Knowledge (Facts)
 
 | Tool | Description |

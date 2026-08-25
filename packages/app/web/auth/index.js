@@ -179,7 +179,14 @@ export function extractToken(req) {
         const parts = protocols.split(",").map((segment) => segment.trim());
         const tokenIndex = parts.indexOf("access_token");
         if (tokenIndex >= 0 && parts[tokenIndex + 1]) {
-            return parts[tokenIndex + 1];
+            // Clients percent-encode the token so it is a legal subprotocol
+            // value (a dev token `dev:<persona>` has a colon, which RFC 6455
+            // forbids). A JWT has nothing to decode, so this is a no-op there.
+            try {
+                return decodeURIComponent(parts[tokenIndex + 1]);
+            } catch {
+                return parts[tokenIndex + 1];
+            }
         }
     }
 

@@ -97,6 +97,142 @@ export interface CanvasAppManifest {
     data?: string;
     notes?: string;
     responseContract?: Record<string, any>;
+    /**
+     * The app's half of the KV write switch (interactive-canvas-apps Part D.3):
+     * `write: "viewers"` lets the canvas policy admit collaborators; the
+     * default `"owner"` keeps writes to the owner and the agent whatever the
+     * policy says. `shared` lists key globs (`app/task/*`) any admitted
+     * writer may overwrite; everything else is author-bound.
+     */
+    kv?: { write?: "owner" | "viewers"; shared?: string[] };
+    /**
+     * The app's INTERFACE — what an agent needs to drive this app without
+     * reading its HTML. This is the catalog card's payload (Part F): the KV
+     * keys the page reads and writes, the requests it queues for the agent,
+     * and the notes it expects back. Prose fields are clipped; the whole
+     * block is capped at CANVAS_INTERFACE_MAX_BYTES.
+     */
+    interface?: CanvasAppInterface;
+    /** Catalog tags, e.g. ["review", "release", "collaborative"]. */
+    tags?: string[];
+}
+
+export interface CanvasAppInterface {
+    /** KV keys the app uses, one entry per prefix or exact key. */
+    keys?: Array<{
+        /** e.g. "app/item/<id>", "app/vote/<me.id>", "cfg/deadline" */
+        key: string;
+        /** Who writes it: "page" (viewers), "agent", or "both". */
+        writer?: "page" | "agent" | "both";
+        /** The value's shape, as an example object or a one-line description. */
+        shape?: unknown;
+        note?: string;
+    }>;
+    /** Requests the page queues under req/<id> for the agent to drain. */
+    requests?: Array<{
+        /** The `op` field of the req/* row, e.g. "expand", "store", "summarize". */
+        op: string;
+        /** The `args` shape, as an example or a one-line description. */
+        args?: unknown;
+        /** What the agent writes back into `result` when it lands the row. */
+        result?: unknown;
+        note?: string;
+    }>;
+    /** Notes the agent may write under evt/<n> that the page renders. */
+    events?: Array<{ key: string; shape?: unknown; note?: string }>;
+    /** Anything else an agent must know to operate the app (one paragraph). */
+    notes?: string;
+}
+
+/** Cap on the serialized `interface` block — it rides every catalog card. */
+export const CANVAS_INTERFACE_MAX_BYTES = 6 * 1024;
+const INTERFACE_LIST_CAP = 32;
+const INTERFACE_SHAPE_MAX_BYTES = 512;
+
+function clipShape(value: unknown): unknown {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === "string") return clampProse(value);
+    try {
+        const text = JSON.stringify(value);
+        if (text.length <= INTERFACE_SHAPE_MAX_BYTES) return value;
+        return `${text.slice(0, INTERFACE_SHAPE_MAX_BYTES - 1)}…`;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Normalize a manifest's `interface` block: unknown fields dropped, lists
+ * capped, prose clipped. Returns null when nothing usable is declared, and
+ * `{ error }` when the block is present but over the size cap.
+ */
+export function normalizeCanvasAppInterface(raw: unknown): { interface: CanvasAppInterface | null; error?: string } {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { interface: null };
+    const r = raw as Record<string, unknown>;
+    const out: CanvasAppInterface = {};
+    if (Array.isArray(r.keys)) {
+        out.keys = r.keys
+            .filter((k: any) => k && typeof k === "object" && typeof k.key === "string" && k.key.trim())
+            .slice(0, INTERFACE_LIST_CAP)
+            .map((k: any) => ({
+                key: String(k.key).trim().slice(0, 200),
+                ...(k.writer === "page" || k.writer === "agent" || k.writer === "both" ? { writer: k.writer } : {}),
+                ...(clipShape(k.shape) !== undefined ? { shape: clipShape(k.shape) } : {}),
+                ...(clampProse(k.note) ? { note: clampProse(k.note) } : {}),
+            }));
+    }
+    if (Array.isArray(r.requests)) {
+        out.requests = r.requests
+            .filter((q: any) => q && typeof q === "object" && typeof q.op === "string" && q.op.trim())
+            .slice(0, INTERFACE_LIST_CAP)
+            .map((q: any) => ({
+                op: String(q.op).trim().slice(0, 64),
+                ...(clipShape(q.args) !== undefined ? { args: clipShape(q.args) } : {}),
+                ...(clipShape(q.result) !== undefined ? { result: clipShape(q.result) } : {}),
+                ...(clampProse(q.note) ? { note: clampProse(q.note) } : {}),
+            }));
+    }
+    if (Array.isArray(r.events)) {
+        out.events = r.events
+            .filter((e: any) => e && typeof e === "object" && typeof e.key === "string" && e.key.trim())
+            .slice(0, INTERFACE_LIST_CAP)
+            .map((e: any) => ({
+                key: String(e.key).trim().slice(0, 200),
+                ...(clipShape(e.shape) !== undefined ? { shape: clipShape(e.shape) } : {}),
+                ...(clampProse(e.note) ? { note: clampProse(e.note) } : {}),
+            }));
+    }
+    const notes = clampProse(r.notes);
+    if (notes) out.notes = notes;
+    if (!out.keys?.length && !out.requests?.length && !out.events?.length && !out.notes) return { interface: null };
+    const bytes = Buffer.byteLength(JSON.stringify(out), "utf8");
+    if (bytes > CANVAS_INTERFACE_MAX_BYTES) {
+        return { interface: null, error: `interface block is ${bytes} bytes serialized; the cap is ${CANVAS_INTERFACE_MAX_BYTES}` };
+    }
+    return { interface: out };
+}
+
+function normalizeTags(raw: unknown): string[] | undefined {
+    if (!Array.isArray(raw)) return undefined;
+    const tags = raw
+        .filter((t) => typeof t === "string")
+        .map((t: string) => t.trim().toLowerCase().slice(0, 40))
+        .filter(Boolean)
+        .slice(0, 16);
+    return tags.length ? [...new Set(tags)] : undefined;
+}
+
+/** Normalize a manifest's `kv` block: unknown fields dropped, bad shapes ignored. */
+export function normalizeCanvasKvManifest(raw: unknown): { write: "owner" | "viewers"; shared: string[] } | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const write = (raw as any).write === "viewers" ? "viewers" : "owner";
+    const shared = Array.isArray((raw as any).shared)
+        ? (raw as any).shared
+            .filter((g: unknown) => typeof g === "string" && g.trim() && g.length <= 200)
+            .map((g: string) => g.trim())
+            .slice(0, 32)
+        : [];
+    return { write, shared };
 }
 
 function clampProse(value: unknown): string | undefined {
@@ -180,17 +316,65 @@ export function extractCanvasAppManifest(html: string): { manifest: CanvasAppMan
     if (raw.responseContract !== undefined) {
         manifest.responseContract = raw.responseContract as Record<string, any>;
     }
+    const kv = normalizeCanvasKvManifest(raw.kv);
+    if (kv) manifest.kv = kv;
+    const iface = normalizeCanvasAppInterface(raw.interface);
+    if (iface.error) return { manifest: null, error: `CANVAS-APP-MANIFEST interface: ${iface.error}` };
+    if (iface.interface) manifest.interface = iface.interface;
+    const tags = normalizeTags(raw.tags);
+    if (tags) manifest.tags = tags;
     return { manifest };
 }
 
-/** The compact "app card" fields returned to the drawing agent — never the html. */
-export function canvasAppCard(manifest: CanvasAppManifest | null): Record<string, string | number> | undefined {
+/**
+ * The compact "app card" fields returned to the drawing agent — never the
+ * html. Carries the INTERFACE (keys, requests, events) and the kv switch, so
+ * an agent that did not write the app can still drive it from this card.
+ */
+export function canvasAppCard(manifest: CanvasAppManifest | null): Record<string, unknown> | undefined {
     if (!manifest) return undefined;
-    const card: Record<string, string | number> = {};
+    const card: Record<string, unknown> = {};
     if (manifest.name) card.name = manifest.name;
     if (manifest.version) card.version = manifest.version;
     if (manifest.description) card.description = manifest.description;
     if (manifest.data) card.data = manifest.data;
     if (manifest.notes) card.notes = manifest.notes;
+    if (manifest.kv) card.kv = manifest.kv;
+    if (manifest.interface) card.interface = manifest.interface;
+    if (manifest.tags) card.tags = manifest.tags;
     return Object.keys(card).length > 0 ? card : undefined;
+}
+
+/** Catalog app names: a DNS-label-ish slug, so keys and filenames stay clean. */
+export const CANVAS_APP_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+
+/**
+ * The catalog record for a published app (interactive-canvas-apps Part F.2):
+ * the shared fact `apps/<name>`. Derived from the DOCUMENT's manifest, never
+ * from a model's memory of it; the description is the text search ranks on.
+ */
+export function buildCanvasAppCatalogRecord(input: {
+    name: string;
+    description: string;
+    manifest: CanvasAppManifest | null;
+    responseContract?: Record<string, any> | null;
+    source: { sessionId: string; filename: string; sha256: string };
+    publishedBy: string | null;
+    publishedAt: string;
+    tags?: string[];
+}): Record<string, unknown> {
+    const card = canvasAppCard(input.manifest) ?? {};
+    const tags = normalizeTags([...(input.tags ?? []), ...(input.manifest?.tags ?? [])]) ?? [];
+    return {
+        name: input.name,
+        description: input.description,
+        version: input.manifest?.version ?? null,
+        card,
+        ...(input.responseContract ? { responseContract: input.responseContract } : {}),
+        kv: input.manifest?.kv ?? { write: "owner", shared: [] },
+        source: { kind: "artifact", ...input.source },
+        publishedBy: input.publishedBy,
+        publishedAt: input.publishedAt,
+        tags,
+    };
 }

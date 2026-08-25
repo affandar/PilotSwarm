@@ -2950,16 +2950,28 @@ export function selectCanvasView(state) {
 }
 
 /**
- * A validated canvas response on its way to the agent. Flagged so the PORTAL
- * chat skips it (the canvas redraw is the visible half of the loop) while the
- * TUI — which renders no canvas and would otherwise show a silent gap in the
- * conversation — gets a compact dim line.
+ * A validated canvas response on its way to the agent. Flagged `canvasAction`
+ * so each host renders it its own way: the TUI prints the compact dim line
+ * below, while the portal collapses it to a single row that opens to show the
+ * payload. Both need the same facts, so the action name and the full payload
+ * ride on the line rather than only inside the truncated runs.
  */
 function buildCanvasActionLine(message) {
     const dataKeys = message?.data && typeof message.data === "object" ? Object.keys(message.data) : [];
     const detail = dataKeys.length === 1 && typeof message.data[dataKeys[0]] === "string"
         ? message.data[dataKeys[0]].slice(0, 120)
         : (dataKeys.length ? JSON.stringify(message.data).slice(0, 120) : "");
+    let payload = "";
+    if (dataKeys.length) {
+        // A page can post anything that survives structured clone; JSON.stringify
+        // throws on a cycle or a BigInt, and this runs inside the transcript
+        // render path where a throw blanks the whole conversation.
+        try {
+            payload = JSON.stringify(message.data, null, 2);
+        } catch {
+            payload = "";
+        }
+    }
     return {
         runs: [
             { text: "[canvas] ", color: "cyan", bold: true },
@@ -2967,6 +2979,10 @@ function buildCanvasActionLine(message) {
             ...(detail ? [{ text: ` — ${detail}`, color: "gray" }] : []),
         ],
         canvasAction: true,
+        canvasActionName: message?.action || "action",
+        canvasActionDetail: detail,
+        canvasActionPayload: payload,
+        canvasActionTime: message?.time || "",
     };
 }
 
@@ -4005,6 +4021,11 @@ export function selectAdminConsole(state) {
             && pkg.owner.provider === principal.provider
             && pkg.owner.subject === principal.subject),
     );
+    // Editor-level: may change contents and rollout (publish, pin,
+    // enable/disable). The server computes `canEdit` per viewer (admin, owner
+    // or a granted editor); ownsPackage stays the owner-only gate for scope,
+    // delete and the editor list.
+    const canEditPackage = (pkg) => ownsPackage(pkg) || Boolean(pkg?.canEdit);
     // Built once per render, not per row.
     const ownerDirectory = ownerDirectoryFromSessions(state?.sessions?.byId);
     // Same rule as the session list: the owner chip only earns its place when
@@ -4046,7 +4067,7 @@ export function selectAdminConsole(state) {
         semver: pkg.active?.semver || null,
         sha7: pkg.active?.sha256 ? String(pkg.active.sha256).slice(0, 7) : null,
         agentCount: Array.isArray(pkg.active?.manifest?.agents) ? pkg.active.manifest.agents.length : 0,
-        canManage: ownsPackage(pkg),
+        canManage: canEditPackage(pkg),
         // A user-scope package belongs to a PERSON, so it carries the same
         // owner-initials chip the session rows use. Shared packages belong to
         // the deployment and keep the scope badge instead.
@@ -4157,13 +4178,25 @@ export function selectAdminConsole(state) {
                 && installedRowFor(worker)?.status === "ok").length
             : 0;
         const canManage = detail ? ownsPackage(detail) : (summary ? ownsPackage(summary) : false);
+        const canEdit = detail ? canEditPackage(detail) : (summary ? canEditPackage(summary) : false);
         packageDetail = {
             name: pkgState.selectedName,
             loading: Boolean(pkgState.detailLoading),
             error: pkgState.detailError || null,
             scope: (detail?.scope || summary?.scope) === "shared" ? "shared" : "user",
             enabled: detail ? Boolean(detail.enabled) : Boolean(summary?.enabled),
+            // canManage = owner/admin (scope, delete, editors);
+            // canEdit   = canManage OR granted editor (publish, pin, enable).
             canManage,
+            canEdit,
+            editors: Array.isArray(detail?.editors)
+                ? detail.editors.map((e) => ({
+                    provider: e.provider,
+                    subject: e.subject,
+                    label: e.displayName || e.email || e.subject,
+                    grantedByDisplay: e.grantedByDisplay || null,
+                }))
+                : [],
             createdBy: detail?.createdBy || summary?.createdBy || null,
             createdAtText: adminPkgDate(detail?.createdAt || summary?.createdAt),
             description: typeof manifest.description === "string" ? manifest.description : "",

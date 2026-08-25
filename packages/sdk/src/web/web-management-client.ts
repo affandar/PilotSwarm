@@ -210,6 +210,28 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getCanvasLive", { sessionId });
     }
 
+    async readCanvasKv(sessionId: string, slot: number, _principal?: any, query: { prefix?: string | null; limit?: number | null; after?: string | null; key?: string | null } = {}): Promise<any> {
+        return this._api.call("readCanvasKv", {
+            sessionId, slot,
+            ...(query.prefix != null ? { prefix: query.prefix } : {}),
+            ...(query.limit != null ? { limit: query.limit } : {}),
+            ...(query.after != null ? { after: query.after } : {}),
+            ...(query.key != null ? { key: query.key } : {}),
+        });
+    }
+
+    async writeCanvasKv(sessionId: string, slot: number, _principal: any, ops: any[]): Promise<any> {
+        return this._api.call("writeCanvasKv", { sessionId, slot, ops });
+    }
+
+    async setCanvasKvAccess(sessionId: string, slot: number, access: "owner" | "readers" | "link"): Promise<any> {
+        return this._api.call("setCanvasKvAccess", { sessionId, slot, access });
+    }
+
+    async readCanvasKvForLink(_sessionId: string, _slot: number, _query?: any): Promise<any> {
+        throw webModeUnsupported("readCanvasKvForLink", "the link door is a server-internal path; link bearers read through /api/canvas-share/kv");
+    }
+
     async getCanvasShareLink(sessionId: string, slot: number): Promise<{ exists: boolean; createdAt?: string; createdBy?: string }> {
         return this._api.call("getCanvasShareLink", { sessionId, slot });
     }
@@ -401,6 +423,18 @@ export class WebPilotSwarmManagementClient {
 
     async setAgentPackageEnabled(name: string, enabled: boolean, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
         return this.ops.setAgentPackageEnabled({ name, enabled, ...packageSelectorParams(selector) });
+    }
+
+    async grantAgentPackageEditor(name: string, grantee: { provider: string; subject: string }, _owner?: any, _isAdmin?: boolean): Promise<any> {
+        return this.ops.grantAgentPackageEditor({ name, user: grantee });
+    }
+
+    async revokeAgentPackageEditor(name: string, grantee: { provider: string; subject: string }, _owner?: any, _isAdmin?: boolean): Promise<any> {
+        return this.ops.revokeAgentPackageEditor({ name, user: grantee });
+    }
+
+    async listAgentPackageEditors(name: string): Promise<any> {
+        return this.ops.listAgentPackageEditors({ name });
     }
 
     async pinAgentPackageVersion(name: string, semver: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {

@@ -862,9 +862,12 @@ description: How to build a visual as a self-contained HTML artifact.
 When the user wants to see something, build a single self-contained page...
 ```
 
-A skill is spliced into an agent's system message **only when that agent declares
-it** in `skills:` frontmatter. There is no discovery path — a loaded skill that no
-agent declares never reaches a model. A skill directory can also include a
+A skill reaches a model one of two ways. Declared in an agent's `skills:`
+frontmatter, it is spliced into that agent's system message on every turn.
+Otherwise it is **discoverable**: the framework base prompt lists every
+registered skill by name and description, and the `load_skill` tool returns
+the body on demand — so a session pays only for the skills it actually pulls
+(the canvas guidance works this way). A skill directory can also include a
 `tools.json` file listing tools the skill requires:
 
 ```json

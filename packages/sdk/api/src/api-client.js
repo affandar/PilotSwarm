@@ -242,7 +242,12 @@ export class ApiClient {
                 const token = await this.getAccessToken();
                 const socketUrl = toWebSocketUrl(this.apiUrl);
                 socket = token
-                    ? new WebSocketImpl(socketUrl, ["access_token", token])
+                    // A subprotocol value must be an RFC 6455 token: no ":"
+                    // (dev tokens are `dev:<persona>`), no spaces. Percent-
+                    // encoding keeps every JWT byte-identical (base64url has
+                    // nothing to escape) and makes the others legal; the
+                    // server decodes.
+                    ? new WebSocketImpl(socketUrl, ["access_token", encodeURIComponent(token)])
                     : new WebSocketImpl(socketUrl);
             } catch (error) {
                 // getAccessToken rejected or the constructor threw before any

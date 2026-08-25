@@ -217,7 +217,7 @@ export function createArtifactTools(opts: {
                     const from = params.fromArtifact;
                     const filename = params.filename || path.basename(from.filename);
                     // Source session defaults to self: the canonical save-as
-                    // ("copy my canvas.html to apps/<name>.html") should not
+                    // ("copy my canvas.html to app-<name>.html") should not
                     // require the model to know its own session id.
                     const metadata = await blobStore.copyArtifact(
                         from.sessionId || sessionId, from.filename, sessionId, filename, { pinned },

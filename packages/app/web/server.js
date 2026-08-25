@@ -234,6 +234,28 @@ export async function startServer(opts = {}) {
         }
     });
 
+    // The KV store through the link door — READ ONLY today (a read/write
+    // link is phase 4 of interactive-canvas-apps). The token is the
+    // address: session and slot come from the token row, never the query.
+    app.get("/api/canvas-share/kv", async (req, res) => {
+        try {
+            const state = await runtime.getCanvasShareKv(String(req.query.t || ""), {
+                prefix: typeof req.query.prefix === "string" ? req.query.prefix : null,
+                after: typeof req.query.after === "string" ? req.query.after : null,
+                key: typeof req.query.key === "string" ? req.query.key : null,
+                limit: req.query.limit != null ? Number(req.query.limit) : null,
+            });
+            if (!state) {
+                res.status(404).json({ ok: false });
+                return;
+            }
+            res.set("Cache-Control", "no-store, max-age=0");
+            res.json({ ok: true, ...state });
+        } catch {
+            res.status(404).json({ ok: false });
+        }
+    });
+
     // The versioned Web API (the supported product surface). The legacy
     // /api/rpc + /portal-ws routes below stay mounted through the same
     // dispatcher during the deprecation window.

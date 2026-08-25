@@ -227,25 +227,32 @@ pilotswarm (root, system: true, id: "pilotswarm")
 Skills inject domain knowledge into the LLM context. They are directories, not standalone files.
 
 Skills load from every configured plugin skill directory into the worker's skill
-registry. From there, **a skill reaches a prompt only when an agent names it in
-its `skills:` frontmatter.** The worker walks the agents, and for each declared
-name splices `[PRELOADED SKILL: <name>]` plus the whole body into that agent's
-system message.
+registry. Two ways a skill reaches a model, and they cost very differently:
 
-There is no discovery path for an undeclared skill. Nothing indexes them, no tool
-lists them, and the model is never told they exist — so a skill in the registry
-that no agent declares is inert. (This is unrelated to the curated *facts* skills
-under the shared `skills/` fact namespace, which agents do discover at runtime via
-`read_facts`. Same word, different mechanism.)
+1. **Declared (eager).** An agent names it in its `skills:` frontmatter. The
+   worker splices `[PRELOADED SKILL: <name>]` plus the whole body into that
+   agent's system message, on every turn, for the life of the session.
+2. **Discovered (progressive, the default since 0.5.46).** The framework base
+   prompt carries a one-line index of every registered skill — name and
+   description — and the `load_skill` system tool returns a body on demand.
+   A session pays for the index (a line per skill) and for exactly the skills
+   it pulls. This is how the canvas guidance (`html-visuals`, `canvas-apps`)
+   reaches a session that actually builds a canvas, and never one that does
+   not.
+
+(This is unrelated to the curated *facts* skills under the shared `skills/`
+fact namespace, which agents discover via `search_skills`. Same word,
+different mechanism.)
 
 Two consequences worth designing around:
 
-- **Declaring a skill is not free.** The body is inlined verbatim on every turn for
-  the life of the session. Knowledge every session needs belongs in the base prompt;
-  skills are for knowledge only *some* agents should pay for.
-- **An undeclared skill is dead code, and dead documentation rots.** If nothing
-  declares it, delete it or wire it up — a stale copy is worse than none, because
-  the next person to declare it inherits facts that quietly stopped being true.
+- **Declaring a skill is not free.** Reserve `skills:` for knowledge an agent
+  needs on *every* turn. If the model can decide when it needs a skill, let it
+  load it. Write the `description` for that decision: it is the one line the
+  model sees before choosing.
+- **User-scope package skills are private.** They are indexed only for their
+  own package's agents; deployment and shared-package skills are indexed for
+  everyone.
 
 ### Directory Structure
 

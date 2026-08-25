@@ -24,27 +24,17 @@ So the question is narrower and much more tractable than "build a backend":
 
 | Tier | What the page gets | Executes where | New infrastructure | Effort |
 |---|---|---|---|---|
-| 0 · Static | precomputed bytes | portal reads the artifact store | none | ~1 d |
 | 1 · Query | live reads over PG-backed data | portal, existing transport | none | ~4 d |
 | 2 · Tools | repo, ADO, Kusto | a new executor service | **a deployment** | weeks |
 | 3 · Code | arbitrary app functions | a FaaS | a product | no |
 
-Tiers 0 and 1 need no new services and cover most of what these apps want.
-Tier 2 is a real project. Tier 3 is a different product.
+Tier 1 needs no new services and covers most of what these apps want. Tier 2
+is a real project. Tier 3 is a different product.
 
-## Tier 0 — static: `canvas-fetch`
-
-Already proposed in
-[canvas-app-pr-workbench.md §6](canvas-app-pr-workbench.md). The page asks the
-host for an artifact; the host reads it and returns the bytes.
-
-```
-page → host   { type:"canvas-fetch", id, path:"pr/2252148/3f9a1c/file/7.json" }
-host → page   { type:"canvas-fetch-result", id, ok, content }
-```
-
-No model, no worker, no new service — the portal already fetches the canvas
-document exactly this way. Serves anything the agent computed ahead of time.
+A "Tier 0" (a page reading precomputed artifact bytes through the host,
+`canvas-fetch`) was drafted and **removed by decision on 2026-08-24**. Static
+content a page needs is authored into the document or written into the KV by
+the agent; see `interactive-canvas-apps.md` Part K.
 
 ## Tier 1 — query: declared bindings
 
@@ -121,7 +111,7 @@ rules make it bounded:
    same shape as KV writes.
 
 An app that needs to expose *less* than the session can read should query
-artifacts the agent prepared (Tier 0) rather than binding a live query.
+KV values the agent prepared rather than binding a live query.
 
 ### Cost
 
@@ -150,24 +140,24 @@ new operational surface, and it puts a second thing in front of ADO.
 
 **Do not build it. Cache instead.**
 
-The agent is already the executor. Let it fill a cache the page reads at
-Tier 0 speed:
+The agent is already the executor. Let it fill a cache the page reads from
+the KV:
 
 ```
 1. Page asks for something not precomputed
-       → req/<rid> { op: "expand", args: {...} }
-2. Agent wakes, runs the worker tool, writes the answer as an artifact
-       → pr/2252148/3f9a1c/callers/foo.json
-3. Page reads it via canvas-fetch                      ~30 ms
-4. Every later reader — and every later session — hits the artifact
+       → req/<rid> { op: "expand", args: {...} }          (queued; owner-promoted if a collaborator asked)
+2. Agent wakes, runs the worker tool, writes the answer into the KV
+       → app/callers/foo  (≤16 KB; larger results become an artifact the page LINKS to)
+3. Every viewer sees the key land live                    ~50 ms
+4. Every later reader — and a regenerated session — finds it already there
 ```
 
-First call is slow and costs a turn. Every subsequent call is free and instant.
-For a review board, where the same file gets opened by several people over
-several days, the hit rate is high and the miss is survivable.
+First call is slow and costs a turn. Every subsequent read is free and
+instant. For a review board, where the same item gets opened by several people
+over several days, the hit rate is high and the miss is survivable.
 
-**The agent is the cache-fill; artifacts are the cache; `canvas-fetch` is the
-cache read.** That is Tier 2's value at Tier 0's cost.
+**The agent is the cache-fill; the KV is the cache.** That is Tier 2's value
+without a service.
 
 ## Tier 3 — arbitrary app code
 
@@ -183,14 +173,12 @@ role and much less work than pretending otherwise.
 
 ## What to build
 
-1. **Tier 0 now**, folded into phase 1. Small, read-only, unblocks every app
-   whose subject is bigger than its screen.
-2. **Tier 1 next**, after the KV has been exercised. Four days, no new
+1. **Tier 1 first**, after the KV has been exercised. Four days, no new
    services, and it turns the portal's existing 76 read ops into an app
    platform.
-3. **Tier 2 never, as stated.** Ship the cache-fill pattern instead and
+2. **Tier 2 never, as stated.** Ship the cache-fill pattern instead and
    revisit only if a measured miss rate justifies a service.
-4. **Tier 3 out of scope.** Link out.
+3. **Tier 3 out of scope.** Link out.
 
 ## What this does not change
 

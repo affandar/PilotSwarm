@@ -85,7 +85,7 @@ essays through it).
 
 ## Sharing caveat
 
-Only the session's CREATOR can post canvas actions — shared viewers see the
+Only a viewer with session WRITE access (the creator, and anyone the session is write-shared with) can post canvas actions — read-only viewers see the
 form, but their clicks are refused by the platform (their view of a mutating
 canvas may be stale). If the session is shared, say in the page footer who
 the form is addressed to, and let others respond in chat.
@@ -333,7 +333,7 @@ forever, and never courier the bytes through your own context again.
    makes later fromArtifact draws FAIL CLOSED, so keep it valid.
 
 2. **Save = server-side copy, never a re-emit:**
-   `write_artifact({fromArtifact: {filename: "canvas.html"}, filename: "apps/<name>.html"})` — the source defaults to this session.
+   `write_artifact({fromArtifact: {filename: "canvas.html"}, filename: "app-<name>.html"})` — the source defaults to this session.
 
 3. **Load = draw_canvas({fromArtifact: {sessionId?, filename}}).** The bytes go
    store→canvas; your tool result is the interface card — manifest summary plus

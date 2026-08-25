@@ -1517,6 +1517,57 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-muted);
 }
 
+/* A canvas action: one dim collapsed row per button press in the drawn page,
+   tighter than a system notice because a busy board emits a run of them. */
+.ps-canvas-action {
+  margin: 10px 0 11px;
+}
+
+.ps-canvas-action[open] {
+  margin-bottom: 14px;
+}
+
+.ps-canvas-action-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.92em;
+}
+
+.ps-canvas-action-tag {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--ps-border-strong) 62%, transparent);
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--ps-muted) 70%, var(--ps-foreground));
+  font-size: 0.84em;
+  line-height: 1.25;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ps-canvas-action-summary .ps-system-notice-summary-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-canvas-action-time {
+  flex: none;
+  opacity: 0.7;
+  font-size: 0.86em;
+}
+
+.ps-canvas-action-payload {
+  margin: 0;
+  overflow-x: auto;
+  color: var(--ps-muted);
+  font-size: 0.9em;
+  white-space: pre;
+}
+
 .ps-system-notice-body .ps-markdown-preview {
   gap: 10px;
 }
@@ -5683,6 +5734,50 @@ body.is-resizing-pane-y iframe {
 .ps-admin-version .is-ok { color: #3fb950; margin-left: auto; font-size: 11px; }
 .ps-admin-version .ps-mini-button { margin-left: auto; }
 .ps-admin-detail__actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+/* Canvas share dialog: who may write the app's shared state (KV policy). */
+.ps-canvas-share-policy { display: grid; gap: 6px; margin-top: 12px; }
+.ps-canvas-share-policy .ps-canvas-slot-select { max-width: 320px; }
+
+/* Editors of a shared package (Admin → Agents → package detail). */
+.ps-admin-editors { margin-top: 12px; }
+.ps-admin-editors .ps-agent-chip { display: inline-flex; align-items: center; gap: 6px; }
+.ps-chip-remove {
+    border: 0;
+    background: transparent;
+    color: var(--ps-muted);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 13px;
+    line-height: 1;
+}
+.ps-chip-remove:hover:not(:disabled) { color: var(--ps-danger); }
+.ps-admin-editors__add { position: relative; display: flex; gap: 8px; margin-top: 8px; max-width: 420px; }
+.ps-admin-editors__add .ps-input { flex: 1; min-width: 0; }
+.ps-admin-editors__suggestions {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    margin-top: 4px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-md);
+    background: var(--ps-chrome);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+}
+.ps-admin-editors__suggestion {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.ps-admin-editors__suggestion:hover { background: var(--ps-border); }
+.ps-admin-editors__suggestion i { color: var(--ps-muted); font-style: normal; }
 .ps-mini-button.is-danger { color: #f85149; border-color: color-mix(in srgb, #f85149 50%, transparent); }
 
 .ps-admin-ws { display: grid; grid-template-rows: auto minmax(0, 42%) auto minmax(0, 1fr); min-height: 0; position: relative; }
@@ -8365,6 +8460,44 @@ textarea.ps-link-input {
 .ps-budget-legend {
   display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; padding-top: 10px;
   border-top: 1px solid var(--ps-border); font-size: 11px; color: var(--ps-muted);
+}
+
+/* ── System spend: the machinery's own tokens on this provider ────────────────
+   Three stat tiles (total, turns, tokens per turn) and a per-model table with
+   a share bar. The bar is the point: "77.9M of 94.7M on one model" should read
+   without arithmetic. */
+.ps-budget-system-spend { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--ps-border); }
+.ps-budget-system-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 12px; }
+.ps-budget-system-stat {
+  display: flex; flex-direction: column; gap: 2px; min-width: 112px;
+  padding: 8px 12px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md);
+  background: var(--ps-chrome);
+}
+.ps-budget-system-stat strong { font-size: 16px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.ps-budget-system-stat span { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ps-muted); }
+.ps-budget-system-models { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ps-budget-system-models th {
+  text-align: left; font-weight: 500; font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ps-muted); padding: 4px 10px 6px; border-bottom: 1px solid var(--ps-border);
+}
+.ps-budget-system-models td { padding: 6px 10px; border-bottom: 1px solid var(--ps-border); vertical-align: middle; }
+.ps-budget-system-models tr:last-child td { border-bottom: 0; }
+.ps-budget-system-models .is-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-budget-system-models .is-share { width: 40%; min-width: 140px; }
+.ps-budget-system-model-name { font-family: var(--ps-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.ps-budget-system-models .is-share { display: table-cell; }
+.ps-budget-system-models td.is-share { padding-right: 6px; }
+.ps-budget-system-bar {
+  display: inline-block; vertical-align: middle; width: calc(100% - 44px); height: 8px;
+  border-radius: 4px; background: color-mix(in srgb, var(--ps-border) 70%, transparent); overflow: hidden;
+}
+.ps-budget-system-bar-fill { display: block; height: 100%; background: var(--ps-accent); border-radius: 4px; }
+.ps-budget-system-pct {
+  display: inline-block; vertical-align: middle; width: 40px; margin-left: 4px;
+  text-align: right; font-variant-numeric: tabular-nums; color: var(--ps-muted);
+}
+@media (max-width: 640px) {
+  .ps-budget-system-models th.is-share, .ps-budget-system-models td.is-share { display: none; }
 }
 
 /* Axes. A chart without them is decoration: the y ticks give magnitude, the x

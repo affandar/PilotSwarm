@@ -236,7 +236,45 @@ export default {
   never at validation.
 - Server JS in `mcp-servers/` is syntax-checked like the worker module, and
   the same no-bare-imports rule applies.
-- Agents opt in by listing the server name under `mcpServers:`.
+- Agents opt in by listing the server name under `mcpServers:`, and an agent
+  that does so must declare `schemaVersion: 2` (validator error
+  `mcp_requires_schema_v2`).
+- A reference to a server the package does not define is a warning
+  (`unknown_mcp_server`): it must exist in the deployment catalog, or the
+  reference is dropped at load.
+
+Two fields are **deployment-catalog only** and rejected in a package
+`.mcp.json`:
+
+- `"default": true` (`mcp_default_forbidden`) — it would add the server to
+  every agent that inherits the deployment default set.
+- `"allowedAgents"` (`mcp_allowed_agents_forbidden`) — only a deployment may
+  restrict who uses a server.
+
+### Using a server the deployment restricts
+
+A deployment can restrict one of its own catalog entries to named agents:
+
+```json
+{
+    "icm-mcp-rw": {
+        "type": "stdio", "command": "node", "args": ["/app/plugin/mcp/icm-proxy.mjs"],
+        "allowedAgents": ["ops-analyst", "rcakit:rcakit-cosmosdb"],
+        "tools": ["*"]
+    }
+}
+```
+
+Entries are agent identities: a bare `name` is a deployment (baked) agent;
+`namespace:name` is the agent `name` from the plugin or package whose
+namespace is `namespace` — for a package, its `plugin.json` name. A package
+agent matches only the **shared** copy of the package; a user-scope copy is
+a different package and never inherits the grant. Any other reference to a
+restricted server is dropped at load with a warning, and restricted servers
+never join the default set. The catalog is flat, so a package cannot define
+a server with **any** name the deployment catalog already uses — restricted
+or not (`reserved_mcp_server_name` at publish; workers drop such a
+definition at load). Pick your own server names.
 
 ## 7. Versioning and immutability
 

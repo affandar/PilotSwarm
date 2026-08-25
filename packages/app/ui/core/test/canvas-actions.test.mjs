@@ -202,20 +202,21 @@ test("a json field carries one structured object (the whole form), size-capped",
         "the 8 KB payload cap still binds");
 });
 
-// ── Creator-only: the client half of the refusal ────────────────────────────
+// ── Who may ring is the SERVER's call ───────────────────────────────────────
 
-test("a viewer who is not the session creator is refused before the transport", async () => {
+test("a viewer who is not the session creator is NOT refused by the client — the server decides", async () => {
+    // Since 0.5.45 a write-shared collaborator may ring the doorbell
+    // (interactive-canvas-apps Part E). The client cannot tell a write share
+    // from a read share without another round trip, so it forwards every
+    // contract-valid action and the web runtime's sendMessage gate answers;
+    // a read-only viewer gets the server's refusal back as the reason.
     const sent = [];
     const c = actionController(sent);
-    // The viewer authenticates as bob; the session belongs to alice.
     c.dispatch({ type: "sessions/merged", session: { sessionId: "s1", owner: { provider: "dev", subject: "alice" } } });
-    const authState = c.getState().auth;
     c.getState().auth.principal = { provider: "dev", subject: "bob" };
-    const result = await c.submitCanvasAction("s1", msg("chat", { text: "hijack attempt" }));
-    assert.equal(result.ok, false);
-    assert.match(result.reason, /creator/);
-    assert.equal(sent.length, 0, "never reaches the transport");
-    void authState;
+    const result = await c.submitCanvasAction("s1", msg("chat", { text: "from a collaborator" }));
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 1, "reaches the transport; authorization happens there");
 });
 
 // ── Data ticks: quiet, monotonic, replayable ────────────────────────────────

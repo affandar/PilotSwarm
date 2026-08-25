@@ -316,6 +316,9 @@ const VALID_ACCESS_CLASSES = new Set([
     "facts:read", "facts:write",
     "fleet:read", "fleet:admin",
     "authz:audit",
+    // The canvas KV store: both gate on session READ in the runtime; whether
+    // a reader may write is the canvas policy's call inside the chokepoint.
+    "canvas:read", "canvas:write",
 ]);
 
 test("every protocol operation declares a known access class", () => {

@@ -105,23 +105,13 @@ export { normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 
 const DRAW_CANVAS_TOOL_SPEC = {
     description:
-        "Replace one of this session's canvases — persistent visual surfaces rendered live in the user's portal — "
-        + "with a complete HTML document. Up to five canvases per session (slot 1-5, default 1), each with its own "
-        + "revision history and a friendly name you set. "
-        + "Draw when the user asks for something visual (draw, visualize, chart this, keep a dashboard), or when an "
-        + "outcome you are delivering would be GREATLY clarified by a quick graphic. Most replies need no drawing. "
-        + "Drawing switches the user's view to the canvas, so draw only when that interruption is earned — and never "
-        + "redraw on a no-op cycle. "
-        + "The document is replaced whole each time; use read_canvas first when iterating on an existing drawing. "
-        + "Before drawing over a canvas that already exists, check whether only the CONTENT changed: if the layout "
-        + "is the same, update_canvas(patch) costs tens of tokens where a redraw costs the whole document. "
-        + "Layout change = draw_canvas; content change = update_canvas. "
-        + "It renders in the same sandbox as artifact previews: fully self-contained, no network, set your own "
-        + "background and text colors, lay out with CSS so it reflows (follow the html-visuals skill). "
-        + "Pass an empty string to clear the canvas. Sources: inline html, OR fromArtifact to render a stored "
-        + "canvas app without the bytes ever entering your context (exactly one of the two). "
-        + "Do NOT paste canvas links into your reply — the canvas updates live on the user's screen; one sentence "
-        + "noting what it now shows is plenty. For one-off file previews use show_artifact instead.",
+        "Replace one of this session's canvases (persistent visual surfaces rendered live in the portal; slot 1-5, "
+        + "default 1) with a complete self-contained HTML document. Draw when the user asks for something visual or a "
+        + "graphic would greatly clarify an outcome — most replies need no drawing, and drawing switches the user's view. "
+        + "Layout change = draw_canvas; content change = update_canvas(patch) (far cheaper). Exactly one source: inline "
+        + "html (empty string clears), or fromArtifact to render a stored app server-side without the bytes entering your "
+        + "context. Do not paste canvas links in replies. Before an interactive or shared canvas, load_skill(\"canvas-apps\"); "
+        + "for layout, charts and the sandbox rules, load_skill(\"html-visuals\").",
     parameters: {
         type: "object",
         properties: {
@@ -144,14 +134,12 @@ const DRAW_CANVAS_TOOL_SPEC = {
             fromArtifact: {
                 type: "object",
                 description:
-                    "Render a stored HTML artifact onto the canvas SERVER-SIDE — the bytes never enter your "
-                    + "context (never read_artifact + re-paste; that is the anti-pattern this exists to kill). "
-                    + "Mutually exclusive with html. The tool result returns the app's interface card (embedded "
-                    + "CANVAS-APP-MANIFEST summary + the effective responseContract) so you can interpret "
-                    + "canvas-action messages and author update_canvas ticks without ever reading the file.",
+                    "Render a stored HTML artifact onto the canvas SERVER-SIDE (never read_artifact + re-paste). "
+                    + "Mutually exclusive with html. The result returns the app's interface card (manifest summary + "
+                    + "effective responseContract).",
                 properties: {
                     sessionId: { type: "string", description: "Session that owns the source artifact. Defaults to this session." },
-                    filename: { type: "string", description: "Source artifact filename, e.g. 'apps/release-signoff.html'." },
+                    filename: { type: "string", description: "Source artifact filename, e.g. 'app-release-signoff.html' (artifact names are flat: no directories)." },
                     expectedSha256: { type: "string", description: "Optional precondition: fail with SHA_MISMATCH (no draw) if the source bytes hash differently." },
                 },
                 required: ["filename"],
@@ -159,18 +147,11 @@ const DRAW_CANVAS_TOOL_SPEC = {
             responseContract: {
                 type: "object",
                 description:
-                    "Optional contract that makes this canvas interactive while a user is viewing it live. "
-                    + "When drawing fromArtifact, an embedded CANVAS-APP-MANIFEST contract is used automatically — "
-                    + "pass this only to OVERRIDE it. Shape: "
-                    + '{"actions":{"<name>":{"<field>":"string"|"number"|"boolean"}}} — append "?" to a type for an '
-                    + "optional field (e.g. \"string?\"); a \"json\" field carries one structured object — use it to "
-                    + "BATCH a whole form into a single submit action instead of posting per keystroke (see the "
-                    + "html-visuals skill's Forms section). Page controls post back with "
-                    + "parent.postMessage({type:'canvas-action', action:'<name>', data:{...}}, '*'); the browser "
-                    + "validates against this contract and rejects everything else. Conforming actions arrive as "
-                    + "'[canvas-action] {\"action\":...,\"data\":...}' user messages, which the portal hides from the "
-                    + "chat pane — act on them and redraw. Omit the contract entirely for a display-only canvas: "
-                    + "with no contract, the browser accepts nothing.",
+                    "Optional: makes the canvas interactive. Shape {\"actions\":{\"<name>\":{\"<field>\":\"string\"|\"number\"|"
+                    + "\"boolean\"|\"json\"}}} (\"?\" suffix = optional). Page controls post parent.postMessage({type:'canvas-action', "
+                    + "action, data}, '*'); conforming posts reach you as '[canvas-action] {...}' user messages. A fromArtifact "
+                    + "draw uses the embedded CANVAS-APP-MANIFEST contract unless you override it. Omit for display-only. "
+                    + "Full protocol: load_skill(\"canvas-apps\").",
             },
             session_id: {
                 type: "string",
@@ -184,19 +165,11 @@ const DRAW_CANVAS_TOOL_SPEC = {
 
 const UPDATE_CANVAS_TOOL_SPEC = {
     description:
-        "Send a data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1). "
-        + "Use when the canvas's CONTENT changes but its layout does not — dashboards, tickers, watchers: "
-        + "draw the shell once with draw_canvas, then tick with update_canvas. "
-        + "Pass EXACTLY ONE of data or patch. `data` REPLACES the whole state — use it for the first tick "
-        + "after a draw and for wholesale refreshes. `patch` is an RFC 7386 JSON Merge Patch — the cheap "
-        + "path for every incremental change: send ONLY the subtree you are changing; objects deep-merge "
-        + "into the current state server-side, arrays and scalars replace, and null DELETES a key (omit "
-        + "keys you are not touching — null is deletion, not 'no change'). Patching one gauge costs a few "
-        + "tokens; re-sending a whole dashboard costs thousands. "
-        + "The page's applyData(state) always receives the complete merged state either way. "
-        + "Ticks never steal the screen (no view flip) and write no chat line, but they DO mark the canvas "
-        + "unseen — the toggle badges until the user looks. Cap: 32 KB for the MERGED state. Minimum 100 ms "
-        + "between ticks per slot. Layout change = draw_canvas; content change = update_canvas.",
+        "Send a data tick to a canvas page WITHOUT replacing the document (slot 1-5, default 1): content changed, "
+        + "layout did not. Exactly one of data (REPLACE the whole state — first tick after a draw, wholesale refresh) or "
+        + "patch (RFC 7386 merge patch — ONLY the changed subtree; null deletes a key; tens of tokens). The page's "
+        + "applyData(state) always gets the complete merged state. Ticks never steal the screen but DO mark the canvas "
+        + "unseen. Cap 32 KB merged; ≥100 ms between ticks per slot. For state several PEOPLE write, use canvas_kv instead.",
     parameters: {
         type: "object",
         properties: {
@@ -228,12 +201,9 @@ const UPDATE_CANVAS_TOOL_SPEC = {
 
 const SHOW_CANVAS_TOOL_SPEC = {
     description:
-        "Bring one of this session's ALREADY-DRAWN canvases to the user's screen without redrawing it "
-        + "(slot 1-5, default 1). No bytes, no new revision, and nothing is marked unseen — it only turns the "
-        + "user's view to a canvas that already exists: opening the canvas if it is closed, or switching slots "
-        + "if a different one is showing. Use it when the conversation returns to something you drew earlier. "
-        + "It respects the user's choices the same way draws do: if they dismissed that canvas this session, "
-        + "the view stays put. To change content, use draw_canvas or update_canvas instead.",
+        "Turn the user's view to an ALREADY-DRAWN canvas (slot 1-5, default 1) without redrawing: no bytes, no new "
+        + "revision, nothing is marked unseen. Use when the conversation returns to something you drew earlier. "
+        + "Respects a dismissal the same way draws do.",
     parameters: {
         type: "object",
         properties: {
@@ -262,24 +232,98 @@ const READ_CANVAS_TOOL_SPEC = {
             maxBytes: { type: "number", description: "Maximum characters to return (default 65536, cap 262144)." },
             manifestOnly: {
                 type: "boolean",
-                description:
-                    "Return only the canvas's interface card — embedded CANVAS-APP-MANIFEST summary plus the "
-                    + "ARMED responseContract from the latest draw — without the document bytes. Use this to "
-                    + "re-learn an interactive canvas cheaply after context regeneration or when you inherited "
-                    + "a canvas you did not draw.",
+                description: "Only the interface card (manifest summary + armed responseContract), no bytes — the cheap way to re-learn an interactive canvas.",
             },
             include_data: {
                 type: "boolean",
-                description:
-                    "Also return the canvas's CURRENT data state (`live`: the latest merged tick, its seq, and "
-                    + "who wrote it). Use it to resync before patching — after a restart, or when another writer "
-                    + "may have ticked the page. The payload can be up to 32 KB; ask only when you need it.",
+                description: "Also return the current tick state (`live`: merged data, seq, writer; up to 32 KB). Use to resync before patching.",
             },
             session_id: {
                 type: "string",
                 description: "Target an ANCESTOR session's canvas (your parent, grandparent, or the root) instead of your own. Sub-agents use this to keep a shared dashboard on the parent live. Siblings, children, and unrelated sessions are refused.",
             },
         },
+    },
+    handler: async () => "stub",
+} as const;
+
+const CANVAS_KV_TOOL_SPEC = {
+    description:
+        "The canvas KV store: durable per-key shared state for an interactive canvas app (slot 1-5, default 1). "
+        + "Every permitted viewer and you write it; every viewer sees each change live (~50 ms) with NO redraw and NO turn. "
+        + "Use it for app state (app/<item>), requests from the page (req/<id>: read on wake, land each in done|failed), "
+        + "and notes to the page (evt/<n>). One key per item — never a list in one key. "
+        + "get/list read; put/delete write (put accepts ifMatch: 0 = create only, N = current rev must be N). "
+        + "Values are ≤16 KB; 1000 keys and 2 MB per canvas. Load the canvas-apps skill (load_skill) for the protocol.",
+    parameters: {
+        type: "object",
+        properties: {
+            op: { type: "string", enum: ["get", "put", "list", "delete"], description: "get one key · list a prefix · put a value · delete a key." },
+            key: { type: "string", description: "Key for get/put/delete, e.g. app/item/5502432 or req/7f3a. Letters, digits, . _ / - only." },
+            value: { description: "put: the value to store (any JSON). The page reads it back as-is." },
+            prefix: { type: "string", description: "list: key prefix, e.g. req/ or app/. Omit for everything." },
+            limit: { type: "number", description: "list: page size (≤200)." },
+            after: { type: "string", description: "list: cursor — the last key of the previous page." },
+            ifMatch: { type: "number", description: "put/delete: compare-and-swap. 0 = the key must not exist (claim); N = the current rev must be N." },
+            slot: { type: "number", description: "Which canvas, 1-5. Default 1." },
+            session_id: { type: "string", description: "Target an ANCESTOR session's canvas (parent, grandparent, root). Siblings, children, unrelated sessions are refused." },
+        },
+        required: ["op"],
+    },
+    handler: async () => "stub",
+} as const;
+
+const PUBLISH_CANVAS_APP_TOOL_SPEC = {
+    description:
+        "Publish the canvas on a slot as a reusable app that EVERY session in the deployment can find and draw. "
+        + "Copies the document to a pinned artifact app-<name>.html and writes the catalog card (shared fact apps/<name>) "
+        + "from the document's CANVAS-APP-MANIFEST — which MUST carry an `interface` block (keys, requests, events) so "
+        + "another agent can drive the app from the card alone. Call it when the user says to share the app with the "
+        + "team. Publishing is a disclosure: publish the SHELL, never a page with data baked in.",
+    parameters: {
+        type: "object",
+        properties: {
+            name: { type: "string", description: "Catalog slug, e.g. release-signoff. Lowercase letters, digits, dashes. Republishing the same name replaces the card." },
+            description: { type: "string", description: "The text the catalog RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
+            tags: { type: "array", items: { type: "string" }, description: "Optional catalog tags, e.g. [\"review\", \"release\"]." },
+            slot: { type: "number", description: "Which canvas to publish, 1-5. Default 1." },
+            session_id: { type: "string", description: "Publish an ANCESTOR session's canvas instead of your own." },
+        },
+        required: ["name", "description"],
+    },
+    handler: async () => "stub",
+} as const;
+
+const FIND_CANVAS_APP_TOOL_SPEC = {
+    description:
+        "Search the deployment's catalog of published canvas apps. LOOK BEFORE BUILDING: when the user asks for an app "
+        + "(a board, a poll, a sign-off sheet, a review workbench), search first and offer an existing one. Returns ranked "
+        + "cards {key, name, description, tags, kv, source}. Then read_facts(key_pattern=\"apps/<name>\", scope=\"shared\") "
+        + "for the full card — its `interface` tells you the KV keys and req/* ops the app speaks — and "
+        + "draw_canvas({fromArtifact: card.source}) to put it on screen.",
+    parameters: {
+        type: "object",
+        properties: {
+            query: { type: "string", description: "The situation, in words: 'review a pull request diff', 'team availability', 'release sign-off'." },
+            limit: { type: "number", description: "Max results (default 8, cap 20)." },
+        },
+        required: ["query"],
+    },
+    handler: async () => "stub",
+} as const;
+
+const LOAD_SKILL_TOOL_SPEC = {
+    description:
+        "Load a skill's full instructions on demand. The system prompt lists the available skills by name with a "
+        + "one-line description; call this with a name when the task at hand matches one (e.g. canvas-apps before building "
+        + "an interactive canvas, html-visuals before a dashboard). The body is returned once as this tool's result — "
+        + "do not call it again for the same skill in one session.",
+    parameters: {
+        type: "object",
+        properties: {
+            name: { type: "string", description: "Skill name exactly as listed in the system prompt's skills index." },
+        },
+        required: ["name"],
     },
     handler: async () => "stub",
 } as const;
@@ -588,6 +632,12 @@ export class ManagedSession {
     readonly sessionId: string;
     private copilotSession: CopilotSession;
     private config: ManagedSessionConfig;
+    /** Skills the `load_skill` tool may return, by reference from the worker. */
+    private skillCatalog: Array<{ name: string; description: string; prompt: string }> = [];
+
+    setSkillCatalog(list: Array<{ name: string; description: string; prompt: string }>): void {
+        this.skillCatalog = Array.isArray(list) ? list : [];
+    }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
@@ -889,8 +939,12 @@ export class ManagedSession {
         const updateCanvasTool = defineTool("update_canvas", UPDATE_CANVAS_TOOL_SPEC);
         const readCanvasTool = defineTool("read_canvas", READ_CANVAS_TOOL_SPEC);
         const showCanvasTool = defineTool("show_canvas", SHOW_CANVAS_TOOL_SPEC);
+        const canvasKvTool = defineTool("canvas_kv", CANVAS_KV_TOOL_SPEC);
+        const publishCanvasAppTool = defineTool("publish_canvas_app", PUBLISH_CANVAS_APP_TOOL_SPEC);
+        const findCanvasAppTool = defineTool("find_canvas_app", FIND_CANVAS_APP_TOOL_SPEC);
+        const loadSkillTool = defineTool("load_skill", LOAD_SKILL_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool,
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool,
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
     }
 
@@ -1730,6 +1784,75 @@ export class ManagedSession {
                 return JSON.stringify(result);
             },
         });
+        const canvasKvTool = defineTool("canvas_kv", {
+            ...CANVAS_KV_TOOL_SPEC,
+            handler: async (args: { op?: string; key?: string; value?: unknown; prefix?: string; limit?: number; after?: string; ifMatch?: number; slot?: number; session_id?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("canvas_kv");
+                if (typeof (controlBridge as any)?.canvasKv !== "function") {
+                    return "Error: the canvas bridge is unavailable on this session.";
+                }
+                const op = String(args?.op ?? "");
+                if (!["get", "put", "list", "delete"].includes(op)) return "Error: op must be get, put, list or delete.";
+                const result = await (controlBridge as any).canvasKv({
+                    op,
+                    ...(args?.key !== undefined ? { key: String(args.key) } : {}),
+                    ...(args?.value !== undefined ? { value: args.value } : {}),
+                    ...(args?.prefix !== undefined ? { prefix: String(args.prefix) } : {}),
+                    ...(args?.limit !== undefined ? { limit: args.limit } : {}),
+                    ...(args?.after !== undefined ? { after: String(args.after) } : {}),
+                    ...(args?.ifMatch !== undefined ? { ifMatch: args.ifMatch } : {}),
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
+                });
+                if (result?.error) return `Error: canvas_kv ${op} failed: ${result.error}`;
+                return JSON.stringify(result);
+            },
+        });
+        const publishCanvasAppTool = defineTool("publish_canvas_app", {
+            ...PUBLISH_CANVAS_APP_TOOL_SPEC,
+            handler: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("publish_canvas_app");
+                if (typeof (controlBridge as any)?.publishCanvasApp !== "function") {
+                    return "Error: the canvas bridge is unavailable on this session.";
+                }
+                const result = await (controlBridge as any).publishCanvasApp({
+                    name: args?.name, description: args?.description,
+                    ...(Array.isArray(args?.tags) ? { tags: args.tags } : {}),
+                    ...(args?.slot !== undefined ? { slot: args.slot } : {}),
+                    ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
+                });
+                if (result?.error) return `Error: could not publish the app: ${result.error}`;
+                return JSON.stringify(result);
+            },
+        });
+        const findCanvasAppTool = defineTool("find_canvas_app", {
+            ...FIND_CANVAS_APP_TOOL_SPEC,
+            handler: async (args: { query?: string; limit?: number }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("find_canvas_app");
+                if (typeof (controlBridge as any)?.findCanvasApp !== "function") {
+                    return "Error: the canvas bridge is unavailable on this session.";
+                }
+                const result = await (controlBridge as any).findCanvasApp({ query: args?.query, limit: args?.limit });
+                if (result?.error) return `Error: could not search the app catalog: ${result.error}`;
+                if (!result?.count) return JSON.stringify({ count: 0, apps: [], note: "No published app matches. Build one, and publish_canvas_app it when the user wants it shared." });
+                return JSON.stringify(result);
+            },
+        });
+        const loadSkillTool = defineTool("load_skill", {
+            ...LOAD_SKILL_TOOL_SPEC,
+            handler: async (args: { name?: string }) => {
+                const name = String(args?.name ?? "").trim();
+                if (!name) return "Error: name is required.";
+                const catalog = this.skillCatalog;
+                const skill = catalog.find((s) => s.name === name)
+                    ?? catalog.find((s) => s.name.toLowerCase() === name.toLowerCase());
+                if (!skill) {
+                    const names = catalog.map((s) => s.name).sort().join(", ");
+                    return `Error: no skill named ${JSON.stringify(name)}. Available: ${names || "(none)"}.`;
+                }
+                return `[SKILL: ${skill.name}]\n${skill.description ? `${skill.description}\n\n` : ""}${skill.prompt}`;
+            },
+        });
 
         // list_available_models — returns data inline (no abort/continuation needed)
         const listModelsTool = defineTool("list_available_models", {
@@ -2225,7 +2348,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2268,7 +2391,7 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app",
     "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -2297,6 +2420,10 @@ export class ManagedSession {
             updateCanvasTool,
             readCanvasTool,
             showCanvasTool,
+            canvasKvTool,
+            publishCanvasAppTool,
+            findCanvasAppTool,
+            loadSkillTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
 
         // The provider budget tools' REAL handlers are built from the catalog

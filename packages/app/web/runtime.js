@@ -136,6 +136,7 @@ const BREAK_GLASS_AUDITED = {
 // entirely and writes at once.
 const SIGNIN_ROLE_REFRESH_MS = 5 * 60 * 1000;
 
+
 function coerceShareSlot(raw) {
     // POST body params arrive as { slot } objects or bare numbers depending
     // on the caller; accept both, validate downstream.
@@ -291,6 +292,14 @@ export class PortalRuntime {
         if (access === "facts:write") {
             await this._authorizeFactsWrite(method, safeParams, authContext, { owner, isAdmin });
             return { snapshot: null };
+        }
+
+        // The canvas KV store: reading and writing both floor on session READ.
+        // Whether a read-only viewer may WRITE is the canvas policy's call,
+        // decided per request inside the SDK chokepoint (canvas-kv.ts) —
+        // never by handing them session:write.
+        if (access === "canvas:read" || access === "canvas:write") {
+            return this._gateSession(method, "session:read", safeParams.sessionId, authContext, { owner, isAdmin });
         }
 
         if (access === "group:manage") {
@@ -890,6 +899,40 @@ export class PortalRuntime {
                 return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin, packageSelectorParams(safeParams, { scopeless: true }));
             case "setAgentPackageEnabled":
                 return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, isAdmin, packageSelectorParams(safeParams));
+            case "grantAgentPackageEditor": {
+                const grantee = safeParams.user && typeof safeParams.user === "object" ? safeParams.user : {};
+                if (!grantee.provider || !grantee.subject) {
+                    throw Object.assign(new Error("grantAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.grantAgentPackageEditor(safeParams.name, grantee, owner, isAdmin);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "grantAgentPackageEditor",
+                    sessionId: null,
+                    target: `${grantee.provider}/${grantee.subject}`,
+                    decision: "share_change",
+                    reason: `package=${safeParams.name}`,
+                });
+                return { name: safeParams.name, granted: { provider: grantee.provider, subject: grantee.subject } };
+            }
+            case "revokeAgentPackageEditor": {
+                const grantee = safeParams.user && typeof safeParams.user === "object" ? safeParams.user : {};
+                if (!grantee.provider || !grantee.subject) {
+                    throw Object.assign(new Error("revokeAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.revokeAgentPackageEditor(safeParams.name, grantee, owner, isAdmin);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "revokeAgentPackageEditor",
+                    sessionId: null,
+                    target: `${grantee.provider}/${grantee.subject}`,
+                    decision: "share_change",
+                    reason: `package=${safeParams.name}`,
+                });
+                return { name: safeParams.name, revoked: { provider: grantee.provider, subject: grantee.subject } };
+            }
+            case "listAgentPackageEditors":
+                return this.transport.listAgentPackageEditors(safeParams.name);
             case "pinAgentPackageVersion":
                 return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin, packageSelectorParams(safeParams));
             case "deleteAgentPackage":
@@ -949,8 +992,16 @@ export class PortalRuntime {
                 // closed when no access snapshot is resolvable.
                 if (typeof safeParams.prompt === "string" && safeParams.prompt.startsWith("[canvas-action] ")) {
                     const snapshot = gate.snapshot ?? await this._getAccessSnapshot(safeParams.sessionId, owner);
-                    if (!snapshot?.viewerIsOwner) {
-                        throw forbiddenError("Canvas actions are accepted only from the session's creator. Use the chat box instead.");
+                    // Anyone who may WRITE the session may ring the doorbell
+                    // (interactive-canvas-apps Part E): they can send a chat
+                    // message already, so an action is no new power. Read-only
+                    // viewers and link bearers are refused — their requests
+                    // land in the KV as `suggested` instead.
+                    const mayRing = Boolean(snapshot) && (
+                        snapshot.viewerIsOwner || isAdmin
+                        || snapshot.viewerShareAccess === "write" || snapshot.visibility === "shared_write");
+                    if (!mayRing) {
+                        throw forbiddenError("Canvas actions are accepted only from people who can write this session. Use the chat box, or ask the owner.");
                     }
                 }
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, {
@@ -1137,12 +1188,73 @@ export class PortalRuntime {
                 return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit, safeParams.eventTypes);
             case "getCanvasLive":
                 return this.transport.getCanvasLive(safeParams.sessionId);
+            case "readCanvasKv": {
+                const slot = this._canvasKvSlot(safeParams.slot);
+                return this.transport.readCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, isAdmin), {
+                    prefix: safeParams.prefix ?? null,
+                    limit: safeParams.limit ?? null,
+                    after: safeParams.after ?? null,
+                    key: safeParams.key ?? null,
+                });
+            }
+            case "writeCanvasKv": {
+                const slot = this._canvasKvSlot(safeParams.slot);
+                const ops = Array.isArray(safeParams.ops) ? safeParams.ops : [];
+                if (ops.length === 0 || ops.length > 50) {
+                    throw Object.assign(new Error("writeCanvasKv requires ops: [{op, key, value?, ifMatch?}] (1-50)"), { code: "INVALID_REQUEST" });
+                }
+                const who = `${owner?.provider ?? ""}/${owner?.subject ?? ""}`;
+                // Rate limits live at the door (Part I): 10 WRITES/s per
+                // viewer across the session, 50/s per canvas. Counted per op,
+                // not per request, or one 50-op request would be free.
+                if (!this._canvasKvRateOk(`${safeParams.sessionId}:${who}`, 10, ops.length) || !this._canvasKvRateOk(`${safeParams.sessionId}:${slot}`, 50, ops.length)) {
+                    throw Object.assign(new Error("canvas KV write rate exceeded (10 writes/s per viewer, 50/s per canvas)"), { code: "RATE_LIMITED", status: 429 });
+                }
+                return this.transport.writeCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, isAdmin), ops);
+            }
+            case "setCanvasKvAccess": {
+                const slot = this._canvasKvSlot(safeParams.slot);
+                const access = String(safeParams.access ?? "");
+                if (!["owner", "readers", "link"].includes(access)) {
+                    throw Object.assign(new Error("setCanvasKvAccess requires access: owner | readers | link"), { code: "INVALID_REQUEST" });
+                }
+                await this.transport.setCanvasKvAccess(safeParams.sessionId, slot, access);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "setCanvasKvAccess",
+                    sessionId: String(safeParams.sessionId),
+                    decision: "share_change",
+                    reason: `slot=${slot} kv-access=${access}`,
+                });
+                return { sessionId: safeParams.sessionId, slot, access };
+            }
             case "getCanvasShareLink":
                 return this.transport.getCanvasShareLink(safeParams.sessionId, safeParams.slot);
-            case "resetCanvasShareLink":
-                return this.transport.resetCanvasShareLink(safeParams.sessionId, coerceShareSlot(safeParams.slot), principalLabel(authContext));
-            case "removeCanvasShareLink":
-                return this.transport.removeCanvasShareLink(safeParams.sessionId, coerceShareSlot(safeParams.slot));
+            case "resetCanvasShareLink": {
+                const slot = coerceShareSlot(safeParams.slot);
+                const minted = await this.transport.resetCanvasShareLink(safeParams.sessionId, slot, principalLabel(authContext));
+                // A public link is a share change (interactive-canvas-apps H.3).
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "resetCanvasShareLink",
+                    sessionId: String(safeParams.sessionId),
+                    decision: "share_change",
+                    reason: `slot=${slot} public view link minted or rotated`,
+                });
+                return minted;
+            }
+            case "removeCanvasShareLink": {
+                const slot = coerceShareSlot(safeParams.slot);
+                const removed = await this.transport.removeCanvasShareLink(safeParams.sessionId, slot);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: "removeCanvasShareLink",
+                    sessionId: String(safeParams.sessionId),
+                    decision: "share_change",
+                    reason: `slot=${slot} public view link removed`,
+                });
+                return removed;
+            }
             case "getTopEventEmitters":
                 return this.transport.getTopEventEmitters(normalizeTopEventEmitterOptions(safeParams));
             case "getLogConfig":
@@ -1433,6 +1545,68 @@ export class PortalRuntime {
             if (!body) return null;
             const html = Buffer.isBuffer(body) ? body.toString("utf8") : String(body);
             return { ...scope, html };
+        } catch {
+            return null;
+        }
+    }
+
+    /** The KV chokepoint's user principal for a signed-in caller. */
+    _canvasKvPrincipal(authContext, owner, isAdmin) {
+        // `label` is what other people SEE on a row: the display name, then
+        // the email, then the bare subject. (principalLabel prefers email —
+        // it was written for share-link provenance, not for attribution.)
+        const p = authContext?.principal ?? owner ?? {};
+        const label = String(p?.displayName || owner?.displayName || p?.email || owner?.email || p?.subject || "").trim();
+        return {
+            kind: "user",
+            provider: String(owner?.provider ?? ""),
+            subject: String(owner?.subject ?? ""),
+            isAdmin: Boolean(isAdmin),
+            label: label || null,
+        };
+    }
+
+    /** A canvas slot from a request param: integer 1-5, else INVALID_REQUEST. */
+    _canvasKvSlot(raw) {
+        const value = raw && typeof raw === "object" && raw.slot !== undefined ? raw.slot : raw;
+        const slot = value === undefined || value === null || value === "" ? 1 : Number(value);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 5) {
+            throw Object.assign(new Error("slot must be an integer 1-5"), { code: "INVALID_REQUEST" });
+        }
+        return slot;
+    }
+
+    /** Sliding one-second window per key; true when `count` more writes fit. */
+    _canvasKvRateOk(key, perSecond, count = 1) {
+        if (!this._canvasKvRate) this._canvasKvRate = new Map();
+        const now = Date.now();
+        const stamps = (this._canvasKvRate.get(key) || []).filter((t) => now - t < 1000);
+        if (stamps.length + count > perSecond) {
+            this._canvasKvRate.set(key, stamps);
+            return false;
+        }
+        for (let i = 0; i < count; i++) stamps.push(now);
+        this._canvasKvRate.set(key, stamps);
+        // Bound the map: forget idle keys on every 500th check.
+        if (this._canvasKvRate.size > 2000) {
+            for (const [k, v] of this._canvasKvRate) {
+                if (v.length === 0 || now - v[v.length - 1] > 5000) this._canvasKvRate.delete(k);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Share door: the KV store for a validated token — READ ONLY. Session
+     * and slot come from the token row; the bearer never names them.
+     */
+    async getCanvasShareKv(rawToken, query = {}) {
+        const scope = await this.resolveCanvasShareToken(rawToken);
+        if (!scope) return null;
+        if (typeof this.transport.readCanvasKvForLink !== "function") return null;
+        try {
+            const read = await this.transport.readCanvasKvForLink(scope.sessionId, scope.slot, query);
+            return { slot: scope.slot, ...read };
         } catch {
             return null;
         }

@@ -158,6 +158,35 @@ you only need to look. Edit what you staged, then diff, get approval, publish.
 Never invent what the current agent says. Seed from the real version and edit
 it, or you will silently drop instructions somebody depended on.
 
+**MCP servers.** An agent that needs tools from an MCP server needs three
+things in the package, and you write all three:
+
+```
+.mcp.json                   catalog of servers this package ships, at the package ROOT
+                            { "<name>": { "type": "http", "url": "https://…", "tools": ["*"] } }
+                            { "<name>": { "command": "node", "args": ["./mcp-servers/x.js"], "tools": ["*"] } }
+                            (stdio: paths relative to the package root; do not set cwd)
+agents/<name>.agent.md      schemaVersion: 2
+                            mcpServers: [<name>]
+                            inheritDefaultMcpServers: false
+```
+
+Do NOT add `"mcpConfig"` to `plugin.json` for a convention-layout package
+(one with no `agents`/`skills`/`tools` lists in it): declaring any layout
+field switches the package to manifest mode, where only declared artifacts
+ship — the agents you did not list would silently vanish. A root `.mcp.json`
+is picked up by convention. Only a package that already lists its artifacts
+in `plugin.json` names the catalog file with `"mcpConfig"`.
+
+Rules the validator enforces: `schemaVersion: 2` whenever `mcpServers:` is
+present; no `"default": true` and no `"allowedAgents"` in a package
+`.mcp.json` (both are deployment-catalog fields); a server name that
+collides with any deployment catalog entry is rejected. An agent may also
+reference a server the DEPLOYMENT defines (not in the package) — then the
+deployment must list the agent's identity `<package>:<agent>` in that
+server's `allowedAgents`, or the reference is dropped at load. In-package
+stdio servers must be dependency-free ESM: no `node_modules`.
+
 ## NOTHING SHIPS UNREVIEWED
 
 **You must show a diff and get an explicit human yes before every publish.**

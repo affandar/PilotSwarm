@@ -413,6 +413,83 @@ test("malformed .mcp.json shapes are rejected", async () => {
     assert.match(result.errors[0].message, /"command" \(stdio\) or "url"/);
 });
 
+// ─── MCP: deployment-catalog fields and agent cross-checks ──────
+
+function warningCodes(validation) {
+    return validation.warnings.map((w) => w.code).sort();
+}
+
+function writeMcpAgent(dir, name, frontmatterLines) {
+    fs.writeFileSync(path.join(dir, "agents", `${name}.agent.md`), [
+        "---",
+        `name: ${name}`,
+        "version: 1.0.0",
+        ...frontmatterLines,
+        "---",
+        "",
+        "You use MCP.",
+    ].join("\n"));
+}
+
+test('"default": true in a package .mcp.json is rejected', async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({
+        "ticket-api": { command: "node", args: ["./mcp-servers/ticket.js"], tools: ["*"], default: true },
+    }));
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["mcp_default_forbidden"]);
+});
+
+test('"allowedAgents" in a package .mcp.json is rejected', async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({
+        "ticket-api": { command: "node", args: ["./mcp-servers/ticket.js"], tools: ["*"], allowedAgents: ["triager"] },
+    }));
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["mcp_allowed_agents_forbidden"]);
+});
+
+test("a package server named like a deployment-restricted entry is rejected only when the caller reserves it", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify({
+        "icm-mcp-readonly": { command: "node", args: ["./mcp-servers/ticket.js"], tools: ["*"] },
+    }));
+    const reserved = await validateAgentPackageDir(dir, { skipSyntaxCheck: true, reservedMcpServerNames: ["icm-mcp-readonly"] });
+    assert.deepEqual(errorCodes(reserved), ["reserved_mcp_server_name"]);
+    const open = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(open.ok, true, "no reservation list → the name is just a name");
+});
+
+test("an agent declaring mcpServers under schemaVersion 1 is rejected; under 2 it passes", async () => {
+    const dir = writeValidPackage(tmpdir());
+    writeMcpAgent(dir, "mcpuser", ["schemaVersion: 1", "mcpServers: [ticket-api]"]);
+    const v1 = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(v1), ["mcp_requires_schema_v2"]);
+    assert.match(v1.errors[0].message, /agents\/mcpuser\.agent\.md/);
+
+    writeMcpAgent(dir, "mcpuser", ["schemaVersion: 2", "mcpServers: [ticket-api]"]);
+    const v2 = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(v2.ok, true);
+    assert.deepEqual(warningCodes(v2), [], "a reference the package defines is not warned about");
+});
+
+test("inheritDefaultMcpServers: true is an MCP declaration for the schema gate too", async () => {
+    const dir = writeValidPackage(tmpdir());
+    writeMcpAgent(dir, "inheritor", ["schemaVersion: 1", "inheritDefaultMcpServers: true"]);
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(result), ["mcp_requires_schema_v2"]);
+});
+
+test("an mcpServers reference the package does not define is a warning, not an error", async () => {
+    const dir = writeValidPackage(tmpdir());
+    writeMcpAgent(dir, "borrower", ["schemaVersion: 2", "mcpServers: [icm-mcp-rw, ticket-api]"]);
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(result.ok, true);
+    assert.deepEqual(warningCodes(result), ["unknown_mcp_server"]);
+    assert.match(result.warnings[0].message, /"icm-mcp-rw"/);
+    assert.equal(result.warnings[0].file, "agents/borrower.agent.md");
+});
+
 test("tools/ without worker-module.js is rejected", async () => {
     const dir = writeValidPackage(tmpdir());
     fs.mkdirSync(path.join(dir, "tools"));

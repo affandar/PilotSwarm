@@ -38,6 +38,12 @@ export function errorToResult(err: unknown): ToolResult {
         });
     }
     if (status === 403 || /\b403\b|forbidden/i.test(message)) {
+        // A 403 that names its rule (AGENT_PACKAGE_FORBIDDEN: only the
+        // package creator, an editor, or an admin …) is the answer the model
+        // needs. Only a bare 403 gets the generic admin-role explanation.
+        if (/[A-Z][A-Z_]+_FORBIDDEN:/.test(message)) {
+            return errorResult(message, { status: 403, code: "FORBIDDEN" });
+        }
         return errorResult(
             "forbidden: this operation requires the deployment's admin role. "
             + "The MCP server's credential (PILOTSWARM_API_TOKEN or cached login) does not carry it.",

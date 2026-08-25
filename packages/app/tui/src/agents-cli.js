@@ -32,6 +32,7 @@ import {
     validateAgentPackageDir,
     stageAgentPackageDir,
     listBundledAgentNames,
+    listDeploymentMcpServerNames,
     loadAgentFiles,
     AgentPackageValidationError,
 } from "pilotswarm-sdk";
@@ -75,6 +76,9 @@ Usage:
   pilotswarm agents pin <name>@<semver>
   pilotswarm agents promote <name> | demote <name>
   pilotswarm agents enable <name> | disable <name>
+  pilotswarm agents editors <name> [--json]
+  pilotswarm agents editors add <name> <provider>:<subject>
+  pilotswarm agents editors remove <name> <provider>:<subject>
   pilotswarm agents tree <name> [--semver <v>] [--json]
   pilotswarm agents cat <name> <file> [--semver <v>]
     pilotswarm agents download <name> [--semver <v>] [--output <file>]
@@ -303,6 +307,7 @@ export async function runAgentsCommand(argv) {
                             resolvedDir, scope, actor, isAdmin, {
                                 createdBy,
                                 reservedAgentNames: reservedAgentNamesForCli(),
+                                reservedMcpServerNames: listDeploymentMcpServerNames(getPluginDirsFromEnv()),
                             },
                         );
                     }
@@ -373,6 +378,36 @@ export async function runAgentsCommand(argv) {
                 const enabled = command === "enable";
                 await ctx.client.setAgentPackageEnabled(name, enabled, actor, isAdmin, selector);
                 console.log(`✓ ${name} ${enabled ? "enabled" : "disabled"} fleet-wide — workers converge on the next epoch poll`);
+                return 0;
+            }
+            // Editors: write grants on a SHARED package. `<provider>:<subject>`
+            // is the identity pair list_known_users / the share dialog show.
+            case "editors": {
+                const usage = "usage: pilotswarm agents editors <name> [--json] | editors add|remove <name> <provider>:<subject>";
+                const verb = rest[0] === "add" || rest[0] === "remove" ? rest[0] : null;
+                const name = verb ? rest[1] : rest[0];
+                if (!name) { console.error(usage); return 1; }
+                if (!verb) {
+                    const editors = await ctx.client.listAgentPackageEditors(name);
+                    if (flags.json) { console.log(JSON.stringify(editors, null, 2)); return 0; }
+                    if (editors.length === 0) { console.log(`${name}: no editors (only the owner and admins can change it)`); return 0; }
+                    for (const e of editors) {
+                        const who = e.displayName || e.email || e.subject;
+                        console.log(`  ${who}  ${e.provider}:${e.subject}  granted ${asDay(e.grantedAt)}${e.grantedByDisplay ? ` by ${e.grantedByDisplay}` : ""}`);
+                    }
+                    return 0;
+                }
+                const who = String(rest[2] ?? "");
+                const sep = who.indexOf(":");
+                if (sep <= 0 || sep === who.length - 1) { console.error(usage); return 1; }
+                const grantee = { provider: who.slice(0, sep), subject: who.slice(sep + 1) };
+                if (verb === "add") {
+                    await ctx.client.grantAgentPackageEditor(name, grantee, actor, isAdmin);
+                    console.log(`✓ ${grantee.provider}:${grantee.subject} can now publish, pin and enable ${name} (revoked if the package is demoted)`);
+                } else {
+                    await ctx.client.revokeAgentPackageEditor(name, grantee, actor, isAdmin);
+                    console.log(`✓ ${grantee.provider}:${grantee.subject} is no longer an editor of ${name}`);
+                }
                 return 0;
             }
             case "tree": {

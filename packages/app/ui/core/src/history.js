@@ -129,6 +129,18 @@ export function stripLeadingRehydrationNoticeText(text) {
     return normalized;
 }
 
+// The runtime neutralizes a FORGED `[SYSTEM:` marker by inserting a zero-width
+// character after the bracket, so a collaborator cannot inject system guidance
+// (orchestration/utils.ts). That neutralizer runs when the queued message is
+// consumed — AFTER the runtime has appended its own timer/cron notice to the
+// same text — so a GENUINE notice on a message from anyone but the session
+// owner arrives neutralized too. Match both spellings, or those notices print
+// as raw prose in the transcript.
+const NOTICE_MARKER_INVISIBLES = "[\\u200b-\\u200f\\u2060-\\u2064\\ufeff]*";
+const SYSTEM_NOTICE_LINE_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:`, "i");
+const SYSTEM_NOTICE_SINGLE_LINE_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:\\s*(.*?)\\]\\s*$`, "i");
+const SYSTEM_NOTICE_OPENING_RE = new RegExp(`^\\s*\\[${NOTICE_MARKER_INVISIBLES}SYSTEM:\\s*`, "i");
+
 function splitSystemNoticeSegments(text) {
     const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
     const segments = [];
@@ -145,13 +157,13 @@ function splitSystemNoticeSegments(text) {
 
     for (let index = 0; index < lines.length;) {
         const line = lines[index];
-        if (!/^\s*\[SYSTEM:/i.test(line)) {
+        if (!SYSTEM_NOTICE_LINE_RE.test(line)) {
             textLines.push(line);
             index += 1;
             continue;
         }
 
-        const singleLineMatch = /^\s*\[SYSTEM:\s*(.*?)\]\s*$/i.exec(line);
+        const singleLineMatch = SYSTEM_NOTICE_SINGLE_LINE_RE.exec(line);
         if (singleLineMatch) {
             flushText();
             segments.push({
@@ -162,7 +174,7 @@ function splitSystemNoticeSegments(text) {
             continue;
         }
 
-        const noticeLines = [line.replace(/^\s*\[SYSTEM:\s*/i, "")];
+        const noticeLines = [line.replace(SYSTEM_NOTICE_OPENING_RE, "")];
         let closingIndex = -1;
         for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
             const closingLine = lines[cursor];
@@ -254,7 +266,7 @@ function isInternalSystemLikeText(text) {
     const normalized = normalizeMessageText(text);
     if (!normalized) return false;
 
-    return /^\[SYSTEM:/i.test(normalized)
+    return SYSTEM_NOTICE_LINE_RE.test(normalized)
         || /^\[CHILD_UPDATE\b/i.test(normalized)
         || /^\[SESSION_MESSAGE(?:_RESPONSE)?\b/i.test(normalized)
         || /^Buffered child updates arrived /i.test(normalized)
@@ -469,13 +481,19 @@ function buildChatMessage(event, role) {
     const sessionMessageCard = buildSessionMessageChatCard(event, rawText);
     if (sessionMessageCard) return sessionMessageCard;
 
+    // The attribution prefix and any embedded system notice come off BEFORE
+    // the canvas check. A collaborator pressing a button in the drawn page
+    // arrives as `[FROM: …]\n[canvas-action] {…}\n\n[SYSTEM: …]`: testing the
+    // raw text misses it on both ends, and the message then prints as an
+    // ordinary chat line with its raw JSON payload showing.
+    const visibleText = stripLeadingSenderMarker(extractVisibleChatText(rawText, role));
+
     // A structured canvas response — the browser sent it on the viewer's
     // behalf after validating it against the drawn contract. One item shape
     // from ONE builder, so bulk load and live append cannot disagree. The
-    // portal chat hides it (the redraw is the visible half of the loop);
-    // the TUI shows a compact line.
-    if (role === "user" && isCanvasActionContent(rawText)) {
-        const parsed = parseCanvasActionContent(rawText);
+    // portal collapses it to one row; the TUI shows a compact line.
+    if (role === "user" && isCanvasActionContent(visibleText)) {
+        const parsed = parseCanvasActionContent(visibleText);
         if (parsed) {
             return {
                 id: `${event.sessionId}:${event.seq}`,
@@ -483,7 +501,7 @@ function buildChatMessage(event, role) {
                 role: "user",
                 action: parsed.action,
                 data: parsed.data,
-                text: rawText,
+                text: visibleText,
                 time: formatTimestamp(event.createdAt),
                 createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
                 // Without the ids, the distinct-ids rule can never fire and two
@@ -496,7 +514,7 @@ function buildChatMessage(event, role) {
         }
     }
 
-    const text = stripLeadingSenderMarker(extractVisibleChatText(rawText, role));
+    const text = visibleText;
     if (!hasVisibleMessageText(text)) return null;
     const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
         ? event.data.clientMessageIds.filter((id) => typeof id === "string" && id)

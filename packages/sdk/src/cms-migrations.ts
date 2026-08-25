@@ -325,6 +325,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "provider_ledger_base",
             sql: migration_0062_provider_ledger_base(schema),
         },
+        {
+            version: "0063",
+            name: "agent_package_editors",
+            sql: migration_0063_agent_package_editors(schema),
+        },
+        {
+            version: "0064",
+            name: "canvas_kv",
+            sql: migration_0064_canvas_kv(schema),
+        },
     ];
 }
 
@@ -12878,5 +12888,821 @@ BEGIN
     RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
+`;
+}
+
+// ─── Migration 0063: package editors, and everyone in the picker ─────
+//
+// Two things, one migration, because they ship together.
+//
+// EDITORS. A shared package's owner can grant named users WRITE access:
+// publish a new version, republish into it, pin, enable/disable. Never
+// scope changes, delete, or the editor list itself — those stay with the
+// owner (or an admin). The grant lives on the SHARED row only, and it is
+// deleted when that row is demoted to user scope: unsharing revokes. A
+// personal copy is a different row and never inherits a grant.
+//
+// The table keys on users.user_id like session_shares does, and the grant
+// path creates the grantee row create-only (0033's rule): a person who has
+// never signed in can be granted, and the 0032 email adoption folds them
+// into the real principal on first login.
+//
+// THE PICKER. cms_list_users hid every row whose display_name was NULL —
+// which is every Entra sign-in whose access token carries no `name` claim.
+// The user exists (0042 registers them at login) and is invisible to every
+// share dialog. Widen to "has a name OR an email"; a row with neither is
+// still the raw-id-grant placeholder the original filter meant to hide.
+//
+// Every function below that already existed is CREATE OR REPLACE'd here in
+// full: editing an applied migration in place is a silent no-op.
+
+function migration_0063_agent_package_editors(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.agent_package_editors (
+    package_id TEXT        NOT NULL REFERENCES ${s}.agent_packages(package_id) ON DELETE CASCADE,
+    user_id    BIGINT      NOT NULL REFERENCES ${s}.users(user_id),
+    granted_by BIGINT      REFERENCES ${s}.users(user_id),
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (package_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS agent_package_editors_user_idx ON ${s}.agent_package_editors (user_id);
+
+-- Is this principal an editor of this package row?
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_is_editor(
+    p_package_id TEXT, p_provider TEXT, p_subject TEXT
+) RETURNS BOOLEAN AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM ${s}.agent_package_editors e
+          JOIN ${s}.users u ON u.user_id = e.user_id
+         WHERE e.package_id = p_package_id
+           AND u.provider = NULLIF(BTRIM(p_provider), '')
+           AND u.subject  = NULLIF(BTRIM(p_subject), '')
+    );
+$$ LANGUAGE sql STABLE;
+
+-- ── Authz gains an editor mode ───────────────────────────────────
+--
+-- One new trailing argument with a default, so the existing seven-argument
+-- callers (delete, and anything else that must stay owner-only) keep
+-- resolving to this function unchanged. The seven-argument overload is
+-- dropped first: leaving it would make every seven-argument call ambiguous.
+DROP FUNCTION IF EXISTS ${s}.cms_agent_package_authz(TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT, TEXT);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_authz(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT,
+    p_allow_editor BOOLEAN DEFAULT FALSE
+) RETURNS ${s}.agent_packages AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_id  TEXT;
+    v_count INT;
+    v_is_owner BOOLEAN;
+BEGIN
+    v_id := ${s}.cms_resolve_agent_package_id(
+        p_name, p_actor_provider, p_actor_subject,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, FALSE);
+
+    -- Editors do not own a copy, so "my copy, then shared" finds nothing for
+    -- them when they omit the selector. Fall through to the shared copy,
+    -- which is the only row an editor grant can exist on.
+    IF v_id IS NULL AND p_allow_editor AND p_sel_scope IS NULL THEN
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'shared';
+    END IF;
+
+    -- Admin fallback (0043): NULL-owner rows and other users' private rows
+    -- have no owner triple to select by; refuse ambiguity rather than guess.
+    IF v_id IS NULL AND p_is_admin AND p_sel_scope IS NULL THEN
+        SELECT count(*) INTO v_count FROM ${s}.agent_packages p WHERE p.name = p_name;
+        IF v_count > 1 THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_AMBIGUOUS: % copies of "%" exist; name an owner or scope to pick one', v_count, p_name;
+        END IF;
+        SELECT p.package_id INTO v_id FROM ${s}.agent_packages p WHERE p.name = p_name;
+    END IF;
+
+    IF v_id IS NULL THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+
+    SELECT * INTO v_pkg FROM ${s}.agent_packages WHERE package_id = v_id FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+    END IF;
+
+    v_is_owner := v_pkg.owner_provider IS NOT NULL
+        AND v_pkg.owner_provider IS NOT DISTINCT FROM NULLIF(BTRIM(p_actor_provider), '')
+        AND v_pkg.owner_subject  IS NOT DISTINCT FROM NULLIF(BTRIM(p_actor_subject), '');
+
+    IF p_is_admin OR v_is_owner THEN
+        RETURN v_pkg;
+    END IF;
+    IF p_allow_editor AND ${s}.cms_agent_package_is_editor(v_pkg.package_id, p_actor_provider, p_actor_subject) THEN
+        RETURN v_pkg;
+    END IF;
+    IF p_allow_editor THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator, an editor, or an admin can modify "%"', p_name;
+    END IF;
+    RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can modify "%"', p_name;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Editor-level mutations: enable/disable and pin ───────────────
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_enabled(
+    p_name TEXT, p_enabled BOOLEAN, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, TRUE);
+    UPDATE ${s}.agent_packages SET enabled = p_enabled WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_pin_agent_package_version(
+    p_name TEXT, p_semver TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_version_id TEXT;
+BEGIN
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, TRUE);
+    SELECT version_id INTO v_version_id FROM ${s}.agent_package_versions
+     WHERE package_id = v_pkg.package_id AND semver = p_semver;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_VERSION_NOT_FOUND: %@% is not a published version', p_name, p_semver;
+    END IF;
+    UPDATE ${s}.agent_packages SET active_version_id = v_version_id WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Scope change stays owner-only; demotion revokes every editor ─
+CREATE OR REPLACE FUNCTION ${s}.cms_set_agent_package_scope(
+    p_name TEXT, p_scope TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_clash TEXT;
+BEGIN
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject);
+
+    IF p_scope = 'shared' AND v_pkg.scope <> 'shared' THEN
+        SELECT p.package_id INTO v_clash FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'shared';
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NAME_TAKEN: a shared package named "%" already exists; rename before promoting', p_name;
+        END IF;
+    END IF;
+
+    IF p_scope = 'user' AND v_pkg.scope <> 'user' THEN
+        IF v_pkg.owner_provider IS NULL OR v_pkg.owner_subject IS NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NO_OWNER: "%" has no owner identity to demote to', p_name;
+        END IF;
+        SELECT p.package_id INTO v_clash FROM ${s}.agent_packages p
+         WHERE p.name = p_name AND p.scope = 'user'
+           AND p.owner_provider = v_pkg.owner_provider
+           AND p.owner_subject = v_pkg.owner_subject;
+        IF v_clash IS NOT NULL THEN
+            RAISE EXCEPTION 'AGENT_PACKAGE_NAME_TAKEN: that owner already has a user-scope package named "%"', p_name;
+        END IF;
+        -- Unsharing revokes. Same statement, same transaction: a failed
+        -- demotion above leaves the grants exactly as they were.
+        DELETE FROM ${s}.agent_package_editors WHERE package_id = v_pkg.package_id;
+    END IF;
+
+    UPDATE ${s}.agent_packages SET scope = p_scope WHERE package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Publish: an editor may add versions to the shared package ────
+--
+-- Body is 0043's, with one change at the existing-package gate. The row
+-- keeps its owner: an editor's publish never reassigns the package.
+CREATE OR REPLACE FUNCTION ${s}.cms_publish_agent_package(
+    p_package_id TEXT, p_version_id TEXT, p_name TEXT, p_scope TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_source_id TEXT,
+    p_semver TEXT, p_sha256 TEXT, p_size_bytes BIGINT, p_artifact_filename TEXT,
+    p_commit_sha TEXT, p_manifest JSONB, p_created_by TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(status TEXT, package_id TEXT, version_id TEXT) AS $$
+DECLARE
+    v_pkg RECORD;
+    v_ver RECORD;
+    v_owner_provider TEXT := NULLIF(BTRIM(p_owner_provider), '');
+    v_owner_subject  TEXT := NULLIF(BTRIM(p_owner_subject), '');
+    v_is_owner BOOLEAN;
+BEGIN
+    IF p_scope NOT IN ('shared', 'user') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "%"', p_scope;
+    END IF;
+
+    IF LOWER(BTRIM(p_name)) LIKE '\\_\\_%' THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_RESERVED_NAME: "%" uses the reserved "__" prefix', p_name;
+    END IF;
+
+    IF NOT p_is_admin AND (v_owner_provider IS NULL OR v_owner_subject IS NULL) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: publishing without an owner identity requires the admin role';
+    END IF;
+
+    <<retry>>
+    LOOP
+        SELECT * INTO v_pkg FROM ${s}.agent_packages p
+         WHERE p.name = p_name
+           AND p.scope = p_scope
+           AND (p_scope = 'shared'
+                OR (p.owner_provider IS NOT DISTINCT FROM v_owner_provider
+                    AND p.owner_subject IS NOT DISTINCT FROM v_owner_subject))
+         FOR UPDATE;
+        IF NOT FOUND THEN
+            BEGIN
+                INSERT INTO ${s}.agent_packages
+                    (package_id, source_id, name, scope, owner_provider, owner_subject, created_by)
+                VALUES (p_package_id, p_source_id, p_name, p_scope,
+                        v_owner_provider, v_owner_subject, p_created_by);
+            EXCEPTION WHEN unique_violation THEN
+                CONTINUE retry;
+            END;
+            INSERT INTO ${s}.agent_package_versions
+                (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+            VALUES (p_version_id, p_package_id, p_semver, p_sha256, p_size_bytes,
+                    p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+            UPDATE ${s}.agent_packages SET active_version_id = p_version_id WHERE ${s}.agent_packages.package_id = p_package_id;
+            PERFORM ${s}.cms_agent_registry_bump();
+            RETURN QUERY SELECT 'published'::TEXT, p_package_id, p_version_id;
+            RETURN;
+        END IF;
+        EXIT retry;
+    END LOOP;
+
+    v_is_owner := v_pkg.owner_provider IS NOT NULL
+        AND v_pkg.owner_provider IS NOT DISTINCT FROM v_owner_provider
+        AND v_pkg.owner_subject  IS NOT DISTINCT FROM v_owner_subject;
+    IF NOT p_is_admin AND NOT v_is_owner
+       AND NOT ${s}.cms_agent_package_is_editor(v_pkg.package_id, v_owner_provider, v_owner_subject) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_FORBIDDEN: only the package creator, an editor, or an admin can publish new versions of "%"', p_name;
+    END IF;
+
+    SELECT * INTO v_ver FROM ${s}.agent_package_versions v
+     WHERE v.package_id = v_pkg.package_id AND v.semver = p_semver;
+    IF FOUND THEN
+        IF v_ver.sha256 = p_sha256 THEN
+            RETURN QUERY SELECT 'noop'::TEXT, v_pkg.package_id, v_ver.version_id;
+            RETURN;
+        END IF;
+        RAISE EXCEPTION 'AGENT_PACKAGE_SEMVER_CONFLICT: %@% is already published with different content — published versions are immutable, bump the version', p_name, p_semver;
+    END IF;
+
+    INSERT INTO ${s}.agent_package_versions
+        (version_id, package_id, semver, sha256, size_bytes, artifact_filename, commit_sha, manifest, created_by)
+    VALUES (p_version_id, v_pkg.package_id, p_semver, p_sha256, p_size_bytes,
+            p_artifact_filename, p_commit_sha, p_manifest, p_created_by);
+    UPDATE ${s}.agent_packages
+       SET active_version_id = p_version_id,
+           source_id = COALESCE(p_source_id, ${s}.agent_packages.source_id)
+     WHERE ${s}.agent_packages.package_id = v_pkg.package_id;
+    PERFORM ${s}.cms_agent_registry_bump();
+    RETURN QUERY SELECT 'published'::TEXT, v_pkg.package_id, p_version_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Grant / revoke / list ────────────────────────────────────────
+--
+-- All three pin the SHARED copy: editors only exist there. Grant and revoke
+-- are owner-or-admin (authz without editor mode). No registry epoch bump:
+-- who may edit changes nothing a worker installs.
+-- The shared copy of a name, or a legible refusal. Resolving with the
+-- selector pinned to 'shared' returns nothing when only a private copy
+-- exists, and "does not exist" is the wrong answer to give the person who
+-- owns that copy. So: no shared copy AND the actor can see a copy → NOT_SHARED;
+-- no copy the actor can see → NOT_FOUND.
+CREATE OR REPLACE FUNCTION ${s}.cms_agent_package_require_shared(
+    p_name TEXT, p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM ${s}.agent_packages p WHERE p.name = p_name AND p.scope = 'shared') THEN
+        RETURN;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM ${s}.agent_packages p
+         WHERE p.name = p_name
+           AND (p_is_admin
+                OR (p.owner_provider = NULLIF(BTRIM(p_actor_provider), '')
+                    AND p.owner_subject = NULLIF(BTRIM(p_actor_subject), '')))
+    ) THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_SHARED: "%" is not shared; editors exist only on a shared package — promote it first', p_name;
+    END IF;
+    RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: package "%" does not exist', p_name;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_grant_agent_package_editor(
+    p_name TEXT, p_provider TEXT, p_subject TEXT,
+    p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject), '');
+    v_user_id BIGINT;
+    v_granted_by BIGINT;
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RAISE EXCEPTION 'Grantee provider and subject are required';
+    END IF;
+    PERFORM ${s}.cms_agent_package_require_shared(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin, 'shared', NULL, NULL);
+    IF v_pkg.owner_provider = v_provider AND v_pkg.owner_subject = v_subject THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_EDITOR_IS_OWNER: the owner of "%" already has full access', p_name;
+    END IF;
+
+    -- Create-only (0033): a grant never rewrites a sighted user's identity.
+    INSERT INTO ${s}.users (provider, subject)
+    VALUES (v_provider, v_subject)
+    ON CONFLICT (provider, subject) DO NOTHING;
+    SELECT u.user_id INTO v_user_id FROM ${s}.users u
+     WHERE u.provider = v_provider AND u.subject = v_subject;
+
+    SELECT u.user_id INTO v_granted_by FROM ${s}.users u
+     WHERE u.provider = NULLIF(BTRIM(p_actor_provider), '')
+       AND u.subject  = NULLIF(BTRIM(p_actor_subject), '');
+
+    INSERT INTO ${s}.agent_package_editors (package_id, user_id, granted_by)
+    VALUES (v_pkg.package_id, v_user_id, v_granted_by)
+    ON CONFLICT (package_id, user_id) DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_revoke_agent_package_editor(
+    p_name TEXT, p_provider TEXT, p_subject TEXT,
+    p_actor_provider TEXT, p_actor_subject TEXT, p_is_admin BOOLEAN
+) RETURNS VOID AS $$
+DECLARE
+    v_pkg ${s}.agent_packages;
+BEGIN
+    PERFORM ${s}.cms_agent_package_require_shared(p_name, p_actor_provider, p_actor_subject, p_is_admin);
+    v_pkg := ${s}.cms_agent_package_authz(
+        p_name, p_actor_provider, p_actor_subject, p_is_admin, 'shared', NULL, NULL);
+    DELETE FROM ${s}.agent_package_editors e
+     USING ${s}.users u
+     WHERE e.package_id = v_pkg.package_id
+       AND u.user_id = e.user_id
+       AND u.provider = NULLIF(BTRIM(p_provider), '')
+       AND u.subject  = NULLIF(BTRIM(p_subject), '');
+END;
+$$ LANGUAGE plpgsql;
+
+-- Anyone who can see the shared package can see its editors: this is a
+-- trusted system, and who may edit a shared agent is not a secret.
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_package_editors(
+    p_name TEXT
+) RETURNS TABLE(
+    provider TEXT, subject TEXT, email TEXT, display_name TEXT,
+    granted_at TIMESTAMPTZ, granted_by_display TEXT
+) AS $$
+BEGIN
+    -- "No editors" and "no such shared package" must not look the same.
+    IF NOT EXISTS (SELECT 1 FROM ${s}.agent_packages p WHERE p.name = p_name AND p.scope = 'shared') THEN
+        RAISE EXCEPTION 'AGENT_PACKAGE_NOT_FOUND: there is no shared package named "%"', p_name;
+    END IF;
+    RETURN QUERY
+    SELECT u.provider, u.subject, u.email, u.display_name,
+           e.granted_at,
+           COALESCE(g.display_name, g.email, g.subject) AS granted_by_display
+      FROM ${s}.agent_packages p
+      JOIN ${s}.agent_package_editors e ON e.package_id = p.package_id
+      JOIN ${s}.users u ON u.user_id = e.user_id
+      LEFT JOIN ${s}.users g ON g.user_id = e.granted_by
+     WHERE p.name = p_name AND p.scope = 'shared'
+     ORDER BY e.granted_at, u.user_id;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- ── Reads carry can_edit ─────────────────────────────────────────
+DROP FUNCTION IF EXISTS ${s}.cms_list_agent_packages(TEXT, TEXT, BOOLEAN);
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_package(TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT, TEXT);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_list_agent_packages(
+    p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, semver TEXT, sha256 TEXT, size_bytes BIGINT,
+    artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT,
+    shadowed BOOLEAN, can_edit BOOLEAN
+) AS $$
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by,
+           (p.scope = 'shared' AND EXISTS (
+                SELECT 1 FROM ${s}.agent_packages o
+                 WHERE o.name = p.name AND o.scope = 'user' AND o.enabled
+                   AND o.owner_provider = BTRIM(p_viewer_provider)
+                   AND o.owner_subject  = BTRIM(p_viewer_subject)
+           )) AS shadowed,
+           (p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+            OR ${s}.cms_agent_package_is_editor(p.package_id, p_viewer_provider, p_viewer_subject)
+           ) AS can_edit
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.version_id = p.active_version_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.scope = 'shared'
+        OR p_is_admin
+        OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+     ORDER BY p.name, p.scope, p.owner_provider, p.owner_subject;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_package(
+    p_name TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_is_admin BOOLEAN,
+    p_sel_scope TEXT, p_sel_owner_provider TEXT, p_sel_owner_subject TEXT
+) RETURNS TABLE(
+    package_id TEXT, source_id TEXT, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT,
+    owner_email TEXT, owner_display_name TEXT,
+    enabled BOOLEAN, created_by TEXT, created_at TIMESTAMPTZ,
+    active_version_id TEXT, version_id TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, commit_sha TEXT, manifest JSONB,
+    version_created_at TIMESTAMPTZ, version_created_by TEXT,
+    can_edit BOOLEAN
+) AS $$
+DECLARE
+    v_id TEXT;
+    v_count INT;
+BEGIN
+    v_id := ${s}.cms_resolve_agent_package_id(
+        p_name, p_viewer_provider, p_viewer_subject,
+        p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, TRUE);
+    IF v_id IS NULL THEN
+        v_id := ${s}.cms_resolve_agent_package_id(
+            p_name, p_viewer_provider, p_viewer_subject,
+            p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, FALSE);
+    END IF;
+
+    IF v_id IS NULL AND p_is_admin AND p_sel_scope IS NULL THEN
+        SELECT count(*) INTO v_count FROM ${s}.agent_packages p WHERE p.name = p_name;
+        IF v_count = 1 THEN
+            SELECT p.package_id INTO v_id FROM ${s}.agent_packages p WHERE p.name = p_name;
+        END IF;
+    END IF;
+
+    IF v_id IS NULL THEN
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT p.package_id, p.source_id, p.name, p.scope,
+           p.owner_provider, p.owner_subject,
+           u.email, u.display_name,
+           p.enabled, p.created_by, p.created_at, p.active_version_id,
+           v.version_id, v.semver, v.sha256, v.size_bytes,
+           v.artifact_filename, v.commit_sha, v.manifest, v.created_at, v.created_by,
+           (p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject))
+            OR ${s}.cms_agent_package_is_editor(p.package_id, p_viewer_provider, p_viewer_subject)
+           ) AS can_edit
+      FROM ${s}.agent_packages p
+      LEFT JOIN ${s}.agent_package_versions v ON v.package_id = p.package_id
+      LEFT JOIN ${s}.users u
+             ON u.provider = p.owner_provider AND u.subject = p.owner_subject
+     WHERE p.package_id = v_id
+       AND (p.scope = 'shared' OR p_is_admin
+            OR (p.owner_provider = BTRIM(p_viewer_provider) AND p.owner_subject = BTRIM(p_viewer_subject)))
+     ORDER BY v.created_at DESC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── The picker: a name OR an email makes a user findable ─────────
+CREATE OR REPLACE FUNCTION ${s}.cms_list_users(
+    p_limit INT
+) RETURNS TABLE (
+    provider     TEXT,
+    subject      TEXT,
+    email        TEXT,
+    display_name TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 500), 2000));
+BEGIN
+    RETURN QUERY
+    SELECT u.provider, u.subject, u.email, u.display_name
+    FROM ${s}.users u
+    WHERE NOT (u.provider = 'system' AND u.subject = 'system')
+      AND NOT (u.provider = 'local' AND u.subject = 'default')
+      -- The no-auth provider's anonymous principal is not a person either.
+      AND NOT (u.provider = 'none')
+      -- Sighted members carry a name or an email (0042 writes both from the
+      -- token when present). A row with neither is a raw-id grant
+      -- placeholder and stays hidden until that person signs in.
+      AND (u.display_name IS NOT NULL OR u.email IS NOT NULL)
+    ORDER BY u.updated_at DESC, u.user_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── Ghost adoption must carry editor grants across ───────────────
+--
+-- 0032's cms_register_user adopts email-keyed placeholder rows on a real
+-- user's first sighting: shares move to the real user and the placeholder
+-- is deleted. agent_package_editors also references users(user_id), so a
+-- placeholder that was granted an editor row blocked that DELETE with an FK
+-- violation — and the whole registration rolled back, which meant the
+-- person could not sign in. Same body as 0032 plus the editor re-pointing.
+CREATE OR REPLACE FUNCTION ${s}.cms_register_user(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT
+) RETURNS BIGINT AS $$
+DECLARE
+    v_provider TEXT := NULLIF(BTRIM(p_provider), '');
+    v_subject  TEXT := NULLIF(BTRIM(p_subject), '');
+    v_email    TEXT := NULLIF(BTRIM(p_email), '');
+    v_display  TEXT := NULLIF(BTRIM(p_display_name), '');
+    v_user_id  BIGINT;
+    v_ghost    BIGINT;
+BEGIN
+    IF v_provider IS NULL OR v_subject IS NULL THEN
+        RAISE EXCEPTION 'User provider and subject are required';
+    END IF;
+
+    INSERT INTO ${s}.users (provider, subject, email, display_name)
+    VALUES (v_provider, v_subject, v_email, v_display)
+    ON CONFLICT (provider, subject) DO UPDATE
+    SET email        = COALESCE(EXCLUDED.email, ${s}.users.email),
+        display_name = COALESCE(EXCLUDED.display_name, ${s}.users.display_name),
+        updated_at   = now()
+    WHERE COALESCE(EXCLUDED.email, ${s}.users.email) IS DISTINCT FROM ${s}.users.email
+       OR COALESCE(EXCLUDED.display_name, ${s}.users.display_name) IS DISTINCT FROM ${s}.users.display_name;
+
+    SELECT user_id INTO v_user_id
+    FROM ${s}.users
+    WHERE provider = v_provider AND subject = v_subject;
+
+    IF v_email IS NOT NULL THEN
+        FOR v_ghost IN
+            SELECT u.user_id FROM ${s}.users u
+            WHERE u.provider = v_provider
+              AND LOWER(u.subject) = LOWER(v_email)
+              AND u.user_id <> v_user_id
+        LOOP
+            UPDATE ${s}.session_shares ss SET user_id = v_user_id
+            WHERE ss.user_id = v_ghost
+              AND NOT EXISTS (
+                  SELECT 1 FROM ${s}.session_shares e
+                  WHERE e.session_id = ss.session_id AND e.user_id = v_user_id
+              );
+            UPDATE ${s}.session_shares e SET access = 'write'
+            FROM ${s}.session_shares g
+            WHERE g.user_id = v_ghost AND g.session_id = e.session_id
+              AND e.user_id = v_user_id AND g.access = 'write' AND e.access <> 'write';
+            DELETE FROM ${s}.session_shares WHERE user_id = v_ghost;
+            UPDATE ${s}.session_shares SET granted_by = v_user_id WHERE granted_by = v_ghost;
+            -- Editor grants: move the ones the real user does not already
+            -- hold, drop the duplicates, re-point granted_by.
+            UPDATE ${s}.agent_package_editors ge SET user_id = v_user_id
+            WHERE ge.user_id = v_ghost
+              AND NOT EXISTS (
+                  SELECT 1 FROM ${s}.agent_package_editors e
+                  WHERE e.package_id = ge.package_id AND e.user_id = v_user_id
+              );
+            DELETE FROM ${s}.agent_package_editors WHERE user_id = v_ghost;
+            UPDATE ${s}.agent_package_editors SET granted_by = v_user_id WHERE granted_by = v_ghost;
+            UPDATE ${s}.session_owners SET user_id = v_user_id WHERE user_id = v_ghost;
+            UPDATE ${s}.session_group_owners SET user_id = v_user_id WHERE user_id = v_ghost;
+            DELETE FROM ${s}.users WHERE user_id = v_ghost;
+        END LOOP;
+    END IF;
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0064: the canvas KV store ─────────────────────────────
+//
+// Shared, durable, per-key state for interactive canvas apps
+// (docs/proposals/interactive-canvas-apps.md Part C). One row per
+// (session, slot, key); the value is the envelope {v, by, at}; `rev` is the
+// compare-and-swap token; deletes are tombstones (rev still advances, so a
+// live viewer drops the key and a late joiner never sees it).
+//
+// The rows live HERE, in the CMS, not in the facts table the proposal first
+// named: the facts store can be a different database (HorizonDB), and the
+// write must be atomic with its NOTIFY on the CMS connection. One statement
+// does the CAS check, the quota check, the upsert and the notify, so two
+// writers on one key serialize on the row and two viewers never see a
+// write without its ping.
+//
+// session_canvases gains the per-canvas access policy (Part D: who may
+// write) and the manifest's `kv` block cached at draw time (the app's half
+// of the switch), so a write never has to re-read the document.
+
+function migration_0064_canvas_kv(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.session_canvases
+    ADD COLUMN IF NOT EXISTS kv_access TEXT NOT NULL DEFAULT 'owner'
+        CHECK (kv_access IN ('owner', 'readers', 'link'));
+ALTER TABLE ${s}.session_canvases
+    ADD COLUMN IF NOT EXISTS kv_manifest JSONB;
+
+CREATE TABLE IF NOT EXISTS ${s}.canvas_kv (
+    session_id TEXT        NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    slot       SMALLINT    NOT NULL CHECK (slot BETWEEN 1 AND 5),
+    key        TEXT        NOT NULL,
+    value      JSONB       NOT NULL,
+    rev        BIGINT      NOT NULL DEFAULT 1,
+    deleted_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, slot, key)
+);
+
+-- Policy + manifest switch, upserting the 0045 row when the canvas has
+-- never been drawn (an owner may set the policy before the first draw).
+CREATE OR REPLACE FUNCTION ${s}.cms_set_canvas_kv_access(
+    p_session_id TEXT, p_slot INT, p_access TEXT
+) RETURNS VOID AS $$
+BEGIN
+    IF p_access NOT IN ('owner', 'readers', 'link') THEN
+        RAISE EXCEPTION 'CANVAS_KV_BAD_ACCESS: kv-access must be owner, readers or link, got "%"', p_access;
+    END IF;
+    INSERT INTO ${s}.session_canvases (session_id, slot, name, latest_rev, size_bytes, kv_access, updated_at)
+    VALUES (p_session_id, p_slot, '', 0, NULL, p_access, now())
+    ON CONFLICT (session_id, slot) DO UPDATE SET kv_access = EXCLUDED.kv_access, updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_set_canvas_kv_manifest(
+    p_session_id TEXT, p_slot INT, p_manifest JSONB
+) RETURNS VOID AS $$
+BEGIN
+    INSERT INTO ${s}.session_canvases (session_id, slot, name, latest_rev, size_bytes, kv_manifest, updated_at)
+    VALUES (p_session_id, p_slot, '', 0, NULL, p_manifest, now())
+    ON CONFLICT (session_id, slot) DO UPDATE SET kv_manifest = EXCLUDED.kv_manifest, updated_at = now();
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_canvas_kv_settings(
+    p_session_id TEXT, p_slot INT
+) RETURNS TABLE(kv_access TEXT, kv_manifest JSONB, latest_rev INTEGER) AS $$
+    SELECT c.kv_access, c.kv_manifest, c.latest_rev
+      FROM ${s}.session_canvases c
+     WHERE c.session_id = p_session_id AND c.slot = p_slot;
+$$ LANGUAGE sql STABLE;
+
+-- The write. p_value NULL = delete. p_if_match NULL = no CAS; 0 = the key
+-- must not be live (claim); N = the live rev must be N. Statuses:
+--   written | deleted | not_found | conflict | too_large | quota_keys | quota_bytes
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_kv_write(
+    p_session_id TEXT, p_slot INT, p_key TEXT, p_value JSONB, p_if_match BIGINT,
+    p_max_keys INT, p_max_bytes BIGINT, p_max_value_bytes INT, p_schema TEXT
+) RETURNS TABLE(status TEXT, rev BIGINT, size_bytes INT) AS $$
+DECLARE
+    v_rev BIGINT;
+    v_deleted TIMESTAMPTZ;
+    v_found BOOLEAN;
+    v_live BOOLEAN;
+    v_size INT;
+    v_keys BIGINT;
+    v_bytes BIGINT;
+    v_new_rev BIGINT;
+BEGIN
+    SELECT k.rev, k.deleted_at INTO v_rev, v_deleted
+      FROM ${s}.canvas_kv k
+     WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.key = p_key
+       FOR UPDATE;
+    v_found := FOUND;
+    v_live := v_found AND v_deleted IS NULL;
+
+    IF p_if_match IS NOT NULL THEN
+        IF (p_if_match = 0 AND v_live) OR (p_if_match <> 0 AND (NOT v_live OR v_rev <> p_if_match)) THEN
+            RETURN QUERY SELECT 'conflict'::TEXT, COALESCE(v_rev, 0)::BIGINT, NULL::INT;
+            RETURN;
+        END IF;
+    END IF;
+
+    IF p_value IS NULL THEN
+        IF NOT v_live THEN
+            RETURN QUERY SELECT 'not_found'::TEXT, COALESCE(v_rev, 0)::BIGINT, NULL::INT;
+            RETURN;
+        END IF;
+        UPDATE ${s}.canvas_kv k SET deleted_at = now(), rev = k.rev + 1, updated_at = now()
+         WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.key = p_key
+         RETURNING k.rev INTO v_new_rev;
+        PERFORM pg_notify('pilotswarm_canvas_live', json_build_object(
+            'schema', p_schema, 'sessionId', p_session_id, 'slot', p_slot,
+            'kind', 'kv', 'key', p_key, 'rev', v_new_rev, 'op', 'delete')::text);
+        RETURN QUERY SELECT 'deleted'::TEXT, v_new_rev, 0;
+        RETURN;
+    END IF;
+
+    v_size := octet_length(p_value::text);
+    IF v_size > p_max_value_bytes THEN
+        RETURN QUERY SELECT 'too_large'::TEXT, COALESCE(v_rev, 0)::BIGINT, v_size;
+        RETURN;
+    END IF;
+
+    -- Budget check against every OTHER live key of this canvas.
+    SELECT count(*), COALESCE(sum(octet_length(k.value::text)), 0) INTO v_keys, v_bytes
+      FROM ${s}.canvas_kv k
+     WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.deleted_at IS NULL AND k.key <> p_key;
+    IF NOT v_live AND v_keys + 1 > p_max_keys THEN
+        RETURN QUERY SELECT 'quota_keys'::TEXT, COALESCE(v_rev, 0)::BIGINT, v_size;
+        RETURN;
+    END IF;
+    IF v_bytes + v_size > p_max_bytes THEN
+        RETURN QUERY SELECT 'quota_bytes'::TEXT, COALESCE(v_rev, 0)::BIGINT, v_size;
+        RETURN;
+    END IF;
+
+    -- A claim (if_match = 0) must not become an update under a concurrent
+    -- first insert: the upsert only resurrects a tombstone, never overwrites
+    -- a live row, and a missing RETURNING row is reported as a conflict.
+    IF p_if_match = 0 THEN
+        INSERT INTO ${s}.canvas_kv (session_id, slot, key, value, rev, deleted_at, updated_at)
+        VALUES (p_session_id, p_slot, p_key, p_value, 1, NULL, now())
+        ON CONFLICT (session_id, slot, key) DO UPDATE SET
+            value = EXCLUDED.value, rev = ${s}.canvas_kv.rev + 1, deleted_at = NULL, updated_at = now()
+        WHERE ${s}.canvas_kv.deleted_at IS NOT NULL
+        RETURNING ${s}.canvas_kv.rev INTO v_new_rev;
+        IF v_new_rev IS NULL THEN
+            RETURN QUERY SELECT 'conflict'::TEXT, COALESCE(v_rev, 0)::BIGINT, v_size;
+            RETURN;
+        END IF;
+    ELSE
+        INSERT INTO ${s}.canvas_kv (session_id, slot, key, value, rev, deleted_at, updated_at)
+        VALUES (p_session_id, p_slot, p_key, p_value, 1, NULL, now())
+        ON CONFLICT (session_id, slot, key) DO UPDATE SET
+            value = EXCLUDED.value, rev = ${s}.canvas_kv.rev + 1, deleted_at = NULL, updated_at = now()
+        RETURNING ${s}.canvas_kv.rev INTO v_new_rev;
+    END IF;
+
+    -- The value rides the ping when the envelope is small; a bigger value
+    -- ships a pointer and the viewer fetches that one key. pg_notify hard
+    -- errors past 8000 bytes and that would roll back the write.
+    PERFORM pg_notify('pilotswarm_canvas_live', (
+        SELECT CASE WHEN octet_length(m.with_value) <= 7000 THEN m.with_value ELSE m.pointer END
+          FROM (SELECT
+                json_build_object('schema', p_schema, 'sessionId', p_session_id, 'slot', p_slot,
+                    'kind', 'kv', 'key', p_key, 'rev', v_new_rev, 'op', 'put', 'value', p_value)::text AS with_value,
+                json_build_object('schema', p_schema, 'sessionId', p_session_id, 'slot', p_slot,
+                    'kind', 'kv', 'key', p_key, 'rev', v_new_rev, 'op', 'put')::text AS pointer) m));
+    RETURN QUERY SELECT 'written'::TEXT, v_new_rev, v_size;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_kv_get(
+    p_session_id TEXT, p_slot INT, p_key TEXT
+) RETURNS TABLE(key TEXT, value JSONB, rev BIGINT, updated_at TIMESTAMPTZ) AS $$
+    SELECT k.key, k.value, k.rev, k.updated_at
+      FROM ${s}.canvas_kv k
+     WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.key = p_key AND k.deleted_at IS NULL;
+$$ LANGUAGE sql STABLE;
+
+-- Prefix listing, key-ordered, cursor = the last key of the previous page.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_kv_list(
+    p_session_id TEXT, p_slot INT, p_prefix TEXT, p_limit INT, p_after_key TEXT
+) RETURNS TABLE(key TEXT, value JSONB, rev BIGINT, updated_at TIMESTAMPTZ) AS $$
+    SELECT k.key, k.value, k.rev, k.updated_at
+      FROM ${s}.canvas_kv k
+     WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.deleted_at IS NULL
+       AND (p_prefix IS NULL OR p_prefix = '' OR left(k.key, length(p_prefix)) = p_prefix)
+       AND (p_after_key IS NULL OR k.key > p_after_key)
+     ORDER BY k.key
+     LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 200), 200));
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_kv_stats(
+    p_session_id TEXT, p_slot INT
+) RETURNS TABLE(keys BIGINT, bytes BIGINT) AS $$
+    SELECT count(*)::BIGINT, COALESCE(sum(octet_length(k.value::text)), 0)::BIGINT
+      FROM ${s}.canvas_kv k
+     WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.deleted_at IS NULL;
+$$ LANGUAGE sql STABLE;
 `;
 }

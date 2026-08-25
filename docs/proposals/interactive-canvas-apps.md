@@ -1,7 +1,54 @@
 # Interactive Canvas Apps
 
-Status: PROPOSED (2026-08-18). The umbrella spec. Absorbs the canvas KV data
-plane, which was drafted separately and is now Part C here.
+Status: phases 1–3, 5 and 6 IMPLEMENTED 2026-08-24 on branch
+`package-editors-mcp-allowlist` (pilotswarm 0.5.46, migrations 0064 + facts
+0012); phase 4 (read/write links) OPEN. The umbrella spec. Absorbs the canvas
+KV data plane, which was drafted separately and is now Part C here.
+
+**Catalog (Part F) as built:** `publish_canvas_app` / `find_canvas_app`
+(`packages/sdk/src/canvas-app-catalog.ts`). One addition to F.2 the text did
+not have: the manifest carries an **`interface` block** (`keys`, `requests`,
+`events`, `notes`, capped at 6 KB) and publish refuses a manifest without
+one — the card must let an agent that never read the HTML drive the app
+(F.5 "suggest by situation" only works if the found app is operable). The
+base-store fallback is a listing ranked by term overlap, as F.4 says.
+
+**Implementation notes (2026-08-24) — where the build deviates from the text:**
+
+- **Rows live in the CMS, not the facts table.** `canvas_kv (session_id, slot,
+  key, value, rev, deleted_at)` in the CMS schema. The facts store can be a
+  different database (HorizonDB), and the write must be atomic with its
+  NOTIFY on the CMS connection: `cms_canvas_kv_write` does the CAS, the
+  quota, the upsert and the `pg_notify` in one statement. C.1's "the state IS
+  the fact rows" recovery becomes `canvas_kv(list)`.
+- **The policy and the manifest switch are columns on `session_canvases`**
+  (`kv_access`, `kv_manifest`); the draw path caches the manifest's `kv`
+  block so a write never re-reads the document.
+- **Door 2 is read-only.** `GET /api/canvas-share/kv?t=` ships; the write
+  door, `write_enabled` links, signed writer ids and TTLs are phase 4. The
+  chokepoint's rule for bearers is in place (`writeEnabled`), unused.
+- **`_notifySessionAccessChanged` does not exist** in the codebase (the text
+  assumed it did). Writes re-resolve access per request, which is what
+  revocation depends on; open sockets keep today's behaviour.
+- **Progressive discovery shipped with it.** The `load_skill` tool and a
+  one-line skills index in the base prompt replace the 15K chars of canvas
+  guidance every session used to carry; `canvas-apps` is the on-demand guide
+  for everything in Parts B, C, E and F.6a/F.7. The default agent's canvas
+  text is ~1.5K chars.
+- **`me.relation` has five values** (`owner | admin | collaborator | viewer |
+  link`) plus `agent` for door 3. A signed-in user with no access to a
+  private session is refused before a relation is computed, so `viewer` is
+  seen only on `shared_read`/`shared_write` sessions.
+- **Wire details that differ from the prose below.** The KV ping carries the
+  value inline when the whole envelope is ≤ 7000 bytes (C.4 says 2 KB; the
+  pg_notify cap is 8000). `canvas-kv-change` carries `{ key, rev, op, v, by,
+  at }` — the page's value field is `v`, as in every entry, not `value`. Door
+  3 is `canvas_kv { op, key, value, prefix, limit, after, ifMatch, slot,
+  session_id }` (snake-case `session_id`, like the other canvas tools).
+- **Not built, pre-existing:** an open WebSocket keeps receiving pushes after
+  `revokeSessionShare` until it reconnects — the D.4 "immediate via
+  onSessionAccessChanged" row assumed a notifier that does not exist; the
+  HTTP doors re-resolve access per request.
 
 Builds on shipped work: [architecture/canvas.md](../architecture/canvas.md),
 [proposals/canvas-data-plane.md](canvas-data-plane.md) (phases 1–3 shipped),
@@ -955,7 +1002,7 @@ artifacts hold bytes, and the shared facts namespace is a searchable catalog.
 They compose:
 
 ```
-BYTES     artifact  apps/<name>.html      content-addressed, cross-session readable
+BYTES     artifact  app-<name>.html      content-addressed, cross-session readable
 CARD      fact      shared:apps/<name>    name, description, manifest, pointer
 FIND      searchFacts({namespace: "apps", scope: "shared", mode: "hybrid"})
 ```
@@ -993,7 +1040,7 @@ agents forget the second call, or hand-write a bad card. One tool instead:
 
 ```
 publish_canvas_app({ slot?, name, description, tags? })
-   → server-side copy canvas.html  → artifact apps/<name>.html
+   → server-side copy canvas.html  → artifact app-<name>.html
    → extract the embedded manifest → the card
    → upsert shared fact apps/<name>
 ```
@@ -1296,6 +1343,13 @@ dropped to last; and phase 1 grew the relay branch it actually needs (C.4).
   plane removed, and hands writers a way to spend the owner's tokens.
 - **A canvas renderer in the TUI.** The terminal cannot run the page. A loud
   line and a URL is the honest answer.
+- **A bulk read channel from the page (`canvas-fetch`).** Removed by decision
+  on 2026-08-24. It would have been a fourth postMessage type resolved by the
+  host as a manifest-scoped artifact read. The three lanes stay as they are:
+  large payload reaches a page only as document bytes the agent authored, or
+  as a KV value (pointer or ≤16 KB), and an app whose subject is bigger than
+  its screen links out. `canvas-app-pr-workbench.md` §6 keeps the evidence for
+  the gap; `canvas-app-backend.md` no longer has a Tier 0.
 
 # Part L — Open
 
@@ -1304,20 +1358,7 @@ dropped to last; and phase 1 grew the relay branch it actually needs (C.4).
    would thrash the embedder. Opt in per app for "search last month's notes".
 3. **Notes outliving the session.** Session facts are swept on delete.
    Recommendation: keep that, and make publish-or-export the explicit way out.
-4. **The bulk read channel (`canvas-fetch`).** A canvas cannot see anything
-   large: the document caps at 900 KB, KV values at 16 KB, ticks at 32 KB, and
-   the sandbox has no network at all. The PR workbench on chk carries **97
-   lines of code for three PRs** as a result — an evidence board, not a diff
-   viewer. Proposed fix in
-   [canvas-app-pr-workbench.md §6](canvas-app-pr-workbench.md): a fourth
-   postMessage type, `canvas-fetch`, resolved by the HOST as a read-only
-   artifact read, scoped to prefixes the manifest declares (default-closed like
-   the response contract). Completes the storage story — KV for small mutable
-   shared state, artifacts for large immutable payload, the host bridging both.
-   **Recommendation: fold into phase 1.** Every app whose subject is bigger
-   than its screen needs it, and it adds no write surface.
-
-5. **Attribution for authenticated link bearers.** A named colleague who must
+4. **Attribution for authenticated link bearers.** A named colleague who must
    see the board but NOT the session transcript has no good option today:
    `readers` gives the transcript, `link` gives anonymity. Fix: an
    authenticated viewer opening a link keeps the link's scope and gains their
@@ -1325,14 +1366,14 @@ dropped to last; and phase 1 grew the relay branch it actually needs (C.4).
    only attribution does. This is the case the dropped `canvas_grant` existed
    for, solved without the table.
 
-6. **`cfg/policy.autoQueueFrom`.** Whether a collaborator's request auto-queues
+5. **`cfg/policy.autoQueueFrom`.** Whether a collaborator's request auto-queues
    or waits for the owner should be one owner-writable config key, default
    `["owner"]`.
 
-7. **Thread anchoring across revisions.** Threads must carry the SHA they were
+6. **Thread anchoring across revisions.** Threads must carry the SHA they were
    written against and be re-anchored or marked outdated when the subject
    changes — never silently moved. The chk app has no anchoring at all.
 
-8. **Catalog curation.** Anyone can publish `apps/*`. Does it need the
+7. **Catalog curation.** Anyone can publish `apps/*`. Does it need the
    facts-manager's review, a per-user namespace, or nothing? Recommendation:
    nothing at first; revisit if the catalog gets noisy.

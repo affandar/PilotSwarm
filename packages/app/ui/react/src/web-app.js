@@ -1258,6 +1258,33 @@ function SystemNoticeLine({ line, theme }) {
 }
 
 /**
+ * A canvas action is a button press inside the drawn page, not something the
+ * viewer typed. Printing the raw `[canvas-action] {…}` JSON as a chat message
+ * buries the conversation in plumbing, so it renders as one collapsed row —
+ * the same affordance as a system notice — that opens to show the exact
+ * payload the page sent.
+ */
+function CanvasActionLine({ line, theme }) {
+    const payload = String(line?.canvasActionPayload || "").trim();
+    const name = line?.canvasActionName || "action";
+    const detail = String(line?.canvasActionDetail || "").trim();
+    const time = String(line?.canvasActionTime || "").trim();
+    return React.createElement("details", { className: "ps-system-notice ps-canvas-action" },
+        React.createElement("summary", {
+            className: "ps-system-notice-summary ps-canvas-action-summary",
+            style: { color: resolveColor(theme, "gray") || "var(--ps-muted)" },
+        },
+        React.createElement("span", { className: "ps-canvas-action-tag" }, "canvas"),
+        React.createElement("span", { className: "ps-system-notice-summary-text" },
+            `${name}${detail ? ` — ${detail}` : ""}`),
+        time ? React.createElement("span", { className: "ps-canvas-action-time" }, time) : null),
+        payload
+            ? React.createElement("div", { className: "ps-system-notice-body" },
+                React.createElement("pre", { className: "ps-canvas-action-payload" }, payload))
+            : null);
+}
+
+/**
  * Coalesce high-frequency dispatches to one per animation frame.
  *
  * pointermove and scroll fire many times per frame, and each dispatch
@@ -1302,6 +1329,11 @@ const Line = React.memo(function Line({ line, theme, className = "" }) {
     }
     if (line.kind === "systemNotice") {
         return React.createElement(SystemNoticeLine, { line, theme });
+    }
+    // Checked before `kind`: the canvas-action line carries runs for the TUI
+    // but the portal renders it as its own collapsed row, not as those runs.
+    if (line.canvasAction) {
+        return React.createElement(CanvasActionLine, { line, theme });
     }
     if (line.kind === "runs") {
         return React.createElement("div", { className: lineClassName },
@@ -3448,8 +3480,12 @@ function StructuredChatBlocks({ lines, theme, controller = null }) {
     // for a host that cannot render the canvas). In the browser the canvas
     // pane updating IS the signal, so the chat skips them outright — desktop
     // and mobile share this renderer, so one filter covers both.
+    //
+    // canvasAction lines are NOT skipped: pressing a button in the drawn page
+    // is a real thing the viewer did, and dropping it leaves an unexplained
+    // gap before the agent's reply. Line renders it as one collapsed row.
     const blocks = React.useMemo(
-        () => parseStructuredChatBlocks((lines || []).filter((line) => !line?.canvasUpdate && !line?.canvasAction)),
+        () => parseStructuredChatBlocks((lines || []).filter((line) => !line?.canvasUpdate)),
         [lines],
     );
     return React.createElement(StructuredBlockList, { blocks, theme, controller });
@@ -6576,6 +6612,13 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     // making, and stacking them put a destructive Reset next to an innocuous
     // deep link. Mirrors the Manage-session dialog's General/Access tabs.
     const [tab, setTab] = React.useState("session");
+    // The canvas KV write policy (interactive-canvas-apps Part D): who may
+    // write the app's shared state. null = not loaded / not supported.
+    const [kvPolicy, setKvPolicy] = React.useState(null);
+    // Who the VIEWER is on this canvas. Only an owner or an admin may change
+    // the policy, so the control is disabled for everyone else rather than
+    // letting them pick a value and then showing a refusal.
+    const [kvMe, setKvMe] = React.useState(null);
     const transport = controller.transport;
     const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1`;
     // The token variants all resolve the same hashed row: one token, N doors,
@@ -6588,8 +6631,23 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
         transport.getCanvasShareLink?.(sessionId, slot)
             .then((state) => setInfo(state || { exists: false }))
             .catch((err) => { setInfo({ exists: false }); setError(err?.message || String(err)); });
+        if (typeof transport.readCanvasKv === "function") {
+            transport.readCanvasKv(sessionId, slot, { limit: 1 })
+                .then((read) => { setKvPolicy(read?.policy || "owner"); setKvMe(read?.me || null); })
+                .catch(() => { setKvPolicy(null); setKvMe(null); });
+        }
     }, [transport, sessionId, slot]);
     React.useEffect(() => { refresh(); }, [refresh]);
+
+    const canSetKvPolicy = kvMe?.relation === "owner" || kvMe?.relation === "admin";
+
+    const setPolicy = (value) => {
+        setBusy(true); setError("");
+        transport.setCanvasKvAccess(sessionId, slot, value)
+            .then(() => setKvPolicy(value))
+            .catch((err) => setError(err?.message || String(err)))
+            .finally(() => setBusy(false));
+    };
 
     const copy = (label, text) => {
         navigator.clipboard?.writeText(text)
@@ -6648,7 +6706,34 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                     role: "tabpanel", "aria-hidden": tab === "session" ? undefined : "true",
                 },
                     React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
-                    linkRows(sessionLink, "session")),
+                    linkRows(sessionLink, "session"),
+                    // Who may WRITE the app's shared state. Stated in words:
+                    // "readers" reaches everyone the session is read-shared
+                    // with, which a dialog that only says "link" hides.
+                    kvPolicy !== null
+                        ? React.createElement("div", { className: "ps-canvas-share-policy" },
+                            React.createElement("label", { className: "ps-canvas-share-sub", htmlFor: "ps-canvas-kv-policy" }, "Who can edit inside this app"),
+                            React.createElement("select", {
+                                id: "ps-canvas-kv-policy",
+                                className: "ps-canvas-slot-select",
+                                value: kvPolicy,
+                                disabled: busy || !canSetKvPolicy,
+                                onChange: (event) => setPolicy(event.target.value),
+                            },
+                                React.createElement("option", { value: "owner" }, "Only people who can edit the session"),
+                                React.createElement("option", { value: "readers" }, "Anyone who can open the session"),
+                                React.createElement("option", { value: "link" }, "Anyone who can open the session, plus link viewers")),
+                            React.createElement("div", { className: "ps-canvas-share-sub" },
+                                kvPolicy === "owner"
+                                    ? "You, admins, and anyone you shared the session with as “write”. People with view-only access can watch the app but not change anything in it."
+                                    : kvPolicy === "link"
+                                        ? "Your view-only people can edit inside the app. Anyone holding the share link can watch it — link holders can never edit."
+                                        : "Adds your view-only people: they can edit inside the app. It does not let them message the agent."),
+                            canSetKvPolicy
+                                ? null
+                                : React.createElement("div", { className: "ps-canvas-share-sub" },
+                                    "Only the session owner or an admin can change this."))
+                        : null),
                 React.createElement("div", {
                     className: `ps-canvas-share-panel${tab === "public" ? " is-active" : ""}`,
                     role: "tabpanel", "aria-hidden": tab === "public" ? undefined : "true",
@@ -6753,6 +6838,9 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     const autoRetryRef = React.useRef({ rev: 0, used: false });
     const hostRef = React.useRef(null);
     const liveIframeElRef = React.useRef(null);
+    // The staging frame's element, so the KV bridge can answer a page's
+    // `ready` posted at script time (before promote). See the bridge below.
+    const stagingIframeElRef = React.useRef(null);
     const hostBox = useElementBox(hostRef);
     // The frame geometry each revision LOADED at. A sandboxed page cannot be
     // poked after the fact (no reaching into an opaque origin), and pages
@@ -6779,18 +6867,99 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (!controller || !sessionId) return undefined;
         const onMessage = (event) => {
             const frameEl = liveIframeElRef.current;
-            if (!frameEl || !event.source || event.source !== frameEl.contentWindow) return;
             const payload = event.data;
-            if (!payload || typeof payload !== "object" || payload.type !== "canvas-action") return;
-            controller.submitCanvasAction(sessionId, payload).then((result) => {
-                if (result && result.ok === false && typeof console !== "undefined") {
-                    console.warn(`canvas action rejected: ${result.reason}`);
+            if (!payload || typeof payload !== "object" || !event.source) return;
+            const fromLive = Boolean(frameEl && event.source === frameEl.contentWindow);
+            // A document runs its scripts in the STAGING frame first and is
+            // promoted on load — so a page that calls CanvasKV() at script
+            // time posts `ready` before this frame is live. KV READS are
+            // safe to answer from the staging frame of THIS canvas (it holds
+            // the revision about to go live; the reply goes back to the
+            // window that asked). Writes and actions stay live-frame only.
+            const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
+            if (!fromLive && !fromStaging) return;
+            if (payload.type === "canvas-action") {
+                if (!fromLive) return;
+                controller.submitCanvasAction(sessionId, payload).then((result) => {
+                    if (result && result.ok === false && typeof console !== "undefined") {
+                        console.warn(`canvas action rejected: ${result.reason}`);
+                    }
+                }).catch(() => {});
+                return;
+            }
+            // The KV bridge (door 1). The page never names the session or the
+            // slot — both come from THIS frame — and never sends `by`: the
+            // server stamps it from the signed-in principal.
+            if (payload.type === "canvas-kv") {
+                const id = payload.id;
+                const transport = controller.transport;
+                // Reply to the window that ASKED (live or staging), never to
+                // whichever frame is live by the time the request lands.
+                const source = event.source;
+                const post = (message) => {
+                    try { source.postMessage(message, "*"); } catch { /* frame mid-teardown */ }
+                };
+                const fail = (error, code = "ERROR") => post({ type: "canvas-kv-result", id, ok: false, error: String(error?.message || error || "failed"), code: error?.code || code });
+                if (typeof transport?.readCanvasKv !== "function") { fail("the canvas KV store is not available on this deployment", "UNAVAILABLE"); return; }
+                const op = String(payload.op || "");
+                if (!fromLive && (op === "put" || op === "delete")) {
+                    fail("the canvas is still loading; retry the write in a moment", "NOT_READY");
+                    return;
                 }
-            }).catch(() => {});
+                if (op === "ready" || op === "list") {
+                    transport.readCanvasKv(sessionId, slot, { prefix: payload.prefix ?? null, limit: payload.limit ?? null, after: payload.after ?? null })
+                        .then((read) => post({
+                            type: op === "ready" ? "canvas-kv-ready" : "canvas-kv-result",
+                            id, ok: true,
+                            entries: read?.entries ?? [], nextAfter: read?.nextAfter ?? null,
+                            me: read?.me ?? null, canWrite: Boolean(read?.me?.canWrite), policy: read?.policy ?? "owner",
+                        }))
+                        .catch(fail);
+                    return;
+                }
+                if (op === "get") {
+                    transport.readCanvasKv(sessionId, slot, { key: payload.key })
+                        .then((read) => post({ type: "canvas-kv-result", id, ok: true, entry: read?.entries?.[0] ?? null }))
+                        .catch(fail);
+                    return;
+                }
+                if (op === "put" || op === "delete") {
+                    const one = op === "put"
+                        ? { op: "put", key: payload.key, value: payload.value, ...(payload.ifMatch != null ? { ifMatch: payload.ifMatch } : {}) }
+                        : { op: "delete", key: payload.key, ...(payload.ifMatch != null ? { ifMatch: payload.ifMatch } : {}) };
+                    transport.writeCanvasKv(sessionId, slot, [one])
+                        .then((written) => {
+                            const r = written?.results?.[0] ?? { ok: false, error: "no result" };
+                            post({ type: "canvas-kv-result", id, ok: Boolean(r.ok), key: r.key, rev: r.rev, capped: r.capped, error: r.error, code: r.code });
+                        })
+                        .catch(fail);
+                    return;
+                }
+                fail(`unknown canvas-kv op ${op}`, "INVALID_REQUEST");
+            }
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [controller, sessionId]);
+    }, [controller, sessionId, slot]);
+
+    // Live KV changes for this slot → the page, as `canvas-kv-change`. A
+    // pointer-only ping (value too big for the notify) fetches that one key.
+    React.useEffect(() => {
+        if (!controller || !sessionId || typeof controller.subscribeCanvasKv !== "function") return undefined;
+        return controller.subscribeCanvasKv(sessionId, (change) => {
+            if (!change || Number(change.slot) !== Number(slot)) return;
+            const frameWindow = liveIframeElRef.current?.contentWindow;
+            if (!frameWindow) return;
+            const deliver = (entry) => {
+                try { frameWindow.postMessage({ type: "canvas-kv-change", key: change.key, rev: change.rev, op: change.op, ...(entry ? { v: entry.v, by: entry.by, at: entry.at } : {}) }, "*"); } catch { /* frame mid-teardown */ }
+            };
+            if (change.op === "delete") { deliver(null); return; }
+            if (change.value && typeof change.value === "object") { deliver({ v: change.value.v, by: change.value.by, at: change.value.at }); return; }
+            controller.transport?.readCanvasKv?.(sessionId, slot, { key: change.key })
+                .then((read) => deliver(read?.entries?.[0] ?? null))
+                .catch(() => { /* the page's next list catches up */ });
+        });
+    }, [controller, sessionId, slot]);
 
     React.useEffect(() => {
         if (!controller || !sessionId || !latestRev) return undefined;
@@ -6971,7 +7140,9 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     return React.createElement("div", { ref: hostRef, className: "ps-html-preview-host is-fitting" },
         [live, staging].filter(Boolean).map((frame) => React.createElement("iframe", {
             key: `canvas:${frame.rev}:${frame.url}`,
-            ref: frame === live ? ((el) => { liveIframeElRef.current = el; }) : undefined,
+            ref: frame === live
+                ? ((el) => { liveIframeElRef.current = el; })
+                : ((el) => { stagingIframeElRef.current = el; }),
             className: `ps-html-preview-frame${frame === live ? "" : " is-staging"}`,
             style: zoomStyle,
             src: frame.url,
@@ -9938,14 +10109,42 @@ function ProviderSystemSpend({ view }) {
             ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" }, spend.error)
             : null,
         spend.loaded ? React.createElement(React.Fragment, null,
-            React.createElement("div", { className: "ps-budget-system-total" },
-                React.createElement("strong", null, `${spend.tokensLabel} tokens`),
-                React.createElement("span", { className: "ps-budget-sub" }, ` · ${budgetPlural(spend.turns, "turn", "turns")}`)),
+            // The headline: total tokens and turns as two stat tiles, then a
+            // per-model table with a share bar so the mix reads at a glance
+            // (77.9M of 94.7M on one model is the fact that matters).
+            React.createElement("div", { className: "ps-budget-system-stats" },
+                React.createElement("div", { className: "ps-budget-system-stat" },
+                    React.createElement("strong", null, spend.tokensLabel),
+                    React.createElement("span", null, "tokens")),
+                React.createElement("div", { className: "ps-budget-system-stat" },
+                    React.createElement("strong", null, formatCompactNumber(spend.turns)),
+                    React.createElement("span", null, spend.turns === 1 ? "turn" : "turns")),
+                spend.turns > 0
+                    ? React.createElement("div", { className: "ps-budget-system-stat" },
+                        React.createElement("strong", null, formatCompactNumber(Math.round(spend.tokens / spend.turns))),
+                        React.createElement("span", null, "tokens / turn"))
+                    : null),
             spend.models.length
-                ? React.createElement("div", { className: "ps-budget-system-models" },
-                    spend.models.map((model) => React.createElement("div", { key: model.key, className: "ps-budget-system-model" },
-                        React.createElement("span", null, modelLabel(model.label)),
-                        React.createElement("strong", null, `${model.tokensLabel} · ${budgetPlural(model.turns, "turn", "turns")}`))))
+                ? React.createElement("table", { className: "ps-budget-system-models" },
+                    React.createElement("thead", null,
+                        React.createElement("tr", null,
+                            React.createElement("th", { scope: "col" }, "Model"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Tokens"),
+                            React.createElement("th", { scope: "col", className: "is-share" }, "Share"),
+                            React.createElement("th", { scope: "col", className: "is-num" }, "Turns"))),
+                    React.createElement("tbody", null,
+                        spend.models.map((model) => {
+                            const share = spend.tokens > 0 ? model.tokens / spend.tokens : 0;
+                            const pct = Math.round(share * 100);
+                            return React.createElement("tr", { key: model.key },
+                                React.createElement("td", { className: "ps-budget-system-model-name" }, modelLabel(model.label)),
+                                React.createElement("td", { className: "is-num" }, model.tokensLabel),
+                                React.createElement("td", { className: "is-share" },
+                                    React.createElement("span", { className: "ps-budget-system-bar", role: "img", "aria-label": `${pct}% of system spend` },
+                                        React.createElement("span", { className: "ps-budget-system-bar-fill", style: { width: `${Math.max(share > 0 ? 1 : 0, share * 100)}%` } })),
+                                    React.createElement("span", { className: "ps-budget-system-pct" }, `${pct}%`)),
+                                React.createElement("td", { className: "is-num" }, formatCompactNumber(model.turns)));
+                        })))
                 : React.createElement("div", { className: "ps-budget-sub" }, "No system spend in this range.")) : null);
 }
 
@@ -12003,13 +12202,18 @@ function AdminPackageDetailPane({ controller, view }) {
                         React.createElement("span", null, version.dateText),
                         version.active
                             ? React.createElement("span", { className: "is-ok" }, "● active")
-                            : (detail.canManage
+                            : (detail.canEdit
                                 ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("pin", version.semver), disabled: Boolean(pending) }, "Pin")
                                 : null)))))
             : null,
-        detail.canManage
+        // Editors live on the shared copy only. Everyone sees the list;
+        // only the owner/admin changes it.
+        detail.scope === "shared"
+            ? React.createElement(AdminPackageEditorsSection, { controller, detail, pending })
+            : null,
+        detail.canEdit
             ? React.createElement("div", { className: "ps-admin-detail__actions" },
-                detail.source
+                detail.source && detail.canManage
                     ? React.createElement("button", { type: "button", className: "ps-primary-button", onClick: act("sync"), disabled: Boolean(pending) },
                         pending === "sync" ? "Syncing…" : "Sync now")
                     : null,
@@ -12034,8 +12238,11 @@ function AdminPackageDetailPane({ controller, view }) {
                         disabled: Boolean(pending) || !detail.activeSemver,
                         title: `Publish ${detail.name}@${detail.activeSemver ?? "?"} into the existing shared package`,
                     }, pending === "republish" ? "Publishing…" : `Publish ${detail.activeSemver ?? ""} to shared`)
-                    : React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending) },
-                        detail.scope === "shared" ? "Demote to user" : "Promote to shared"),
+                    : (detail.canManage
+                        ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "demote" : "promote"), disabled: Boolean(pending),
+                            title: detail.scope === "shared" && detail.editors.length ? "Demoting revokes every editor grant" : undefined },
+                            detail.scope === "shared" ? "Demote to user" : "Promote to shared")
+                        : null),
                 detail.scope === "shared" && !detail.hasOwnUserCounterpart
                     ? React.createElement("button", {
                         type: "button",
@@ -12047,11 +12254,107 @@ function AdminPackageDetailPane({ controller, view }) {
                     : null,
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
                     detail.enabled ? "Disable" : "Enable"),
-                React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete"))
+                detail.canManage
+                    ? React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete")
+                    : null)
             : React.createElement("p", { className: "ps-admin-console__hint" },
-                "Read-only: only the package creator or an admin can modify it."),
+                "Read-only: only the package creator, a granted editor, or an admin can modify it."),
         detail.actionError
             ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, detail.actionError)
+            : null);
+}
+
+/**
+ * Editors of a SHARED package: named users who may publish, pin and
+ * enable/disable it (never scope, delete, or this list). Everyone who can
+ * see the package sees the list; only the owner/admin changes it. Grantees
+ * are picked from the same member directory the session-share dialog uses.
+ */
+function AdminPackageEditorsSection({ controller, detail, pending }) {
+    const [query, setQuery] = React.useState("");
+    const [directory, setDirectory] = React.useState([]);
+    React.useEffect(() => {
+        if (!detail.canManage || typeof controller.transport.listKnownUsers !== "function") return undefined;
+        let cancelled = false;
+        controller.transport.listKnownUsers({ limit: 500 })
+            .then((users) => { if (!cancelled) setDirectory(Array.isArray(users) ? users : []); })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, [controller, detail.canManage]);
+
+    const editorKeys = new Set(detail.editors.map((e) => `${e.provider}${e.subject}`));
+    const q = query.trim().toLowerCase();
+    const suggestions = q
+        ? directory.filter((u) => !editorKeys.has(`${u.provider}${u.subject}`) && (
+            (u.displayName && u.displayName.toLowerCase().includes(q))
+            || (u.email && u.email.toLowerCase().includes(q))
+            || (u.subject && u.subject.toLowerCase().includes(q)))).slice(0, 8)
+        : [];
+    const grant = (user) => {
+        if (!user?.provider || !user?.subject) return;
+        setQuery("");
+        controller.runAdminPackageAction("grantEditor", { provider: user.provider, subject: user.subject });
+    };
+    // Enter/Add grants only an EXACT match, or the single remaining
+    // suggestion. A typo must never hand write access to whoever happens
+    // to sort first in the directory — the person picks from the list.
+    const grantTyped = () => {
+        const text = query.trim();
+        if (!text) return;
+        const exact = directory.find((u) =>
+            (u.displayName && u.displayName.toLowerCase() === text.toLowerCase())
+            || (u.email && u.email.toLowerCase() === text.toLowerCase())
+            || (u.subject && u.subject.toLowerCase() === text.toLowerCase()));
+        if (exact) return grant(exact);
+        if (suggestions.length === 1) return grant(suggestions[0]);
+    };
+
+    return React.createElement("div", { className: "ps-admin-editors" },
+        React.createElement("div", { className: "ps-admin-detail__label" }, "Editors"),
+        detail.editors.length
+            ? React.createElement("div", { className: "ps-admin-detail__chips" },
+                detail.editors.map((e) => React.createElement("span", {
+                    key: `${e.provider}${e.subject}`,
+                    className: "ps-agent-chip",
+                    title: `${e.provider}:${e.subject}${e.grantedByDisplay ? ` · granted by ${e.grantedByDisplay}` : ""}`,
+                },
+                    e.label,
+                    detail.canManage
+                        ? React.createElement("button", {
+                            type: "button",
+                            className: "ps-chip-remove",
+                            "aria-label": `Remove editor ${e.label}`,
+                            disabled: Boolean(pending),
+                            onClick: () => controller.runAdminPackageAction("revokeEditor", { provider: e.provider, subject: e.subject }),
+                        }, "×")
+                        : null)))
+            : React.createElement("p", { className: "ps-admin-console__hint" },
+                detail.canManage
+                    ? "No editors yet. Add a person to let them publish, pin and enable this package. Grants are revoked if the package is demoted."
+                    : "Only the owner and admins can change this package."),
+        detail.canManage
+            ? React.createElement("div", { className: "ps-admin-editors__add" },
+                React.createElement("input", {
+                    type: "text",
+                    className: "ps-input",
+                    placeholder: "Add editor by name, email, or id…",
+                    value: query,
+                    disabled: Boolean(pending),
+                    onChange: (event) => setQuery(event.target.value),
+                    onKeyDown: (event) => { if (event.key === "Enter") { event.preventDefault(); grantTyped(); } },
+                    "aria-label": "Add editor",
+                }),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: grantTyped, disabled: Boolean(pending) || !query.trim() }, "Add"),
+                suggestions.length
+                    ? React.createElement("div", { className: "ps-admin-editors__suggestions", role: "listbox" },
+                        suggestions.map((u) => React.createElement("button", {
+                            key: `${u.provider}${u.subject}`,
+                            type: "button",
+                            role: "option",
+                            className: "ps-admin-editors__suggestion",
+                            onClick: () => grant(u),
+                        }, u.displayName || u.email || u.subject, u.email && u.displayName ? React.createElement("i", null, ` ${u.email}`) : null)))
+                    : null)
             : null);
 }
 

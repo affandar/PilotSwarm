@@ -134,6 +134,10 @@ export class HttpApiTransport {
     setAgentPackageScope(name, scope, selector) { return this.api.call("setAgentPackageScope", { name, scope, ...selectorParams(selector, { scopeless: true }) }); }
     setAgentPackageEnabled(name, enabled, selector) { return this.api.call("setAgentPackageEnabled", { name, enabled, ...selectorParams(selector) }); }
     pinAgentPackageVersion(name, semver, selector) { return this.api.call("pinAgentPackageVersion", { name, semver, ...selectorParams(selector) }); }
+    // Editors live on the shared copy only — no selector.
+    grantAgentPackageEditor(name, user) { return this.api.call("grantAgentPackageEditor", { name, user }); }
+    revokeAgentPackageEditor(name, user) { return this.api.call("revokeAgentPackageEditor", { name, user }); }
+    listAgentPackageEditors(name) { return this.api.call("listAgentPackageEditors", { name }); }
     deleteAgentPackage(name, selector) { return this.api.call("deleteAgentPackage", { name, ...selectorParams(selector) }); }
     republishAgentPackageVersion(name, semver, targetScope, selector) { return this.api.call("republishAgentPackageVersion", { name, semver, targetScope, ...selectorParams(selector) }); }
     downloadAgentPackage(name, semver, selector) {
@@ -472,6 +476,25 @@ export class HttpApiTransport {
         return this.api.call("getCanvasLive", { sessionId });
     }
 
+    // The canvas KV store (door 1 — signed-in browser).
+    async readCanvasKv(sessionId, slot, query = {}) {
+        return this.api.call("readCanvasKv", {
+            sessionId, slot,
+            ...(query.prefix != null ? { prefix: query.prefix } : {}),
+            ...(query.limit != null ? { limit: query.limit } : {}),
+            ...(query.after != null ? { after: query.after } : {}),
+            ...(query.key != null ? { key: query.key } : {}),
+        });
+    }
+
+    async writeCanvasKv(sessionId, slot, ops) {
+        return this.api.call("writeCanvasKv", { sessionId, slot, ops });
+    }
+
+    async setCanvasKvAccess(sessionId, slot, access) {
+        return this.api.call("setCanvasKvAccess", { sessionId, slot, access });
+    }
+
     async getCanvasShareLink(sessionId, slot) {
         return this.api.call("getCanvasShareLink", { sessionId, slot });
     }
@@ -586,6 +609,30 @@ export class HttpApiTransport {
         };
         const unsubscribeEvents = this.api.subscribeSession(sessionId, wrapped);
         const unsubscribeCanvas = this.api.subscribeCanvasLive(sessionId, (message) => {
+            if (message?.kind === "kv") {
+                // A KV change: not part of the tick mirror (per-key rev, not
+                // the slot seq chain). Surface it as a TRANSIENT event so the
+                // canvas frame can post `canvas-kv-change` into the page.
+                const handlers = this._canvasEmitHandlers?.get(sessionId);
+                if (handlers) {
+                    const event = {
+                        eventType: "session.canvas_kv",
+                        sessionId,
+                        transient: true,
+                        data: {
+                            slot: Number(message.slot) || 1,
+                            key: String(message.key ?? ""),
+                            rev: Number(message.rev) || 0,
+                            op: message.op === "delete" ? "delete" : "put",
+                            ...(message.value !== undefined ? { value: message.value } : {}),
+                        },
+                    };
+                    for (const h of handlers) {
+                        try { h(event); } catch { /* consumer's problem */ }
+                    }
+                }
+                return;
+            }
             this._canvasMirror.onPing(sessionId, message);
             if (message?.kind === "unavailable") {
                 // Propagate the release downstream: the reducer holds its own

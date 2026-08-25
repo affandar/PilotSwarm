@@ -69,7 +69,38 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "prefix_crawl_flag",
             sql: migration_0011_prefix_crawl_flag(schema),
         },
+        {
+            version: "0012",
+            name: "apps_namespace",
+            sql: migration_0012_apps_namespace(schema),
+        },
     ];
+}
+
+// ─── Migration 0012: the `apps` namespace in stats ───────────────
+//
+// The canvas app catalog (interactive-canvas-apps Part F) lives in the shared
+// facts namespace `apps/<name>`. Search already works on any prefix; this
+// only stops the stats views from bucketing catalog rows under "(other)".
+function migration_0012_apps_namespace(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.facts_namespace_for_key(p_key TEXT)
+    RETURNS TEXT AS $$
+DECLARE
+    v_first TEXT;
+BEGIN
+    IF p_key IS NULL OR p_key = '' THEN
+        RETURN '(other)';
+    END IF;
+    v_first := split_part(p_key, '/', 1);
+    IF v_first IN ('skills', 'asks', 'intake', 'config', 'apps') THEN
+        RETURN v_first;
+    END IF;
+    RETURN '(other)';
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+`;
 }
 
 // ─── Migration 0001: Baseline ────────────────────────────────────

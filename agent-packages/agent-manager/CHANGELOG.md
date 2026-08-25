@@ -1,5 +1,16 @@
 # Changelog — agent-manager
 
+## 1.1.0
+
+### Added
+
+- Authoring guidance for MCP servers: the `.mcp.json` catalog, the
+  `plugin.json` `mcpConfig` pointer, and the `schemaVersion: 2` +
+  `mcpServers:` frontmatter an agent needs — plus the validator rules and
+  the `allowedAgents` identity (`<package>:<agent>`) a deployment uses to
+  admit a package agent to a restricted server. Until now the manager never
+  wrote `.mcp.json`, so agents it authored could not use MCP at all.
+
 ## 1.0.9
 
 ### Changed

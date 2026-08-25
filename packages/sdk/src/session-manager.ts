@@ -189,6 +189,13 @@ export interface WorkerDefaults {
     /** Custom agents to pass to the Copilot SDK. */
     customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any> }>;
     /**
+     * Every registered skill (deployment + packages), held BY REFERENCE from
+     * the worker. Progressive discovery: the base prompt carries a one-line
+     * index of names and descriptions, and the `load_skill` tool returns a
+     * body on demand — nothing is inlined unless an agent declares it.
+     */
+    skills?: Array<{ name: string; description: string; prompt: string; dir?: string }>;
+    /**
      * Deployment MCP catalog (merged `.mcp.json` map). NOT applied to
      * sessions wholesale — a session receives exactly its bound agent's
      * resolved map from `agentMcpServers` (capability-profiles Phase 1).
@@ -201,6 +208,14 @@ export interface WorkerDefaults {
      * opt-ins plus direct worker-config servers (legacy semantics).
      */
     baseMcpServers?: Record<string, any>;
+    /**
+     * Catalog servers restricted with `allowedAgents` (server name → allowed
+     * agent identities). Held BY REFERENCE from the worker, which clears and
+     * refills it in place on every plugin reload.
+     */
+    mcpAllowedAgents?: Map<string, Set<string>>;
+    /** Every server name the deployment defines — a package may not redefine one. Held BY REFERENCE. */
+    deploymentMcpNames?: Set<string>;
     /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
@@ -1446,7 +1461,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app",
     "update_canvas"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
@@ -1567,6 +1582,12 @@ export class SessionManager {
                 // conversation that produced it already is.
                 artifactStore: this.artifactStore ?? null,
                 sessionId,
+                // Names a package may not define: every worker drops a package
+                // definition of a deployment catalog server at load.
+                reservedMcpServerNames: [...new Set([
+                    ...(this.workerDefaults.deploymentMcpNames ?? []),
+                    ...(this.workerDefaults.mcpAllowedAgents?.keys() ?? []),
+                ])],
             })
             : [];
         // Provider budgets. Declared by managed-session for the two Token
@@ -1848,6 +1869,9 @@ export class SessionManager {
         }
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
+        // The `load_skill` catalog (progressive discovery) — held on the
+        // managed session, NEVER in the CLI's session config.
+        managed.setSkillCatalog(this.workerDefaults.skills ?? []);
         this.sessions.set(sessionId, managed);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
@@ -1973,6 +1997,9 @@ export class SessionManager {
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
+        // The `load_skill` catalog (progressive discovery) — held on the
+        // managed session, NEVER in the CLI's session config.
+        managed.setSkillCatalog(this.workerDefaults.skills ?? []);
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry
                             await sleep(500 * attempt);

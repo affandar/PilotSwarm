@@ -2614,6 +2614,14 @@ export class PilotSwarmUiController {
      */
     async refreshWorkerRegistryIfStale() {
         const workers = this.getState().admin?.workers;
+        // The registry is fleet:admin. Polling it as a plain user is a 403
+        // every few seconds and a red console for nothing.
+        const role = this.getState().auth?.authorization?.role;
+        const isAdmin = role === "admin" || role === "anonymous" || this.getState().admin?.profile?.isAdmin === true;
+        if (!isAdmin) {
+            this.dispatch({ type: "admin/workers/attempt", skip: "not admin" });
+            return;
+        }
         if (workers?.loading) {
             this.dispatch({ type: "admin/workers/attempt", skip: "already in flight" });
             return;
@@ -3653,6 +3661,13 @@ export class PilotSwarmUiController {
                     break;
                 case "delete":
                     await this.transport.deleteAgentPackage(name, selector);
+                    break;
+                // Editors live on the shared copy only — no selector.
+                case "grantEditor":
+                    await this.transport.grantAgentPackageEditor(name, arg);
+                    break;
+                case "revokeEditor":
+                    await this.transport.revokeAgentPackageEditor(name, arg);
                     break;
                 default:
                     throw new Error(`unknown package action: ${kind}`);
@@ -5270,12 +5285,11 @@ export class PilotSwarmUiController {
         // the authority; this is the friendly refusal). The canvas mutates —
         // a shared viewer may be looking at a different revision than the one
         // the creator is conversing through, so their clicks must not speak.
-        const me = this.getState().auth?.principal || null;
-        const ownerRow = this.getState().sessions.byId[sessionId]?.owner || null;
-        if (me && ownerRow && (String(ownerRow.provider || "") !== String(me.provider || "")
-            || String(ownerRow.subject || "") !== String(me.subject || ""))) {
-            return Promise.resolve({ ok: false, reason: "only the session's creator can use canvas controls" });
-        }
+        // Who may ring is the SERVER's decision (owner, admin, or anyone with
+        // session write — interactive-canvas-apps Part E). The client no
+        // longer pre-refuses non-owners: a write-shared collaborator's click
+        // must reach the agent, and the server's refusal for a read-only
+        // viewer comes back as the result's reason.
         const contract = this.getState().canvas.bySessionId[sessionId]?.responseContract || null;
         const verdict = validateCanvasAction(contract, message);
         if (!verdict.ok) return Promise.resolve(verdict);
@@ -5386,6 +5400,23 @@ export class PilotSwarmUiController {
         return true;
     }
 
+    /**
+     * Listen for canvas KV changes on a session (the live path of the canvas
+     * KV store). Returns an unsubscriber. Frames use this to post
+     * `canvas-kv-change` into their page.
+     */
+    subscribeCanvasKv(sessionId, callback) {
+        if (!sessionId || typeof callback !== "function") return () => {};
+        if (!this._canvasKvListeners) this._canvasKvListeners = new Map();
+        if (!this._canvasKvListeners.has(sessionId)) this._canvasKvListeners.set(sessionId, new Set());
+        const set = this._canvasKvListeners.get(sessionId);
+        set.add(callback);
+        return () => {
+            set.delete(callback);
+            if (set.size === 0) this._canvasKvListeners.delete(sessionId);
+        };
+    }
+
     applyCanvasDataEvent(sessionId, event) {
         this.dispatch({
             type: "canvas/data",
@@ -5412,6 +5443,17 @@ export class PilotSwarmUiController {
         if (event.transient === true) {
             if (event.eventType === "session.canvas_data") {
                 this.applyCanvasDataEvent(sessionId, event);
+            }
+            if (event.eventType === "session.canvas_kv") {
+                // KV changes never touch the reducer: they go straight to
+                // the canvas frames listening for this session, which post
+                // them into the page as `canvas-kv-change`.
+                const listeners = this._canvasKvListeners?.get(sessionId);
+                if (listeners) {
+                    for (const cb of listeners) {
+                        try { cb(event.data); } catch { /* one frame's problem */ }
+                    }
+                }
             }
             if (event.eventType === "session.canvas_plane_released") {
                 // The plane died for this session (server error/rollback).

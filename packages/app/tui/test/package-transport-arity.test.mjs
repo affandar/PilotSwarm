@@ -18,8 +18,12 @@ function fakeTransport() {
             deleteAgentPackage: track("deleteAgentPackage"),
             republishAgentPackageVersion: track("republishAgentPackageVersion"),
             uploadAgentPackage: track("uploadAgentPackage"),
+            grantAgentPackageEditor: track("grantAgentPackageEditor"),
+            revokeAgentPackageEditor: track("revokeAgentPackageEditor"),
+            listAgentPackageEditors: track("listAgentPackageEditors"),
         },
         _reservedAgentNames: () => ["sweeper"],
+        _reservedMcpServerNames: () => ["icm-mcp-rw"],
     };
     for (const name of Object.keys(transport.mgmt)) transport[name] = NodeSdkTransport.prototype[name];
     return { transport, calls };
@@ -38,6 +42,10 @@ test("shared UI package signatures resolve the native principal internally", asy
     await transport.deleteAgentPackage("pkg", selector);
     await transport.republishAgentPackageVersion("pkg", "1.0.0", "shared");
     await transport.uploadAgentPackage([], "user");
+    const grantee = { provider: "test", subject: "alice" };
+    await transport.grantAgentPackageEditor("pkg", grantee);
+    await transport.revokeAgentPackageEditor("pkg", grantee);
+    await transport.listAgentPackageEditors("pkg");
 
     for (const call of calls) {
         const name = call[0];
@@ -55,6 +63,17 @@ test("shared UI package signatures resolve the native principal internally", asy
             assert.equal(args[2], transport.currentUser);
             assert.equal(args[3], true);
             assert.deepEqual(args[4].reservedAgentNames, ["sweeper"]);
+            assert.deepEqual(args[4].reservedMcpServerNames, ["icm-mcp-rw"], "publish refuses deployment-restricted MCP names");
+            continue;
+        }
+        // Editors live on the shared copy: no selector, but the native
+        // principal and admin authority still ride along on mutations.
+        if (name === "grantAgentPackageEditor" || name === "revokeAgentPackageEditor") {
+            assert.deepEqual(args, ["pkg", grantee, transport.currentUser, true]);
+            continue;
+        }
+        if (name === "listAgentPackageEditors") {
+            assert.deepEqual(args, ["pkg"]);
             continue;
         }
         assert.ok(args.includes(transport.currentUser), `${name} carries the native principal`);

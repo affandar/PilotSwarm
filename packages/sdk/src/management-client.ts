@@ -30,9 +30,11 @@ import type {
 } from "./types.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
-    AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentWorkerStateRow, WorkerRow,
+    AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
+import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
     ProviderStore, ProviderRow, ProviderStatusRow, PausedSessionRow, DefaultTuple, UsageFilters,
     ProviderClass, UsageGridRow, ProviderDefaults, ProviderCredential, SystemAgentModelOverride,
@@ -2033,6 +2035,63 @@ export class PilotSwarmManagementClient {
         return catalog.getCanvasLive(sessionId);
     }
 
+    // ── The canvas KV store (migration 0064) ─────────────────────────
+    //
+    // Doors 1 (signed-in) and 2 (link, read-only) land here with a RESOLVED
+    // principal; every rule is the SDK chokepoint's (canvas-kv.ts). The
+    // runtime has already gated session read for door 1.
+
+    private _canvasKvStore(): CanvasKvStore {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.canvasKvWrite !== "function") {
+            throw Object.assign(new Error("this deployment's catalog predates the canvas KV store (migration 0064)"), { code: "NOT_FOUND" });
+        }
+        return catalog as CanvasKvStore;
+    }
+
+    private _mapCanvasKvErrors<T>(run: () => Promise<T>): Promise<T> {
+        return run().catch((error: any) => {
+            if (error instanceof CanvasKvError) {
+                error.code = error.code === "INVALID_KEY" ? "INVALID_REQUEST" : error.code;
+            }
+            throw error;
+        });
+    }
+
+    async readCanvasKv(
+        sessionId: string,
+        slot: number,
+        principal: CanvasKvPrincipal,
+        query: { prefix?: string | null; limit?: number | null; after?: string | null; key?: string | null } = {},
+    ): Promise<CanvasKvReadResult> {
+        return this._mapCanvasKvErrors(() => readCanvasKv(this._canvasKvStore(), sessionId, slot, principal, query));
+    }
+
+    async writeCanvasKv(
+        sessionId: string,
+        slot: number,
+        principal: CanvasKvPrincipal,
+        ops: CanvasKvWriteOp[],
+    ): Promise<{ results: CanvasKvWriteResult[]; me: CanvasKvMe }> {
+        return this._mapCanvasKvErrors(() => writeCanvasKv(this._canvasKvStore(), sessionId, slot, principal, ops));
+    }
+
+    /** Door 2: a link bearer reads; the link door is read-only until phase 4. */
+    async readCanvasKvForLink(
+        sessionId: string,
+        slot: number,
+        query: { prefix?: string | null; limit?: number | null; after?: string | null; key?: string | null } = {},
+    ): Promise<CanvasKvReadResult> {
+        const principal: CanvasKvPrincipal = { kind: "link", writerId: "link", label: null, writeEnabled: false };
+        return this._mapCanvasKvErrors(() => readCanvasKv(this._canvasKvStore(), sessionId, slot, principal, query));
+    }
+
+    async setCanvasKvAccess(sessionId: string, slot: number, access: "owner" | "readers" | "link"): Promise<void> {
+        const store = this._canvasKvStore() as any;
+        await store.setCanvasKvAccess(sessionId, slot, access);
+    }
+
     /**
      * Graph-search forensics (enhancedfactstore 07 P4): the `graph.searched`
      * events a session emitted — what graph queries it ran and how many results
@@ -3795,7 +3854,7 @@ export class PilotSwarmManagementClient {
             if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*FORBIDDEN/.test(message)) error.code = "FORBIDDEN";
             else if (/AGENT_(?:PACKAGE|SOURCE)_[A-Z_]*NOT_FOUND/.test(message)) error.code = "NOT_FOUND";
             else if (/AGENT_PACKAGE_(?:SEMVER_CONFLICT|SCOPE_MISMATCH|NAME_TAKEN|AMBIGUOUS)/.test(message)) error.code = "CONFLICT";
-            else if (/AGENT_PACKAGE_(?:BAD_(?:SCOPE|NAME)|NO_OWNER|RESERVED_NAME)/.test(message)) error.code = "INVALID_REQUEST";
+            else if (/AGENT_PACKAGE_(?:BAD_(?:SCOPE|NAME)|NO_OWNER|RESERVED_NAME|NOT_SHARED|EDITOR_IS_OWNER)/.test(message)) error.code = "INVALID_REQUEST";
             throw error;
         }
     }
@@ -3872,6 +3931,54 @@ export class PilotSwarmManagementClient {
         return { ok: true };
     }
 
+    // ── Editors: write grants on a SHARED package ─────────────────────
+    //
+    // No copy selector on any of these: editors exist only on the shared
+    // copy, so the name alone is unambiguous. Grant/revoke are owner-or-admin
+    // (enforced in SQL); the list is readable by anyone who can see the
+    // package.
+
+    async grantAgentPackageEditor(
+        name: string,
+        grantee: { provider: string; subject: string },
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        const provider = String(grantee?.provider ?? "").trim();
+        const subject = String(grantee?.subject ?? "").trim();
+        if (!provider || !subject) {
+            throw Object.assign(new Error("grantAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
+        }
+        await this._mapAgentPackageErrors(() => this._catalog!.grantAgentPackageEditor(
+            name, { provider, subject }, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+        ));
+        return { ok: true };
+    }
+
+    async revokeAgentPackageEditor(
+        name: string,
+        grantee: { provider: string; subject: string },
+        owner: AgentPrincipal | null,
+        isAdmin: boolean,
+    ): Promise<{ ok: true }> {
+        this._ensureStarted();
+        const provider = String(grantee?.provider ?? "").trim();
+        const subject = String(grantee?.subject ?? "").trim();
+        if (!provider || !subject) {
+            throw Object.assign(new Error("revokeAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
+        }
+        await this._mapAgentPackageErrors(() => this._catalog!.revokeAgentPackageEditor(
+            name, { provider, subject }, this._agentPackagePrincipal(owner, isAdmin), isAdmin,
+        ));
+        return { ok: true };
+    }
+
+    async listAgentPackageEditors(name: string): Promise<AgentPackageEditorInfo[]> {
+        this._ensureStarted();
+        return this._mapAgentPackageErrors(() => this._catalog!.listAgentPackageEditors(name));
+    }
+
     async pinAgentPackageVersion(
         name: string,
         semver: string,
@@ -3909,7 +4016,7 @@ export class PilotSwarmManagementClient {
         scope: AgentPackageScope,
         owner: AgentPrincipal | null,
         isAdmin: boolean,
-        opts: { createdBy?: string | null; reservedAgentNames?: string[] } = {},
+        opts: { createdBy?: string | null; reservedAgentNames?: string[]; reservedMcpServerNames?: string[] } = {},
     ) {
         this._ensureStarted();
         return this._mapAgentPackageErrors(() => publishAgentPackageDir(
@@ -3920,7 +4027,9 @@ export class PilotSwarmManagementClient {
                 owner: this._agentPackagePrincipal(owner, isAdmin),
                 createdBy: opts.createdBy ?? null,
                 isAdmin,
-                ...(opts.reservedAgentNames?.length ? { validate: { reservedAgentNames: opts.reservedAgentNames } } : {}),
+                ...(opts.reservedAgentNames?.length || opts.reservedMcpServerNames?.length
+                    ? { validate: { reservedAgentNames: opts.reservedAgentNames ?? [], reservedMcpServerNames: opts.reservedMcpServerNames ?? [] } }
+                    : {}),
             },
         ));
     }
@@ -3930,10 +4039,18 @@ export class PilotSwarmManagementClient {
         scope: AgentPackageScope,
         owner: AgentPrincipal | null,
         isAdmin: boolean,
-        opts: { createdBy?: string | null; reservedAgentNames?: string[] } = {},
+        opts: { createdBy?: string | null; reservedAgentNames?: string[]; reservedMcpServerNames?: string[] } = {},
     ) {
         const invalid = (message: string) => Object.assign(new Error(message), { code: "INVALID_REQUEST" });
         const tooLarge = (message: string) => Object.assign(new Error(message), { code: "PAYLOAD_TOO_LARGE" });
+        // An absent scope means "user", as it does on the CLI and the MCP tool.
+        // Anything else is refused HERE: the SQL check `p_scope NOT IN (...)`
+        // is NULL for a NULL scope and lets it through to a NOT NULL violation,
+        // which surfaced as a 500 with a raw SQLSTATE.
+        const resolvedScope: AgentPackageScope = scope == null ? "user" : scope;
+        if (resolvedScope !== "shared" && resolvedScope !== "user") {
+            throw invalid(`AGENT_PACKAGE_BAD_SCOPE: scope must be shared or user, got "${String(scope)}"`);
+        }
         if (!Array.isArray(files) || files.length === 0) throw invalid("upload requires files: [{ path, contentBase64 }]");
         if (files.length > 2_000) throw tooLarge("upload exceeds 2000 files");
         const normalizedPaths = files.map((file) => String(file?.path || ""));
@@ -3969,7 +4086,7 @@ export class PilotSwarmManagementClient {
                 fs.mkdirSync(path.dirname(target), { recursive: true });
                 fs.writeFileSync(target, bytes);
             }
-            return await this.publishAgentPackageDirectory(tmp, scope, owner, isAdmin, opts);
+            return await this.publishAgentPackageDirectory(tmp, resolvedScope, owner, isAdmin, opts);
         } catch (error) {
             if (error instanceof AgentPackageValidationError) {
                 const wrapped: any = new Error(error.message);

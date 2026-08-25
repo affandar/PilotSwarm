@@ -80,6 +80,14 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "read_session_tree_retrieval_usage",
     "read_session_graph_node_usage",
     "read_session_graph_edge_search_usage",
+    // The canvas KV store, the app catalog and on-demand skill loading joined
+    // the always-on set in 0.5.45. canvas_kv is the multi-writer state plane
+    // behind draw_canvas/update_canvas; publish_canvas_app / find_canvas_app
+    // are the catalog; load_skill replaced eagerly inlining every skill.
+    "canvas_kv",
+    "publish_canvas_app",
+    "find_canvas_app",
+    "load_skill",
 ];
 const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,

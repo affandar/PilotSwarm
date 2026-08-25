@@ -170,14 +170,19 @@ export async function publishPackedAgentPackage(
         ...(opts.scope === "user" && opts.owner ? { owner: opts.owner } : {}),
     });
     if (existing) {
+        // Same rule as cms_publish_agent_package: admin, owner, or a granted
+        // editor. This pre-check runs before any bytes move; the proc
+        // re-checks atomically. Keep the two in step — an editor refused
+        // HERE never reaches the proc that would have admitted them.
         const actorOwns = opts.isAdmin || (
             existing.owner != null && opts.owner != null
             && existing.owner.provider === opts.owner.provider
             && existing.owner.subject === opts.owner.subject
         );
-        if (!actorOwns) {
+        const actorEdits = !actorOwns && await ctx.catalog.isAgentPackageEditor(existing.packageId, opts.owner);
+        if (!actorOwns && !actorEdits) {
             throw new Error(
-                `AGENT_PACKAGE_FORBIDDEN: only the package creator or an admin can publish new versions of "${name}"`,
+                `AGENT_PACKAGE_FORBIDDEN: only the package creator, an editor, or an admin can publish new versions of "${name}"`,
             );
         }
         const existingVersion = existing.versions.find((v) => v.semver === semver);

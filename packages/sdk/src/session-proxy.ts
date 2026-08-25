@@ -1,6 +1,9 @@
 import nodeCrypto from "node:crypto";
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
+import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
+import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
+import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
@@ -207,85 +210,10 @@ export async function resolveAgentDefinitionForCaller(opts: {
     };
 }
 
-/**
- * The session canvas: one reserved artifact per ROOT session, drawn by the
- * agent with draw_canvas and rendered live in the portal. The revision is
- * derived from the durable session.canvas_updated event log, not a counter
- * column — see docs/proposals/session-canvas.md.
- */
-export const CANVAS_ARTIFACT_FILENAME = "canvas.html";
-
-/** Slot 1 keeps the historical name; 2-5 are canvas2.html .. canvas5.html. */
-export function canvasArtifactFilename(slot: number): string {
-    return slot <= 1 ? CANVAS_ARTIFACT_FILENAME : `canvas${slot}.html`;
-}
-
-/** 1-5, defaulting absent to 1. Returns null for anything else. */
-function normalizeCanvasSlot(value: unknown): number | null {
-    if (value === undefined || value === null || value === "") return 1;
-    const n = Number(value);
-    if (!Number.isInteger(n) || n < 1 || n > 5) return null;
-    return n;
-}
-
-/** Event rows predate slots; a missing slot means slot 1. */
-function eventSlot(row: any): number {
-    const n = Number(row?.data?.slot);
-    return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
-}
-
-/**
- * The current canvas revision, from the durable event log — the single
- * authority. Reads a small window rather than exactly one row and takes the
- * max of the VALID revs it finds, so one garbage event (rev missing, NaN,
- * negative — injectable via send_session_event, which validates nothing)
- * cannot reset the sequence to 1 and break every client's monotonic compare.
- */
-// Latest canvas draw's full data (rev + armed contract) — same bounded event
-// query as latestCanvasRev; used by read_canvas(manifestOnly) so an inheriting
-// agent learns what the browser is currently enforcing.
-async function latestCanvasEventData(catalog: any, sessionId: string, slot = 1): Promise<{ rev: number; responseContract?: Record<string, any> }> {
-    // No empty-coerce on failure: a transient read error that reads as "no
-    // canvas" would mint rev 1 over a live rev-12 canvas (clients' monotonic
-    // guards then discard the draw while the tool reports success). Callers
-    // route the throw to a structured { error }.
-    //
-    // Window 30, not 5: five interleaved slots can push one slot's latest
-    // draw well past a five-event window. The session_canvases table is the
-    // fast path; this scan is the durable fallback.
-    const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
-    );
-    let latest: { rev: number; responseContract?: Record<string, any> } = { rev: 0 };
-    for (const row of rows || []) {
-        if (eventSlot(row) !== slot) continue;
-        const rev = Number((row?.data as any)?.rev);
-        if (Number.isFinite(rev) && Number.isInteger(rev) && rev > latest.rev) {
-            latest = { rev, responseContract: (row?.data as any)?.responseContract };
-        }
-    }
-    return latest;
-}
-
-async function latestCanvasRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
-    // Table first (migration 0045); event scan as the durable fallback for
-    // rows the table has not seen (legacy sessions, a missed upsert).
-    try {
-        const rows = await catalog.getSessionCanvases?.(sessionId);
-        const hit = (rows || []).find((r: any) => Number(r.slot) === slot);
-        if (hit && Number(hit.latestRev) > 0) return Number(hit.latestRev);
-    } catch { /* fall through to the event scan */ }
-    const rows = await catalog.getSessionEventsBefore(
-        sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
-    );
-    let latest = 0;
-    for (const row of rows || []) {
-        if (eventSlot(row) !== slot) continue;
-        const rev = Number((row?.data as any)?.rev);
-        if (Number.isFinite(rev) && rev > latest && Number.isInteger(rev)) latest = rev;
-    }
-    return latest;
-}
+// The canvas helpers (filenames, slot normalization, revision derivation)
+// live in canvas-support.ts, shared with the app catalog. Re-exported so
+// existing importers keep their path.
+export { CANVAS_ARTIFACT_FILENAME, canvasArtifactFilename } from "./canvas-support.js";
 
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
@@ -2750,6 +2678,25 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         try {
                             await catalog.upsertSessionCanvas?.(target, slot, rawName ?? null, rev, sizeBytes);
                         } catch { /* self-heals on the next draw */ }
+                        // The app's half of the KV write switch (Part D.3),
+                        // cached so a KV write never re-reads the document.
+                        // A document with no manifest clears it: the new page
+                        // declares nothing, so collaborators cannot write. A
+                        // failed cache write fails CLOSED: the previous app's
+                        // `viewers` switch must not stay armed for a page that
+                        // declared nothing, so clearing is retried and the
+                        // result tells the agent when neither landed.
+                        let kvManifestWarning: string | undefined;
+                        try {
+                            await (catalog as any).setCanvasKvManifest?.(target, slot, extraction.manifest?.kv ?? null);
+                        } catch {
+                            try {
+                                await (catalog as any).setCanvasKvManifest?.(target, slot, null);
+                            } catch {
+                                kvManifestWarning = "the canvas KV manifest cache could not be written; collaborators may keep the previous app's write access until the next successful draw.";
+                            }
+                        }
+                        if (kvManifestWarning) manifestWarning = manifestWarning ? `${manifestWarning} ${kvManifestWarning}` : kvManifestWarning;
                         // The data plane (migration 0047): doc pointer for
                         // live viewers + RESET of the data mirror — the new
                         // page starts from its own initial state, never the
@@ -2889,6 +2836,66 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }], workerNodeId);
                     return { presented: true, slot, rev };
                 },
+                // Door 3 of the canvas KV store: the agent. Same chokepoint
+                // as the browser doors; the principal is the session itself.
+                canvasKv: async (args: { op: "get" | "put" | "list" | "delete"; key?: string; value?: unknown; prefix?: string; limit?: number; after?: string; ifMatch?: number; slot?: number; session_id?: string }) => {
+                    if (!catalog) return { error: "canvas KV requires the CMS catalog" };
+                    if (typeof (catalog as any).canvasKvWrite !== "function") return { error: "this deployment's catalog predates the canvas KV store (migration 0064)" };
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    const { target } = resolved;
+                    const principal = { kind: "agent" as const, sessionId: input.sessionId };
+                    const store = catalog as any;
+                    try {
+                        switch (args.op) {
+                            case "get": {
+                                if (!args.key) return { error: "key is required for get (use list with a prefix to browse)" };
+                                const read = await readCanvasKv(store, target, slot, principal, { key: args.key });
+                                return read.entries.length ? { found: true, ...read.entries[0] } : { found: false, key: args.key };
+                            }
+                            case "list": {
+                                const read = await readCanvasKv(store, target, slot, principal, { prefix: args.prefix, limit: args.limit, after: args.after });
+                                return { entries: read.entries, ...(read.nextAfter ? { nextAfter: read.nextAfter } : {}), policy: read.policy };
+                            }
+                            case "put":
+                            case "delete": {
+                                if (!args.key) return { error: "key is required" };
+                                const op = args.op === "put"
+                                    ? { op: "put" as const, key: args.key, value: args.value, ifMatch: args.ifMatch ?? null }
+                                    : { op: "delete" as const, key: args.key, ifMatch: args.ifMatch ?? null };
+                                const written = await writeCanvasKv(store, target, slot, principal, [op]);
+                                const result = written.results[0];
+                                return result.ok
+                                    ? { ok: true, key: result.key, rev: result.rev }
+                                    : { error: `${result.code}: ${result.error}`, key: result.key, ...(result.rev !== undefined ? { rev: result.rev } : {}) };
+                            }
+                            default:
+                                return { error: `op must be get, put, list or delete (got ${String((args as any).op)})` };
+                        }
+                    } catch (err: any) {
+                        return { error: err?.message || String(err) };
+                    }
+                },
+                // The app catalog (interactive-canvas-apps Part F). Publish
+                // copies the canvas bytes to a pinned `app-<name>.html`
+                // artifact and writes ONE shared fact `apps/<name>` whose value
+                // is the card — derived from the document's manifest, never
+                // from the model's memory of it. Find is a ranked search over
+                // that namespace (hybrid on an enhanced store, a plain listing
+                // with a lexical filter on a base store).
+                publishCanvasApp: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
+                    const slot = normalizeCanvasSlot(args.slot);
+                    if (slot === null) return { error: "slot must be an integer 1-5" };
+                    const resolved = await resolveCanvasTarget(args.session_id);
+                    if ("error" in resolved) return { error: resolved.error };
+                    return publishCanvasApp(
+                        { artifactStore, catalog, factStore, sessionId: input.sessionId, agentIdentity: runConfig.agentIdentity ?? null, workerNodeId },
+                        { name: args.name, description: args.description, tags: args.tags, slot, target: resolved.target },
+                    );
+                },
+                findCanvasApp: async (args: { query?: string; limit?: number }) => findCanvasApp({ factStore }, args),
                 readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; includeData?: boolean; slot?: number; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };

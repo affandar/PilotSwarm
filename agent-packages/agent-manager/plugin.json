@@ -1,6 +1,6 @@
 {
   "name": "agent-manager",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "title": "Agent Manager",
   "description": "Agents that manage agents \u2014 read, write, import and keep agent packages current.",
   "agents": [

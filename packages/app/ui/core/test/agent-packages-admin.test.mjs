@@ -614,3 +614,59 @@ for (const [label, run] of [
         assert.equal(store.getState().sessions.activeSessionId, "new-1", "and the new session is the active one");
     });
 }
+
+// ─── Editors: canEdit vs canManage ──────────────────────────────
+
+test("package rows and detail split editor-level canEdit from owner-level canManage", () => {
+    const store = createStore(appReducer, createInitialState());
+    loadedPackagesState(store);
+    // Two more shared packages owned by someone else: one where the server
+    // says alice is a granted editor, one where it does not.
+    const list = store.getState().admin.packages.list;
+    store.dispatch({
+        type: "admin/packages/loaded",
+        list: [
+            ...list,
+            {
+                packageId: "p3", sourceId: null, name: "team-kit", scope: "shared",
+                owner: { provider: "test", subject: "bob" }, enabled: true, canEdit: true,
+                createdBy: "bob@test", createdAt: "2026-07-01T00:00:00Z",
+                active: { versionId: "v9", semver: "2.0.0", sha256: "0123456789abcdef", sizeBytes: 1, artifactFilename: "f9", commitSha: null, manifest: { agents: [] }, createdAt: "2026-07-01T00:00:00Z", createdBy: "bob@test" },
+            },
+            {
+                packageId: "p4", sourceId: null, name: "locked-kit", scope: "shared",
+                owner: { provider: "test", subject: "bob" }, enabled: true, canEdit: false,
+                createdBy: "bob@test", createdAt: "2026-07-01T00:00:00Z",
+                active: null,
+            },
+        ],
+        workerState: store.getState().admin.packages.workerState,
+    });
+
+    let tree = selectAdminConsole(store.getState()).settingsTree;
+    assert.equal(tree.find((r) => r.kind === "package" && r.name === "team-kit").canManage, true, "a granted editor manages the row");
+    assert.equal(tree.find((r) => r.kind === "package" && r.name === "locked-kit").canManage, false, "a stranger does not");
+    assert.equal(tree.find((r) => r.kind === "package" && r.name === "incident-kit").canManage, true, "the owner still does");
+
+    store.dispatch({ type: "admin/packages/select", name: "team-kit", selector: { scope: "shared" } });
+    store.dispatch({
+        type: "admin/packages/detail/loaded",
+        name: "team-kit",
+        detail: {
+            packageId: "p3", sourceId: null, name: "team-kit", scope: "shared",
+            owner: { provider: "test", subject: "bob" }, enabled: true, canEdit: true,
+            createdBy: "bob@test", createdAt: "2026-07-01T00:00:00Z", activeVersionId: "v9",
+            versions: [],
+            editors: [
+                { provider: "test", subject: "alice", email: "alice@test", displayName: "Alice", grantedAt: "2026-07-02T00:00:00Z", grantedByDisplay: "Bob" },
+                { provider: "test", subject: "carol", email: "carol@test", displayName: null, grantedAt: "2026-07-03T00:00:00Z", grantedByDisplay: null },
+                { provider: "test", subject: "raw-id", email: null, displayName: null, grantedAt: "2026-07-04T00:00:00Z", grantedByDisplay: null },
+            ],
+        },
+    });
+    const detail = selectAdminConsole(store.getState()).packages.detail;
+    assert.equal(detail.canEdit, true, "editor may publish/pin/enable");
+    assert.equal(detail.canManage, false, "editor may NOT scope/delete/grant");
+    assert.deepEqual(detail.editors.map((e) => e.label), ["Alice", "carol@test", "raw-id"], "label = displayName || email || subject");
+    assert.equal(detail.editors[0].grantedByDisplay, "Bob");
+});

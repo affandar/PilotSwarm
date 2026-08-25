@@ -327,7 +327,15 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         enhancedFacts,
         graph,
         admin,
-        agentMgmt: opts.agentMgmt ?? "full",
+        // A typo in a RESTRICTION flag must not resolve to the most permissive
+        // tier. Only the three documented values are accepted.
+        agentMgmt: ((): "off" | "read" | "full" => {
+            const raw = opts.agentMgmt ?? "full";
+            if (raw !== "off" && raw !== "read" && raw !== "full") {
+                throw new Error(`--agent-mgmt must be one of off | read | full (got "${String(raw)}")`);
+            }
+            return raw;
+        })(),
         role: ctxRole,
         authz: ctxAuthz,
         webMode: Boolean(opts.apiUrl),

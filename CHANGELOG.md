@@ -1,5 +1,148 @@
 # Changelog
 
+## 0.5.46 — 2026-08-25
+
+Shared agent packages gain editors, every signed-in user is findable in
+share dialogs, the Agent Manager learns MCP, deployment-restricted MCP
+servers move from a Waldemort image patch into the platform, canvas apps
+gain a shared KV store that several people write at once, and skills become
+discoverable on demand instead of inlined into every session.
+
+### Added
+
+- **Package editors.** The owner of a SHARED agent package (or an admin)
+  can grant named users write access: publish new versions, republish into
+  it, pin, enable/disable. Editors cannot change scope, delete, or manage
+  the editor list. Demoting the package to user scope revokes every grant
+  in the same transaction; a personal copy of the same name never inherits
+  one. New table `agent_package_editors` (migration 0063, keyed on
+  `users.user_id` like session shares), procs `cms_grant/revoke/list_agent_package_editor(s)`,
+  `can_edit` on package reads, ops `grantAgentPackageEditor` /
+  `revokeAgentPackageEditor` / `listAgentPackageEditors`, MCP tools
+  `grant_agent_package_editor` / `revoke_agent_package_editor` /
+  `list_agent_package_editors`, `pilotswarm agents editors add|remove`, and
+  an Editors section in the Admin Console package detail. Grants and
+  revocations are written to the authz audit log.
+
+- **`allowedAgents` on MCP catalog entries.** A deployment `.mcp.json`
+  entry can name the only agents allowed to reference it — `name` for a
+  deployment agent, `namespace:name` for a plugin or package agent (shared
+  copy only). Other references are dropped at load, restricted servers
+  never join the default set or the every-session base map, the field is
+  stripped before configs reach the Copilot CLI, and a package can neither
+  restrict a server nor redefine a restricted one. Replaces Waldemort's
+  version-pinned `worker.js` patch.
+
+- **MCP validation at publish.** New package validator rules:
+  `mcp_requires_schema_v2`, `mcp_default_forbidden`,
+  `mcp_allowed_agents_forbidden`, `reserved_mcp_server_name`, and the
+  `unknown_mcp_server` warning. The Agent Manager (1.1.0) now knows how to
+  author `.mcp.json`, `plugin.json` `mcpConfig`, and the schema-2
+  `mcpServers:` frontmatter.
+
+- **The canvas KV store (interactive canvas apps, phases 1–3).** A canvas
+  app now holds durable, per-key shared state that several people write at
+  once: `canvas_kv` table (migration 0064) with compare-and-swap `rev`,
+  tombstones, per-canvas budgets (1000 keys, 2 MB, 16 KB values) and a
+  NOTIFY per write on the existing canvas plane. Three doors, one SDK
+  chokepoint (`canvas-kv.ts`): the signed-in browser
+  (`readCanvasKv`/`writeCanvasKv`, access classes `canvas:read`/`canvas:write`
+  gated on session read), the link view (`GET /api/canvas-share/kv`, read
+  only), and the agent (`canvas_kv` tool). Pages talk to the host with
+  `canvas-kv` / `canvas-kv-result` / `canvas-kv-ready` / `canvas-kv-change`
+  and paste the `CanvasKV()` helper from the `canvas-apps` skill. The owner
+  sets who may write per canvas (`setCanvasKvAccess`: owner | readers |
+  link, in the share dialog); the app declares `"kv": { "write": "viewers",
+  "shared": [...] }` in its manifest; both switches are needed. Reserved
+  prefixes (`cfg/`, `evt/`, `ui/<writer>`), author-bound overwrites, and the
+  `req/*` status cap (collaborators suggest, the owner queues) are enforced
+  server-side. Read/write links and the app catalog are not in this release.
+
+- **The canvas app catalog (interactive canvas apps, phase 6).**
+  `publish_canvas_app` copies a canvas to a pinned `app-<name>.html`
+  artifact and writes its card as the shared fact `apps/<name>`;
+  `find_canvas_app` ranks the catalog (hybrid search on an enhanced store, a
+  term-overlap listing on a base store); `draw_canvas({fromArtifact:
+  card.source})` puts a found app on screen. The manifest gained an
+  `interface` block — `keys` (KV keys, writer, example value), `requests`
+  (`req/*` ops, args, result), `events` — and publish refuses an app
+  without one: the card is what an agent that never read the HTML drives the
+  app from. The base prompt tells agents to look before building; facts
+  migration 0012 buckets the `apps` namespace in stats.
+
+- **Progressive skill discovery.** The base prompt now carries a one-line
+  index of every registered skill and a `load_skill` tool returns a body on
+  demand, so a session pays only for the skills it uses. The canvas guidance
+  moved out of every session's context (≈15K chars → ≈1.5K) into
+  `html-visuals` and a rewritten `canvas-apps` skill; the four canvas tool
+  descriptions shrank to match. The stale "sub-agents have no canvas" line
+  is gone (they have had canvases since 0.5.37).
+
+### Fixed
+
+- **A canvas button press printed its raw JSON in the transcript.** The
+  chat classified the message before removing the `[FROM: …]` attribution
+  prefix and the appended `[SYSTEM: …]` notice, so a press from anyone but
+  the session owner failed the canvas-action test and rendered as an
+  ordinary message showing `[canvas-action] {…}`. Cleaning comes first now.
+  The portal no longer drops these lines either: a press is something the
+  viewer did, so it renders as one collapsed row — an uppercase `CANVAS`
+  tag, the action name, a one-line summary, the time — that opens to show
+  the exact payload the page sent.
+
+- **The runtime's own `[SYSTEM: …]` notice printed as prose to everyone but
+  the owner.** The forged-marker neutralizer inserts a zero-width space
+  after `[` so a collaborator cannot inject system guidance, and it runs
+  when the queued message is consumed — after the runtime has appended its
+  own timer or cron notice to that same text. The transcript's notice
+  matcher only knew the clean spelling, so genuine notices leaked into the
+  conversation. It now matches both spellings; the notice is hidden from
+  chat and kept in the activity feed, as it always was for owners. The
+  ordering itself is still wrong upstream and is worth fixing separately.
+
+- **A canvas app's first `ready` handshake was dropped on every cold open.**
+  A document runs its scripts in the staging iframe and is promoted on
+  load; the host bridge accepted messages from the live frame only, so a
+  page that called `CanvasKV()` at script time waited forever. The bridge
+  now answers KV reads (`ready`, `list`, `get`) from the staging frame of
+  the same canvas and replies to the window that asked; writes and actions
+  stay live-frame only. The skill's helper also re-posts `ready` until
+  answered, lists the app prefix across pages, fetches a change that
+  arrived without its value, and resyncs when the live feed is quiet.
+
+- **Canvas actions from write-shared collaborators.** The doorbell was
+  creator-only; per the canvas-apps design anyone who can write the session
+  may ring it (they can already send a message). Read-only viewers and link
+  bearers are still refused. The stale "sub-agents have no canvas" and
+  "creator only" lines are gone from the prompts and the `html-visuals`
+  skill.
+
+- **No live path under the dev auth provider.** The browser sent its
+  bearer token as a WebSocket subprotocol value, and a dev token
+  (`dev:<persona>`) contains a colon, which RFC 6455 forbids — the
+  `WebSocket` constructor threw and no events, canvas ticks or KV changes
+  ever streamed. The client now percent-encodes the token and the server
+  decodes it (a JWT is unchanged). Also: the share-link socket dropped a
+  `subscribeCanvas` sent on `open` about half the time (the handler was
+  attached after the token was resolved); early messages are now buffered
+  and replayed, and bearers are no longer told the session id.
+
+- **Signed-in users missing from share and editor pickers.** Users are
+  registered at login (since 0042), but the member directory hid every row
+  whose Entra token carried no `name` claim. `cms_list_users` now shows a
+  user with a display name OR an email, and the Entra normalizer falls back
+  to `preferred_username` for the display name.
+
+## 0.5.44 — 2026-08-24
+
+### Portal
+
+- **System spend, readable.** The Providers & Budgets pane's System spend
+  block was one run-together text column (`gpt-5.6-terra77.9M · 100 turns`).
+  It is now three stat tiles — tokens, turns, tokens per turn — and a
+  per-model table with a share bar, so "77.9M of 94.7M on one model" reads
+  without arithmetic. Share column hides at phone width.
+
 ## 0.5.44 — 2026-08-24
 
 ### Portal

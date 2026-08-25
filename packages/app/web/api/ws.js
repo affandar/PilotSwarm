@@ -33,6 +33,15 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
         let shareScope = null;
         let shareRevalidateTimer = null;
         let auth = null;
+        // Messages that arrive while auth is still being resolved (a client
+        // that sends `subscribeCanvas` on `open`) must not be lost: the real
+        // handler is attached only after the awaits below. Buffer them and
+        // replay once it is. Measured before this: the share view lost its
+        // subscribe about half the time.
+        const early = [];
+        let buffering = true;
+        const earlyListener = (raw) => { if (buffering) early.push(raw); };
+        ws.on("message", earlyListener);
         if (shareToken) {
             if (typeof runtime.resolveCanvasShareToken === "function") {
                 shareScope = await runtime.resolveCanvasShareToken(shareToken).catch(() => null);
@@ -84,6 +93,15 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
 
         send({ type: "ready" });
 
+        // The real handler is registered synchronously right below. Stop
+        // buffering NOW (so nothing is delivered twice) and replay what was
+        // buffered after this tick, when the handler exists.
+        buffering = false;
+        setImmediate(() => {
+            ws.off("message", earlyListener);
+            for (const raw of early.splice(0)) ws.emit("message", raw, false);
+        });
+
         ws.on("message", async (raw) => {
             let message;
             try {
@@ -109,12 +127,14 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                         send({ type: "error", scope: "canvas", sessionId, error: "canvas plane unavailable" });
                         return;
                     }
+                    // A bearer is never told the session id: the token IS the
+                    // address, and the share view does not need it.
                     const unsubscribe = plane.subscribe(sessionId, (update) => {
                         if (Number(update?.slot) !== shareScope.slot) return;
-                        send({ type: "canvasLive", sessionId, ...update });
+                        send({ type: "canvasLive", ...update });
                     });
                     canvasSubscriptions.set(sessionId, unsubscribe);
-                    send({ type: "subscribedCanvas", sessionId });
+                    send({ type: "subscribedCanvas" });
                 } else if (type === "unsubscribeCanvas") {
                     const unsubscribe = canvasSubscriptions.get(shareScope.sessionId);
                     if (unsubscribe) {

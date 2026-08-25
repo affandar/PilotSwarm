@@ -219,6 +219,12 @@ export interface CreateInspectToolsOptions {
     artifactStore?: import("./session-store.js").ArtifactStore | null;
     /** The session these tools act in, used to attach patch artifacts. */
     sessionId?: string;
+    /**
+     * Deployment MCP catalog entries restricted with `allowedAgents`. The
+     * write bundle's publish refuses a package that defines one of these
+     * names, since every worker would drop that definition at load.
+     */
+    reservedMcpServerNames?: string[];
 }
 
 export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[] {
@@ -1529,6 +1535,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             artifactStore: opts.artifactStore ?? null,
             sessionId: opts.sessionId,
             resolveViewer: viewerFor,
+            reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
         }));
     }
 

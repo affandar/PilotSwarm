@@ -652,6 +652,12 @@ export interface AgentPackageValidation {
 export interface ValidateAgentPackageOptions {
     /** Baked agent names a package may not shadow. */
     reservedAgentNames?: string[];
+    /**
+     * MCP server names the deployment catalog defines. A package `.mcp.json`
+     * may not define one of these: the catalog is flat, every worker drops
+     * the package's definition at load, so reject it up front.
+     */
+    reservedMcpServerNames?: string[];
     /** Skip `node --check` (used by pure-parse test paths). */
     skipSyntaxCheck?: boolean;
     /** Internal: rootDir is already a staged canonical tree — do not re-stage. */
@@ -856,7 +862,12 @@ export async function validateAgentPackageDir(
     }
 
     // .mcp.json — shape only; ${VAR} expansion happens at load, never here.
+    // Two deployment-catalog fields are refused outright, because the worker
+    // ignores them in packages and an author must not discover that at
+    // runtime: "default": true (would join the every-inheriting-agent set)
+    // and "allowedAgents" (only a deployment may restrict a server).
     const mcpJsonPath = path.join(rootDir, ".mcp.json");
+    const reservedMcp = new Set(opts.reservedMcpServerNames ?? []);
     let mcpServerNames: string[] = [];
     if (fs.existsSync(mcpJsonPath)) {
         try {
@@ -872,11 +883,43 @@ export async function validateAgentPackageDir(
                             `.mcp.json server "${serverName}" needs either "command" (stdio) or "url" (http/sse)`, ".mcp.json");
                         continue;
                     }
+                    if (cfg.default === true) {
+                        err(errors, "mcp_default_forbidden",
+                            `.mcp.json server "${serverName}": "default": true would add it to every agent that inherits the deployment default set — packages grant servers per agent via mcpServers:`, ".mcp.json");
+                    }
+                    if ("allowedAgents" in cfg) {
+                        err(errors, "mcp_allowed_agents_forbidden",
+                            `.mcp.json server "${serverName}": "allowedAgents" is a deployment-catalog field — a package cannot restrict who uses a server (the worker ignores it)`, ".mcp.json");
+                    }
+                    if (reservedMcp.has(serverName)) {
+                        err(errors, "reserved_mcp_server_name",
+                            `.mcp.json server "${serverName}" collides with a deployment catalog entry; workers drop a package definition of that name — pick another name`, ".mcp.json");
+                    }
                     mcpServerNames.push(serverName);
                 }
             }
         } catch (e: any) {
             err(errors, "invalid_mcp_json", `.mcp.json is not valid JSON: ${e?.message ?? e}`, ".mcp.json");
+        }
+    }
+
+    // Agent ↔ MCP cross-checks. The loader only WARNS on these at runtime,
+    // which nobody reads; a publish is the moment the author is listening.
+    const packageMcpNames = new Set(mcpServerNames);
+    for (const agent of agents) {
+        const file = `agents/${path.basename(agent.sourcePath ?? `${agent.name}.agent.md`)}`;
+        const declaresMcp = (agent.mcpServers?.length ?? 0) > 0 || agent.inheritDefaultMcpServers === true;
+        if (declaresMcp && (agent.schemaVersion ?? 1) < 2) {
+            err(errors, "mcp_requires_schema_v2",
+                `${file}: declares MCP servers but schemaVersion ${agent.schemaVersion ?? 1} — set "schemaVersion: 2" so older loaders skip the agent instead of silently dropping its MCP configuration`, file);
+        }
+        for (const ref of agent.mcpServers ?? []) {
+            if (packageMcpNames.has(ref)) continue;
+            warnings.push({
+                code: "unknown_mcp_server",
+                message: `${file}: mcpServers names "${ref}", which this package does not define — it must exist in the deployment catalog (and allow this agent) or the reference is dropped at load`,
+                file,
+            });
         }
     }
 

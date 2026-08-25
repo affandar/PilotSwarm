@@ -191,6 +191,24 @@ test("handshake: everything except subscribeCanvas is refused on a share connect
     assert.ok(!ws.sent.some((m) => m.type === "subscribedSession" || m.type === "subscribedLogs"));
 });
 
+test("handshake: a subscribe sent while the token is still being resolved is buffered, not lost", async () => {
+    // Browsers send `subscribeCanvas` on `open`, which fires BEFORE the
+    // server's async token resolution finishes. Before the early buffer the
+    // share view lost its live feed about half the time.
+    const h = shareHarness({});
+    const handle = createConnectionHandler(h.runtime);
+    const ws = fakeSocket();
+    const pending = handle(ws, { headers: {}, url: "/?canvasShare=tok-1" });
+    ws.emit("message", JSON.stringify({ type: "subscribeCanvas" }));
+    await pending;
+    await tick();
+    await new Promise((r) => setImmediate(r));
+    await tick();
+    const subscribed = ws.sent.filter((m) => m.type === "subscribedCanvas");
+    assert.equal(subscribed.length, 1, "delivered exactly once");
+    assert.equal(subscribed[0].sessionId, undefined, "a bearer is never told the session id");
+});
+
 test("handshake: a WRONG explicit sessionId is refused; the right one works", async () => {
     const h = shareHarness({});
     const handle = createConnectionHandler(h.runtime);
