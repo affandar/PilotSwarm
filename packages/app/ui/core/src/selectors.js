@@ -5234,9 +5234,10 @@ export function selectStatusBar(state) {
     if (state.ui.modal?.type === "sessionAgentPicker") {
         return {
             left: "Select an agent for the new session",
-            // Enter no longer always creates — on a section header it opens or
-            // closes — and the disclosure keys have to be named somewhere.
-            right: "up/down move · ←/→ open/close · enter start · esc cancel",
+            // Every row is an agent now, so Enter always starts one. The
+            // arrows are no longer named because they no longer do anything
+            // here — they belong to the search box, where they move the caret.
+            right: "type to search · up/down move · enter start · esc cancel",
         };
     }
     if (state.ui.modal?.type === "sessionGroupPicker") {
@@ -6503,15 +6504,23 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
             ], contentWidth);
         } else {
             const callable = item?.kind === "generic" || item?.supportsDirectStart !== false;
-            // A sub-agent that cannot be started is shown, not hidden — seeing
-            // what a package is made of is most of the value of grouping it.
-            // Dimming plus the └ connector carries it; the detail pane spells
-            // out why. An extra "called only" tag on the row was redundant with
-            // both, and read as a sentence fragment.
-            const glyph = item?.kind === "generic" ? "○ " : (item?.depth || 0) > 0 && item?.parentAgentName ? "└ " : "★ ";
+            // ONE LINE PER AGENT. The package is trailing metadata rather than a
+            // row of its own, so the list is as long as the number of agents —
+            // the grouped shape spent a second row on every single-agent package
+            // saying the same thing twice.
+            const glyph = item?.kind === "generic" ? "○ " : "★ ";
+            const name = item?.title || item?.agentName || item?.id || "Agent";
+            const pkg = item?.kind === "generic" ? "" : (item?.packageTitle || item?.packageName || "");
+            // Only shown while sorting BY use, where the number is the sort key
+            // and therefore explains the order. Everywhere else it is noise.
+            const uses = modal.sort === "used" && Number(item?.usageCount) > 0
+                ? `  ${item.usageCount}×`
+                : "";
             labelRuns = fitRuns([
                 { text: `${indent}${glyph}`, color: callable ? "yellow" : "gray" },
-                { text: item?.title || item?.agentName || item?.id || "Agent", color: callable ? "white" : "gray", bold: callable },
+                { text: name, color: callable ? "white" : "gray", bold: callable },
+                ...(pkg ? [{ text: `  ${pkg}`, color: "gray" }] : []),
+                ...(uses ? [{ text: uses, color: "cyan" }] : []),
             ], contentWidth);
         }
 

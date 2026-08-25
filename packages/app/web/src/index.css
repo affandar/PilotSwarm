@@ -8660,3 +8660,52 @@ textarea.ps-link-input {
 }
 .ps-admin-provider-apply { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
 .ps-admin-provider-apply .ps-admin-console__hint { flex: 1; }
+
+/* ── Agent picker: search and sort ──────────────────────────────────────────
+   The picker is a flat list of agents, so its length is the number of agents
+   the deployment has. Search is what keeps that from mattering; the sort
+   buttons say which order you are looking at, because "most used" is not
+   guessable from the rows alone. */
+.ps-agent-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  /* The modal's own grid uses a flat 16px rhythm; match it rather than
+     inventing a token. */
+  margin: 0 0 4px;
+}
+.ps-agent-picker-search {
+  flex: 1 1 240px;
+  min-width: 0;
+  font: inherit;
+  color: var(--ps-modal-foreground);
+  background: var(--ps-background);
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  padding: 6px 10px;
+}
+.ps-agent-picker-search::placeholder { color: var(--ps-modal-muted); }
+.ps-agent-picker-search:focus {
+  outline: none;
+  border-color: var(--ps-modal-selected-border);
+}
+.ps-agent-picker-sorts { display: flex; gap: 4px; flex: none; }
+.ps-agent-picker-sort {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ps-modal-muted);
+  background: none;
+  border: 1px solid var(--ps-modal-border);
+  border-radius: var(--ps-radius-sm);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.ps-agent-picker-sort:hover:not(.is-on) { border-color: var(--ps-modal-selected-border); }
+.ps-agent-picker-sort.is-on {
+  /* Foreground token with the background it pairs with — the same mistake as
+     the Add-package tab, which drew its label in a background colour. */
+  color: var(--ps-modal-selected-foreground);
+  background: var(--ps-modal-selected-background);
+  border-color: var(--ps-modal-selected-border);
+}

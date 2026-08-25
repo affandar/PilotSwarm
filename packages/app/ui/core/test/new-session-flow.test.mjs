@@ -117,15 +117,11 @@ test("New+Model opens the agent picker after model selection instead of fast-cre
     const modal = store.getState().ui.modal;
     assert.equal(modal?.type, "sessionAgentPicker");
     assert.equal(modal.sessionOptions.model, "openai:gpt-test");
-    // Generic leads the whole list, outside every section: it is the most
-    // common pick, and it used to sit below every specialist the deployment
-    // shipped. Everything else opens closed.
-    assert.deepEqual(
-        modal.items.map((item) => (item.kind === "section" ? `#${item.sectionKey}` : "generic")),
-        ["generic", "#builtin"],
-    );
+    // Generic leads the flat list: it is the most common pick, and it used to
+    // sit below every specialist the deployment shipped.
+    assert.equal(modal.items[0].kind, "generic");
+    assert.ok(modal.items.some((item) => item.agentName === "alpha"), "agents are listed directly, no section to open");
 
-    controller.toggleAgentPickerSection("builtin");
     const opened = store.getState().ui.modal;
     store.dispatch({ type: "ui/modal", modal: { ...opened, selectedIndex: opened.items.findIndex((item) => item.agentName === "alpha") } });
     await controller.confirmModal();
@@ -166,7 +162,6 @@ test("New+Model with reasoning effort opens the agent picker with model and effo
     assert.equal(modal.sessionOptions.model, "openai:gpt-reasoning");
     assert.equal(modal.sessionOptions.reasoningEffort, "high");
 
-    controller.toggleAgentPickerSection("builtin");
     const opened = store.getState().ui.modal;
     store.dispatch({ type: "ui/modal", modal: { ...opened, selectedIndex: opened.items.findIndex((item) => item.agentName === "alpha") } });
     await controller.confirmModal();

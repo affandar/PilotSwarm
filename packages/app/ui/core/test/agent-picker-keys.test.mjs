@@ -1,17 +1,15 @@
 /**
- * The agent picker's disclosure keys are actually bound, on both hosts.
+ * The agent picker's keys, after it became a flat searchable list.
  *
- * The dialog tells the user "Enter or → to open" in its detail pane. Nothing
- * listened for it: left/right inside a modal reach `moveModalPane` only via
- * MODAL_PANE_PREV/NEXT, and both hosts bind those to Tab / Shift+Tab. In the
- * TUI the arrow keys were handled for the four text-input modals and the
- * modal block then `return`s; in the web the modal branch handles
- * Escape/Enter/Tab/Up/Down and returns. So the picker documented a key that
- * did nothing, and the one key that worked (Tab) was named nowhere.
+ * It used to be a collapsible tree, and both hosts bound left/right to open
+ * and close its headings. There are no headings any more — every row is an
+ * agent — so those bindings had to go, and this file pins that they DID: a
+ * host that still swallows the arrows would stop the search box's caret from
+ * moving, which is a bug you only notice by typing.
  *
- * The binding lives in two host key handlers — a real terminal and a real
- * keydown event, neither of which the reducer tests reach — so it is pinned
- * here at the source, alongside the hint text it has to agree with.
+ * The bindings live in two host key handlers — a real terminal and a real
+ * keydown event, neither of which the reducer tests reach — so they are
+ * pinned here at the source, alongside the hint text they have to agree with.
  *
  * Run: node --test test/agent-picker-keys.test.mjs
  */
@@ -31,37 +29,7 @@ const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)),
 const webApp = read("../../react/src/web-app.js");
 const tuiApp = read("../../../tui/src/app.js");
 
-test("the web host binds left/right for the agent picker", () => {
-    assert.match(
-        webApp,
-        /modal\.type === "sessionAgentPicker" && \(event\.key === "ArrowRight" \|\| event\.key === "ArrowLeft"\)/,
-    );
-});
-
-test("the TUI host binds left/right for the agent picker", () => {
-    assert.match(
-        tuiApp,
-        /modal\.type === "sessionAgentPicker" && \(key\.leftArrow \|\| key\.rightArrow\)/,
-    );
-});
-
-test("the binding is scoped to the picker so Tab pane-cycling is untouched", () => {
-    // Every other list modal is flat; left/right there would either do nothing
-    // or fight the pane cycling those hosts already use Tab for.
-    for (const [host, source] of [["web", webApp], ["tui", tuiApp]]) {
-        const arrowBinding = source.slice(source.indexOf('modal.type === "sessionAgentPicker" && ('));
-        assert.match(arrowBinding.slice(0, 400), /MODAL_PANE_(NEXT|PREV)/, `${host} routes to the pane commands`);
-    }
-});
-
-test("right maps to open and left to close, not the other way round", () => {
-    const web = webApp.slice(webApp.indexOf('modal.type === "sessionAgentPicker" && (event.key === "ArrowRight"'));
-    assert.match(web.slice(0, 300), /ArrowRight" \? UI_COMMANDS\.MODAL_PANE_NEXT : UI_COMMANDS\.MODAL_PANE_PREV/);
-    const tui = tuiApp.slice(tuiApp.indexOf('modal.type === "sessionAgentPicker" && (key.leftArrow'));
-    assert.match(tui.slice(0, 300), /key\.rightArrow \? UI_COMMANDS\.MODAL_PANE_NEXT : UI_COMMANDS\.MODAL_PANE_PREV/);
-});
-
-test("the status bar names the keys that exist, and no longer promises Enter creates", async () => {
+function makeController(transportOverrides = {}) {
     const store = createStore(appReducer, createInitialState({ mode: "web" }));
     const controller = new PilotSwarmUiController({
         store,
@@ -69,73 +37,72 @@ test("the status bar names the keys that exist, and no longer promises Enter cre
             listSessions: async () => [],
             subscribeSession: () => () => {},
             getCurrentUserProfile: async () => ({ provider: "t", subject: "u", profileSettings: {} }),
-            listCreatableAgents: async () => [{ name: "alpha", title: "Alpha" }],
+            listCreatableAgents: async () => [
+                { name: "alpha", title: "Alpha", source: "builtin" },
+                { name: "beta", title: "Beta", source: "builtin" },
+            ],
             getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
+            ...transportOverrides,
         },
     });
+    return { controller, store };
+}
+
+// ── the hosts must not hijack the arrows ────────────────────────────────────
+
+test("neither host binds left/right for the agent picker any more", () => {
+    assert.doesNotMatch(
+        webApp,
+        /modal\.type === "sessionAgentPicker" && \(event\.key === "ArrowRight"/,
+        "the web host must leave the arrows to the search input's caret",
+    );
+    assert.doesNotMatch(
+        tuiApp,
+        /modal\.type === "sessionAgentPicker" && \(key\.leftArrow/,
+        "the TUI host has nothing to open or close either",
+    );
+});
+
+test("the controller's arrow hook refuses, so the keystroke keeps travelling", () => {
+    const { controller } = makeController();
+    // Returning false is the contract: a truthy answer would mark the key
+    // handled and the search box would never see it.
+    assert.equal(controller.moveAgentPickerSection(1), false);
+    assert.equal(controller.moveAgentPickerSection(-1), false);
+});
+
+// ── the hint has to describe the keys that exist ────────────────────────────
+
+test("the status bar names search, and no longer names open/close", async () => {
+    const { controller, store } = makeController();
     await controller.openSessionAgentPicker();
 
     const hint = selectStatusBar(store.getState())?.right || "";
-    assert.match(hint, /←\/→/, "the disclosure keys are named");
-    assert.doesNotMatch(hint, /enter create/, "Enter opens a section when one is selected");
+    assert.match(hint, /search/i, "search is the primary way through the list now");
+    assert.match(hint, /enter start/, "every row is an agent, so Enter always starts one");
+    assert.doesNotMatch(hint, /open\/close/, "there is nothing left to open or close");
+    assert.doesNotMatch(hint, /←\/→/, "naming a key that does nothing is worse than naming none");
 });
 
-test("right opens a closed section and left closes it again", async () => {
-    const store = createStore(appReducer, createInitialState({ mode: "web" }));
-    const controller = new PilotSwarmUiController({
-        store,
-        transport: {
-            listSessions: async () => [],
-            subscribeSession: () => () => {},
-            getCurrentUserProfile: async () => ({ provider: "t", subject: "u", profileSettings: {} }),
-            listCreatableAgents: async () => [
-                { name: "solo", title: "Solo", source: "package", scope: "shared", packageName: "kit", packageSemver: "1.0.0" },
-            ],
-            getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
-        },
-    });
+// ── up/down still move, and land on something startable ─────────────────────
+
+test("up and down move the selection across the flat list", async () => {
+    const { controller, store } = makeController();
     await controller.openSessionAgentPicker();
-    // The picker opens fully collapsed; open the category first.
-    controller.toggleAgentPickerSection("installed:shared");
 
-    const modal = store.getState().ui.modal;
-    const packageIndex = modal.items.findIndex((item) => item.packageName === "kit");
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: packageIndex } });
-
-    controller.moveModalPane(1);
-    assert.ok(store.getState().ui.modal.items.some((item) => item.agentName === "solo"), "right opens it");
-
-    controller.moveModalPane(-1);
-    assert.ok(!store.getState().ui.modal.items.some((item) => item.agentName === "solo"), "left closes it");
+    const startIndex = store.getState().ui.modal.selectedIndex;
+    controller.moveModalSelection(1);
+    assert.equal(store.getState().ui.modal.selectedIndex, startIndex + 1);
+    controller.moveModalSelection(-1);
+    assert.equal(store.getState().ui.modal.selectedIndex, startIndex);
 });
 
-test("left on a leaf steps out to its section header", async () => {
-    const store = createStore(appReducer, createInitialState({ mode: "web" }));
-    const controller = new PilotSwarmUiController({
-        store,
-        transport: {
-            listSessions: async () => [],
-            subscribeSession: () => () => {},
-            getCurrentUserProfile: async () => ({ provider: "t", subject: "u", profileSettings: {} }),
-            listCreatableAgents: async () => [
-                { name: "solo", title: "Solo", source: "package", scope: "shared", packageName: "kit", packageSemver: "1.0.0" },
-            ],
-            getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
-        },
-    });
+test("a search that matches nothing leaves an empty list, not a stale selection", async () => {
+    const { controller, store } = makeController();
     await controller.openSessionAgentPicker();
-    controller.toggleAgentPickerSection("installed:shared");
-    const key = store.getState().ui.modal.items.find((item) => item.packageName === "kit").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
+    controller.setAgentPickerQuery("zzzznothing");
     const modal = store.getState().ui.modal;
-    store.dispatch({
-        type: "ui/modal",
-        modal: { ...modal, selectedIndex: modal.items.findIndex((item) => item.agentName === "solo") },
-    });
-
-    controller.moveModalPane(-1);
-    const after = store.getState().ui.modal;
-    assert.equal(after.items[after.selectedIndex].sectionKey, key, "the cursor walks out, it does not collapse the parent");
-    assert.ok(after.items.some((item) => item.agentName === "solo"), "and the section stays open");
+    assert.equal(modal.items.length, 0);
+    assert.equal(modal.selectedIndex, 0, "the cursor resets rather than pointing past the end");
 });

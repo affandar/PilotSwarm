@@ -893,7 +893,127 @@ export function agentPickerInitialIndex(items = []) {
     return firstClosed >= 0 ? firstClosed : 0;
 }
 
-export function buildAgentPickerItems(catalog = [], collapsedKeys = [], genericItem = null) {
+/** How the picker may be ordered. `used` is per-person; the rest are stable. */
+export const AGENT_PICKER_SORTS = ["used", "name", "package"];
+export const AGENT_PICKER_DEFAULT_SORT = "used";
+
+/** Profile-settings key holding this person's per-agent start counts. */
+export const AGENT_USAGE_SETTING = "agentPickerUsage";
+
+/** Everything a query is matched against, lowercased once per agent. */
+function agentHaystack(agent) {
+    return [
+        agent?.label, agent?.agentName, agent?.title, agent?.description,
+        agent?.packageTitle, agent?.packageName,
+        ...(Array.isArray(agent?.tools) ? agent.tools : []),
+    ].filter(Boolean).join(" ").toLowerCase();
+}
+
+/**
+ * Lexical match: every whitespace-separated term must appear somewhere in the
+ * agent's text. AND rather than OR, because "rcakit pg" should narrow to one
+ * agent rather than widen to everything mentioning either word.
+ *
+ * The score only ranks matches against each other — a name hit outranks a
+ * description hit, and a prefix outranks a mid-word hit, so typing "rca" puts
+ * the agents CALLED rcakit above the ones that merely mention it.
+ */
+export function scoreAgentMatch(agent, query) {
+    const terms = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return 0;
+    const hay = agentHaystack(agent);
+    const name = `${agent?.label || ""} ${agent?.agentName || ""}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+        if (!hay.includes(term)) return -1;          // every term must land
+        if (name.startsWith(term)) score += 6;
+        else if (new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(name)) score += 4;
+        else if (name.includes(term)) score += 3;
+        else score += 1;
+    }
+    return score;
+}
+
+function agentUsageCount(usage, agent) {
+    if (!usage || !agent?.agentName) return 0;
+    return Number(usage[String(agent.agentName)]) || 0;
+}
+
+function compareAgentsForSort(sort, usage) {
+    const byName = (a, b) => String(a.label || a.agentName || "")
+        .localeCompare(String(b.label || b.agentName || ""), undefined, { sensitivity: "base" });
+    if (sort === "name") return byName;
+    if (sort === "package") {
+        return (a, b) => String(a.packageTitle || a.packageName || "")
+            .localeCompare(String(b.packageTitle || b.packageName || ""), undefined, { sensitivity: "base" })
+            || byName(a, b);
+    }
+    // "used": most-started first, then alphabetical so the long tail of
+    // never-started agents is not in arbitrary order.
+    return (a, b) => agentUsageCount(usage, b) - agentUsageCount(usage, a) || byName(a, b);
+}
+
+/**
+ * The picker list: ONE ROW PER AGENT.
+ *
+ * The old shape gave each package a header row and then repeated its agents
+ * beneath. Nearly every package holds exactly one agent, so that spent two
+ * rows saying the same thing twice and pushed the list past a screen. The
+ * package is still shown — as trailing metadata on the row it belongs to,
+ * and as a sort key — but it no longer costs a row of its own.
+ */
+export function buildAgentPickerItems(catalog = [], opts = {}) {
+    const {
+        query = "",
+        sort = AGENT_PICKER_DEFAULT_SORT,
+        usage = null,
+        genericItem = null,
+    } = opts || {};
+
+    // Generic sits ABOVE everything and never filters out on an empty query:
+    // it is not an agent, it is the absence of one, and it is the most common
+    // pick. A typed query does filter it, so search can reach past it.
+    const items = [];
+    const terms = String(query || "").trim();
+    if (genericItem && (!terms || scoreAgentMatch({ label: genericItem.label, description: genericItem.description }, terms) >= 0)) {
+        items.push({ ...genericItem, depth: 0 });
+    }
+
+    // Composition still decides whether an agent can be STARTED — `startedBy`
+    // resolving inside its own set is what makes it called-only. The flat list
+    // drops the nesting, not that derivation, so each set still goes through
+    // orderAgentsByComposition; only its ordering is discarded here.
+    const raw = catalog.filter((agent) => agent && agent.kind !== "section");
+    const sets = new Map();
+    for (const agent of raw) {
+        const key = agent.builtin ? "builtin" : agentPickerPackageKey(agent);
+        if (!sets.has(key)) sets.set(key, []);
+        sets.get(key).push(agent);
+    }
+    const agents = [];
+    for (const set of sets.values()) {
+        for (const agent of orderAgentsByComposition(set)) agents.push({ ...agent, depth: 0 });
+    }
+
+    const scored = terms
+        ? agents.map((agent) => ({ agent, score: scoreAgentMatch(agent, terms) })).filter((row) => row.score >= 0)
+        : agents.map((agent) => ({ agent, score: 0 }));
+
+    const compare = compareAgentsForSort(sort, usage);
+    scored.sort((a, b) => (terms ? b.score - a.score : 0) || compare(a.agent, b.agent));
+
+    for (const { agent } of scored) {
+        items.push({
+            ...agent,
+            depth: 0,
+            usageCount: agentUsageCount(usage, agent),
+        });
+    }
+    return items;
+}
+
+/** @deprecated the grouped shape; kept only for the TUI's collapse tests. */
+export function buildGroupedAgentPickerItems(catalog = [], collapsedKeys = [], genericItem = null) {
     const collapsed = new Set(collapsedKeys);
     const items = [];
 
@@ -5648,6 +5768,10 @@ export class PilotSwarmUiController {
         try {
             const requestOptions = this.applyActiveGroupDefault(options);
             const created = await this.transport.createSessionForAgent(agentName, requestOptions);
+            // Count the start for this person's "most used" ordering. Deliberately
+            // not awaited: the picker's sort order must never delay opening the
+            // session that was just created, and a lost count only reorders a list.
+            this._recordAgentPickerUse(agentName);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
             await this.refreshSessions();
             await this.loadSession(created.sessionId);
@@ -6143,18 +6267,14 @@ export class PilotSwarmUiController {
             }
             : null;
 
-        // EVERYTHING starts closed. The dialog opens as a short menu of
-        // categories — Generic, then whichever of Built-in / Shared / Yours
-        // this deployment actually has — and you open the one you want. A
-        // section expanded by default is a section every other user has to
-        // scroll past.
-        const collapsed = [
-            AGENT_PICKER_BUILTIN_KEY,
-            AGENT_PICKER_SHARED_KEY,
-            AGENT_PICKER_MINE_KEY,
-            ...new Set(catalog.filter((item) => !item.builtin).map((item) => agentPickerPackageKey(item))),
-        ];
-        const items = buildAgentPickerItems(catalog, collapsed, genericItem);
+        // Per-person start counts, so "most used" means most used BY YOU.
+        // Best-effort: a profile that cannot be read just sorts alphabetically
+        // rather than failing the picker open.
+        const usage = await this._loadAgentPickerUsage();
+        const sort = AGENT_PICKER_SORTS.includes(this._agentPickerSort)
+            ? this._agentPickerSort
+            : AGENT_PICKER_DEFAULT_SORT;
+        const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem });
 
         this.dispatch({
             type: "ui/modal",
@@ -6163,8 +6283,10 @@ export class PilotSwarmUiController {
                 title: "Select agent for new session",
                 catalog,
                 genericItem,
-                collapsed,
                 items,
+                query: "",
+                sort,
+                usage,
                 // Land somewhere Enter does something useful. First choice is a
                 // real agent row; with none visible (no generic, no baked
                 // agents, every package closed) fall back to the first CLOSED
@@ -7715,61 +7837,91 @@ export class PilotSwarmUiController {
      * cursor shifts every index below it, and re-using the old number would
      * silently move the highlight onto a different agent.
      */
-    toggleAgentPickerSection(sectionKey, force = null) {
-        const modal = this.getState().ui.modal;
-        if (!modal || modal.type !== "sessionAgentPicker" || !sectionKey) return;
-        const collapsed = new Set(modal.collapsed || []);
-        const shouldCollapse = force === null ? !collapsed.has(sectionKey) : force;
-        if (shouldCollapse === collapsed.has(sectionKey)) return;
-        if (shouldCollapse) collapsed.add(sectionKey);
-        else collapsed.delete(sectionKey);
-
-        const nextCollapsed = [...collapsed];
-        const items = buildAgentPickerItems(modal.catalog || [], nextCollapsed, modal.genericItem || null);
-        const selectedId = modal.items?.[modal.selectedIndex || 0]?.id;
-        let nextIndex = items.findIndex((item) => item.id === selectedId);
-        if (nextIndex < 0) {
-            // The selected row was inside the section that just closed — land
-            // on that section's own header, which is where it went.
-            nextIndex = Math.max(0, items.findIndex((item) => item.sectionKey === sectionKey));
+    /**
+     * This person's per-agent start counts, from their profile settings.
+     * Best-effort by design: a profile that cannot be read sorts the picker
+     * alphabetically instead of refusing to open.
+     */
+    async _loadAgentPickerUsage() {
+        try {
+            if (typeof this.transport.getCurrentUserProfile !== "function") return null;
+            const profile = await this.transport.getCurrentUserProfile();
+            const raw = profile?.profileSettings?.[AGENT_USAGE_SETTING];
+            if (!raw || typeof raw !== "object") return {};
+            const usage = {};
+            for (const [name, count] of Object.entries(raw)) {
+                const n = Number(count);
+                if (Number.isFinite(n) && n > 0) usage[name] = n;
+            }
+            return usage;
+        } catch {
+            return null;
         }
-        this.dispatch({
-            type: "ui/modal",
-            modal: { ...modal, collapsed: nextCollapsed, items, selectedIndex: nextIndex },
-        });
     }
 
     /**
-     * Left/right on the agent picker. Right opens a closed section (or steps
-     * into it); left closes an open one, or jumps to the parent header when
-     * the cursor is already on a leaf — the same shape as the session tree.
+     * Count one start. Read-modify-write against the whole settings document,
+     * because that is the shape the API takes — so a concurrent write from
+     * another tab can lose a count. A miscount only reorders a picker, which
+     * is not worth a locking protocol.
      */
-    moveAgentPickerSection(delta) {
+    async _recordAgentPickerUse(agentName) {
+        const name = String(agentName || "").trim();
+        if (!name) return;
+        try {
+            if (typeof this.transport.getCurrentUserProfile !== "function"
+                || typeof this.transport.setCurrentUserProfileSettings !== "function") return;
+            const profile = await this.transport.getCurrentUserProfile();
+            const settings = { ...(profile?.profileSettings || {}) };
+            const usage = { ...(settings[AGENT_USAGE_SETTING] || {}) };
+            usage[name] = (Number(usage[name]) || 0) + 1;
+            settings[AGENT_USAGE_SETTING] = usage;
+            await this.transport.setCurrentUserProfileSettings({ settings });
+        } catch {
+            // Never let bookkeeping fail a session create.
+        }
+    }
+
+    /** Re-run the list against a new query or sort, keeping the selection. */
+    _refreshAgentPicker(patch) {
         const modal = this.getState().ui.modal;
-        if (!modal || modal.type !== "sessionAgentPicker") return false;
-        const items = Array.isArray(modal.items) ? modal.items : [];
-        const index = Math.max(0, Math.min(Number(modal.selectedIndex) || 0, items.length - 1));
-        const item = items[index];
-        if (!item) return false;
+        if (!modal || modal.type !== "sessionAgentPicker") return;
+        const next = { ...modal, ...patch };
+        const items = buildAgentPickerItems(next.catalog || [], {
+            query: next.query,
+            sort: next.sort,
+            usage: next.usage,
+            genericItem: next.genericItem || null,
+        });
+        // Keep the same agent selected when it survives the new list; land on
+        // the first row when it does not, so Enter always does something.
+        const selectedId = modal.items?.[modal.selectedIndex || 0]?.id;
+        const keptIndex = items.findIndex((item) => item.id === selectedId);
+        this.dispatch({
+            type: "ui/modal",
+            modal: { ...next, items, selectedIndex: keptIndex >= 0 ? keptIndex : 0 },
+        });
+    }
 
-        if (delta > 0) {
-            if (item.kind === "section" && item.collapsed) {
-                this.toggleAgentPickerSection(item.sectionKey, false);
-                return true;
-            }
-            return false;
-        }
+    setAgentPickerQuery(query) {
+        this._refreshAgentPicker({ query: String(query ?? "") });
+    }
 
-        if (item.kind === "section" && !item.collapsed) {
-            this.toggleAgentPickerSection(item.sectionKey, true);
-            return true;
-        }
-        for (let i = index - 1; i >= 0; i -= 1) {
-            if (items[i].kind === "section" && items[i].depth < item.depth) {
-                this.dispatch({ type: "ui/modalSelection", index: i });
-                return true;
-            }
-        }
+    setAgentPickerSort(sort) {
+        if (!AGENT_PICKER_SORTS.includes(sort)) return;
+        this._agentPickerSort = sort;      // remembered for the next open
+        this._refreshAgentPicker({ sort });
+    }
+
+    /**
+     * Left/right on the agent picker: nothing.
+     *
+     * These keys used to open and close package headings. The picker is a flat
+     * list of agents now, so there is nothing to expand — and returning false
+     * matters, because that is what lets the keystroke reach the search box and
+     * move the caret instead of being swallowed here.
+     */
+    moveAgentPickerSection() {
         return false;
     }
 
@@ -7992,11 +8144,6 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "sessionAgentPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
-            // Enter on a heading opens or closes it; the dialog stays up.
-            if (item?.kind === "section") {
-                this.toggleAgentPickerSection(item.sectionKey);
-                return;
-            }
             // A called-only agent is rendered so the package's composition is
             // visible, but starting one cold is not a thing you can do. Refuse
             // here rather than letting the create fail after the dialog closes.

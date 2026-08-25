@@ -674,6 +674,13 @@ export class NodeSdkTransport {
                 if (!pkg.enabled || !pkg.active) continue;
                 const ownerKey = principalKey(pkg.owner);
                 const mine = pkg.scope === "user" && (viewerKey === null || ownerKey === viewerKey);
+                // Someone else's user-scoped package is not creatable by anyone
+                // but its owner — not even an admin. The catalog hands admins
+                // every user's packages so the Agent Package MANAGER can
+                // administer them; the picker is a "what can I start" list, and
+                // listing agents an admin should not instantiate (and naming
+                // whose they are) belongs to the manager, not here.
+                if (pkg.scope === "user" && !mine) continue;
                 const agents = Array.isArray(pkg.active.manifest?.agents) ? pkg.active.manifest.agents : [];
                 for (const agent of agents) {
                     if (!agent?.name) continue;

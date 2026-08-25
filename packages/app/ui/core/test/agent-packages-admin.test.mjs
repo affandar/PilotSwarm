@@ -19,12 +19,11 @@ import {
 
 const ALICE = { provider: "test", subject: "alice", email: "alice@test", isAdmin: false };
 
-// The picker opens FULLY COLLAPSED, so package rows are not on screen until
-// their category is opened. Tests that reach for a package go through here.
-const CATEGORY_KEYS = ["builtin", "installed:shared", "installed:mine"];
-const openCategories = (controller) => {
-    for (const key of CATEGORY_KEYS) controller.toggleAgentPickerSection(key);
-};
+// The picker is a FLAT list of agents — no categories to open, no package
+// rows. Reaching a package now means finding an agent that belongs to it.
+const openCategories = () => {};
+const agentRow = (store, agentName) =>
+    store.getState().ui.modal.items.find((item) => item.agentName === agentName);
 const packageSection = (store, packageName) =>
     store.getState().ui.modal.items.find((item) => item.packageName === packageName);
 
@@ -54,38 +53,25 @@ const CATALOG = [
 // An ADMIN sees every user's user-scoped packages, so "scope is user" is not
 // "mine". The transport knows the viewer and says so; grouping on scope alone
 // filed other people's agents onto the caller's shelf.
-test("another user's user-scoped agent is not badged as mine", async () => {
+// A package the VIEWER does not own is filtered out of the picker upstream, in
+// the transport, where the viewer's identity is known. These tests use the
+// catalog the transport would actually hand back.
+test("another user's user-scoped agent never reaches the picker", async () => {
     const { controller, store } = makeController({
+        // What _listRegistryCreatableAgents returns AFTER its own filter: the
+        // caller's own user-scoped package, and nothing of anyone else's.
         listCreatableAgents: async () => [
             { name: "mine-bot", title: "Mine Bot", source: "package", scope: "user", mine: true, packageName: "my-kit", packageSemver: "1.0.0" },
-            { name: "theirs-bot", title: "Theirs Bot", source: "package", scope: "user", mine: false, packageName: "their-kit", packageSemver: "1.0.0" },
         ],
     });
     await controller.openSessionAgentPicker();
 
-    const catalog = store.getState().ui.modal.catalog;
-    const groupOf = (agentName) => catalog.find((item) => item.agentName === agentName)?.group;
-    assert.equal(groupOf("mine-bot"), "mine", "my own user-scoped package stays mine");
-    assert.equal(groupOf("theirs-bot"), "shared", "another user's user-scoped package must not be mine");
-
-    // Ownership picks the SHELF now, not a badge. Another user's user-scoped
-    // package is not mine, so it files under Shared.
-    openCategories(controller);
-    assert.equal(packageSection(store, "my-kit").mine, true);
-    assert.equal(packageSection(store, "their-kit").mine, false);
-    const shelfOf = (packageName) => {
-        const items = store.getState().ui.modal.items;
-        const index = items.findIndex((item) => item.packageName === packageName);
-        for (let i = index; i >= 0; i -= 1) {
-            if (items[i].sectionKind === "installed") return items[i].sectionKey;
-        }
-        return null;
-    };
-    assert.equal(shelfOf("my-kit"), "installed:mine");
-    assert.equal(shelfOf("their-kit"), "installed:shared");
+    const names = store.getState().ui.modal.items.map((item) => item.agentName);
+    assert.ok(names.includes("mine-bot"), "my own user-scoped agent is startable");
+    assert.ok(!names.includes("theirs-bot"), "someone else's private agent is not offered");
 });
 
-test("the picker opens as a short menu of categories, everything closed", async () => {
+test("the picker opens as a flat list of agents, generic first", async () => {
     const { controller, store } = makeController({
         listCreatableAgents: async () => CATALOG,
     });
@@ -93,77 +79,109 @@ test("the picker opens as a short menu of categories, everything closed", async 
 
     const modal = store.getState().ui.modal;
     assert.equal(modal.type, "sessionAgentPicker");
-    assert.deepEqual(
-        modal.items.map((item) => (item.kind === "section" ? `#${item.title}` : "generic")),
-        // Generic leads OUTSIDE every section: it is not an agent, it is the
-        // absence of one, and it must never be behind a twisty.
-        ["generic", "#Built-in", "#Installed · Shared", "#Installed · Yours"],
-    );
+    assert.ok(!modal.items.some((item) => item.kind === "section"), "no package or category headings");
+    assert.equal(modal.items[0].kind, "generic", "generic leads: it is the most common pick");
+    // One row per agent — the whole point of the redesign.
+    assert.equal(modal.items.length, 1 + CATALOG.length);
 });
 
-test("an empty category is omitted rather than shown reading zero", async () => {
-    const { controller, store } = makeController({
-        // Shared packages only — no user-scoped ones at all.
-        listCreatableAgents: async () => CATALOG.filter((agent) => agent.scope !== "user"),
-    });
-    await controller.openSessionAgentPicker();
-
-    const titles = store.getState().ui.modal.items.map((item) => item.title);
-    assert.ok(titles.includes("Installed · Shared"));
-    assert.ok(!titles.includes("Installed · Yours"), "a heading whose only content is its own emptiness is noise");
-});
-
-test("a package with no plugin.json title falls back to its DNS-label name", async () => {
-    const { controller, store } = makeController({
-        listCreatableAgents: async () => CATALOG,
-    });
-    await controller.openSessionAgentPicker();
-    openCategories(controller);
-
-    assert.equal(packageSection(store, "hn-scraper").title, "hn-scraper");
-    assert.equal(packageSection(store, "incident-kit").title, "Incident Kit");
-});
-
-test("opening a package reveals its agents and closing hides them again", async () => {
+test("the package is carried on the agent row, not spent on a row of its own", async () => {
     const { controller, store } = makeController({
         listCreatableAgents: async () => CATALOG,
     });
     await controller.openSessionAgentPicker();
 
-    openCategories(controller);
-    const key = packageSection(store, "incident-kit").sectionKey;
-    controller.toggleAgentPickerSection(key);
-    assert.ok(
-        store.getState().ui.modal.items.some((item) => item.agentName === "shared-triager"),
-        "opening the package shows its agents",
-    );
-
-    controller.toggleAgentPickerSection(key);
-    assert.ok(
-        !store.getState().ui.modal.items.some((item) => item.agentName === "shared-triager"),
-        "closing it hides them again",
-    );
+    assert.equal(agentRow(store, "shared-triager").packageTitle, "Incident Kit");
+    // No plugin.json title falls back to the DNS-label name.
+    const mine = agentRow(store, "my-scraper");
+    assert.equal(mine.packageTitle || mine.packageName, "hn-scraper");
 });
 
-test("closing a section moves the highlight to its header, not to another agent", async () => {
-    // Selection is carried by item id: collapsing a section above the cursor
-    // shifts every index below it, so re-using the number would silently point
-    // the highlight at a different agent.
+test("search narrows on name, package and description, and every term must land", async () => {
     const { controller, store } = makeController({
         listCreatableAgents: async () => CATALOG,
     });
     await controller.openSessionAgentPicker();
 
-    openCategories(controller);
-    const key = packageSection(store, "incident-kit").sectionKey;
-    controller.toggleAgentPickerSection(key);
-    const modal = store.getState().ui.modal;
-    const triagerIndex = modal.items.findIndex((item) => item.agentName === "shared-triager");
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: triagerIndex } });
+    controller.setAgentPickerQuery("triager");
+    let names = store.getState().ui.modal.items.map((item) => item.agentName).filter(Boolean);
+    assert.deepEqual(names, ["shared-triager"]);
 
-    controller.toggleAgentPickerSection(key);
-    const after = store.getState().ui.modal;
-    assert.equal(after.items[after.selectedIndex].sectionKey, key);
+    // Matching the PACKAGE finds the agents inside it.
+    controller.setAgentPickerQuery("incident kit");
+    names = store.getState().ui.modal.items.map((item) => item.agentName).filter(Boolean);
+    assert.deepEqual(names, ["shared-triager"], "both terms must land, and they do — on the package title");
+
+    // AND, not OR: a term that matches nothing empties the list even when the
+    // other term matches everything.
+    controller.setAgentPickerQuery("incident zzzz");
+    names = store.getState().ui.modal.items.map((item) => item.agentName).filter(Boolean);
+    assert.deepEqual(names, []);
+
+    controller.setAgentPickerQuery("");
+    assert.equal(store.getState().ui.modal.items.length, 1 + CATALOG.length, "clearing restores the list");
+});
+
+test("a name hit outranks a description hit", async () => {
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => [
+            { name: "note-taker", title: "Note Taker", source: "builtin", description: "writes notes" },
+            { name: "auditor", title: "Auditor", source: "builtin", description: "reviews a note taker's output" },
+        ],
+    });
+    await controller.openSessionAgentPicker();
+    controller.setAgentPickerQuery("note");
+    const names = store.getState().ui.modal.items.map((item) => item.agentName).filter(Boolean);
+    assert.deepEqual(names, ["note-taker", "auditor"], "the agent CALLED note leads");
+});
+
+test("sort: most-used is per person, and name/package are alphabetical", async () => {
+    const settings = { agentPickerUsage: { "shared-triager": 7, "builtin-bot": 2 } };
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => CATALOG,
+        getCurrentUserProfile: async () => ({ ...ALICE, profileSettings: settings }),
+    });
+    await controller.openSessionAgentPicker();
+
+    const namesNow = () => store.getState().ui.modal.items.map((item) => item.agentName).filter(Boolean);
+    // Default is most-used: 7, then 2, then the never-started one alphabetically.
+    assert.deepEqual(namesNow(), ["shared-triager", "builtin-bot", "my-scraper"]);
+
+    controller.setAgentPickerSort("name");
+    assert.deepEqual(namesNow(), ["builtin-bot", "my-scraper", "shared-triager"]);
+
+    controller.setAgentPickerSort("package");
+    // hn-scraper < Incident Kit; the built-in has no package and sorts first.
+    assert.deepEqual(namesNow(), ["builtin-bot", "my-scraper", "shared-triager"]);
+
+    controller.setAgentPickerSort("nonsense");
+    assert.deepEqual(namesNow(), ["builtin-bot", "my-scraper", "shared-triager"], "an unknown sort is ignored");
+});
+
+test("starting an agent counts one use against the person's profile", async () => {
+    let saved = null;
+    const { controller } = makeController({
+        listCreatableAgents: async () => CATALOG,
+        getCurrentUserProfile: async () => ({ ...ALICE, profileSettings: { agentPickerUsage: { "shared-triager": 1 } } }),
+        setCurrentUserProfileSettings: async ({ settings }) => { saved = settings; return { profileSettings: settings }; },
+        createSessionForAgent: async () => ({ sessionId: "11111111-2222-3333-4444-555555555555" }),
+        getSession: async () => ({ sessionId: "11111111-2222-3333-4444-555555555555" }),
+    });
+    await controller.createSessionForAgent("shared-triager", {});
+    // The write is deliberately not awaited by the create path.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(saved?.agentPickerUsage?.["shared-triager"], 2, "the existing count is incremented, not replaced");
+});
+
+test("a profile that cannot be read still opens the picker", async () => {
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => CATALOG,
+        getCurrentUserProfile: async () => { throw new Error("profile service down"); },
+    });
+    await controller.openSessionAgentPicker();
+    // Falls back to alphabetical rather than refusing to open.
+    assert.equal(store.getState().ui.modal.type, "sessionAgentPicker");
+    assert.equal(store.getState().ui.modal.items.length, 1 + CATALOG.length);
 });
 
 test("a called-only agent renders but refuses to start", async () => {
@@ -177,14 +195,14 @@ test("a called-only agent renders but refuses to start", async () => {
         ],
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "desk").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const modal = store.getState().ui.modal;
     const helper = modal.items.find((item) => item.agentName === "helper");
     assert.equal(helper.supportsDirectStart, false, "startedBy implies not directly startable");
-    assert.ok(helper.depth > modal.items.find((item) => item.agentName === "lead").depth, "the sub-agent nests under its creator");
+    // The flat list shows it — seeing what a package is made of still has
+    // value — but nesting is gone with the tree; the refusal below is what
+    // carries "you cannot start this one".
+    assert.ok(modal.items.some((item) => item.agentName === "lead"));
 
     // Confirming leaves the dialog UP — refusing here beats letting the create
     // fail after the dialog has already closed.
@@ -205,9 +223,6 @@ test("an explicit supportsDirectStart publishes a sub-agent that is also startab
         ],
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "desk").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const helper = store.getState().ui.modal.items.find((item) => item.agentName === "helper");
     assert.equal(helper.supportsDirectStart, true);
@@ -230,13 +245,9 @@ test("an agent whose startedBy names a DIFFERENT package's agent stays startable
         ],
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "p2").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const worker = store.getState().ui.modal.items.find((item) => item.agentName === "worker");
     assert.equal(worker.supportsDirectStart, true, "nothing in p2 starts it, so it is p2's entry point");
-    assert.equal(worker.depth, 2, "and it renders at entry-point depth");
 });
 
 test("nesting matches names the way the resolver does", async () => {
@@ -253,9 +264,6 @@ test("nesting matches names the way the resolver does", async () => {
         ],
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "desk").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const items = store.getState().ui.modal.items;
     const child = items.find((item) => item.agentName === "line-editor");
@@ -263,28 +271,33 @@ test("nesting matches names the way the resolver does", async () => {
     assert.equal(child.supportsDirectStart, false);
 });
 
-test("the opening cursor never lands somewhere Enter would collapse the list", async () => {
-    // With generic disabled and no baked agents, every visible row is a
-    // header. Landing on "Installed" meant the first keystroke closed
-    // everything instead of creating anything.
+test("the opening cursor lands on an agent, so the first Enter creates", async () => {
+    // The old list opened on a category header, where Enter toggled instead of
+    // creating. A flat list has no headers, so the cursor starts on something
+    // Enter can actually start.
+    let started = null;
     const { controller, store } = makeController({
         getSessionCreationPolicy: () => ({ creation: { allowGeneric: false } }),
         listCreatableAgents: async () => [
             { name: "solo", title: "Solo", source: "package", scope: "shared", packageName: "p1", packageSemver: "1.0.0" },
         ],
+        createSessionForAgent: async (name) => {
+            started = name;
+            return { sessionId: "11111111-2222-3333-4444-555555555555" };
+        },
+        getSession: async () => ({ sessionId: "11111111-2222-3333-4444-555555555555" }),
     });
     await controller.openSessionAgentPicker();
 
     const modal = store.getState().ui.modal;
     const landed = modal.items[modal.selectedIndex];
-    assert.equal(landed.kind, "section", "with no generic and no built-ins, every visible row is a header");
-    assert.equal(landed.collapsed, true, "and it is a CLOSED one, whose Enter opens rather than collapses");
+    // There are no headers left to land on, so the cursor starts on a real
+    // agent and Enter creates — which is what the old rule was protecting.
+    assert.equal(landed.agentName, "solo");
+    assert.notEqual(landed.kind, "section");
 
     await controller.confirmModal();
-    assert.ok(
-        store.getState().ui.modal.items.length > modal.items.length,
-        "the first Enter reveals rows rather than collapsing the list",
-    );
+    assert.equal(started, "solo", "the first Enter starts the agent under the cursor");
 });
 
 test("a cycle promotes its own members, not whichever sub-agent was listed first", async () => {
@@ -298,41 +311,56 @@ test("a cycle promotes its own members, not whichever sub-agent was listed first
         ],
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "p").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const items = store.getState().ui.modal.items.filter((item) => item.agentName);
     assert.equal(items.length, 3, "a malformed package still shows every agent exactly once");
-    const depth = Object.fromEntries(items.map((item) => [item.agentName, item.depth]));
-    assert.ok(depth.c > depth.a, "c nests under a rather than posing as an entry point");
+    // Depth is gone with the tree. What still matters is that a cycle does not
+    // make an ordinary sub-agent look startable: only the cycle members are
+    // promoted, and `c` — started by `a` — stays called-only.
+    const startable = Object.fromEntries(items.map((item) => [item.agentName, item.supportsDirectStart]));
+    assert.equal(startable.c, false, "c is started by a, so it is not an entry point");
 });
 
-test("the picker renders section headers and the detail pane describes them", async () => {
+test("the picker renders one line per agent, package as trailing metadata", async () => {
     const { controller, store } = makeController({
         listCreatableAgents: async () => CATALOG,
     });
     await controller.openSessionAgentPicker();
 
-    openCategories(controller);
     const view = selectSessionAgentPickerModal(store.getState());
     assert.ok(Array.isArray(view.rowItemIndexes), "picker emits rowItemIndexes");
     assert.equal(view.rowItemIndexes.length, view.rows.length, "rows and items stay 1:1");
-    // The SELECTED row is a single highlight run rather than a run array.
+
     const rowText = (row) => (Array.isArray(row) ? row.map((run) => run.text).join("") : String(row?.text || ""));
     const text = view.rows.map(rowText).join("\n");
-    assert.match(text, /▾ Built-in {2}· {2}1 agent\b/, "the count runs inline, not padded to a guessed column");
-    assert.match(text, /▾ Installed · Shared {2}· {2}1 package\b/);
-    assert.match(text, /▸ Incident Kit {2}·/, "a closed package shows a closed twisty");
-    assert.doesNotMatch(text, /\[shared\]/, "the shelf says it; the row does not repeat it");
-    assert.doesNotMatch(text, /called only/, "dimming and the detail pane carry that, the row does not repeat it");
+    // The package rides on the agent's own row instead of owning one.
+    assert.match(text, /★ Shared Triager {2}Incident Kit/);
+    assert.doesNotMatch(text, /▾|▸/, "no twisties: there is nothing left to open");
+    assert.doesNotMatch(text, /· 1 entry ·/, "the per-package entry/agent count is gone");
+    assert.doesNotMatch(text, /\[private\]/, "another user's package never reaches this list");
 
+    // The detail pane describes the selected AGENT, and still names its package.
     const modal = store.getState().ui.modal;
-    const sectionIndex = modal.items.findIndex((item) => item.packageName === "incident-kit");
-    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: sectionIndex } });
+    const index = modal.items.findIndex((item) => item.agentName === "shared-triager");
+    store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: index } });
     const detail = selectSessionAgentPickerModal(store.getState());
     const detailText = detail.detailsLines.map((line) => line.map((run) => run.text).join("")).join("\n");
     assert.match(detailText, /incident-kit@1\.4\.0/);
+});
+
+test("the use count is shown only while sorting by use, where it explains the order", async () => {
+    const { controller, store } = makeController({
+        listCreatableAgents: async () => CATALOG,
+        getCurrentUserProfile: async () => ({ ...ALICE, profileSettings: { agentPickerUsage: { "shared-triager": 4 } } }),
+    });
+    await controller.openSessionAgentPicker();
+    const textNow = () => selectSessionAgentPickerModal(store.getState())
+        .rows.map((row) => (Array.isArray(row) ? row.map((run) => run.text).join("") : String(row?.text || "")))
+        .join("\n");
+
+    assert.match(textNow(), /4×/, "sorting by use shows the number that decides the order");
+    controller.setAgentPickerSort("name");
+    assert.doesNotMatch(textNow(), /4×/, "sorting by name does not, because it explains nothing there");
 });
 
 test("the detail pane still names the package for an agent", async () => {
@@ -340,9 +368,6 @@ test("the detail pane still names the package for an agent", async () => {
         listCreatableAgents: async () => CATALOG,
     });
     await controller.openSessionAgentPicker();
-    openCategories(controller);
-    const key = packageSection(store, "incident-kit").sectionKey;
-    controller.toggleAgentPickerSection(key);
 
     const modal = store.getState().ui.modal;
     store.dispatch({

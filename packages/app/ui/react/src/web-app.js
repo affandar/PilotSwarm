@@ -11018,7 +11018,7 @@ function ModalLayer({ controller }) {
         }),
         React.createElement("span", null, "Mobile"));
 
-    const renderListModal = (presentation, confirmLabel = "Apply", footerExtras = null) => {
+    const renderListModal = (presentation, confirmLabel = "Apply", footerExtras = null, headerExtras = null) => {
         const rows = Array.isArray(presentation.rows) ? presentation.rows : [];
         const rowItemIndexes = Array.isArray(presentation.rowItemIndexes) ? presentation.rowItemIndexes : null;
         const usesHangingIndent = modal.type === "modelPicker" || modal.type === "reasoningEffortPicker" || modal.type === "contextTierPicker" || modal.type === "sessionAgentPicker";
@@ -11088,6 +11088,7 @@ function ModalLayer({ controller }) {
                 React.createElement("div", { className: "ps-modal-title" }, presentation.title),
                 React.createElement("button", { type: "button", className: "ps-modal-close", onClick: close, "aria-label": "Close", title: "Close" }, "✕"),
             ),
+            headerExtras,
             React.createElement("div", { className: "ps-modal-grid" },
                 React.createElement("div", { ref: listModalRef, className: "ps-modal-list" },
                     renderedList,
@@ -11178,14 +11179,40 @@ function ModalLayer({ controller }) {
         return renderListModal(modalState.contextTierPicker, pickerConfirmLabel);
     }
     if (modal.type === "sessionAgentPicker" && modalState.sessionAgentPicker) {
-        // The primary button follows the selection: on a section it is the
-        // disclosure, not a create, and labelling it "Create Session" would
-        // promise something Enter does not do there.
-        const picked = modal.items?.[modal.selectedIndex || 0];
-        const confirmLabel = picked?.kind === "section"
-            ? (picked.collapsed ? "Open" : "Close")
-            : "Create Session";
-        return renderListModal(modalState.sessionAgentPicker, confirmLabel);
+        // Every row is an agent now, so Enter always creates.
+        const SORTS = [
+            ["used", "Most used", "Ordered by how often YOU have started each agent"],
+            ["name", "Name", "Alphabetical by agent name"],
+            ["package", "Package", "Grouped by package name, then agent name"],
+        ];
+        const toolbar = React.createElement("div", { className: "ps-agent-picker-toolbar" },
+            React.createElement("input", {
+                type: "search",
+                className: "ps-agent-picker-search",
+                placeholder: "Search agents, packages, tools…",
+                value: modal.query || "",
+                autoFocus: true,
+                "aria-label": "Search agents",
+                onChange: (event) => controller.setAgentPickerQuery(event.target.value),
+                // The list's own keys must still work from inside the box, but
+                // every OTHER key has to stay here — the modal binds j and k to
+                // move the selection, and without this you cannot type "kusto".
+                onKeyDown: (event) => {
+                    const passes = ["ArrowUp", "ArrowDown", "Enter", "Escape", "Tab"];
+                    if (!passes.includes(event.key)) event.stopPropagation();
+                },
+            }),
+            React.createElement("div", { className: "ps-agent-picker-sorts", role: "group", "aria-label": "Sort agents" },
+                SORTS.map(([value, label, title]) => React.createElement("button", {
+                    key: value,
+                    type: "button",
+                    className: `ps-agent-picker-sort${(modal.sort || "used") === value ? " is-on" : ""}`,
+                    title,
+                    "aria-pressed": (modal.sort || "used") === value ? "true" : "false",
+                    onClick: () => controller.setAgentPickerSort(value),
+                }, label))),
+        );
+        return renderListModal(modalState.sessionAgentPicker, "Create Session", null, toolbar);
     }
     if (modal.type === "sessionGroupPicker" && modalState.sessionGroupPicker) {
         return renderListModal(modalState.sessionGroupPicker, "Move");
@@ -11571,18 +11598,6 @@ function useKeyboardShortcuts(controller, mobile) {
                 if (event.key === "Tab") {
                     event.preventDefault();
                     controller.handleCommand(UI_COMMANDS.MODAL_PANE_NEXT).catch(() => {});
-                    return;
-                }
-                // Disclosure keys for the agent picker. Scoped to that modal:
-                // every other list modal is flat, and left/right there would
-                // either do nothing or fight the Tab pane-cycling. Without
-                // this the picker's own hint ("Enter or → to open") named a
-                // key nothing listened for.
-                if (modal.type === "sessionAgentPicker" && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
-                    event.preventDefault();
-                    controller.handleCommand(
-                        event.key === "ArrowRight" ? UI_COMMANDS.MODAL_PANE_NEXT : UI_COMMANDS.MODAL_PANE_PREV,
-                    ).catch(() => {});
                     return;
                 }
                 if (event.key === "ArrowUp" || event.key === "k") {
