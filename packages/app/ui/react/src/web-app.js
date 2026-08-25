@@ -12158,6 +12158,19 @@ function AdminPackageDetailPane({ controller, view }) {
     };
     const act = (kind, arg) => () => controller.runAdminPackageAction(kind, arg);
     const pending = detail.actionPending;
+    // Download is a pure read that streams to the browser, so it does not go
+    // through runAdminPackageAction (which mutates and refreshes the detail).
+    const downloadPackage = async () => {
+        try {
+            await controller.transport.saveAgentPackageDownload(
+                detail.name,
+                detail.activeSemver ?? null,
+                { scope: detail.scope, owner: detail.owner ?? null },
+            );
+        } catch (err) {
+            window.alert(`Could not download ${detail.name}: ${err?.message || err}`);
+        }
+    };
     return React.createElement("div", { className: "ps-admin-detail" },
         detail.error
             ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" },
@@ -12251,6 +12264,20 @@ function AdminPackageDetailPane({ controller, view }) {
                         disabled: Boolean(pending) || !detail.activeSemver,
                         title: "Copy the active version into your user scope as a private test bench",
                     }, pending === "republish" ? "Copying…" : "Copy to my user scope")
+                    : null,
+                // Getting a published package back OUT. The Web API has always
+                // served it; without this the only way was the CLI, which is a
+                // strange gap for a console that can publish, promote and
+                // delete. Feature-detected: a host with nowhere to put a file
+                // does not offer it.
+                typeof controller.transport.saveAgentPackageDownload === "function"
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button",
+                        onClick: () => downloadPackage(),
+                        disabled: Boolean(pending) || !detail.activeSemver,
+                        title: `Download ${detail.name}@${detail.activeSemver ?? "?"} as the .tgz the CLI would push`,
+                    }, pending === "download" ? "Downloading…" : "Download")
                     : null,
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
                     detail.enabled ? "Disable" : "Enable"),

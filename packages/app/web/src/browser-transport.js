@@ -35,6 +35,32 @@ async function saveArtifactDownload(transport, sessionId, filename) {
     };
 }
 
+/**
+ * Save a package as the .tgz the CLI would push. The Web API has served this
+ * all along (GET /packages/:name/download); the Admin Console just never
+ * offered it, so the only way to get a published package back out was the CLI.
+ */
+async function saveAgentPackageDownload(transport, name, semver, selector) {
+    const response = await transport.api.downloadAgentPackageResponse(name, {
+        ...(semver ? { semver } : {}),
+        ...(selector?.scope ? { scope: selector.scope } : {}),
+        ...(selector?.owner?.provider ? { ownerProvider: selector.owner.provider } : {}),
+        ...(selector?.owner?.subject ? { ownerSubject: selector.owner.subject } : {}),
+    });
+    const blob = await response.blob();
+    const filename = `${name}${semver ? `-${semver}` : ""}.tgz`;
+    const blobUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    return { filename };
+}
+
 async function openUrlInDefaultBrowser(targetUrl) {
     const href = String(targetUrl || "").trim();
     if (!href) {
@@ -60,6 +86,7 @@ export class BrowserPortalTransport extends HttpApiTransport {
             onForbidden,
             host: {
                 saveArtifactDownload,
+                saveAgentPackageDownload,
                 openUrlInDefaultBrowser,
                 artifactExportDirectory: "Browser downloads",
             },

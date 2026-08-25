@@ -68,6 +68,9 @@ export class HttpApiTransport {
         const host = options.host || {};
         if (host.saveArtifactDownload) this.saveArtifactDownload = host.saveArtifactDownload.bind(null, this);
         else this.saveArtifactDownload = unsupported("saveArtifactDownload", "no host download handler");
+        // Optional: a host that can write a file offers package download too.
+        // Absent on hosts with nowhere to put it, so callers feature-detect.
+        if (host.saveAgentPackageDownload) this.saveAgentPackageDownload = host.saveAgentPackageDownload.bind(null, this);
         if (host.uploadArtifactFromPath) this.uploadArtifactFromPath = host.uploadArtifactFromPath.bind(null, this);
         if (host.openPathInDefaultApp) this.openPathInDefaultApp = host.openPathInDefaultApp;
         if (host.openUrlInDefaultBrowser) this.openUrlInDefaultBrowser = host.openUrlInDefaultBrowser;

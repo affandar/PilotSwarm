@@ -5559,7 +5559,7 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree__row.is-selected {
     background: var(--ps-modal-selected-background);
     border-color: var(--ps-modal-selected-border);
-    color: var(--ps-modal-selected-foreground);
+    color: var(--ps-selection-background);
 }
 .ps-admin-tree__row.is-disabled .ps-admin-tree__name { color: var(--ps-muted); }
 .ps-admin-tree__name { overflow: hidden; text-overflow: ellipsis; }
@@ -5772,11 +5772,20 @@ body.is-resizing-pane-y iframe {
     text-align: left;
     border: 0;
     background: transparent;
+    /* A <button> inherits neither colour nor font from the page: without these
+       it renders in the browser's default `buttontext` (black) in the platform
+       UI font, which is unreadable on the dark panel behind it. */
+    color: var(--ps-foreground);
+    font: inherit;
     padding: 6px 10px;
     font-size: 12px;
     cursor: pointer;
 }
-.ps-admin-editors__suggestion:hover { background: var(--ps-border); }
+.ps-admin-editors__suggestion:hover {
+    background: var(--ps-highlight-background);
+    color: var(--ps-highlight-foreground);
+}
+.ps-admin-editors__suggestion:hover i { color: inherit; }
 .ps-admin-editors__suggestion i { color: var(--ps-muted); font-style: normal; }
 .ps-mini-button.is-danger { color: #f85149; border-color: color-mix(in srgb, #f85149 50%, transparent); }
 
@@ -5828,7 +5837,7 @@ body.is-resizing-pane-y iframe {
 .ps-admin-ws__row.is-selected {
     background: var(--ps-modal-selected-background);
     border-color: var(--ps-modal-selected-border);
-    color: var(--ps-modal-selected-foreground);
+    color: var(--ps-selection-background);
 }
 .ps-admin-ws__caret { width: 12px; color: var(--ps-muted); flex: none; }
 .ps-admin-ws__name { overflow: hidden; text-overflow: ellipsis; }
@@ -5858,7 +5867,11 @@ body.is-resizing-pane-y iframe {
 }
 .ps-admin-add__tab.is-on {
     border-color: var(--ps-modal-selected-border);
-    color: var(--ps-selection-background);
+    /* Pair the selected BACKGROUND with the selected FOREGROUND. This was
+       --ps-selection-background, a background token, so the label was drawn in
+       the same colour as the fill behind it and the selected tab looked like a
+       blank coloured rectangle. */
+    color: var(--ps-modal-selected-foreground);
     background: var(--ps-modal-selected-background);
 }
 .ps-admin-add__field { display: flex; flex-direction: column; gap: 3px; color: var(--ps-muted); font-size: 11px; }
