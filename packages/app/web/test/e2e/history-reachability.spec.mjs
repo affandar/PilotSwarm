@@ -38,8 +38,20 @@ test("a session past the auto-expand cap offers a way to load older messages", a
     await expect(button).toBeEnabled();
 });
 
+// The detail box now starts FOLDED to a one-line summary and remembers the
+// choice — ten rows of reference detail under a list you are trying to read
+// was too much by default. The full field grid is one click away.
+async function expandDetailBox(page) {
+    const summary = page.locator(".ps-session-detail-summary");
+    if (await summary.count() > 0) {
+        await summary.first().click();
+        await page.waitForTimeout(300);
+    }
+}
+
 test("the detail box shows the full session title without changing height", async ({ page }) => {
     await open(page);
+    await expandDetailBox(page);
 
     const title = await page.locator(".ps-session-detail-field.is-title .ps-session-detail-value").textContent();
     // The row above ellipsizes; the box must carry the whole name.

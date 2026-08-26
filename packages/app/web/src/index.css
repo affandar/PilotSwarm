@@ -1987,6 +1987,12 @@ body.is-resizing-pane-y iframe {
   padding: 0;
 }
 
+/* …except the pause block, which stays even when folded. Outside the grid it
+   needs its own gutter, and its grid-column is inert here. */
+.ps-session-detail-box.is-collapsed .ps-session-detail-pause {
+  padding: 0 10px 7px;
+}
+
 .ps-session-detail-summary {
   display: flex;
   align-items: baseline;

@@ -40,6 +40,17 @@ async function openListFocused(page) {
     await page.waitForTimeout(400);
 }
 
+// The detail box now starts FOLDED to a one-line summary and remembers the
+// choice — ten rows of reference detail under a list you are trying to read
+// was too much by default. The full field grid is one click away.
+async function expandDetailBox(page) {
+    const summary = page.locator(".ps-session-detail-summary");
+    if (await summary.count() > 0) {
+        await summary.first().click();
+        await page.waitForTimeout(300);
+    }
+}
+
 test("moving through the session list does not fetch per keypress", async ({ page }) => {
     await openListFocused(page);
 
@@ -85,6 +96,7 @@ test("the selection still lands on the right session and loads it", async ({ pag
 
     // The detail box reflects the landed session, which only happens once the
     // selection actually took effect.
+    await expandDetailBox(page);
     const id = await page.locator(".ps-session-detail-field.is-id .ps-session-detail-value").textContent();
     expect(id).toMatch(/^[0-9a-f-]{8,}/i);
 });

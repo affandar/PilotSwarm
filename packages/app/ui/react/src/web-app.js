@@ -4215,7 +4215,14 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
                 React.createElement("span", { className: "ps-session-detail-twisty", "aria-hidden": "true" }, "▸"),
                 React.createElement("span", { className: "ps-session-detail-summary-title" },
                     session?.title || SESSION_DETAIL_NONE),
-                React.createElement("span", { className: "ps-session-detail-marks" }, marks)));
+                React.createElement("span", { className: "ps-session-detail-marks" }, marks)),
+            // A stopped session keeps its whole block, not just a marker. The
+            // fold is for reference detail you look up once — id, owner, agent.
+            // Why the session is stopped, and the way through to the surface
+            // that can unstop it, is the one thing you need WITHOUT going
+            // looking for it, and folding it away hid it behind a click at the
+            // exact moment it mattered.
+            pauseBlock);
     }
 
     return React.createElement("div", { className: "ps-session-detail-box" },
