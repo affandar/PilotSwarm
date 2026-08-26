@@ -1,7 +1,7 @@
 import React from "react";
 import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm/ui-react";
-import { UI_COMMANDS, selectNodeMapView } from "pilotswarm/ui-core";
+import { UI_COMMANDS, selectAdminConsole, selectNodeMapView } from "pilotswarm/ui-core";
 import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
@@ -413,6 +413,12 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 if (plainShortcut && input === "e" && providerPage === "mine") {
                     controller.beginAdminCreateGithubProvider();
+                    return;
+                }
+                if (plainShortcut && input === "U" && providerPage === "mine") {
+                    const view = selectAdminConsole(controller.getState()).modelProviders;
+                    const provider = view.myProviders.find((row) => row.name === view.selection?.providerName);
+                    controller.beginAdminUpdateProviderCredential(provider);
                     return;
                 }
                 if (plainShortcut && input === "E" && providerPage === "shared" && adminState?.profile?.isAdmin) {

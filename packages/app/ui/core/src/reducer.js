@@ -2504,6 +2504,7 @@ export function appReducer(state, action) {
         }
         case "admin/modelProviders/createBegin": {
             const draft = String(action.name || "");
+            const update = action.mode === "update";
             return {
                 ...state,
                 admin: {
@@ -2512,12 +2513,13 @@ export function appReducer(state, action) {
                         ...state.admin.modelProviders,
                         create: {
                             editing: true,
-                            stage: "name",
-                            name: "",
+                            mode: update ? "update" : "create",
+                            stage: update || action.stage === "credential" ? "credential" : "name",
+                            name: update ? draft : "",
                             typeId: String(action.typeId || ""),
                             shared: action.shared === true,
-                            draft,
-                            cursorIndex: draft.length,
+                            draft: update ? "" : draft,
+                            cursorIndex: update ? 0 : draft.length,
                             saving: false,
                             error: null,
                         },

@@ -275,6 +275,7 @@ data or reveals anyone else's grouping.
 |---|---|---|---|
 | listProviders | `GET /api/v1/providers` | — | Shared providers, the caller's personal providers, and admin-visible metadata. Credentials are never returned. |
 | createMyProvider | `POST /api/v1/me/providers` | name, type, credentials, baseUrl? (body) | Add a private BYOK provider for the authenticated user. |
+| updateMyProviderCredential | `PUT /api/v1/me/providers/:name/credential` | name (path), credentials (body) | Replace the credential on the caller's personal provider while preserving its name, defaults, routing references, and usage history. |
 | createProvider **[admin]** | `POST /api/v1/management/providers` | name, type, credentials, baseUrl? (body) | Add a shared cluster provider. |
 | clearProviderRoutingDependencies | `POST /api/v1/providers/:name/clear-routing` | name (path) | Explicitly clear ordinary/system defaults and agent overrides before deleting a provider. Shared providers require admin. |
 | setProviderSystemUse **[admin]** | `PUT /api/v1/management/providers/:name/system-use` | name (path), enabled (body) | Permit system sessions to use the calling admin's personal provider without exposing it to other users. |

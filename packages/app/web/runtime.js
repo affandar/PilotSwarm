@@ -955,6 +955,7 @@ export class PortalRuntime {
             case "getProviderUsageGrid":
             case "createProvider":
             case "createMyProvider":
+            case "updateMyProviderCredential":
             case "deleteProvider":
             case "deleteMyProvider":
             case "clearProviderRoutingDependencies":
@@ -1307,6 +1308,11 @@ export class PortalRuntime {
                         type: params.type,
                         credentials: params.credentials,
                         baseUrl: params.baseUrl,
+                    });
+                case "updateMyProviderCredential":
+                    return await mgmt.updateMyProviderCredential(viewer, {
+                        name: params.name,
+                        credentials: params.credentials,
                     });
                 case "deleteProvider":
                     return await mgmt.deleteProvider(viewer, params.name);

@@ -521,6 +521,7 @@ metadata is owner/admin only.
 | `get_provider_usage_grid` | Fixed day/week/month usage and quota cells for every visible provider/model |
 | `get_provider_usage` | Historical totals, daily chart data, and bounded breakdowns (up to 365 days) |
 | `create_my_provider` / `delete_my_provider` | Create/delete the caller's personal provider instance |
+| `manage_provider` (`update_credential`) | Replace the caller's personal provider credential without replacing the provider |
 | `create_provider` / `delete_provider` | Admin shared-provider lifecycle |
 | `set_model_default` | User or cluster default routing |
 | `set_system_model_default` / `set_system_session_model` | Admin system routing and per-agent overrides |

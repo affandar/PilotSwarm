@@ -10638,8 +10638,9 @@ function EditProviderSheet({
  */
 function CreateProviderSheet({
     types, existingNames, isAdmin, busy, error, onCancel, onConfirm,
-    initialName = "", initialShared = false, initialType = "",
+    initialName = "", initialShared = false, initialType = "", updateProvider = null,
 }) {
+    const updating = Boolean(updateProvider);
     const [name, setName] = React.useState(initialName);
     const [type, setType] = React.useState(initialType || types[0]?.id || "");
     const [credential, setCredential] = React.useState("");
@@ -10652,7 +10653,7 @@ function CreateProviderSheet({
     const trimmed = name.trim();
     // A name is unique across the cluster and immutable, so a clash is
     // permanent. The database refuses it too; refusing here saves the trip.
-    const taken = existingNames.some((existing) => existing.toLowerCase() === trimmed.toLowerCase());
+    const taken = !updating && existingNames.some((existing) => existing.toLowerCase() === trimmed.toLowerCase());
     // MAJOR 16: the database's own check constraint allows only these, and it
     // reports every violation with one fixed sentence — so a name refused for
     // its LENGTH was told to use letters and numbers, which it already did.
@@ -10678,9 +10679,9 @@ function CreateProviderSheet({
     };
 
     return React.createElement(BudgetSheet, {
-        title: isGithub ? "Add GitHub Copilot provider" : "Add model provider",
+        title: updating ? `Update key for ${trimmed}` : (isGithub ? "Add GitHub Copilot provider" : "Add model provider"),
         subtitle: shared ? "Shared" : "Personal",
-        confirmLabel: "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
+        confirmLabel: updating ? "Update key" : "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
         footNote: "",
     },
     React.createElement(SheetField, {
@@ -10694,6 +10695,7 @@ function CreateProviderSheet({
         ref, className: `ps-budget-input${(taken || badChars || tooLong) && trimmed ? " is-invalid" : ""}`,
         "aria-label": "Provider name",
         value: name, placeholder: "azure-prod",
+        disabled: updating,
         onChange: (event) => setName(event.target.value),
         onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
     })),
@@ -10703,7 +10705,7 @@ function CreateProviderSheet({
     },
     React.createElement("select", {
         className: "ps-budget-input", "aria-label": "Provider type",
-        value: type, onChange: (event) => setType(event.target.value),
+        value: type, disabled: updating, onChange: (event) => setType(event.target.value),
     }, types.length === 0
         ? React.createElement("option", { value: "" }, "No provider types are listed on this deployment")
         : types.map((option) => React.createElement("option", { key: option.id, value: option.id }, option.id)))),
@@ -10717,13 +10719,13 @@ function CreateProviderSheet({
         value: credential, placeholder: "Paste token",
         onChange: (event) => setCredential(event.target.value),
     })),
-    React.createElement(SheetField, { label: "Base URL", hint: "Optional." },
+    !updating ? React.createElement(SheetField, { label: "Base URL", hint: "Optional." },
         React.createElement("input", {
             className: "ps-budget-input", value: baseUrl, placeholder: "https://…",
             "aria-label": "Base URL",
             onChange: (event) => setBaseUrl(event.target.value),
-        })),
-    isAdmin ? React.createElement(SheetField, { label: "Access" },
+        })) : null,
+    isAdmin && !updating ? React.createElement(SheetField, { label: "Access" },
         React.createElement(Segmented, {
             value: shared ? "shared" : "mine", onChange: (value) => setShared(value === "shared"),
             label: "Access",
@@ -12118,14 +12120,16 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const submitProvider = React.useCallback(async (input) => {
         setProviderSheetBusy(true);
         setProviderSheetError(null);
-        const outcome = await controller.createAdminProvider(input);
+        const outcome = providerSheet?.update
+            ? await controller.updateAdminProviderCredential({ name: input.name, credentials: input.credentials })
+            : await controller.createAdminProvider(input);
         setProviderSheetBusy(false);
         if (!outcome?.ok) {
-            setProviderSheetError(outcome?.error || "The provider could not be created.");
+            setProviderSheetError(outcome?.error || `The provider key could not be ${providerSheet?.update ? "updated" : "created"}.`);
             return;
         }
         closeProviderSheet();
-    }, [closeProviderSheet, controller]);
+    }, [closeProviderSheet, controller, providerSheet]);
 
     const principalLabel = formatAdminPrincipalLabel(view.principal);
 
@@ -12145,6 +12149,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
         view,
         onAddPersonal: () => setProviderSheet({ shared: false, github: true }),
         onAddShared: () => setProviderSheet({ shared: true, github: false }),
+        onUpdatePersonal: (provider) => setProviderSheet({ update: provider }),
     });
 
     const tree = React.createElement(AdminSettingsTree, { controller, view });
@@ -12164,9 +12169,11 @@ function AdminConsolePanel({ controller, mobile = false }) {
             ].map((provider) => provider.name),
             isAdmin: view.isAdmin,
             initialShared: providerSheet.shared,
+            updateProvider: providerSheet.update || null,
             initialType: providerSheet.github
                 ? (view.modelProviders?.providerTypes || []).find((type) => /github/i.test(type.id))?.id || ""
-                : "",
+                : (providerSheet.update?.typeId || ""),
+            initialName: providerSheet.update?.name || "",
             busy: providerSheetBusy,
             error: providerSheetError,
             onCancel: closeProviderSheet,
@@ -12916,7 +12923,7 @@ function AdminDefaultSelect({ label, hint, value, choices, disabled, emptyLabel,
         hint ? React.createElement("span", { className: "ps-admin-console__hint" }, hint) : null);
 }
 
-function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, onDelete }) {
+function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, onUpdate, onDelete }) {
     if (!providers.length) {
         return React.createElement("p", { className: "ps-admin-console__hint" },
             personal ? "No personal providers yet." : "No shared providers are configured.");
@@ -12941,6 +12948,12 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
                     onChange: (event) => onSystemUse(provider.name, event.target.checked),
                 }),
                 "Allow system sessions") : null,
+            personal ? React.createElement("button", {
+                type: "button",
+                className: "ps-mini-button",
+                disabled: busy,
+                onClick: () => onUpdate(provider),
+            }, "Update Key") : null,
             React.createElement(IconButton, {
                 icon: React.createElement(TrashGlyph),
                 label: `Delete ${provider.name}`,
@@ -12950,7 +12963,7 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             })))));
 }
 
-function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared }) {
+function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal }) {
     const providers = view.modelProviders || {};
     const pending = Boolean(providers.mutation?.pending);
     const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
@@ -13002,6 +13015,7 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
             React.createElement(AdminProviderRows, {
                 providers: providers.myProviders || [], isAdmin: view.isAdmin, personal: true, busy: pending,
                 onSystemUse: (name, enabled) => controller.setAdminProviderSystemUse(name, enabled),
+                onUpdate: onUpdatePersonal,
                 onDelete: deleteProvider,
             })),
         React.createElement("div", { className: "ps-admin-provider-block" },

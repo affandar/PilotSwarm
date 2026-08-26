@@ -434,6 +434,7 @@ export class HttpApiTransport {
     createProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createProvider", { name, type, credentials, baseUrl, displayName }); }
     deleteProvider(name) { return this.api.call("deleteProvider", { name }); }
     createMyProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createMyProvider", { name, type, credentials, baseUrl, displayName }); }
+    updateMyProviderCredential({ name, credentials } = {}) { return this.api.call("updateMyProviderCredential", { name, credentials }); }
     deleteMyProvider(name) { return this.api.call("deleteMyProvider", { name }); }
     clearProviderRoutingDependencies(name) { return this.api.call("clearProviderRoutingDependencies", { name }); }
     setProviderLimit({ name, period, model, tokens } = {}) { return this.api.call("setProviderLimit", { name, period, model: model ?? null, tokens }); }

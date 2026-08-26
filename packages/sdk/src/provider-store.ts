@@ -667,6 +667,18 @@ export class ProviderStore {
         return { name: r.name, typeId: r.type_id, class: r.class };
     }
 
+    async updatePersonalCredential(
+        name: string,
+        secretRef: Record<string, unknown> | null | undefined,
+        actor: number | null,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_provider_update_personal_credential")}($1,$2,$3)`,
+            [name, JSON.stringify(normalizeCallerSecret(secretRef)), actor]);
+        const r = rows[0] ?? {};
+        return { name: r.name, typeId: r.type_id, class: r.class };
+    }
+
     /** Returns how many sessions now name a provider that no longer exists. */
     async deleteProvider(name: string, actor: number | null, isAdmin: boolean): Promise<number> {
         const rows = await this.call(

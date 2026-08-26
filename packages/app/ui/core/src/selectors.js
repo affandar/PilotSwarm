@@ -4674,6 +4674,7 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
     const create = admin.modelProviders?.create || {};
     if (!admin.visible || !create.editing) return null;
     const credentialStage = create.stage === "credential";
+    const updating = create.mode === "update";
     const shared = create.shared === true;
     const ownTitle = /github/i.test(create.typeId || "")
         ? "Add GitHub Copilot provider"
@@ -4681,7 +4682,9 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
     const value = String(create.draft || "");
     return {
         type: "adminProviderCreate",
-        title: credentialStage
+        title: updating
+            ? `Update key for ${create.name}`
+            : credentialStage
             ? (shared ? "Add shared model provider" : ownTitle)
             : (shared ? "Name the shared provider" : ownTitle),
         label: credentialStage ? "credential" : "provider name",
@@ -4703,7 +4706,7 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
                 { text: "Letters, numbers, dot, dash, and underscore only.", color: "gray" },
             ],
         helpLines: credentialStage
-            ? ["Type/paste credential", "Enter  create provider", "Esc  cancel and clear"]
+            ? ["Type/paste credential", `Enter  ${updating ? "update key" : "create provider"}`, "Esc  cancel and clear"]
             : ["Type provider name", "Tab  next provider type", "Enter  continue to credential", "Esc  cancel"],
     };
 }

@@ -558,11 +558,15 @@ export async function startProviderBudgetStub({
         const systemAgentModelMatch = /\/management\/system-sessions\/([^/]+)\/model$/.exec(p);
         const deleteSharedMatch = /\/management\/providers\/([^/]+)$/.exec(p);
         const deleteMineMatch = /\/me\/providers\/([^/]+)$/.exec(p);
+        const updateCredentialMatch = /\/me\/providers\/([^/]+)\/credential$/.exec(p);
 
         let spec = null;
         let result = {};
         if (method === "POST" && /\/management\/providers$/.test(p)) { spec = change("createProvider"); }
         else if (method === "POST" && /\/me\/providers$/.test(p)) { spec = change("createMyProvider"); }
+        else if (method === "PUT" && updateCredentialMatch) {
+            spec = change("updateMyProviderCredential", decodeURIComponent(updateCredentialMatch[1]));
+        }
         else if (method === "DELETE" && deleteSharedMatch) {
             spec = change("deleteProvider", decodeURIComponent(deleteSharedMatch[1]));
             result = { waitingSessions: 2 };

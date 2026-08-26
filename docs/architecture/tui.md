@@ -158,8 +158,8 @@ spend total and per-model breakdown.
 
 Provider credentials are write-only. Neither provider/default reads nor shared
 view models carry saved credentials. The browser keeps a password draft local
-to the creation sheet; the native wizard masks its draft and removes it from
-shared state before awaiting the create call. Cancel and completion clear both.
+to the create/update sheet; the native wizard masks its draft and removes it
+from shared state before awaiting either call. Cancel and completion clear both.
 
 ### Chat/history flow
 
