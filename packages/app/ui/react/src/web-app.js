@@ -10637,7 +10637,7 @@ function EditProviderSheet({
  * credential is the key itself, never a pointer to one.
  */
 function CreateProviderSheet({
-    types, existingNames, isAdmin, busy, error, onCancel, onConfirm,
+    types, existingNames, isAdmin, busy, error, onDirty, onCancel, onConfirm,
     initialName = "", initialShared = false, initialType = "", updateProvider = null,
 }) {
     const updating = Boolean(updateProvider);
@@ -10703,7 +10703,7 @@ function CreateProviderSheet({
         "aria-label": "Provider name",
         value: name, placeholder: "azure-prod",
         disabled: updating,
-        onChange: (event) => setName(event.target.value),
+        onChange: (event) => { onDirty?.(); setName(event.target.value); },
         onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
     })),
     React.createElement(SheetField, {
@@ -10712,7 +10712,7 @@ function CreateProviderSheet({
     },
     React.createElement("select", {
         className: `ps-budget-input${updating ? " is-static" : ""}`, "aria-label": "Provider type",
-        value: type, disabled: updating, onChange: (event) => setType(event.target.value),
+        value: type, disabled: updating, onChange: (event) => { onDirty?.(); setType(event.target.value); },
     }, types.length === 0
         ? React.createElement("option", { value: "" }, "No provider types are listed on this deployment")
         : types.map((option) => React.createElement("option", { key: option.id, value: option.id }, option.id)))),
@@ -10730,7 +10730,7 @@ function CreateProviderSheet({
             ? (isGithub ? "New GitHub Copilot token" : "New API key")
             : (isGithub ? "GitHub Copilot token" : "API key"),
         value: credential, placeholder: "Paste token",
-        onChange: (event) => setCredential(event.target.value),
+        onChange: (event) => { onDirty?.(); setCredential(event.target.value); },
         // While updating this is the only editable field, and the Name input
         // that carries the other Enter handler is disabled — so without this
         // the sheet cannot be submitted from the keyboard at all.
@@ -12133,7 +12133,12 @@ function AdminConsolePanel({ controller, mobile = false }) {
         setProviderSheet(null);
         setProviderSheetBusy(false);
         setProviderSheetError(null);
-    }, []);
+        // The sheet's own error is local state and goes with it. The PANE
+        // banner is not: a failed mutation writes it into the store, and
+        // nothing cleared it until the next mutation succeeded — so Cancel
+        // left a red band describing a change that was abandoned.
+        controller.dismissAdminModelProviderMutationError();
+    }, [controller]);
     const submitProvider = React.useCallback(async (input) => {
         setProviderSheetBusy(true);
         setProviderSheetError(null);
@@ -12164,9 +12169,14 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const providerSection = React.createElement(AdminModelProvidersSection, {
         controller,
         view,
-        onAddPersonal: () => setProviderSheet({ shared: false, github: true }),
-        onAddShared: () => setProviderSheet({ shared: true, github: false }),
-        onUpdatePersonal: (provider) => setProviderSheet({ update: provider }),
+        // One failure should say itself once. While a sheet is open it shows
+        // the message itself, and the pane printed the SAME text behind it.
+        sheetOpen: Boolean(providerSheet),
+        // Open clean: a banner from a previous, abandoned attempt must not
+        // greet the next one.
+        onAddPersonal: () => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ shared: false, github: true }); },
+        onAddShared: () => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ shared: true, github: false }); },
+        onUpdatePersonal: (provider) => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ update: provider }); },
     });
 
     const tree = React.createElement(AdminSettingsTree, { controller, view });
@@ -12193,6 +12203,10 @@ function AdminConsolePanel({ controller, mobile = false }) {
             initialName: providerSheet.update?.name || "",
             busy: providerSheetBusy,
             error: providerSheetError,
+            // Editing a field is the person answering the error. Leaving the
+            // old failure sitting under the input while they retype makes it
+            // look like the new value is already rejected.
+            onDirty: () => setProviderSheetError(null),
             onCancel: closeProviderSheet,
             onConfirm: submitProvider,
         })
@@ -12986,7 +13000,7 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             })))));
 }
 
-function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal }) {
+function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShared, onUpdatePersonal, sheetOpen = false }) {
     const providers = view.modelProviders || {};
     const pending = Boolean(providers.mutation?.pending);
     const systemConfigured = adminDefaultModel(providers.systemSessionDefault);
@@ -13135,8 +13149,12 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
 
     return React.createElement("section", { className: "ps-admin-detail ps-admin-model-providers" },
         pageHeader,
-        providers.error || providers.mutation?.error
-            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, providers.mutation?.error || providers.error)
+        // A mutation error belongs to the sheet that raised it while that sheet
+        // is up. `providers.error` is different — it is the LOAD failing, which
+        // is about the pane itself, so it still shows.
+        providers.error || (providers.mutation?.error && !sheetOpen)
+            ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" },
+                (!sheetOpen && providers.mutation?.error) || providers.error)
             : null,
         sharedPage ? sharedProvidersPage : myPage);
 }

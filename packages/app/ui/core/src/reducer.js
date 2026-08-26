@@ -2467,6 +2467,29 @@ export function appReducer(state, action) {
                 },
             };
         }
+        /**
+         * Put the banner down.
+         *
+         * A failed mutation writes mutation.error, which the Model Providers
+         * pane renders as a red band. Nothing cleared it except the NEXT
+         * mutation, so cancelling a failed sheet left the band sitting there
+         * over an unchanged list, and it survived until something else
+         * succeeded. The sheet that raised it owns it; when that sheet goes,
+         * so does this.
+         */
+        case "admin/modelProviders/mutationDismissed": {
+            if (!state.admin?.modelProviders?.mutation?.error) return state;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    modelProviders: {
+                        ...state.admin.modelProviders,
+                        mutation: { ...state.admin.modelProviders.mutation, error: null },
+                    },
+                },
+            };
+        }
         case "admin/modelProviders/select": {
             return {
                 ...state,

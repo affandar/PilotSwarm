@@ -3283,6 +3283,15 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * Drop a failed provider mutation's error. Called when the sheet that
+     * raised it closes — the failure was that sheet's, and a banner outliving
+     * it describes a change the person already abandoned.
+     */
+    dismissAdminModelProviderMutationError() {
+        this.dispatch({ type: "admin/modelProviders/mutationDismissed" });
+    }
+
     async _runAdminModelProviderMutation(pending, run) {
         this.dispatch({ type: "admin/modelProviders/mutationPending", pending });
         try {
