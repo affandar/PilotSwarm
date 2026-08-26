@@ -171,6 +171,12 @@ spec:
             # public runtime source.
             - name: CALLER_AUTH_ENV_TOKENS
               value: "__CALLER_AUTH_ENV_TOKENS__"
+            # Deployment-defined pass-through env. A fleet's per-repo deploy config
+            # may inject extra name/value pairs here. Opaque to this manifest and to
+            # the runtime — they carry no meaning to PilotSwarm and exist only so a
+            # deployment can feed settings to whatever tools its worker image ships,
+            # without this public base naming them. Empty on fleets that define none.
+__WORKER_EXTRA_ENV__
             # Per-turn inactivity watchdog override (ms). The watchdog fires when the
             # Copilot CLI subprocess goes silent for this long and is routed through
             # the connection-closed recovery (release affinity + retry on ANY worker),
