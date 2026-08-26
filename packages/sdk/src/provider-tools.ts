@@ -521,6 +521,18 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             }
             if (args.action === "update_credential") {
                 if (!args.mine) return { error: "manage_provider: update_credential is available only for your own personal provider." };
+                // NOT AUDITED. The HTTP route writes an authz_audit row
+                // (management-client updateMyProviderCredential); this surface
+                // writes none, so a key rotated from inside a session leaves no
+                // trace. Same for create/delete just below — the gap is the
+                // surface's, not this action's.
+                //
+                // Deliberately not patched here: ProviderToolsViewer carries
+                // only { userId, isAdmin }, so a row written from here would
+                // have a null actor — weaker than no row, because it looks like
+                // attribution and is not. The real fix is to thread the
+                // principal into the viewer and route all four actions through
+                // the management client.
                 return store.updatePersonalCredential(args.name, args.credentials ?? null, v.userId);
             }
             // Deleting your own and deleting a shared one are the same call:

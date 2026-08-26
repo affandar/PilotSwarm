@@ -33,5 +33,15 @@ test("portal runtime routes personal provider credential updates with the authen
         input: { name: "my-ghcp", credentials: { githubToken: "replacement-token" } },
     }]);
     assert.deepEqual(result, { name: "my-ghcp", typeId: "github-copilot", class: "personal" });
+    // NOT a credential-leak guard, despite reading like one: `result` comes
+    // wholly from the stub above, which is hardcoded to {name,typeId,class},
+    // and runtime.call returns the mgmt result verbatim. Nothing in the store,
+    // the management client or the SQL could turn it red — and the deepEqual
+    // on the line above already pins the exact value. The real guard is that
+    // the store never puts a secret in what it returns; see
+    // provider-credential-update.test.mjs, which asserts against the shape the
+    // store actually produces.
+    //
+    // Kept as a cheap tripwire on the STUB's own shape only.
     assert.equal(JSON.stringify(result).includes("replacement-token"), false);
 });
