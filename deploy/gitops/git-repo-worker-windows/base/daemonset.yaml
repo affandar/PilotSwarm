@@ -171,6 +171,23 @@ spec:
             # public runtime source.
             - name: CALLER_AUTH_ENV_TOKENS
               value: "__CALLER_AUTH_ENV_TOKENS__"
+            # Per-turn inactivity watchdog override (ms). The watchdog fires when the
+            # Copilot CLI subprocess goes silent for this long and is routed through
+            # the connection-closed recovery (release affinity + retry on ANY worker),
+            # which MIGRATES the session mid-turn. A long-running MCP tool call that
+            # legitimately produces no output for an extended period can exceed the
+            # 5-minute SDK default, so fleets that run such tools raise it. Empty keeps
+            # the SDK default. TODO: replace with an MCP-shim heartbeat and drop this.
+            - name: PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS
+              value: "__PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS__"
+            # Wall-clock cap for a single Copilot turn (ms). An explicit env entry here
+            # WINS over the worker-env ConfigMap default (1200000 = 20 min). Some
+            # workloads legitimately run long — a turn that makes many slow MCP tool
+            # calls can exceed 20 min. Empty keeps the SDK default. TEMPORARY: the
+            # enduring fix is to decompose such work so no single turn needs a long
+            # wall clock.
+            - name: PILOTSWARM_TURN_TIMEOUT_MS
+              value: "__PILOTSWARM_TURN_TIMEOUT_MS__"
           envFrom:
             - configMapRef:
                 name: worker-env
