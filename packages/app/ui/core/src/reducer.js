@@ -832,6 +832,10 @@ export function appReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        case "ui/sessionDetailCollapsed":
+            if (Boolean(action.collapsed) === Boolean(state.ui.sessionDetailCollapsed)) return state;
+            return { ...state, ui: { ...state.ui, sessionDetailCollapsed: Boolean(action.collapsed) } };
+
         case "profileSettings/apply": {
             const settings = action.settings && typeof action.settings === "object" && !Array.isArray(action.settings)
                 ? action.settings
@@ -845,6 +849,8 @@ export function appReducer(state, action) {
             // say "rich" fall through to the transcript below.
             const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
                 && typeof settings.touchScale === "boolean";
+            const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
+                && typeof settings.sessionDetailCollapsed === "boolean";
             const hasRightPaneMode = Object.prototype.hasOwnProperty.call(settings, "rightPaneMode")
                 && (settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes");
             // The two independent columns. A profile written by a build that
@@ -921,6 +927,9 @@ export function appReducer(state, action) {
                     ...selection.ui,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
+                    sessionDetailCollapsed: hasSessionDetailCollapsed
+                        ? settings.sessionDetailCollapsed
+                        : selection.ui.sessionDetailCollapsed,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
                         ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true }

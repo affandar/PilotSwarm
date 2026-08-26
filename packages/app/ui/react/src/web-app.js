@@ -282,6 +282,9 @@ function normalizeProfileSettings(settings) {
     if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
         normalized.themeId = candidate.themeId.trim();
     }
+    if (typeof candidate.sessionDetailCollapsed === "boolean") {
+        normalized.sessionDetailCollapsed = candidate.sessionDetailCollapsed;
+    }
     if (typeof candidate.touchScale === "boolean") {
         normalized.touchScale = candidate.touchScale;
     }
@@ -397,6 +400,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
     return normalizeProfileSettings({
         themeId: state.themeId,
         [touchScaleKey()]: state.touchScale,
+        sessionDetailCollapsed: state.sessionDetailCollapsed,
         sessionOwnerFilter: state.ownerFilter,
         layoutAdjustments: {
             paneAdjust: state.paneAdjust,
@@ -447,6 +451,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
     return normalizeProfileSettings({
         themeId: state?.ui?.themeId,
         [touchScaleKey()]: state?.ui?.touchScale,
+        sessionDetailCollapsed: state?.ui?.sessionDetailCollapsed,
         // Derive the owner-filter default from the RESOLVED principal, never a
         // snapshot of state.sessions.ownerFilter — at mount that snapshot is
         // still {all:true} (principal not yet applied), and using it as the
@@ -541,6 +546,13 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : (isNarrowViewport() && hasOwn(normalizedRemote, "touchScale")
                 ? { touchScale: normalizedRemote.touchScale }
                 : {})),
+        // Read back for the same reason as touchScale above: written but never
+        // merged means the fold state resets on every reload. No default here
+        // either — absent must stay absent so a poll cannot overwrite a toggle
+        // the person just made.
+        ...(hasOwn(normalizedRemote, "sessionDetailCollapsed")
+            ? { sessionDetailCollapsed: normalizedRemote.sessionDetailCollapsed }
+            : {}),
     });
 }
 
@@ -4040,7 +4052,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
  */
 const SESSION_DETAIL_NONE = "—";
 
-function SessionDetailBox({ session, childCount = 0, pause = null, controller = null }) {
+function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
     // height — a box that grew and shrank would shove the list under the
@@ -4128,7 +4140,53 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
             ).catch(() => {}),
         }, pause.provider ? `Open ${pause.provider}` : "Open providers and budgets") : null));
 
+    // Collapsed, the box is one line: the state you check constantly (how full
+    // the context is, when it last moved, whether it is stuck) without the ten
+    // rows you look up once. Expanding is a click, and the choice is a
+    // preference so it survives switching sessions and reloading.
+    if (collapsed) {
+        const marks = [];
+        if (context) {
+            marks.push(React.createElement("span", {
+                key: "context",
+                className: `ps-session-detail-mark${percent != null && percent >= 85 ? " is-hot" : percent != null && percent >= 70 ? " is-warm" : ""}`,
+            }, percent != null ? `${percent}%` : context));
+        }
+        if (statusSummary) {
+            marks.push(React.createElement("span", { key: "updated", className: "ps-session-detail-mark" },
+                `${statusSummary.relative} (${statusSummary.status})`));
+        }
+        // A stopped session is the one thing you must not have to expand to
+        // find out, so it keeps a marker in the collapsed line.
+        if (pause || waitReason) {
+            marks.push(React.createElement("span", {
+                key: "halt",
+                className: `ps-session-detail-mark${pause ? " is-paused" : ""}`,
+                title: pause ? pause.reason : waitReason,
+            }, pause ? "paused" : "waiting"));
+        }
+        return React.createElement("div", { className: "ps-session-detail-box is-collapsed" },
+            React.createElement("button", {
+                type: "button",
+                className: "ps-session-detail-summary",
+                "aria-expanded": false,
+                title: "Show session details",
+                onClick: onToggle,
+            },
+                React.createElement("span", { className: "ps-session-detail-twisty", "aria-hidden": "true" }, "▸"),
+                React.createElement("span", { className: "ps-session-detail-summary-title" },
+                    session?.title || SESSION_DETAIL_NONE),
+                React.createElement("span", { className: "ps-session-detail-marks" }, marks)));
+    }
+
     return React.createElement("div", { className: "ps-session-detail-box" },
+        React.createElement("button", {
+            type: "button",
+            className: "ps-session-detail-collapse",
+            "aria-expanded": true,
+            title: "Hide session details",
+            onClick: onToggle,
+        }, React.createElement("span", { "aria-hidden": "true" }, "▾"), " Less"),
         // The row above ellipsizes to one line, so this is the only place the
         // whole name is legible. Two lines are RESERVED whether or not they are
         // used, so the box height still cannot move with the selection.
@@ -4435,23 +4493,58 @@ function useStableValue(value) {
 }
 
 /**
- * Vertical-primary touch scrolling with an explicit horizontal opt-in.
+ * One axis per gesture: a touch drag scrolls the session list up/down OR
+ * left/right, never both.
  *
  * The session list has `width: max-content` rows, so it overflows sideways
- * whenever a title is long. Declaring `touch-action: pan-x pan-y` told the
- * browser both axes were equally on offer, and on a phone a swipe is never
- * perfectly vertical — so scrolling down kept sliding the list sideways.
+ * whenever a title is long. With both axes on offer a swipe is never perfectly
+ * vertical, so scrolling down kept sliding the list sideways too.
  *
- * The fix is to give the browser ONE axis (`touch-action: pan-y`, set in CSS,
- * which keeps native vertical momentum) and drive horizontal ourselves, only
- * for a gesture that is unambiguously sideways. Once a gesture commits to an
- * axis it keeps it until the finger lifts: to scroll across you stop and make
- * a deliberate left/right swipe, which is exactly the intent.
+ * This used to hand the vertical case back to the browser (`touch-action:
+ * pan-y`) and only drive horizontal itself. That relied on the browser to
+ * refuse the sideways component, and it has two problems:
+ *
+ *   - What counts as "vertical enough" for `pan-y` is the browser's call, not
+ *     ours, and engines disagree. The guarantee was only as good as whichever
+ *     one the reader happened to be using.
+ *   - A drag near 45° fell in the gap: we committed it to vertical and stepped
+ *     aside, and the browser then declined to pan it at all. The list simply
+ *     did not move, which reads as broken rather than as a locked axis.
+ *
+ * So both axes are driven here. Every gesture past the slop threshold commits
+ * to exactly one axis and always moves it — no dead zone, and no engine gets a
+ * vote on the diagonal. Vertical stays the default: sideways has to be asked
+ * for, by a drag that beats vertical by PAN_HORIZONTAL_RATIO.
+ *
+ * Driving the scroll ourselves means we also own the part the browser was
+ * doing for free, so a flick decays under `releaseFling` instead of stopping
+ * dead under the finger. CSS keeps `touch-action: pan-y` as a floor: if these
+ * listeners ever fail to attach, the list still scrolls vertically the native
+ * way rather than becoming inert.
  */
 const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
 const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
+const FLING_MIN_VELOCITY = 0.05;    // px/ms below which a lift is a stop, not a flick
+const FLING_FRICTION = 0.95;        // per frame; ~0.35s of glide from a brisk flick
+const FLING_MAX_VELOCITY = 4;       // px/ms ceiling, so a fast flick stays catchable
 
-function useHorizontalPanOptIn(ref) {
+/**
+ * Which axis does this gesture own? Pure, and exported so the rule can be
+ * tested without a browser — the bug it replaces was a gesture that matched
+ * NEITHER branch and therefore scrolled nothing.
+ *
+ * Returns null while the drag is still inside the slop radius, then "x" or
+ * "y" — never null again, and never both. Every gesture that gets past the
+ * threshold moves something.
+ */
+export function commitPanAxis(dx, dy) {
+    if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return null;
+    // Ties, and anything close to a tie, go to vertical. Vertical is the
+    // primary axis; sideways has to be asked for.
+    return Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
+}
+
+function useAxisLockedPan(ref) {
     React.useEffect(() => {
         const el = ref.current;
         if (!el) return undefined;
@@ -4459,50 +4552,106 @@ function useHorizontalPanOptIn(ref) {
         let startX = 0;
         let startY = 0;
         let lastX = 0;
-        let axis = null;   // null = undecided, "x" | "y" = committed for this gesture
+        let lastY = 0;
+        let lastT = 0;
+        let velocity = 0;   // px/ms along the committed axis, sign follows the finger
+        let axis = null;    // null = undecided, "x" | "y" = committed for this gesture
+        let flingFrame = null;
+
+        const stopFling = () => {
+            if (flingFrame !== null) {
+                cancelAnimationFrame(flingFrame);
+                flingFrame = null;
+            }
+        };
+
+        const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
         const onTouchStart = (event) => {
-            if (event.touches.length !== 1) { axis = "y"; return; }
+            stopFling();
+            // Two fingers is a pinch or a system gesture — leave it alone.
+            if (event.touches.length !== 1) { axis = "done"; return; }
             const touch = event.touches[0];
             startX = lastX = touch.clientX;
-            startY = touch.clientY;
+            startY = lastY = touch.clientY;
+            lastT = now();
+            velocity = 0;
             axis = null;
         };
 
         const onTouchMove = (event) => {
-            if (axis === "y" || event.touches.length !== 1) return;
+            if (axis === "done" || event.touches.length !== 1) return;
             const touch = event.touches[0];
             const dx = touch.clientX - startX;
             const dy = touch.clientY - startY;
 
             if (axis === null) {
-                if (Math.abs(dx) < PAN_COMMIT_PX && Math.abs(dy) < PAN_COMMIT_PX) return;
-                // Ties, and anything close to a tie, go to vertical. Vertical is
-                // the primary axis; sideways has to be asked for.
-                axis = Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
+                axis = commitPanAxis(dx, dy);
+                if (axis === null) return;
+                // Measure from here, so the slop we ignored is not also applied.
                 lastX = touch.clientX;
-                if (axis === "y") return;
+                lastY = touch.clientY;
+                lastT = now();
             }
 
-            // Committed horizontal: the browser is not panning this axis, so we
-            // do it. preventDefault stops the gesture also scrolling an
-            // ancestor sideways.
-            el.scrollLeft -= touch.clientX - lastX;
+            const stepX = touch.clientX - lastX;
+            const stepY = touch.clientY - lastY;
+            const t = now();
+            const elapsed = Math.max(1, t - lastT);
+            const step = axis === "x" ? stepX : stepY;
+
+            if (axis === "x") el.scrollLeft -= stepX;
+            else el.scrollTop -= stepY;
+
+            // Exponential smoothing: one jittery sample should not decide the
+            // whole flick, and a finger that stops before lifting should decay
+            // to zero rather than fling on a stale reading.
+            const sample = Math.max(-FLING_MAX_VELOCITY, Math.min(FLING_MAX_VELOCITY, step / elapsed));
+            velocity = velocity * 0.7 + sample * 0.3;
+
             lastX = touch.clientX;
+            lastY = touch.clientY;
+            lastT = t;
+            // We are the scroller now; stop the browser doing it as well.
             if (event.cancelable) event.preventDefault();
         };
 
-        const onTouchEnd = () => { axis = null; };
+        const releaseFling = (committed) => {
+            if (Math.abs(velocity) < FLING_MIN_VELOCITY) return;
+            let v = velocity;
+            const tick = () => {
+                v *= FLING_FRICTION;
+                if (Math.abs(v) < FLING_MIN_VELOCITY) { flingFrame = null; return; }
+                const before = committed === "x" ? el.scrollLeft : el.scrollTop;
+                if (committed === "x") el.scrollLeft -= v * 16;
+                else el.scrollTop -= v * 16;
+                const after = committed === "x" ? el.scrollLeft : el.scrollTop;
+                // Hit an end stop — no point animating against it.
+                if (after === before) { flingFrame = null; return; }
+                flingFrame = requestAnimationFrame(tick);
+            };
+            flingFrame = requestAnimationFrame(tick);
+        };
+
+        const onTouchEnd = () => {
+            const committed = axis;
+            axis = null;
+            if (committed === "x" || committed === "y") releaseFling(committed);
+            velocity = 0;
+        };
+
+        const onTouchCancel = () => { axis = null; velocity = 0; stopFling(); };
 
         el.addEventListener("touchstart", onTouchStart, { passive: true });
         el.addEventListener("touchmove", onTouchMove, { passive: false });
         el.addEventListener("touchend", onTouchEnd, { passive: true });
-        el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+        el.addEventListener("touchcancel", onTouchCancel, { passive: true });
         return () => {
+            stopFling();
             el.removeEventListener("touchstart", onTouchStart);
             el.removeEventListener("touchmove", onTouchMove);
             el.removeEventListener("touchend", onTouchEnd);
-            el.removeEventListener("touchcancel", onTouchEnd);
+            el.removeEventListener("touchcancel", onTouchCancel);
         };
     }, [ref]);
 }
@@ -4515,13 +4664,17 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
     // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
     const sessionListRef = React.useRef(null);
-    useHorizontalPanOptIn(sessionListRef);
+    useAxisLockedPan(sessionListRef);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
     // the `(pointer: fine)` guard on touch-action in the stylesheet.
     const touchInput = isMobilePane || useCoarsePointer();
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
+    const detailCollapsed = useControllerSelector(
+        controller,
+        (state) => Boolean(state.ui.sessionDetailCollapsed),
+    );
     const sessionButtonRefs = React.useRef(new Map());
     const viewState = useControllerSelector(controller, (state) => ({
         branding: state.branding,
@@ -5318,6 +5471,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             // change it. The row already carries the joined pause record.
             pause: activeRow?.pause || null,
             controller,
+            collapsed: detailCollapsed,
+            onToggle: () => controller.dispatch({
+                type: "ui/sessionDetailCollapsed",
+                collapsed: !detailCollapsed,
+            }),
         })
         : null),
     (manageOpen && activeSession && !activeSession.isGroup)
@@ -13064,6 +13222,7 @@ export function PilotSwarmWebApp({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
+        sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         ownerFilter: rootState.sessions.ownerFilter,
         pinnedIds: rootState.sessions.pinnedIds,
         // Without this the profile-save effect reads undefined and a reorder
@@ -13381,7 +13540,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.canvasPrefs, state.collapsedSessionIds, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionPaneAdjust, state.themeId, state.touchScale]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

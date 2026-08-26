@@ -1751,7 +1751,7 @@ body.is-resizing-pane-y iframe {
 .ps-session-pane.ps-chat-focus-pane .ps-action-list.ps-session-list {
   overflow-x: auto;
   /* ONE axis for the browser. Vertical keeps native momentum; horizontal is
-     driven by useHorizontalPanOptIn only for a deliberate sideways swipe.
+     driven by useAxisLockedPan only for a deliberate sideways swipe.
      `pan-x pan-y` here offered both axes equally, and since no phone swipe is
      perfectly vertical, scrolling down kept sliding the list sideways. */
   touch-action: pan-y;
@@ -1980,6 +1980,87 @@ body.is-resizing-pane-y iframe {
      list never shifts under the cursor while scrolling. */
   align-content: start;
 }
+
+/* Folded: one row, so the grid above would only get in the way. */
+.ps-session-detail-box.is-collapsed {
+  display: block;
+  padding: 0;
+}
+
+.ps-session-detail-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  /* In a narrow pane the marks would otherwise crush the title to one letter.
+     Wrapping costs a second line — still a tenth of the open box — and keeps
+     both halves readable. */
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  background: none;
+  color: var(--ps-foreground);
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ps-session-detail-summary:hover {
+  background: color-mix(in srgb, var(--ps-border) 30%, transparent);
+}
+
+.ps-session-detail-twisty,
+.ps-session-detail-collapse span {
+  color: var(--ps-muted);
+  flex: none;
+}
+
+/* The list row above shows the title too, but it scrolls away — when it has,
+   this is the only thing naming what the marks describe. So it keeps a floor
+   rather than ellipsizing down to a single letter. */
+.ps-session-detail-summary-title {
+  flex: 1 1 auto;
+  min-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The marks sit at the end and never shrink: they are the reason the row is
+   worth reading at a glance, so the title gives up its width first. */
+.ps-session-detail-marks {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.ps-session-detail-mark {
+  color: var(--ps-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-session-detail-mark.is-warm { color: var(--ps-warning); }
+.ps-session-detail-mark.is-hot,
+.ps-session-detail-mark.is-paused { color: var(--ps-danger); }
+
+/* Unfold control, top-right of the open box. */
+.ps-session-detail-collapse {
+  grid-column: 1 / -1;
+  justify-self: end;
+  margin-bottom: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ps-muted);
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
+  cursor: pointer;
+}
+
+.ps-session-detail-collapse:hover { color: var(--ps-foreground); }
 
 .ps-session-detail-field {
   display: contents;
@@ -7858,7 +7939,7 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 
 /* The session list may pan sideways when its rows overflow — long titles and
    model names are routinely wider than a phone. Vertical stays the primary
-   axis (see useHorizontalPanOptIn: sideways needs a deliberate, mostly
+   axis (see useAxisLockedPan: sideways needs a deliberate, mostly
    horizontal swipe), and rows stop truncating so there is something to reach. */
 .ps-mobile-session-pane .ps-action-list {
   overflow-x: auto;
@@ -7879,8 +7960,11 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
    ellipsis on the title text), so the list's scrollWidth equalled its
    clientWidth and a sideways swipe moved nothing. On the phone pane the row
    grows to its content and the title stops ellipsizing; the list scrolls.
-   Panning stays deliberate — useHorizontalPanOptIn keeps touch-action at
-   pan-y until a mostly-horizontal gesture unlocks it. */
+   Panning stays deliberate — useAxisLockedPan commits each gesture to one
+   axis, and sideways needs a drag that clearly beats vertical. (The old
+   comment here said the hook "keeps touch-action at pan-y"; it never touched
+   touch-action. The pan-y below is CSS's own, and is now only a fallback for
+   if those listeners fail to attach.) */
 .ps-session-pane.ps-mobile-session-pane .ps-action-list .ps-list-button {
   width: max-content;
   min-width: 100%;

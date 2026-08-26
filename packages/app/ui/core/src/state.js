@@ -359,6 +359,11 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // portrait is not the only case — a wall display or a shared screen wants
             // the same thing — so it is a preference, not a viewport query.
             touchScale: false,
+            // The session detail box starts folded to its one-line summary. It
+            // is ten rows of reference detail against a list you are trying to
+            // read, and most of it is looked up once per session, not per
+            // glance. Expanding is one click and the choice persists.
+            sessionDetailCollapsed: true,
             modal: null,
             fullscreenPane: null,
             layout: {
