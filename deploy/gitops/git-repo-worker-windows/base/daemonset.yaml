@@ -162,6 +162,15 @@ spec:
             # Delegated caller auth Key Vault name (ps-caller-<sessionId>).
             - name: CALLER_AUTH_KEYVAULT_NAME
               value: "__CALLER_AUTH_KEYVAULT_NAME__"
+            # Non-MCP delegated-token surfacing: ";"-delimited NAME=audience pairs.
+            # For each pair whose audience the caller minted a delegated token for,
+            # the worker exports that token as $NAME in the session's ambient env
+            # (inherited by the CLI shell tool) — for tools that read a bearer from
+            # an env var rather than an MCP header. Empty on fleets that need no such
+            # mapping. The audience is named only HERE (deploy config), never in the
+            # public runtime source.
+            - name: CALLER_AUTH_ENV_TOKENS
+              value: "__CALLER_AUTH_ENV_TOKENS__"
           envFrom:
             - configMapRef:
                 name: worker-env

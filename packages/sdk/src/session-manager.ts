@@ -1526,6 +1526,60 @@ export class SessionManager {
                 this.sessions.delete(sessionId);
             }
         }
+        // Non-MCP delegated-token surfacing — MUST run BEFORE ensureClient() below.
+        // The default CLI transport is stdio: the child runtime's environment is a
+        // SNAPSHOT of process.env taken when the CopilotClient is constructed
+        // (ensureClient passes `env: {...process.env, COPILOT_HOME}`, which REPLACES
+        // the child's env), so a later process.env mutation never reaches the shell
+        // tool. Some tools consume a caller-delegated bearer through a NAMED ENV VAR
+        // rather than an MCP Authorization header (e.g. a CLI or skill that reads its
+        // bearer from a named environment variable instead of an HTTP Authorization
+        // header). The audience -> env-var-name mapping is DEPLOY CONFIG — `CALLER_AUTH_ENV_TOKENS`,
+        // a ";"-delimited list of `NAME=audience` pairs — and is NEVER hardcoded here
+        // (this ships in a public repo; same principle as the no-hardcoded-audience
+        // table MCP path in _getOrCreateUnlocked). The client must have minted a token
+        // for that audience up front (opt-in additional audience); an audience absent
+        // from the caller's map is skipped and the tool fails closed on its own. This
+        // sets the worker process env, which the stdio CLI child inherits at spawn; it
+        // applies to EVERY session on this repo-pinned worker (PILOTSWARM_WORKER_-
+        // CONCURRENCY=1, so one caller owns the pod at a time). Only fleets that set
+        // CALLER_AUTH_ENV_TOKENS pay the Key Vault read (skipped otherwise).
+        const callerAuthVault = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
+        const callerAuthEnvTokenSpecs = (process.env.CALLER_AUTH_ENV_TOKENS || "")
+            .split(";")
+            .map((p) => p.trim())
+            .filter(Boolean)
+            .map((pair) => {
+                const eq = pair.indexOf("=");
+                if (eq <= 0) return null;
+                const name = pair.slice(0, eq).trim();
+                const audience = pair.slice(eq + 1).trim();
+                // POSIX-ish env-var name guard; audience must be non-empty.
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !audience) return null;
+                return { name, audience };
+            })
+            .filter((s): s is { name: string; audience: string } => s != null);
+        if (callerAuthVault && callerAuthEnvTokenSpecs.length > 0) {
+            const envAudienceTokens = await resolveCallerAuth({
+                vaultName: callerAuthVault,
+                sessionId,
+                trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+            });
+            if (envAudienceTokens) {
+                for (const spec of callerAuthEnvTokenSpecs) {
+                    const tok = envAudienceTokens[spec.audience];
+                    if (tok) {
+                        // NEVER log the token value — only the mapping + length.
+                        process.env[spec.name] = tok;
+                        const msg = `[caller-auth] exported delegated token for audience ${spec.audience} as $${spec.name} (len=${tok.length})`;
+                        console.log(msg);
+                        emitSessionManagerTrace(sessionId, msg, { trace });
+                    } else {
+                        emitSessionManagerTrace(sessionId, `[caller-auth] no delegated token for audience ${spec.audience}; $${spec.name} left unset`, { trace });
+                    }
+                }
+            }
+        }
         const client = await this.ensureClient(userGithubToken, byokOpenAi);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
@@ -1786,7 +1840,6 @@ export class SessionManager {
         // create/resume or when the effective server set changes. Discovery
         // failures on a warm turn should be non-fatal (keep the already-resolved
         // servers) rather than fast-failing.
-        const callerAuthVault = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
         const hasRemoteMcp = Object.values(effectiveMcpServers).some(
             (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
         );
