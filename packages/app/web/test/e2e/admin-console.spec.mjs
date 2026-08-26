@@ -84,10 +84,31 @@ test("Model Providers owns provider onboarding and all default routing controls"
         await expect(page.getByRole("combobox", { name: "Cluster Session Default" })).toHaveCount(0);
 
         const update = page.getByRole("button", { name: "Update Key" });
+        // The row button names its own row: with several providers, three
+        // buttons otherwise announce identically as "Update Key". Checked
+        // before the sheet opens — once it is up, its own confirm button
+        // matches this name too.
+        await expect(update).toHaveAttribute("aria-label", "Update key for my-sandbox");
         await update.click();
         await expect(page.locator(".ps-budget-sheet-title")).toHaveText("Update key for my-sandbox");
         await expect(page.getByRole("textbox", { name: "Provider name" })).toBeDisabled();
         await expect(page.getByRole("combobox", { name: "Provider type" })).toBeDisabled();
+
+        // What an update does NOT change is the whole point of it, and the
+        // sheet said nothing at all — footNote was "".
+        await expect(page.locator(".ps-budget-sheet")).toContainText("Only the key changes");
+        await expect(page.locator(".ps-budget-sheet")).toContainText("usage history");
+
+        // Locked fields have to LOOK locked. `disabled` alone kept the live
+        // field styling, so a locked Name sat beside a browser-dimmed Type
+        // select and the two read differently for the same reason.
+        await expect(page.getByRole("textbox", { name: "Provider name" })).toHaveClass(/is-static/);
+        await expect(page.getByRole("combobox", { name: "Provider type" })).toHaveClass(/is-static/);
+
+        // Add-mode copy under a locked field ("Permanent.", "Paste the token
+        // value.") told the reader the wrong thing.
+        await expect(page.locator(".ps-budget-sheet")).toContainText("Replaces the current one");
+        await expect(page.locator(".ps-budget-sheet")).not.toContainText("Permanent. Used in provider:model.");
         const replacement = page.locator('.ps-budget-sheet input[type="password"]');
         await replacement.fill("replacement-secret");
         await expect(replacement).toHaveAttribute("type", "password");
@@ -95,8 +116,17 @@ test("Model Providers owns provider onboarding and all default routing controls"
         await update.click();
         await expect(page.locator('.ps-budget-sheet input[type="password"]')).toHaveValue("");
         await page.locator('.ps-budget-sheet input[type="password"]').fill("replacement-secret");
-        await page.getByRole("button", { name: "Update key", exact: true }).click();
+        // Enter submits. While updating, the key field is the only editable
+        // one, and the Name input that carried the other Enter handler is
+        // disabled — so the sheet could not be submitted from the keyboard.
+        await page.locator('.ps-budget-sheet input[type="password"]').press("Enter");
         await expect.poll(() => stub.calls.filter((call) => call.op === "updateMyProviderCredential").length).toBe(1);
+        await expect(page.locator(".ps-budget-sheet")).toHaveCount(0);
+
+        await update.click();
+        await page.locator('.ps-budget-sheet input[type="password"]').fill("replacement-secret");
+        await page.getByRole("button", { name: "Update key", exact: true }).click();
+        await expect.poll(() => stub.calls.filter((call) => call.op === "updateMyProviderCredential").length).toBe(2);
         expect(stub.calls.find((call) => call.op === "updateMyProviderCredential")).toMatchObject({
             name: "my-sandbox",
             method: "PUT",

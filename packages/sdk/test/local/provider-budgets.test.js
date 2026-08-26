@@ -255,6 +255,63 @@ describe("creating providers", () => {
         expect(shared).toMatch(/PROVIDER_NOT_FOUND/);
     });
 
+    it("replacing the key keeps a pinned apiVersion, and marks the row touched", async () => {
+        // The update writes the whole secret_ref blob, and the caller is a
+        // credential form: it sends {apiKey} and nothing else. Anything else
+        // living in that blob was therefore dropped.
+        //
+        // apiVersion lives in that blob. provider-catalog reads
+        // secret_ref.apiVersion and otherwise falls back to the type default,
+        // so an azure provider pinned to a version silently moved off it the
+        // first time its owner rotated an expired key — with nothing said in
+        // the UI, the response, or the audit row. Delete-and-recreate, the
+        // workflow this replaces, never had the problem: create carries the
+        // whole credentials object.
+        const alice = await makeUser("alice");
+        await sql(`SELECT * FROM @cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,false)`,
+            ["alice-azure", alice, JSON.stringify({ apiKey: "original", apiVersion: "2026-01-01" })]);
+
+        const before = await one(`SELECT secret_ref, created_at, updated_at FROM @provider_instances WHERE name = 'alice-azure'`);
+        expect(before.secret_ref).toMatchObject({ apiVersion: "2026-01-01" });
+
+        await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-azure", JSON.stringify({ kind: "apiKey", value: "rotated" }), alice]);
+
+        const after = await one(`SELECT secret_ref, created_at, updated_at FROM @provider_instances WHERE name = 'alice-azure'`);
+        expect(after.secret_ref).toEqual({ kind: "apiKey", value: "rotated", apiVersion: "2026-01-01" });
+        // Sean's test above selects created_at but not updated_at, which is
+        // why the missing stamp survived it: a rotation left the two equal.
+        expect(new Date(after.updated_at).getTime()).toBeGreaterThan(new Date(before.updated_at).getTime());
+        expect(after.created_at).toEqual(before.created_at);
+    });
+
+    it("a caller who states an apiVersion overrides the stored one", async () => {
+        // Carrying the old value forward must not make it unchangeable —
+        // stating one is how you change it.
+        const alice = await makeUser("alice");
+        await sql(`SELECT * FROM @cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,false)`,
+            ["alice-azure", alice, JSON.stringify({ apiKey: "original", apiVersion: "2026-01-01" })]);
+
+        await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-azure", JSON.stringify({ kind: "apiKey", value: "v2", apiVersion: "2030-09-09" }), alice]);
+
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'alice-azure'`);
+        expect(after.secret_ref).toEqual({ kind: "apiKey", value: "v2", apiVersion: "2030-09-09" });
+    });
+
+    it("no apiVersion is invented for a provider that never had one", async () => {
+        // The merge must be a carry-forward, not a default.
+        const alice = await makeUser("alice");
+        await createPersonal("alice-ghcp", alice);
+
+        await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-ghcp", JSON.stringify({ kind: "githubToken", value: "replacement" }), alice]);
+
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'alice-ghcp'`);
+        expect(after.secret_ref).toEqual({ kind: "githubToken", value: "replacement" });
+        expect("apiVersion" in after.secret_ref).toBe(false);
+    });
+
     it("a name is claimed once, and the refusal says only that", async () => {
         const alice = await makeUser("alice");
         await createShared("acme");
