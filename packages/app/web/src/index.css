@@ -8450,8 +8450,17 @@ textarea.ps-link-input {
 .ps-budget-input::placeholder { color: color-mix(in srgb, var(--ps-muted) 74%, transparent); }
 .ps-budget-input.is-invalid { border-color: var(--ps-danger); }
 /* A value the sheet shows but will not take back — a name after creation, a
-   period on an edit. Readable, obviously not a field. */
-.ps-budget-input.is-static { color: var(--ps-muted); }
+   period on an edit. Readable, obviously not a field.
+   It only muted the TEXT, which is not enough: keeping the border and the
+   input background left it looking exactly like a live field, so a locked
+   Name sat next to a browser-dimmed disabled <select> and the two read
+   differently for the same reason. Drop the field affordance as well. */
+.ps-budget-input.is-static {
+  color: var(--ps-muted);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--ps-modal-border) 45%, transparent);
+  cursor: default;
+}
 .ps-budget-seg { display: flex; flex-wrap: wrap; gap: 6px; }
 .ps-budget-seg-btn {
   padding: 7px 13px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-sm);
@@ -8716,6 +8725,10 @@ textarea.ps-link-input {
 .ps-admin-provider-block {
   display: flex; flex-direction: column; gap: 10px;
   border: 1px solid var(--ps-border); border-radius: 6px; padding: 14px 16px;
+  /* When even a truncated name plus three controls cannot fit, the row must
+     stay reachable rather than putting Delete past the edge with no way to
+     get to it. */
+  overflow-x: auto;
 }
 .ps-admin-provider-block__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .ps-admin-provider-block h4 { margin: 0; font-size: 1rem; }
@@ -8726,8 +8739,24 @@ textarea.ps-link-input {
 }
 .ps-admin-provider-row:first-child { border-top: 0; padding-top: 2px; }
 .ps-admin-provider-row__identity { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+
+/* The actions are flex-shrink: 0, so all the squeeze lands on the name. It had
+   no truncation of its own, so instead of ellipsizing it ran UNDER the
+   "Allow system sessions" control beside it — "uxtest-ghcp" rendering as
+   "uxtest-gh▣p". Truncate instead; the full name is in the title attribute.
+   Wrapping the row was the other option and costs 60% of its height at every
+   width (55px → 88px measured in the same pane), which is a worse trade for a
+   list you scan. */
+.ps-admin-provider-row__identity > strong {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+
 .ps-admin-provider-row__identity strong { font-size: 0.98rem; }
-.ps-admin-provider-row__actions { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+/* Never shrinks, so every squeeze lands on the name beside it — which is why
+   that name has to truncate rather than run underneath these. */
+.ps-admin-provider-row__actions {
+  display: flex; align-items: center; gap: 14px; flex-shrink: 0;
+}
 .ps-admin-provider-default {
   display: grid; grid-template-columns: auto minmax(240px, 340px);
   align-items: center; column-gap: 14px; row-gap: 5px;

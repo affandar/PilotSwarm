@@ -10682,17 +10682,24 @@ function CreateProviderSheet({
         title: updating ? `Update key for ${trimmed}` : (isGithub ? "Add GitHub Copilot provider" : "Add model provider"),
         subtitle: shared ? "Shared" : "Personal",
         confirmLabel: updating ? "Update key" : "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
-        footNote: "",
+        // The whole point of an update is what does NOT change. Saying so is
+        // the difference between "replace the key" and "did I just make a
+        // second provider?" — the Delete sheet below spells out its
+        // consequences the same way.
+        footNote: updating
+            ? "Only the key changes. The name, type, base URL, defaults, system-session routing and usage history all stay as they are."
+            : "",
     },
     React.createElement(SheetField, {
         label: "Name",
         hint: taken ? "A provider with that name already exists, and names are unique across the cluster."
             : tooLong ? `Too long: ${trimmed.length} characters, and a name may be at most 64.`
                 : badChars ? "Letters, numbers, dot, dash and underscore only — no colon, no spaces, no accents: a session refers to it as \"<provider>:<model>\"."
-                    : "Permanent. Used in provider:model.",
+                    : updating ? "Not changing. Sessions keep referring to it as provider:model."
+                        : "Permanent. Used in provider:model.",
     },
     React.createElement("input", {
-        ref, className: `ps-budget-input${(taken || badChars || tooLong) && trimmed ? " is-invalid" : ""}`,
+        ref, className: `ps-budget-input${updating ? " is-static" : ""}${(taken || badChars || tooLong) && trimmed ? " is-invalid" : ""}`,
         "aria-label": "Provider name",
         value: name, placeholder: "azure-prod",
         disabled: updating,
@@ -10701,23 +10708,33 @@ function CreateProviderSheet({
     })),
     React.createElement(SheetField, {
         label: "Type",
-        hint: "Backend and model catalog.",
+        hint: updating ? "Not changing." : "Backend and model catalog.",
     },
     React.createElement("select", {
-        className: "ps-budget-input", "aria-label": "Provider type",
+        className: `ps-budget-input${updating ? " is-static" : ""}`, "aria-label": "Provider type",
         value: type, disabled: updating, onChange: (event) => setType(event.target.value),
     }, types.length === 0
         ? React.createElement("option", { value: "" }, "No provider types are listed on this deployment")
         : types.map((option) => React.createElement("option", { key: option.id, value: option.id }, option.id)))),
     React.createElement(SheetField, {
-        label: isGithub ? "GitHub Copilot token" : "API key",
-        hint: "Paste the token value.",
+        label: updating
+            ? (isGithub ? "New GitHub Copilot token" : "New API key")
+            : (isGithub ? "GitHub Copilot token" : "API key"),
+        hint: updating
+            ? "Replaces the current one. The existing key is never shown."
+            : "Paste the token value.",
     },
     React.createElement("input", {
         className: "ps-budget-input", type: "password", autoComplete: "off",
-        "aria-label": isGithub ? "GitHub Copilot token" : "API key",
+        "aria-label": updating
+            ? (isGithub ? "New GitHub Copilot token" : "New API key")
+            : (isGithub ? "GitHub Copilot token" : "API key"),
         value: credential, placeholder: "Paste token",
         onChange: (event) => setCredential(event.target.value),
+        // While updating this is the only editable field, and the Name input
+        // that carries the other Enter handler is disabled — so without this
+        // the sheet cannot be submitted from the keyboard at all.
+        onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
     })),
     !updating ? React.createElement(SheetField, { label: "Base URL", hint: "Optional." },
         React.createElement("input", {
@@ -12934,7 +12951,9 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             className: "ps-admin-provider-row",
         },
         React.createElement("div", { className: "ps-admin-provider-row__identity" },
-            React.createElement("strong", null, provider.name),
+            // Truncates when the row is tight (see the CSS), so the full name
+            // has to be recoverable on hover.
+            React.createElement("strong", { title: provider.name }, provider.name),
             React.createElement("span", { className: `ps-scope-badge is-${provider.class === "shared" ? "shared" : "user"}` }, provider.class),
             provider.isMyDefault ? React.createElement("span", { className: "ps-scope-badge is-off" }, "my default") : null,
             provider.isClusterDefault ? React.createElement("span", { className: "ps-scope-badge is-off" }, "cluster default") : null,
@@ -12951,9 +12970,13 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             personal ? React.createElement("button", {
                 type: "button",
                 className: "ps-mini-button",
+                // Three providers means three identical "Update Key" buttons
+                // to a screen reader. The trash below already names its row.
+                "aria-label": `Update key for ${provider.name}`,
+                title: `Update key for ${provider.name}`,
                 disabled: busy,
                 onClick: () => onUpdate(provider),
-            }, "Update Key") : null,
+            }, "Update key") : null,
             React.createElement(IconButton, {
                 icon: React.createElement(TrashGlyph),
                 label: `Delete ${provider.name}`,

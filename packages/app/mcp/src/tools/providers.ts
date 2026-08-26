@@ -76,6 +76,9 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 "Create, update the credential on, or delete a provider.\n"
                 + "  create — needs a type and the credentials that type requires; the name is cluster-unique and "
                 + "cannot be changed afterwards\n"
+                + "  update_credential — replaces the key on your OWN personal provider (mine:true) and changes "
+                + "nothing else: the name, type, base URL, defaults, system-session routing and usage history all "
+                + "stay. Use this to rotate an expired key rather than deleting and re-creating.\n"
                 + "  delete — sessions naming it are not moved anywhere: they wait until the name exists again, and "
                 + "waitingSessions says how many. Re-creating the name is the intended rescue.\n"
                 + "mine:true makes (or removes) a provider of your own, on your own credentials, that nobody else "
@@ -85,7 +88,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 name: z.string().min(1).describe("The provider name — letters, numbers, dot, dash and underscore, never a colon"),
                 mine: z.boolean().describe("true = your own personal provider; false = a shared one everyone may use (admin)"),
                 type: z.string().min(1).optional().describe("Provider type from the deployment's model-providers file (create) — the typeId list_providers shows on existing rows"),
-                credentials: z.record(z.string(), z.any()).optional().describe("The credentials that type requires, e.g. {\"apiKey\": \"…\"} (create)"),
+                credentials: z.record(z.string(), z.any()).optional().describe("The credentials that type requires, e.g. {\"apiKey\": \"…\"} (create, update_credential)"),
                 base_url: z.string().optional().describe("Endpoint to use instead of the type's own (create)"),
             },
         },
