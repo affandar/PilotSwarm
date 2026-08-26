@@ -575,6 +575,11 @@ personal provider, but that machinery grant never makes it available to other
 users. Administrators can also create shared providers for ordinary cluster
 use.
 
+When a personal provider credential expires, use **Update Key** on that
+provider instead of deleting or replacing it. The update changes only the
+write-only credential; the provider identity, defaults, routing references,
+and usage ledger remain unchanged.
+
 The same page owns independent routing settings:
 
 - **My Session Default**: shared providers plus the current user's own.
@@ -596,7 +601,7 @@ gh auth token
 Credentials are write-only: provider reads, defaults reads, logs, and selector
 view models never return them. Browser and terminal password drafts are cleared
 on save and cancel; the native UI also removes its draft before awaiting the
-provider-create request.
+provider create or credential-update request.
 
 ### Legacy Per-User GitHub Copilot Key
 

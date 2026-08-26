@@ -3188,6 +3188,16 @@ export class PilotSwarmUiController {
         }));
     }
 
+    async updateAdminProviderCredential({ name, credentials } = {}) {
+        if (typeof this.transport.updateMyProviderCredential !== "function") {
+            const error = "Provider credential updates are not available on this transport.";
+            this.dispatch({ type: "admin/modelProviders/mutationFailed", error });
+            return { ok: false, result: null, error };
+        }
+        return this._runAdminModelProviderMutation("updateCredential", () =>
+            this.transport.updateMyProviderCredential({ name, credentials }));
+    }
+
     async deleteAdminProvider(name, { shared = false } = {}) {
         const op = shared ? "deleteProvider" : "deleteMyProvider";
         if (typeof this.transport[op] !== "function") {
@@ -3265,11 +3275,23 @@ export class PilotSwarmUiController {
             name = `${base}-${suffix}`;
             suffix += 1;
         }
-        this.dispatch({ type: "admin/modelProviders/createBegin", name, typeId, shared });
+        this.dispatch({ type: "admin/modelProviders/createBegin", name, typeId, shared, mode: "create" });
     }
 
     beginAdminCreateGithubProvider() {
         this.beginAdminCreateProvider({ shared: false });
+    }
+
+    beginAdminUpdateProviderCredential(provider) {
+        if (!provider?.name || provider.class === "shared") return;
+        this.dispatch({
+            type: "admin/modelProviders/createBegin",
+            name: provider.name,
+            typeId: provider.typeId,
+            shared: false,
+            mode: "update",
+            stage: "credential",
+        });
     }
 
     cycleAdminProviderCreateType() {
@@ -3342,7 +3364,9 @@ export class PilotSwarmUiController {
         };
         // Clear the credential from shared state before any network await.
         this.dispatch({ type: "admin/modelProviders/createSaving" });
-        const outcome = await this.createAdminProvider(input);
+        const outcome = create.mode === "update"
+            ? await this.updateAdminProviderCredential({ name: input.name, credentials: input.credentials })
+            : await this.createAdminProvider(input);
         this.dispatch(outcome?.ok
             ? { type: "admin/modelProviders/createEnd" }
             : { type: "admin/modelProviders/createFailed", error: outcome?.error });

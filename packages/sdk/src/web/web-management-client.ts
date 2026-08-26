@@ -746,6 +746,10 @@ export class WebPilotSwarmManagementClient {
         return this.ops.createMyProvider({ name: input.name, type: input.type, credentials: input.credentials, baseUrl: input.baseUrl });
     }
 
+    async updateMyProviderCredential(_viewer: unknown, input: { name: string; credentials?: Record<string, unknown> | null }): Promise<any> {
+        return this.ops.updateMyProviderCredential({ name: input.name, credentials: input.credentials });
+    }
+
     async deleteProvider(_viewer: unknown, name: string): Promise<any> {
         return this.ops.deleteProvider({ name });
     }

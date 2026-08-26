@@ -10,6 +10,13 @@ discoverable on demand instead of inlined into every session.
 
 ### Added
 
+- **Update personal provider keys in place.** Admin Console → My Providers now
+  offers **Update Key** (native TUI: `Shift+U`) for an existing personal
+  provider. The owner-only `updateMyProviderCredential` management/Web API and
+  `manage_provider({ action: "update_credential" })` tool replace only the
+  write-only credential, preserving provider identity, defaults, routing, and
+  usage history (CMS migration 0065).
+
 - **Package editors.** The owner of a SHARED agent package (or an admin)
   can grant named users write access: publish new versions, republish into
   it, pin, enable/disable. Editors cannot change scope, delete, or manage

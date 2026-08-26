@@ -153,6 +153,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
+    "updateMyProviderCredential",
     "updateSessionGroup",
     "uploadAgentPackage",
     "uploadArtifact",
@@ -1470,6 +1471,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Replace the credential on one of your own personal providers without changing its name, defaults, or usage history.
+     * @remarks `PUT /me/providers/:name/credential` — access: `authed`
+     */
+    updateMyProviderCredential(params: {
+        name: string;
+        credentials?: any;
+    }): Promise<any>;
+
+    /**
      * Update group title/description.
      * @remarks `PATCH /management/session-groups/:groupId` — access: `group:manage`
      */
@@ -1699,6 +1709,7 @@ export function createManagementOps(
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
+        updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),

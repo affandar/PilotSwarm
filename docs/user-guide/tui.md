@@ -487,11 +487,10 @@ or `./run.sh`.
 
 **Admin Console (`Shift+A`):**
 
-7. Press `Shift+A` to open the per-user admin console. Profile, GitHub
-   Copilot key, refresh. Useful when your Copilot token expires and you
-   need to update it without restarting.
-8. Press `e` to begin editing the key. Type the new key (input is masked
-   on screen). `Enter` to save. `Esc` to cancel.
+7. Press `Shift+A` to open the Admin Console, then use **My Providers**.
+8. Select your personal provider and press `Shift+U`. Type the replacement
+   credential (input is masked), then press `Enter` to update it. `Esc`
+   cancels. The provider name, defaults, routing, and usage history remain.
 
 **What just happened:**
 

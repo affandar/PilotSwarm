@@ -24,13 +24,13 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = process.argv[2] ? resolve(process.argv[2]) : resolve(here, "../src/web/generated-op-methods.ts");
 
-const { OPERATIONS } = await import(resolve(here, "../api/src/protocol.js"));
+const { OPERATIONS } = await import(pathToFileURL(resolve(here, "../api/src/protocol.js")).href);
 
 /** Table param `type` → TypeScript type. Body params carry no type and are
  *  frequently structured (`options`, `input`, `patch`), so they stay `any`. */
