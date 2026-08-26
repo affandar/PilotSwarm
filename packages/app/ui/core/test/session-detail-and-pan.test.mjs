@@ -33,7 +33,8 @@ import { fileURLToPath } from "node:url";
 
 import { appReducer } from "../src/reducer.js";
 import { createInitialState } from "../src/state.js";
-import { commitPanAxis } from "../../react/src/web-app.js";
+import { selectSessionStatusSummary } from "../src/selectors.js";
+import { commitPanAxis, visibleWaitReason } from "../../react/src/web-app.js";
 
 const webApp = readFileSync(
     fileURLToPath(new URL("../../react/src/web-app.js", import.meta.url)),
@@ -190,4 +191,75 @@ test("the handler drives BOTH axes and blocks the browser on both", () => {
         /if \(axis === "y"\) return;/,
         "handing the vertical case back to the browser is exactly the bug",
     );
+});
+
+// ── the detail box's two halves must agree ──────────────────────────────────
+
+test("the WAITING block does not blink while the status holds steady", () => {
+    // The reported flicker: the box showed "(running)" and a WAITING row
+    // appeared for a few milliseconds on every poll, then vanished.
+    //
+    // Cause: the two halves ran on different clocks. The Updated row reads the
+    // DEBOUNCED status (a change is held 5s, because the 4s catalog poll and
+    // the post-event detail sync disagree mid-turn) while waitReason was read
+    // raw. So the CMS row clearing wait_reason — client.ts does exactly that
+    // when a session goes running — toggled the block under a status that was
+    // deliberately not moving.
+    const PARENT = "flicker-1";
+    const REASON = "Supervise five RCAKit PG Flex incident investigations";
+    const row = (extra) => ({
+        sessionId: PARENT,
+        title: "RCAKit PG Flex",
+        updatedAt: Date.now(),
+        status: "running",
+        orchestrationStatus: "Running",
+        ...extra,
+    });
+
+    let state = createInitialState({ mode: "web" });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [row({ waitReason: REASON })] });
+    state = appReducer(state, { type: "sessions/selected", sessionId: PARENT });
+
+    const seen = [];
+    const sample = () => {
+        const session = state.sessions.byId[PARENT];
+        const status = selectSessionStatusSummary(session)?.status;
+        seen.push(`${status}/${visibleWaitReason(session, status) ? "WAITING" : "-"}`);
+    };
+    sample();
+
+    for (let i = 0; i < 5; i += 1) {
+        // live detail sync: still carries the sentence
+        state = appReducer(state, {
+            type: "sessions/merged",
+            session: { sessionId: PARENT, status: "running", orchestrationStatus: "Running", waitReason: REASON },
+        });
+        sample();
+        // catalog poll: the CMS row has had wait_reason cleared
+        state = appReducer(state, { type: "sessions/loaded", sessions: [row({ waitReason: null })] });
+        sample();
+    }
+
+    assert.deepEqual(
+        [...new Set(seen)],
+        ["running/-"],
+        `the box flickered across polls: ${seen.join(" → ")}`,
+    );
+});
+
+test("a genuinely waiting session still shows its reason", () => {
+    // The gate must not swallow the sentence when it is the whole point of the
+    // block — this is the case the flicker fix could easily over-correct.
+    const session = { sessionId: "s", waitReason: "Waiting for the 09:00 window" };
+    assert.equal(visibleWaitReason(session, "waiting"), "Waiting for the 09:00 window");
+    assert.equal(visibleWaitReason(session, "waiting on 7"), "Waiting for the 09:00 window");
+    assert.equal(visibleWaitReason(session, "waiting on children"), "Waiting for the 09:00 window");
+    assert.equal(visibleWaitReason(session, "input_required"), "Waiting for the 09:00 window");
+    // ...and must stay quiet when the box is saying the session is active.
+    assert.equal(visibleWaitReason(session, "running"), null);
+    assert.equal(visibleWaitReason(session, "idle"), null);
+    assert.equal(visibleWaitReason(session, "completed"), null);
+    // No sentence is no block, whatever the status says.
+    assert.equal(visibleWaitReason({ sessionId: "s", waitReason: "  " }, "waiting"), null);
+    assert.equal(visibleWaitReason({ sessionId: "s" }, "waiting"), null);
 });

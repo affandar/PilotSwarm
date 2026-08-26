@@ -4052,6 +4052,35 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
  */
 const SESSION_DETAIL_NONE = "—";
 
+/**
+ * The wait sentence the detail box should show, given the status it is ALREADY
+ * showing. Pure, and exported so the agreement can be tested directly.
+ *
+ * `waitReason` is applied raw, but the status beside it is debounced — a change
+ * is held for 5s by mergeSessionRowVisualStatus because the 4s catalog poll
+ * (the CMS row) and the post-event detail sync (live orchestration) disagree
+ * mid-turn. Reading one through the hold and the other around it made the
+ * WAITING block blink in and out on every poll, and let the box read
+ * "(running)" with a WAITING row underneath it at the same time.
+ *
+ * So the sentence is shown only while the status on screen agrees there is
+ * something to wait for. A budget pause is not routed through here: it is
+ * authoritative on its own and always shows.
+ */
+export function visibleWaitReason(session, statusLabel) {
+    const reason = typeof session?.waitReason === "string" && session.waitReason.trim()
+        ? session.waitReason.trim()
+        : null;
+    if (!reason) return null;
+    const status = String(statusLabel || "");
+    // "waiting", and "waiting on 7" / "waiting on children" for a parent whose
+    // descendants are still going.
+    const waiting = status === "waiting"
+        || status.startsWith("waiting on")
+        || status === "input_required";
+    return waiting ? reason : null;
+}
+
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
@@ -4116,9 +4145,19 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
     // the "Paused now" band shows, with a way through to the provider that
     // caused it. `waitReason` covers every OTHER kind of wait (a scheduled
     // one, an agent asking to sleep), which is a different fact and says so.
-    const waitReason = typeof session?.waitReason === "string" && session.waitReason.trim()
-        ? session.waitReason.trim()
-        : null;
+    //
+    // The block is gated on the DEBOUNCED status, not on waitReason alone.
+    // Without that gate the two halves of this box run on different clocks:
+    // the Updated row holds a status change for 5s (mergeSessionRowVisualStatus)
+    // while waitReason is applied raw, and mid-turn the two writers disagree —
+    // the CMS row still carries the sentence after the live orchestration has
+    // moved on, or the reverse. The result was a WAITING block blinking in and
+    // out on every 4s poll, and a box that could read "(running)" with a
+    // WAITING row under it at the same time.
+    //
+    // A budget pause is separate: it is authoritative on its own and is not
+    // derived from the session's status, so it always shows.
+    const waitReason = visibleWaitReason(session, statusSummary?.status);
     const pauseBlock = (!pause && !waitReason) ? null : React.createElement("div", {
         className: `ps-session-detail-pause${pause ? " is-paused" : ""}`,
     },
