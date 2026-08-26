@@ -83,7 +83,27 @@ test("Model Providers owns provider onboarding and all default routing controls"
         await expect(page.getByRole("checkbox", { name: "Allow system sessions" })).toBeChecked();
         await expect(page.getByRole("combobox", { name: "Cluster Session Default" })).toHaveCount(0);
 
-        const add = page.getByRole("button", { name: "Add personal provider" });
+        const update = page.getByRole("button", { name: "Update Key" });
+        await update.click();
+        await expect(page.locator(".ps-budget-sheet-title")).toHaveText("Update key for my-sandbox");
+        await expect(page.getByRole("textbox", { name: "Provider name" })).toBeDisabled();
+        await expect(page.getByRole("combobox", { name: "Provider type" })).toBeDisabled();
+        const replacement = page.locator('.ps-budget-sheet input[type="password"]');
+        await replacement.fill("replacement-secret");
+        await expect(replacement).toHaveAttribute("type", "password");
+        await page.getByRole("button", { name: "Cancel" }).click();
+        await update.click();
+        await expect(page.locator('.ps-budget-sheet input[type="password"]')).toHaveValue("");
+        await page.locator('.ps-budget-sheet input[type="password"]').fill("replacement-secret");
+        await page.getByRole("button", { name: "Update key", exact: true }).click();
+        await expect.poll(() => stub.calls.filter((call) => call.op === "updateMyProviderCredential").length).toBe(1);
+        expect(stub.calls.find((call) => call.op === "updateMyProviderCredential")).toMatchObject({
+            name: "my-sandbox",
+            method: "PUT",
+            body: { credentials: { apiKey: "replacement-secret" } },
+        });
+
+        const add = page.getByRole("button", { name: "Add provider", exact: true });
         await add.click();
         await expect(page.locator(".ps-budget-sheet-title")).toHaveText("Add GitHub Copilot provider");
         await expect(page.getByRole("textbox", { name: "Provider display name" })).toHaveCount(0);

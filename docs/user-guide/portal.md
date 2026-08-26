@@ -461,7 +461,9 @@ the TUI. Or vice versa.
 7. Open **Admin → Model Providers**.
 8. **My Providers** holds your credentials and default. **Shared Providers**
    holds cluster/system routing and system-agent overrides (administrators).
-9. **Providers & Budgets** shows user spend by provider and model. Admins also
+9. Use **Update Key** on a personal provider when its credential expires. The
+   provider name, defaults, session routing, and usage history stay intact.
+10. **Providers & Budgets** shows user spend by provider and model. Admins also
    see system spend as a separate, uncapped breakdown.
 
 **What just happened:**
@@ -561,8 +563,8 @@ way; you just have a smaller window into them.
 
 **Session is stuck in `running` and nothing's happening.**
 Check the **logs** inspector tab. Common causes: LLM provider rate
-limit, an invalid provider credential (add a replacement in Admin Console →
-Model Providers, update defaults, then remove the old provider),
+limit, an invalid provider credential (use **Update Key** in Admin Console →
+Model Providers),
 worker disconnected.
 
 **Session won't appear in the list.**

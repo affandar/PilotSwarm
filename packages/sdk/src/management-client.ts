@@ -448,6 +448,11 @@ export interface ProviderCreateInput {
     baseUrl?: string | null;
 }
 
+export interface ProviderCredentialUpdateInput {
+    name: string;
+    credentials?: Record<string, unknown> | null;
+}
+
 export interface ModelDefaultInput {
     scope: "user" | "cluster";
     provider: string | null;
@@ -3332,6 +3337,20 @@ export class PilotSwarmManagementClient {
         await this._wakeProvidersPaused(input.name);
         await this._auditProviderMutation(viewer, "createMyProvider", created.name, { class: "personal", type: created.typeId });
         return created;
+    }
+
+    /** Replace the credential on one of the caller's own personal providers. */
+    async updateMyProviderCredential(
+        viewer: ProviderViewer,
+        input: ProviderCredentialUpdateInput,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const { store, actor } = await this._providerActor(viewer);
+        const updated = await store.updatePersonalCredential(input.name, input.credentials, actor);
+        await this._auditProviderMutation(viewer, "updateMyProviderCredential", updated.name, {
+            class: "personal",
+            type: updated.typeId,
+        });
+        return updated;
     }
 
     /**

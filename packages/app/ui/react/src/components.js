@@ -2152,6 +2152,7 @@ function buildAdminModelProviderLines(view) {
     if (providers.page !== "shared") {
         lines.push([
             { text: " e ", color: "green", bold: true }, { text: "add  ", color: "gray" },
+            { text: "U ", color: "yellow", bold: true }, { text: "update key  ", color: "gray" },
             { text: "d ", color: "red", bold: true }, { text: "delete  ", color: "gray" },
             { text: "u ", color: "cyan", bold: true }, { text: "my default  ", color: "gray" },
             ...(view.isAdmin ? [{ text: "t ", color: "yellow", bold: true }, { text: "system use  ", color: "gray" }] : []),

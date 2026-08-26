@@ -227,6 +227,34 @@ describe("creating providers", () => {
         expect(row.allowance_pct).toBe(100);
     });
 
+    it("an owner can replace a personal provider credential without replacing the provider", async () => {
+        const alice = await makeUser("alice");
+        const bob = await makeUser("bob");
+        await createPersonal("alice-ghcp", alice);
+        const before = await one(`SELECT name, type_id, class, owner_user_id, created_at FROM @provider_instances`);
+
+        const updated = await one(
+            `SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-ghcp", JSON.stringify({ kind: "githubToken", value: "replacement" }), alice]);
+        expect(updated).toMatchObject({ name: "alice-ghcp", type_id: "github", class: "personal" });
+
+        const after = await one(
+            `SELECT name, type_id, class, owner_user_id, created_at, secret_ref FROM @provider_instances`);
+        expect({ ...after, secret_ref: undefined }).toEqual({ ...before, secret_ref: undefined });
+        expect(after.secret_ref).toEqual({ kind: "githubToken", value: "replacement" });
+
+        const hidden = await refusal(
+            `SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-ghcp", JSON.stringify({ kind: "githubToken", value: "stolen" }), bob]);
+        expect(hidden).toMatch(/PROVIDER_NOT_FOUND/);
+
+        await createShared("shared-ghcp");
+        const shared = await refusal(
+            `SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["shared-ghcp", JSON.stringify({ kind: "githubToken", value: "changed" }), alice]);
+        expect(shared).toMatch(/PROVIDER_NOT_FOUND/);
+    });
+
     it("a name is claimed once, and the refusal says only that", async () => {
         const alice = await makeUser("alice");
         await createShared("acme");

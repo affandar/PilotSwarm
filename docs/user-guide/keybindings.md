@@ -148,6 +148,7 @@ The Admin Console takes over the workspace until you press `Esc` to close it. Wh
 | `a` | Show Agent Packages |
 | `w` | Show Workers (administrators only) |
 | `e` | Add a personal provider |
+| `U` | Update the selected personal provider's credential (input is masked) |
 | `E` | Add a shared model provider (administrators only) |
 | `d` | Confirm-delete the selected personal or shared provider |
 | `u` | Cycle My Session Default through usable choices and automatic fallback |
@@ -167,7 +168,7 @@ While the provider-creation wizard is open the console behaves like a modal:
 |-----|--------|
 | type text, `←/→`, `Home`, `End`, `Backspace` | Edit the provider name, then the credential (credential input is masked) |
 | `Tab` (name step) | Cycle the catalog's provider types; personal creation starts on GitHub Copilot |
-| `Enter` | Continue from name to credential, then create the personal provider |
+| `Enter` | Continue from name to credential, then create the provider; in update mode, replace the credential |
 | `Esc` | Cancel and clear the draft |
 
 Personal-provider system use permits PilotSwarm's system machinery to use that

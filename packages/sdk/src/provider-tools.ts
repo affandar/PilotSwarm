@@ -162,7 +162,7 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
     {
         name: "manage_provider",
         description:
-            "Create or delete a provider.\n"
+            "Create, update the credential on, or delete a provider.\n"
             + "  create — needs a type and the credentials that type requires; the name is cluster-unique and "
             + "cannot be changed afterwards\n"
             + "  delete — sessions naming it are not moved anywhere: they wait until the name exists again, and "
@@ -172,7 +172,7 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
         parameters: {
             type: "object",
             properties: {
-                action: { type: "string", enum: ["create", "delete", "clear_routing"], description: "The operation to perform" },
+                action: { type: "string", enum: ["create", "update_credential", "delete", "clear_routing"], description: "The operation to perform" },
                 name: {
                     type: "string",
                     description: "The provider name — letters, numbers, dot, dash and underscore, never a colon",
@@ -509,7 +509,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
         })),
 
         manage_provider: async (args: {
-            action: "create" | "delete" | "clear_routing";
+            action: "create" | "update_credential" | "delete" | "clear_routing";
             name: string;
             mine: boolean;
             type?: string;
@@ -518,6 +518,10 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
         }) => call("manage_provider", async (store, v) => {
             if (args.action === "clear_routing") {
                 return { name: args.name, ...(await store.clearRoutingDependencies(args.name, v.userId, v.isAdmin)) };
+            }
+            if (args.action === "update_credential") {
+                if (!args.mine) return { error: "manage_provider: update_credential is available only for your own personal provider." };
+                return store.updatePersonalCredential(args.name, args.credentials ?? null, v.userId);
             }
             // Deleting your own and deleting a shared one are the same call:
             // `cms_provider_delete` refuses a name the caller may not touch,

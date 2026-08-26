@@ -335,6 +335,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "canvas_kv",
             sql: migration_0064_canvas_kv(schema),
         },
+        {
+            version: "0065",
+            name: "personal_provider_credential_update",
+            sql: migration_0065_personal_provider_credential_update(schema),
+        },
     ];
 }
 
@@ -13704,5 +13709,32 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_kv_stats(
       FROM ${s}.canvas_kv k
      WHERE k.session_id = p_session_id AND k.slot = p_slot AND k.deleted_at IS NULL;
 $$ LANGUAGE sql STABLE;
+`;
+}
+
+function migration_0065_personal_provider_credential_update(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_update_personal_credential(
+    p_name TEXT, p_secret JSONB, p_actor BIGINT
+) RETURNS TABLE(name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT) AS $$
+BEGIN
+    IF p_actor IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: sign in to update a provider of your own';
+    END IF;
+
+    RETURN QUERY
+    UPDATE ${s}.provider_instances pi
+       SET secret_ref = p_secret
+     WHERE pi.name = p_name
+       AND pi.class = 'personal'
+       AND pi.owner_user_id = p_actor
+    RETURNING pi.name, pi.type_id, pi.class, pi.owner_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
 `;
 }

@@ -1558,6 +1558,10 @@ export class NodeSdkTransport {
         return this.mgmt.createMyProvider(await this._modelProviderViewer(), input || {});
     }
 
+    async updateMyProviderCredential(input) {
+        return this.mgmt.updateMyProviderCredential(await this._modelProviderViewer(), input || {});
+    }
+
     async deleteProvider(name) {
         return this.mgmt.deleteProvider(await this._modelProviderViewer(), name);
     }

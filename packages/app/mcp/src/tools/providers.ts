@@ -73,7 +73,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
         {
             title: "Manage Provider",
             description:
-                "Create or delete a provider.\n"
+                "Create, update the credential on, or delete a provider.\n"
                 + "  create — needs a type and the credentials that type requires; the name is cluster-unique and "
                 + "cannot be changed afterwards\n"
                 + "  delete — sessions naming it are not moved anywhere: they wait until the name exists again, and "
@@ -81,7 +81,7 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 + "mine:true makes (or removes) a provider of your own, on your own credentials, that nobody else "
                 + "sees — anyone may. mine:false is a shared provider the whole cluster may spend from — admins only.",
             inputSchema: {
-                action: z.enum(["create", "delete", "clear_routing"]).describe("The operation to perform"),
+                action: z.enum(["create", "update_credential", "delete", "clear_routing"]).describe("The operation to perform"),
                 name: z.string().min(1).describe("The provider name — letters, numbers, dot, dash and underscore, never a colon"),
                 mine: z.boolean().describe("true = your own personal provider; false = a shared one everyone may use (admin)"),
                 type: z.string().min(1).optional().describe("Provider type from the deployment's model-providers file (create) — the typeId list_providers shows on existing rows"),
@@ -92,6 +92,10 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
         withToolErrors(async ({ action, name, mine, type, credentials, base_url }) => {
             if (action === "clear_routing") {
                 return jsonResult(await ctx.mgmt.clearProviderRoutingDependencies(viewer, name));
+            }
+            if (action === "update_credential") {
+                if (!mine) return errorResult("update_credential is available only for your own personal provider", { name });
+                return jsonResult(await ctx.mgmt.updateMyProviderCredential(viewer, { name, credentials: credentials ?? null }));
             }
             if (action === "delete") {
                 return jsonResult(mine

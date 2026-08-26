@@ -232,3 +232,37 @@ test("native provider wizard masks and clears credential drafts before save and 
     controller.cancelAdminProviderCreate();
     assert.equal(JSON.stringify(store.getState()).includes("cancel-secret"), false);
 });
+
+test("native provider wizard updates a personal provider key without retaining the credential", async () => {
+    let releaseUpdate;
+    let submitted = null;
+    const transport = {
+        listProviders: async () => ({ providers: [] }),
+        listModels: async () => [],
+        getModelDefaults: async () => ({}),
+        updateMyProviderCredential: async (input) => {
+            submitted = input;
+            await new Promise((resolve) => { releaseUpdate = resolve; });
+            return { name: input.name };
+        },
+    };
+    const store = createStore(appReducer, loadedAdminState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "admin/visibility", visible: true });
+
+    const provider = selectAdminConsole(store.getState()).modelProviders.myProviders[0];
+    controller.beginAdminUpdateProviderCredential(provider);
+    assert.equal(selectAdminProviderCreateModal(store.getState()).title, "Update key for mine-a");
+    controller.setAdminProviderCreateDraft("replacement-token");
+
+    const saving = controller.saveAdminProviderCreate();
+    assert.deepEqual(submitted, {
+        name: "mine-a",
+        credentials: { githubToken: "replacement-token" },
+    });
+    assert.equal(store.getState().admin.modelProviders.create.draft, "");
+    assert.equal(JSON.stringify(store.getState()).includes("replacement-token"), false);
+    releaseUpdate();
+    await saving;
+    assert.equal(store.getState().admin.modelProviders.create.editing, false);
+});

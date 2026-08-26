@@ -307,6 +307,17 @@ const CAPABILITIES = [
         mcp: { tool: "manage_provider", args: { action: "clear_routing", name: "team", mine: false } },
         agent: { tool: "manage_provider", args: { action: "clear_routing", name: "team", mine: false }, calls: ["clearRoutingDependencies"] },
     },
+    {
+        n: 26,
+        op: "updateMyProviderCredential",
+        http: { method: "PUT", path: "/me/providers/:name/credential", access: "authed" },
+        mcp: { tool: "manage_provider", args: { action: "update_credential", name: "mine", mine: true, credentials: { apiKey: "new" } } },
+        agent: {
+            tool: "manage_provider",
+            args: { action: "update_credential", name: "mine", mine: true, credentials: { apiKey: "new" } },
+            calls: ["updatePersonalCredential"],
+        },
+    },
 ];
 
 const CAPABILITY_OPS = CAPABILITIES.map((cap) => cap.op);
@@ -380,6 +391,7 @@ function createRecordingProviderTools() {
         providerStatus: record("providerStatus", []),
         usageGrid: record("usageGrid", []),
         createProvider: record("createProvider", { name: "team" }),
+        updatePersonalCredential: record("updatePersonalCredential", { name: "mine" }),
         deleteProvider: record("deleteProvider", 0),
         setLimit: record("setLimit", { ruleId: 1, seededTokens: 0 }),
         removeLimit: record("removeLimit", true),
@@ -411,7 +423,7 @@ function createRecordingProviderTools() {
 // ─── The three surfaces ─────────────────────────────────────────
 
 test("every capability is an operation on the HTTP table", () => {
-    assert.equal(CAPABILITIES.length, 25, "the contract lists twenty-five capabilities");
+    assert.equal(CAPABILITIES.length, 26, "the contract lists twenty-six capabilities");
 
     for (const cap of CAPABILITIES) {
         const op = OPERATIONS.find((row) => row.name === cap.op);
