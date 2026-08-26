@@ -105,3 +105,42 @@ test("the SDK stamps the kickoff so the UI has something to recognise", () => {
     assert.match(block, /sender:\s*\{\s*kind:\s*"system"/, "the kickoff send must carry a system sender");
     assert.match(block, /bootstrap:\s*true/, "and must still be a bootstrap prompt");
 });
+
+// ── the system prompt gets a row, folded ────────────────────────────────────
+
+test("the system prompt earns a collapsed row; other system chatter does not", async () => {
+    const { isSystemPromptNotice } = await import("../src/history.js");
+
+    // What the SDK actually writes (session-proxy.ts summarises the prompt
+    // rather than putting 170k chars in CMS).
+    const systemPrompt = {
+        eventType: "system.message",
+        data: {
+            role: "system",
+            content: "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. "
+                + "Full content omitted from CMS (170900 chars). Snippet: You are the GitHub Copilot CLI...]",
+        },
+    };
+    assert.equal(isSystemPromptNotice(systemPrompt), true);
+
+    // Everything else in that stream stays where it was. Widening the match
+    // would drag all of this into the conversation.
+    const noise = [
+        "[SYSTEM: created top-level session abc running \"r2d-poller\".]",
+        "The session was dehydrated and has been rehydrated on a new worker.",
+        "[CHILD_UPDATE] child finished",
+        "Sub-agent spawned successfully.",
+        "[SESSION_MESSAGE from other-session]",
+    ];
+    for (const content of noise) {
+        assert.equal(
+            isSystemPromptNotice({ eventType: "system.message", data: { content } }),
+            false,
+            `must not treat this as the system prompt: ${content.slice(0, 40)}`,
+        );
+    }
+
+    // Only system.message events qualify at all.
+    assert.equal(isSystemPromptNotice({ eventType: "user.message", data: { content: "rebuilt the full system prompt for model input" } }), false);
+    assert.equal(isSystemPromptNotice(null), false);
+});

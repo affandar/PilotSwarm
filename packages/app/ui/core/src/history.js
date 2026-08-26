@@ -542,6 +542,27 @@ function buildChatMessage(event, role) {
     };
 }
 
+// The per-turn system prompt, as the SDK summarises it for CMS: a marker line
+// naming the size with a 120-char snippet, never the whole 170k-char prompt.
+// Matched narrowly on purpose — it is the ONE system.message worth a row in
+// the conversation, and widening this would move rehydration notices, child
+// updates and sub-agent chatter in with it.
+const SYSTEM_PROMPT_NOTICE_RE = /rebuilt the full system prompt for model input/i;
+
+/**
+ * Is this the system prompt itself, rather than internal chatter?
+ *
+ * It stays in the ACTIVITY feed as before — that is the raw diagnostic
+ * stream — and additionally earns one collapsed row in the transcript, the
+ * same affordance as a sub-agent response or a canvas action. Visible enough
+ * to open when you want to know what the model was told; folded away the rest
+ * of the time.
+ */
+export function isSystemPromptNotice(event) {
+    if (event?.eventType !== "system.message") return false;
+    return SYSTEM_PROMPT_NOTICE_RE.test(messageTextFromEvent(event) || "");
+}
+
 function shouldRenderSystemMessageAsActivity(event) {
     // Most system.message events stay out of the chat pane. They include the
     // per-turn system prompt sent to the LLM plus internal rehydration notices,
@@ -1120,6 +1141,13 @@ export function buildHistoryModel(events = [], options = {}) {
             if (shouldRenderSystemMessageAsActivity(event)) {
                 const activityItem = formatActivity(event);
                 if (activityItem) activity.push(activityItem);
+                // The system prompt also earns a collapsed row in the
+                // transcript. It stays in the activity feed above — that is
+                // the raw stream — and this is the readable handle on it.
+                if (isSystemPromptNotice(event)) {
+                    const message = buildChatMessage(event, "system");
+                    if (message) chat.push(message);
+                }
             } else {
                 const message = buildChatMessage(event, "system");
                 if (message) chat.push(message);
@@ -1246,6 +1274,15 @@ export function appendEventToHistory(history, event) {
             if (activityItem) {
                 next.activity.push(activityItem);
                 next.activity = clampHistoryItems(next.activity, loadedEventLimit);
+            }
+            // Same as the bulk path: the system prompt is also worth one
+            // collapsed row in the conversation.
+            if (isSystemPromptNotice(event)) {
+                const message = buildChatMessage(event, "system");
+                if (message) {
+                    next.chat.push(message);
+                    next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
+                }
             }
         } else {
             const message = buildChatMessage(event, "system");

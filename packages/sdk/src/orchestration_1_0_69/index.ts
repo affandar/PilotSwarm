@@ -1,5 +1,14 @@
 /**
- * Durable session orchestration v1.0.70.
+ * Durable session orchestration v1.0.69 — FROZEN.
+ *
+ * Frozen at the release state. 1.0.70 changes what the provider-budget
+ * stash writes: a prompt the gate refuses is recorded as a durable
+ * user.message so it is not lost, and 1.0.69 recorded EVERY refused
+ * prompt that way — including an agent's own bootstrap kickoff, with no
+ * sender on it. A sender-less user message renders from the reader's
+ * perspective, so a session blocked at creation opened with the agent's
+ * instructions under the reader's own name. Replay-only maintenance from
+ * here; live development continues in ../orchestration/.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -23,7 +32,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_70(
+export function* durableSessionOrchestration_1_0_69(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

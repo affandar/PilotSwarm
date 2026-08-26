@@ -570,7 +570,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds);
 }
 
 // ─── Stop-turn race support ─────────────────────────────────
@@ -916,7 +916,6 @@ function* stashBudgetRefusedPrompt(
     runtime: DurableSessionRuntime,
     sourcePrompt: string,
     clientMessageIds?: string[],
-    isBootstrap?: boolean,
 ): Generator<any, void, any> {
     const { state } = runtime;
     const prompt = typeof sourcePrompt === "string" ? sourcePrompt.trim() : "";
@@ -945,17 +944,6 @@ function* stashBudgetRefusedPrompt(
     // The durable record, with the ids the outbox acks by — this is what
     // turns the optimistic ✓ into a true one and shows the message in the
     // transcript while the session is still paused.
-    //
-    // 1.0.70: say WHO wrote it. This event is the one place a bootstrap
-    // prompt can reach a transcript — runTurn refuses to record one (see the
-    // `!input.bootstrap` guard) — and 1.0.69 wrote it bare. A user-role
-    // message with no sender renders from the READER's perspective, so a
-    // session the gate blocked at creation opened with the agent's own
-    // kickoff instructions under the reader's name.
-    //
-    // Stamped rather than skipped: the message stays visible (the portal
-    // folds a system-sender one into a collapsed row), and the reader can
-    // still see what the session was told to do while it sits paused.
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "user.message",
         data: {
@@ -964,7 +952,6 @@ function* stashBudgetRefusedPrompt(
             // Marked, so a reader of the raw events can tell a message that
             // ran from one waiting for the budget to clear.
             budgetQueued: true,
-            ...(isBootstrap ? { sender: { kind: "system", display: "agent kickoff" } } : {}),
         },
     }]);
     stash.push({ prompt, ...(ids.length > 0 ? { clientMessageIds: ids } : {}) });
@@ -1004,10 +991,6 @@ export function* handleTurnResult(
     sourcePrompt: string,
     cycleOrigin?: "cron" | "cron_at",
     clientMessageIds?: string[],
-    // Whether the prompt was an agent's own bootstrap rather than anyone's
-    // words. Only the budget stash below needs it, and only to attribute the
-    // durable record it writes.
-    isBootstrap?: boolean,
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
@@ -1123,7 +1106,7 @@ export function* handleTurnResult(
             // So: record it durably NOW (the ✓ becomes true), stash it, and
             // let it ride into every retry until a turn actually runs.
             if (budgetRefusal) {
-                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap);
+                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds);
             }
 
             if (options.parentSessionId) {
