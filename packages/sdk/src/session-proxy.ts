@@ -1902,7 +1902,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const bootstrap = typeof args.prompt === "string" && args.prompt.trim()
                         ? args.prompt.trim()
                         : (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
-                    await created.send(bootstrap, { bootstrap: true });
+                    // Stamp who actually wrote this. It goes onto the queue as a
+                    // user-role prompt, and an unstamped user-role message is
+                    // rendered from the READER's perspective — so the new
+                    // session's transcript opened with the agent's own
+                    // instructions under "You:", which no person had typed.
+                    // `kind: "agent"` when a manager supplied the opening line,
+                    // `kind: "system"` when it is the agent definition's own.
+                    const bootstrapFromManager = typeof args.prompt === "string" && args.prompt.trim().length > 0;
+                    await created.send(bootstrap, {
+                        bootstrap: true,
+                        sender: bootstrapFromManager
+                            ? { kind: "agent", sessionId: input.sessionId, display: `${runConfig.agentIdentity || "agent"} · opening message` }
+                            : { kind: "system", display: `${agentName} kickoff` },
+                    });
 
                     return `[SYSTEM: created top-level session ${newSessionId} running "${agentName}"`
                         + `${args.test_of ? ` (testOf: ${args.test_of})` : ""}. `
@@ -2137,7 +2150,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         }
                     }
 
-                    await childSession.send(agentTask, { bootstrap: true });
+                    // Stamped: a spawned child's opening task is written by
+                    // THIS agent, not by whoever later reads the child's
+                    // transcript. Unstamped it renders as their own "You:".
+                    await childSession.send(agentTask, {
+                        bootstrap: true,
+                        sender: { kind: "agent", sessionId: input.sessionId, display: `${runConfig.agentIdentity || "agent"} · task` },
+                    });
 
                     if (catalog) {
                         await cmsRetryBestEffort(
@@ -4325,7 +4344,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // This prompt is orchestration-generated bootstrap state for the child
             // session, not an actual user-authored message inside that child chat.
             const sendAt = Date.now();
-            await session.send(input.task, { bootstrap: true });
+            await session.send(input.task, {
+                bootstrap: true,
+                // The comment above says it: this is orchestration-generated
+                // bootstrap state, not a user-authored message. Say so in the
+                // record, or the child's transcript opens under "You:".
+                sender: { kind: "agent", sessionId: input.parentSessionId, display: "parent agent · task" },
+            });
             trace(`session.send bootstrap done (${Date.now() - sendAt}ms)`);
 
             trace(`session created and task sent: ${childSessionId}`);
@@ -4920,7 +4945,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 }),
                 (msg) => activityCtx.traceInfo(msg),
             );
-            await session.send(seed, { bootstrap: true });
+            await session.send(seed, {
+                bootstrap: true,
+                sender: { kind: "system", display: "regen distiller seed" },
+            });
         } finally {
             await sdkClient.stop().catch(() => {});
         }

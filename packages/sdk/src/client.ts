@@ -272,7 +272,16 @@ export class PilotSwarmClient {
         });
 
         if (opts?.initialPrompt) {
-            await session.send(opts.initialPrompt, { bootstrap: true });
+            // Stamp the kickoff as a SYSTEM sender. It is the agent
+            // definition's own opening instruction, not something a person
+            // typed — but it goes onto the queue as a user-role prompt, and
+            // an unstamped user-role message renders from the viewer's
+            // perspective. That is why every packaged agent's instructions
+            // appeared in the transcript under "You:".
+            await session.send(opts.initialPrompt, {
+                bootstrap: true,
+                sender: { kind: "system", display: `${agentName} kickoff`, origin: "api" },
+            });
         }
 
         return session;

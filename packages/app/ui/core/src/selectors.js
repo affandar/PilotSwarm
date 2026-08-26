@@ -1812,6 +1812,21 @@ function prefixRuns(text, color = "gray", options = {}) {
 // (block) chat renderer can consume the same labeling rules without the
 // terminal run/prefix shape. Returns { time, glyph, glyphColor, roleLabel,
 // roleColor }.
+/**
+ * Is this the agent's own opening instruction rather than something a person
+ * sent? The kickoff goes onto the queue as a user-role prompt — that is how a
+ * turn starts — but it is stamped with a SYSTEM sender at the origin
+ * (client.ts, createAgentSession). Anything a person actually sends carries a
+ * `kind: "user"` sender stamped from the validated auth context.
+ *
+ * Sessions created before the stamp existed have no sender on that message, so
+ * their kickoff still reads as "You". Nothing can distinguish it after the
+ * fact; only new sessions are correct.
+ */
+export function isAgentKickoffMessage(message) {
+    return message?.role === "user" && message?.sender?.kind === "system";
+}
+
 function describeChatMessageHeader(message, options = {}) {
     const time = formatTimestamp(message?.createdAt || message?.time);
     // A user.message is labeled from the CURRENT VIEWER's perspective: "You"
@@ -1837,7 +1852,12 @@ function describeChatMessageHeader(message, options = {}) {
     );
     const ownerSuffix = senderIsOwner ? " (owner)" : "";
 
-    const roleLabel = isUser
+    const roleLabel = isAgentKickoffMessage(message)
+        // Belt and braces: the chat pane collapses a kickoff before it reaches
+        // here, but the TUI and any other renderer share this labeling, and
+        // "You" is the one label this message must never carry.
+        ? (sender?.display || "System")
+        : isUser
         ? ((fromOtherPerson ? (sender.display || sender.subject || "User") : "You") + ownerSuffix)
         : message?.role === "assistant"
             ? "Agent"
@@ -2438,6 +2458,22 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
                 return cardLines;
             }
         }
+    }
+
+    // An agent's opening instruction is plumbing, not conversation. It rides
+    // the queue as a user-role prompt (that is how a turn starts), so without
+    // this it rendered as a full chat message attributed to "You" — the
+    // reader's own transcript opening with a wall of instructions they never
+    // wrote. Collapsed to one line, openable, same affordance as a sub-agent
+    // response.
+    if (isAgentKickoffMessage(message)) {
+        return [buildSystemNoticeLine({
+            title: message?.sender?.display || "Agent kickoff",
+            summary: "opening instruction",
+            timestamp: formatTimestamp(message?.createdAt || message?.time),
+            body: message?.text || "",
+            color: "gray",
+        })];
     }
 
     if (message?.role !== "user" && message?.role !== "assistant") {
