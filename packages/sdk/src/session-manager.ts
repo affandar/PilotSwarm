@@ -1809,10 +1809,19 @@ export class SessionManager {
                 : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
         // `let`: delegated repo-defined MCP servers (git-hydration) are merged
         // into this map further down, so it must stay reassignable.
-        let effectiveMcpServers = {
+        let effectiveMcpServers: Record<string, any> = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
-            ...(boundAgentMcpServers ?? {}),
         };
+        const agentMcpOverrides = boundAgentMcpServers ?? {};
+        for (const agentServerName of Object.keys(agentMcpOverrides)) {
+            const agentServerLc = agentServerName.toLowerCase();
+            for (const baseServerName of Object.keys(effectiveMcpServers)) {
+                if (baseServerName !== agentServerName && baseServerName.toLowerCase() === agentServerLc) {
+                    delete effectiveMcpServers[baseServerName];
+                }
+            }
+            effectiveMcpServers[agentServerName] = agentMcpOverrides[agentServerName];
+        }
 
         // Delegated MCP access (repo-stored config + caller-delegated auth):
         // when the caller supplied a credential at createSession — persisted to
