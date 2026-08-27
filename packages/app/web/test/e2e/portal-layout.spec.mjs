@@ -74,9 +74,19 @@ test("all pane headers are the same height", async ({ page }) => {
     // action buttons rendered ~46px while one without rendered 34px, and
     // side-by-side panes started their bodies at different heights.
     await openPortal(page);
+    // Comparing side-by-side panes needs side-by-side panes. The default
+    // workspace is sessions and chat only since the desktop columns became two
+    // independent toggles, so open the diagnostics column — otherwise there is
+    // one header, nothing to diverge from, and the test passes vacuously (it
+    // did not: it asserted >1 and so failed loudly, which is the better bug).
+    const diagnostics = page.getByRole("button", { name: /Show diagnostics/i });
+    if (await diagnostics.count() > 0) {
+        await diagnostics.first().click();
+        await page.waitForTimeout(500);
+    }
     const heights = await page.$$eval(".ps-panel-header", (els) =>
         els.map((e) => Math.round(e.getBoundingClientRect().height)).filter((h) => h > 0));
-    expect(heights.length).toBeGreaterThan(1);
+    expect(heights.length, "expected at least two panes to compare").toBeGreaterThan(1);
     expect(new Set(heights).size, `header heights diverged: ${heights.join(", ")}`).toBe(1);
 });
 
@@ -101,7 +111,14 @@ test("the page never scrolls horizontally", async ({ page }) => {
 
 test("full-screen canvas moves the normal toolbar actions to the left rail", async ({ page }) => {
     await openPortal(page);
-    await page.getByRole("button", { name: "Show canvas" }).click();
+    // The canvas may already be up — the toggle reads "Hide the canvas" then,
+    // and waiting for "Show canvas" simply times out. Same shape the
+    // diagnostics test below already uses: open it only if it is closed.
+    const showCanvas = page.getByRole("button", { name: "Show canvas" });
+    if (await showCanvas.count() > 0) {
+        await showCanvas.first().click();
+        await page.waitForTimeout(300);
+    }
     await page.getByRole("button", { name: "Full screen canvas" }).click();
 
     await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(4);
@@ -154,7 +171,10 @@ test("vertical diagnostics grid lets either pane fully cover the column", async 
 // Every theme, because nobody clicks through twenty of them by hand — and
 // that is exactly where these regressions hide.
 // Current palettes only: light-high-contrast and friends were retired.
-const THEMES = ["github-dark", "github-light", "win95", "ms-dos", "workspace-dark", "workspace-dark-rich"];
+// "workspace-dark-rich" was retired along with the rich transcript renderer.
+// Asking the stub for a theme that no longer exists left every one of these
+// waiting 10s for a data-ps-theme that could never arrive.
+const THEMES = ["github-dark", "github-light", "win95", "ms-dos", "workspace-dark"];
 
 for (const theme of THEMES) {
     test(`[${theme}] themed controls actually receive the theme`, async ({ page }) => {

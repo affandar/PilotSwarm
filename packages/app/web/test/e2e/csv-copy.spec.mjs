@@ -26,6 +26,16 @@ async function openCsvPreview(page) {
     await page.goto(`${base}/?session=${SESSION_ID}`, { waitUntil: "networkidle" });
     await page.waitForSelector(".ps-panel", { timeout: 15_000 });
 
+    // The inspector lives in the diagnostics column, and since the desktop
+    // panes became two independent toggles the default workspace is sessions
+    // and chat only — both columns start closed. Open it before looking for
+    // its tabs, or the Files tab simply is not on the page.
+    const diagnostics = page.getByRole("button", { name: /Show diagnostics/i });
+    if (await diagnostics.count() > 0) {
+        await diagnostics.first().click();
+        await page.waitForTimeout(400);
+    }
+
     // The inspector tab row is icon-only; the accessible name is what is stable.
     await page.getByRole("button", { name: "Files" }).first().click();
     await page.getByText(CSV_ARTIFACT.filename, { exact: false }).first().click();

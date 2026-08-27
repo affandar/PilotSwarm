@@ -399,10 +399,24 @@ test("selecting opens the day chart, and the dashed line is the Day cell's own q
 
         const system = page.locator(".ps-budget-system-spend");
         await expect(system).toContainText("System spend");
-        await expect(system).toContainText("1.0M tokens");
-        await expect(system).toContainText("gpt-5.6-luna");
-        await expect(system).toContainText("760.0K · 5 turns");
-        await expect(system).toContainText("gpt-5.6-sol");
+        // The headline is a STAT TILE — the number in a <strong> above the word
+        // "tokens", not one string — so textContent reads "1.0Mtokens" and a
+        // "1.0M tokens" substring can never match. Assert the two parts, which
+        // also pins that the number is the emphasised one rather than matching
+        // a digit sequence anywhere in the section.
+        const headline = system.locator(".ps-budget-system-stat").first();
+        await expect(headline.locator("strong")).toHaveText("1.0M");
+        await expect(headline).toContainText("tokens");
+        // The per-model breakdown is a TABLE now (Model | Tokens | Share |
+        // Turns), not a "760.0K · 5 turns" sentence. Assert the row's cells, so
+        // this says which column each number is in rather than that the digits
+        // appear somewhere in the section.
+        const luna = system.locator(".ps-budget-system-models tbody tr", { hasText: "gpt-5.6-luna" }).first();
+        await expect(luna).toBeVisible();
+        await expect(luna.locator("td").nth(1)).toHaveText("760.0K");
+        await expect(luna.locator("td").nth(3)).toHaveText("5");
+        await expect(system.locator(".ps-budget-system-models tbody tr", { hasText: "gpt-5.6-sol" }))
+            .toHaveCount(1);
     });
 });
 

@@ -12,15 +12,21 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
-// The rich transcript is a THEME now (Workspace Dark - Rich Text), not a
-// toolbar toggle, so these tests ask the stub to serve that theme; otherwise
-// the portal renders the terminal transcript and .ps-rich-chat never appears.
+// These used to target `.ps-rich-chat`, the rich renderer, served by asking the
+// stub for a "workspace-dark-rich" theme. Both are gone: the rich renderer was
+// retired and that theme no longer exists, so the selector matched nothing and
+// all three tests timed out rather than failing loudly.
+//
+// They now measure the surviving transcript, which is the one that ships. That
+// mattered: the content-visibility optimization had been lost along with the
+// old renderer, and re-layout was back at 6-8ms — the exact cost this file was
+// written to prevent — with nothing red to say so.
 
 let stub;
 let base;
 
 test.beforeAll(async () => {
-    stub = await startStubServer(0, { sessionCount: 6, transcriptTurns: 600, themeId: "workspace-dark-rich" });
+    stub = await startStubServer(0, { sessionCount: 6, transcriptTurns: 600 });
     base = `http://127.0.0.1:${stub.port}`;
 });
 
@@ -30,14 +36,14 @@ test.afterAll(async () => {
 
 async function openTranscript(page) {
     await page.goto(`${base}/?session=11111110-2222-3333-4444-555555555550`, { waitUntil: "networkidle" });
-    await page.waitForSelector(".ps-rich-chat article", { timeout: 20_000 });
+    await page.waitForSelector(".ps-chat-panel .ps-line", { timeout: 20_000 });
     await page.waitForTimeout(1500);
 }
 
 test("transcript blocks opt out of offscreen layout", async ({ page }) => {
     await openTranscript(page);
     const applied = await page.evaluate(() => {
-        const el = document.querySelector(".ps-rich-chat > *");
+        const el = document.querySelector(".ps-chat-panel .ps-line");
         return el ? getComputedStyle(el).contentVisibility : null;
     });
     // A base rule winning a specificity contest here would silently restore the
@@ -48,7 +54,7 @@ test("transcript blocks opt out of offscreen layout", async ({ page }) => {
 test("re-laying out the chat pane stays cheap on a long transcript", async ({ page }) => {
     await openTranscript(page);
 
-    const blocks = await page.locator(".ps-rich-chat article").count();
+    const blocks = await page.locator(".ps-chat-panel .ps-line").count();
     expect(blocks, "expected a long transcript to measure against").toBeGreaterThan(100);
 
     const ms = await page.evaluate(() => {
@@ -64,9 +70,10 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         return Math.min(measure(), measure());
     });
 
-    // 6.2ms without content-visibility at this size, 0.6ms with. 3ms leaves
-    // room for CI noise while still failing if offscreen layout comes back.
-    expect(ms, `${ms.toFixed(1)}ms to re-lay-out ${blocks} blocks`).toBeLessThan(3);
+    // Measured on the surviving transcript at this size: 8.0ms without
+    // content-visibility, 2.3ms with. 4ms leaves room for CI noise while still
+    // failing if offscreen layout comes back.
+    expect(ms, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines`).toBeLessThan(4);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {
