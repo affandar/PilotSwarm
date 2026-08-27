@@ -3354,6 +3354,27 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Replace the credential on a SHARED provider. Admin-only.
+     *
+     * Exists so an expired cluster key can be rotated in place. Deleting and
+     * re-creating the name would drop the cluster-default flag, the allowance,
+     * any hold, the system-use routing and the usage history — everything the
+     * name carries.
+     */
+    async updateSharedProviderCredential(
+        viewer: ProviderViewer,
+        input: ProviderCredentialUpdateInput,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const updated = await store.updateSharedCredential(input.name, input.credentials, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "updateSharedProviderCredential", updated.name, {
+            class: "shared",
+            type: updated.typeId,
+        });
+        return updated;
+    }
+
+    /**
      * Remove a shared provider. Its sessions are not moved anywhere: they
      * wait on a name that no longer resolves, and the count says how many.
      */

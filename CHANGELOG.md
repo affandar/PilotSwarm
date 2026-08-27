@@ -1,5 +1,145 @@
 # Changelog
 
+## 0.5.47 — 2026-08-27
+
+Provider keys can be rotated in place — personal by their owner, shared by
+an admin — and the rotation stomps nothing but the key. The agent picker is
+a flat searchable list, the session detail box folds to one line, touch
+scrolling on the session list commits to one axis, an agent's own opening
+instructions stop appearing under the reader's name, and nine themes get
+readable selected rows back.
+
+### Added
+
+- **Update a provider key in place.** Admin Console → Model Providers offers
+  **Update Key** on every provider row you may rotate: your own personal
+  providers (native TUI: `Shift+U`), and — for an admin — shared providers.
+  Ops `updateMyProviderCredential` (`PUT /me/providers/:name/credential`,
+  authed) and `updateSharedProviderCredential`
+  (`PUT /management/providers/:name/credential`, fleet:admin);
+  `manage_provider({ action: "update_credential", mine })` on the MCP and
+  agent surfaces. Only the key changes: name, type, base URL, defaults,
+  allowance, holds, system-session routing and usage history all stay.
+  Migrations 0065 (personal), 0066 (keep a pinned `apiVersion` on rotation)
+  and 0067 (shared rotation; both paths now merge the stored credential
+  metadata rather than replacing it, and never carry the retired secret
+  forward). A shared name reads as absent to the personal op; a personal
+  name reads as absent to the shared op, even for an admin. A provider
+  seeded from the deployment's model-providers file holds a pointer to an
+  environment variable, not a key; rotating it is refused and the refusal
+  names the variable to rotate instead.
+
+- **A flat, searchable agent picker.** One row per agent instead of a tree of
+  package headings; the package rides along as trailing text. A search box
+  filters as you type (lexical, AND across terms, name-prefix first) and
+  three sorts: **Most used** (per person, kept in profile settings), **Name**,
+  **Package**. Other people's private packages no longer appear here — that
+  is the package manager's job.
+
+- **The session detail box folds.** It starts as one line — title, context %,
+  when it last moved, and whether it is stopped — and opens to the full field
+  grid on a click. The choice is a profile setting. A paused or waiting
+  session keeps its reason and the way through to unstop it visible while
+  folded.
+
+- **The system prompt earns a collapsed row** in the transcript, the same
+  affordance as a sub-agent response, rather than living only in the
+  activity feed.
+
+- **Download** button on an agent package's detail pane.
+
+### Changed
+
+- **Touch scrolling on the session list commits to one axis.** A drag scrolls
+  up/down or left/right, never both, and a 45° drag no longer sits in a dead
+  zone that moved nothing. Both axes are driven by the portal with its own
+  momentum; a fine-pointer touchscreen keeps native scrolling so drag-to-
+  reorder can have the finger.
+
+- **Orchestration 1.0.70.** 1.0.69 is frozen. The provider-budget stash now
+  stamps an agent's bootstrap kickoff as machine-authored instead of writing
+  it bare, and a bootstrap prompt never merges into a person's message —
+  both had let the reader's own name appear on words they never wrote, or
+  hidden words they did. A message the merge pops and cannot use goes back
+  to the head of the queue, not the tail: `[kickoff, "do X", "cancel X"]`
+  used to run the kickoff and leave `["cancel X", "do X"]`.
+
+- **An agent's opening instruction is attributed to the agent**, not to
+  "You". Every bootstrap send in the SDK now stamps a sender (system for the
+  definition's own kickoff, agent for a manager-supplied opening line); the
+  portal folds a kickoff into one openable row.
+
+- **"Admin console" is "Settings" for a plain user.** Same panel, but a
+  non-admin sees only their own providers, default and packages, and the
+  admin name promised more than it held.
+
+- The share dialog no longer claims a person's grant "wins over" general
+  access. A grant can only raise access above the general level.
+
+### Fixed
+
+- **Selected rows were unreadable in 9 of 20 themes.** The row label — and
+  then its version number and scope badge — took a fill colour as text, an
+  exact 1.00 contrast in cobalt2, doom, ms-dos, winamp, win95, duroxide,
+  rust and spongebob. Guarded by tests that measure real WCAG ratios across
+  every theme.
+
+- **Arrowing through the session list fetched once per keypress.** The canvas
+  snapshot effect keyed straight off the selection and re-armed the cost the
+  navigation debounce had removed: 36 requests for 30 moves, now 6.
+
+- The WAITING block in the detail box blinked in and out on every poll,
+  under a status that was deliberately holding still.
+
+- A failed provider change printed its error twice and left a banner behind
+  after Cancel.
+
+- Six pane settings (`canvasOpen`, `canvasZen`, `diagnosticsOpen` and three
+  pane splits) never triggered a profile save; the change survived only if
+  something else happened to change too.
+
+- The agent picker's "Most used" counts were erased by the next portal save.
+
+- Provider rows no longer crush the name under the controls beside it, or
+  push Delete off the edge, in a narrow pane.
+
+- Escape, Enter and the arrow keys work while the focus is in a modal's
+  search box. The picker's own hint said "Esc close", and Escape did
+  nothing; typing still types.
+
+- A short session list that cannot scroll hands the touch straight to the
+  page again; the axis lock had claimed the drag and the page stood still.
+
+- The folded detail box keeps its title and marks on one line at any width;
+  the marks ellipsize instead of wrapping under the title.
+
+- The e2e suite is green for the first time in a while (89 passed, no
+  skips); twelve tests were stale against a renderer, a theme and a default
+  layout that no longer exist. One of them was concealing the fetch-per-
+  keypress regression above.
+
+### Tests
+
+- The live HorizonDB embedder test for an oversized row (batch fails →
+  oversized row marked terminal → good row retried alone) now waits six
+  minutes instead of three. The service's embedder loops tick about once a
+  minute whatever `intervalSeconds` asks for, so the three steps land at
+  roughly 60s, 120s and 210s; the outcome asserted is unchanged, measured
+  three times during this release.
+
+### Notes
+
+- `content-visibility` on transcript lines was tried for a re-layout win
+  (8ms → 2ms per splitter frame) and **reverted**: it makes `scrollHeight`
+  an estimate, and the pane's scroll-to-bottom landed 251px short. A test
+  now guards that opening a session lands at the bottom.
+
+- `AUTHZ_ENFORCE_OWNERSHIP` still defaults to `false` and the deploy
+  template ships `false`. In that mode every ownership denial is computed,
+  audited as `would_deny`, and allowed through — including writes — while
+  the UI describes a boundary it is not enforcing. Deployed environments
+  set it `true`; a new one is open until someone does.
+
 ## 0.5.46 — 2026-08-25
 
 Shared agent packages gain editors, every signed-in user is findable in
@@ -9,13 +149,6 @@ gain a shared KV store that several people write at once, and skills become
 discoverable on demand instead of inlined into every session.
 
 ### Added
-
-- **Update personal provider keys in place.** Admin Console → My Providers now
-  offers **Update Key** (native TUI: `Shift+U`) for an existing personal
-  provider. The owner-only `updateMyProviderCredential` management/Web API and
-  `manage_provider({ action: "update_credential" })` tool replace only the
-  write-only credential, preserving provider identity, defaults, routing, and
-  usage history (CMS migration 0065).
 
 - **Package editors.** The owner of a SHARED agent package (or an admin)
   can grant named users write access: publish new versions, republish into

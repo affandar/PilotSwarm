@@ -579,7 +579,7 @@ function buildSessionOwnerFilterItems(state) {
             id: "all",
             kind: "all",
             label: "All",
-            description: "Show every session, including system and unowned sessions.",
+            description: "Every session you can see — your own, ones shared with you, and system sessions.",
         },
         {
             id: "system",
@@ -3317,14 +3317,26 @@ export class PilotSwarmUiController {
         }));
     }
 
-    async updateAdminProviderCredential({ name, credentials } = {}) {
-        if (typeof this.transport.updateMyProviderCredential !== "function") {
-            const error = "Provider credential updates are not available on this transport.";
+    /**
+     * Rotate a provider's key in place.
+     *
+     * Two ops, one per scope, the same split deleteAdminProvider uses: a
+     * personal provider answers to its owner, a shared one to an admin. Both
+     * change ONLY the key — the name, type, base URL, defaults, system-session
+     * routing and usage history all stay, which is the whole reason this
+     * exists rather than delete-and-recreate.
+     */
+    async updateAdminProviderCredential({ name, credentials, shared = false } = {}) {
+        const op = shared ? "updateSharedProviderCredential" : "updateMyProviderCredential";
+        if (typeof this.transport[op] !== "function") {
+            const error = shared
+                ? "Shared provider credential updates are not available on this transport."
+                : "Provider credential updates are not available on this transport.";
             this.dispatch({ type: "admin/modelProviders/mutationFailed", error });
             return { ok: false, result: null, error };
         }
         return this._runAdminModelProviderMutation("updateCredential", () =>
-            this.transport.updateMyProviderCredential({ name, credentials }));
+            this.transport[op]({ name, credentials }));
     }
 
     async deleteAdminProvider(name, { shared = false } = {}) {
@@ -7909,6 +7921,11 @@ export class PilotSwarmUiController {
             const usage = { ...(settings[AGENT_USAGE_SETTING] || {}) };
             usage[name] = (Number(usage[name]) || 0) + 1;
             settings[AGENT_USAGE_SETTING] = usage;
+            // Into state before the network: the portal's own profile save
+            // fires on the very activeSessionId change this create causes,
+            // and it writes the whole document from state. If state does not
+            // have the new count by then, that save erases it.
+            this.dispatch({ type: "ui/agentPickerUsage", usage });
             await this.transport.setCurrentUserProfileSettings({ settings });
         } catch {
             // Never let bookkeeping fail a session create.

@@ -153,7 +153,13 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
             return byKey.get("live/oversized")?.last_embed_error === 1001
                 && byKey.get("live/retry-good")?.has_vec === true
                 && byKey.get("live/retry-good")?.last_embed_error === null;
-        }, { label: "oversized row terminally fails while good row retries successfully", timeoutMs: 180_000 });
+        // Six minutes, not three. The service's embedder loops tick about
+        // once a minute whatever intervalSeconds asks for, and this outcome
+        // is three ticks deep: the batch fails (~60s), the oversized row is
+        // marked terminal on its single-row retry (~120s), and the good row
+        // is retried alone (~210s, measured three times on 2026-08-27).
+        // 180s timed out 30s short of an outcome that does arrive.
+        }, { label: "oversized row terminally fails while good row retries successfully", timeoutMs: 360_000 });
 
         const { rows: failedRows } = await pool.query(
             `SELECT key, last_embed_error
@@ -167,7 +173,7 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         const after = await store.embedderStatus();
         assert.equal(after.running, true, "both loops remain running after isolating failure");
         assert.ok(after.loops.every((loop) => loop.running), "batch and retry loops both still running");
-    }, 240_000);
+    }, 420_000);
 
     it("S3 (neg) semantic with no endpoint configured throws (fresh store)", async () => {
         const fresh = await makeStore({ tag: "noembed", embeddingDim: 4 });

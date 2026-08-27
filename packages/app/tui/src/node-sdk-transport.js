@@ -1569,6 +1569,11 @@ export class NodeSdkTransport {
         return this.mgmt.updateMyProviderCredential(await this._modelProviderViewer(), input || {});
     }
 
+    /** Rotate a SHARED provider's key. Admin-only, enforced in SQL. */
+    async updateSharedProviderCredential(input) {
+        return this.mgmt.updateSharedProviderCredential(await this._modelProviderViewer(), input || {});
+    }
+
     async deleteProvider(name) {
         return this.mgmt.deleteProvider(await this._modelProviderViewer(), name);
     }

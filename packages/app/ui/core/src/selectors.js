@@ -5266,7 +5266,7 @@ export function selectStatusBar(state) {
     }
     if (state.ui.modal?.type === "themePicker") {
         return {
-            left: "Select a shared portal/TUI theme",
+            left: "Select a theme",
             right: "up/down move · enter apply · esc close",
         };
     }
@@ -8618,7 +8618,7 @@ export function selectThemePickerModal(state, maxWidth = 80) {
             [{
                 text: previewingTheme
                     ? `Previewing now. Cancel reverts to ${originalTheme?.label || "the previous theme"}.`
-                    : "Currently active in this TUI session.",
+                    : "Currently active.",
                 color: previewingTheme ? "yellow" : "green",
             }],
             buildThemeSwatchRuns([

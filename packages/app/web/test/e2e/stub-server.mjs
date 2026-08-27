@@ -192,6 +192,8 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
     const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
     const placements = [];
+    // Rename calls, [{ sessionId, title }], for the same reason.
+    const renames = [];
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
@@ -248,6 +250,22 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 return;
             }
             const sessionMatch = /\/sessions\/([^/]+)$/.exec(pathname);
+            if (sessionMatch && req.method === "PATCH") {
+                // A rename. RECORDED, so a test can prove a single Enter in the
+                // rename box reaches the API exactly once — the box confirms
+                // on Enter itself, and the modal-key handler must not add a
+                // second confirm.
+                let raw = "";
+                req.on("data", (chunk) => { raw += chunk; });
+                req.on("end", () => {
+                    let parsed = {};
+                    try { parsed = JSON.parse(raw || "{}"); } catch { /* record the attempt anyway */ }
+                    renames.push({ sessionId: sessionMatch[1], title: parsed.title });
+                    res.writeHead(200, { "content-type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: { sessionId: sessionMatch[1], title: parsed.title } }));
+                });
+                return;
+            }
             if (sessionMatch) {
                 const found = SESSIONS.find((s) => s.sessionId === sessionMatch[1]) || SESSIONS[0];
                 res.writeHead(200, { "content-type": "application/json" });
@@ -299,6 +317,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 server,
                 port: server.address().port,
                 placements,
+                renames,
                 setGroups: (next) => { liveGroups = next; },
                 groupFetches: () => groupFetches,
             });

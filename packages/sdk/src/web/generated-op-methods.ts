@@ -155,6 +155,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "storeFact",
     "updateMyProviderCredential",
     "updateSessionGroup",
+    "updateSharedProviderCredential",
     "uploadAgentPackage",
     "uploadArtifact",
     "upsertGraphEdge",
@@ -1489,6 +1490,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Replace the credential on a shared provider without changing its name, defaults, routing, or usage history. [admin]
+     * @remarks `PUT /management/providers/:name/credential` — access: `fleet:admin`
+     */
+    updateSharedProviderCredential(params: {
+        name: string;
+        credentials?: any;
+    }): Promise<any>;
+
+    /**
      * Publish a package from inline files ([{path, contentBase64}], ≤ 2 MB total); validates, canonically packs, and registers as the caller.
      * @remarks `POST /agent-packages/upload` — access: `authed`
      */
@@ -1711,6 +1721,7 @@ export function createManagementOps(
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
+        updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),

@@ -273,6 +273,7 @@ describe("creating providers", () => {
 
         const before = await one(`SELECT secret_ref, created_at, updated_at FROM @provider_instances WHERE name = 'alice-azure'`);
         expect(before.secret_ref).toMatchObject({ apiVersion: "2026-01-01" });
+        await new Promise((r) => setTimeout(r, 5)); // same-millisecond guard, see the shared test
 
         await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
             ["alice-azure", JSON.stringify({ kind: "apiKey", value: "rotated" }), alice]);
@@ -297,6 +298,141 @@ describe("creating providers", () => {
 
         const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'alice-azure'`);
         expect(after.secret_ref).toEqual({ kind: "apiKey", value: "v2", apiVersion: "2030-09-09" });
+    });
+
+    it("an admin can rotate a SHARED provider's key, and nothing else moves", async () => {
+        // Shared providers had no rotation at all: an expired cluster key meant
+        // delete-and-recreate, which drops the cluster-default flag, the
+        // allowance, any hold, the system-use routing and the usage history.
+        const ada = await makeUser("ada");
+        await createShared("team-azure", { secret: { apiKey: "original", apiVersion: "2026-01-01" } });
+        const before = await one(`SELECT * FROM @provider_instances WHERE name = 'team-azure'`);
+        // updated_at is read back at millisecond precision; create and rotate
+        // can land in the same millisecond and the > below then fails on luck.
+        await new Promise((r) => setTimeout(r, 5));
+
+        const updated = await one(
+            `SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["team-azure", JSON.stringify({ kind: "apiKey", value: "rotated" }), ada, true]);
+        expect(updated).toMatchObject({ name: "team-azure", class: "shared" });
+
+        const after = await one(`SELECT * FROM @provider_instances WHERE name = 'team-azure'`);
+        // The key changed, the pinned apiVersion stayed, and the OLD secret is
+        // gone — asserted on the WHOLE blob. Checking value and apiVersion
+        // separately let a naive merge pass while `apiKey: "original"` sat
+        // beside the new value (the reviewer proved it with a stub function).
+        expect(after.secret_ref).toEqual({ kind: "apiKey", value: "rotated", apiVersion: "2026-01-01" });
+        // ...and NOTHING else on the row did.
+        expect({ ...after, secret_ref: undefined, updated_at: undefined })
+            .toEqual({ ...before, secret_ref: undefined, updated_at: undefined });
+        expect(new Date(after.updated_at).getTime()).toBeGreaterThan(new Date(before.updated_at).getTime());
+    });
+
+    it("a SHARED rotation retires the old secret under every name it could be stored as", async () => {
+        // Same guarantee as the personal path, asserted on the shared function
+        // itself — the personal tests cannot see a strip missing here.
+        const ada = await makeUser("ada");
+        await createShared("team-legacy", { secret: { key: "OLD-1", apiKey: "OLD-2", token: "OLD-3", githubToken: "OLD-4", note: "kept" } });
+
+        await one(`SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["team-legacy", JSON.stringify({ kind: "apiKey", value: "NEW" }), ada, true]);
+
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'team-legacy'`);
+        expect(after.secret_ref).toEqual({ kind: "apiKey", value: "NEW", note: "kept" });
+        expect(JSON.stringify(after.secret_ref)).not.toMatch(/OLD-/);
+    });
+
+    it("a provider seeded from the config file cannot be rotated here — its key is a pointer", async () => {
+        // ref/source is the deployment's env-var indirection, the one shape
+        // under which no key is copied into the database. Rotating it would
+        // replace the pointer with a literal and silently detach the provider
+        // from its variable.
+        const ada = await makeUser("ada");
+        await createShared("team-env", { secret: { kind: "apiKey", ref: "env:AZURE_KEY", source: "config-file", apiVersion: "2026-01-01" } });
+
+        const refused = await refusal(
+            `SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["team-env", JSON.stringify({ kind: "apiKey", value: "literal" }), ada, true]);
+        expect(refused).toMatch(/PROVIDER_FORBIDDEN/);
+        expect(refused).toMatch(/env:AZURE_KEY/);
+
+        // Untouched: still a pointer.
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'team-env'`);
+        expect(after.secret_ref).toEqual({ kind: "apiKey", ref: "env:AZURE_KEY", source: "config-file", apiVersion: "2026-01-01" });
+    });
+
+    it("a non-admin cannot rotate a shared key, and the personal op cannot reach one", async () => {
+        const alice = await makeUser("alice");
+        await createShared("team-azure");
+
+        const refused = await refusal(
+            `SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["team-azure", JSON.stringify({ kind: "apiKey", value: "stolen" }), alice, false]);
+        expect(refused).toMatch(/PROVIDER_FORBIDDEN/);
+
+        // And the personal op must not become a side door into a shared name.
+        const viaPersonal = await refusal(
+            `SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["team-azure", JSON.stringify({ kind: "apiKey", value: "stolen" }), alice]);
+        expect(viaPersonal).toMatch(/PROVIDER_NOT_FOUND/);
+    });
+
+    it("the shared op cannot reach a PERSONAL provider, even for an admin", async () => {
+        // A personal credential answers to its owner and to nobody else. An
+        // admin must get the same not-found as a stranger, so this cannot be
+        // used to discover that someone's provider exists.
+        const ada = await makeUser("ada");
+        const alice = await makeUser("alice");
+        await createPersonal("alice-ghcp", alice);
+
+        const refused = await refusal(
+            `SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["alice-ghcp", JSON.stringify({ kind: "githubToken", value: "peek" }), ada, true]);
+        expect(refused).toMatch(/PROVIDER_NOT_FOUND/);
+
+        const absent = await refusal(
+            `SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["no-such-name", JSON.stringify({ kind: "apiKey", value: "x" }), ada, true]);
+        expect(absent).toMatch(/PROVIDER_NOT_FOUND/);
+    });
+
+    it("0067 merges the blob on BOTH paths, so nothing beside the key is lost", async () => {
+        // 0066 carried apiVersion forward specifically; 0067 generalises it,
+        // because the shape of the bug was "a one-field form replaces a whole
+        // document" and apiVersion was just the field that happened to be
+        // there.
+        const alice = await makeUser("alice");
+        await sql(`SELECT * FROM @cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,false)`,
+            ["alice-azure", alice, JSON.stringify({ apiKey: "k", apiVersion: "2026-01-01", tenantHint: "contoso" })]);
+
+        await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-azure", JSON.stringify({ kind: "apiKey", value: "rotated" }), alice]);
+
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'alice-azure'`);
+        expect(after.secret_ref).toMatchObject({
+            value: "rotated",
+            apiVersion: "2026-01-01",
+            tenantHint: "contoso",   // an unrelated field, kept
+        });
+    });
+
+    it("a rotation retires the old secret under EVERY name it could have been stored as", async () => {
+        // normalizeCallerSecret accepts apiKey / githubToken / token / key / a
+        // bare string and normalises to {kind, value}. But a blob written
+        // before that existed, or seeded raw, can carry the secret under any
+        // of those names. Strip-then-merge must remove all of them, or a
+        // "rotated" key is still sitting in the row in plaintext — while
+        // metadata that is not a secret survives.
+        const alice = await makeUser("alice");
+        await sql(`SELECT * FROM @cms_provider_create($1,'azure','personal',$2,$3,NULL,$2,false)`,
+            ["alice-legacy", alice, JSON.stringify({ key: "OLD-1", apiKey: "OLD-2", token: "OLD-3", githubToken: "OLD-4", note: "kept" })]);
+
+        await one(`SELECT * FROM @cms_provider_update_personal_credential($1,$2,$3)`,
+            ["alice-legacy", JSON.stringify({ kind: "apiKey", value: "NEW" }), alice]);
+
+        const after = await one(`SELECT secret_ref FROM @provider_instances WHERE name = 'alice-legacy'`);
+        expect(after.secret_ref).toEqual({ kind: "apiKey", value: "NEW", note: "kept" });
+        expect(JSON.stringify(after.secret_ref)).not.toMatch(/OLD-/);
     });
 
     it("no apiVersion is invented for a provider that never had one", async () => {

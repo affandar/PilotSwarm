@@ -832,6 +832,13 @@ export function appReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        case "ui/agentPickerUsage": {
+            const usage = action.usage && typeof action.usage === "object" && !Array.isArray(action.usage)
+                ? action.usage
+                : {};
+            return { ...state, ui: { ...state.ui, agentPickerUsage: usage } };
+        }
+
         case "ui/sessionDetailCollapsed":
             if (Boolean(action.collapsed) === Boolean(state.ui.sessionDetailCollapsed)) return state;
             return { ...state, ui: { ...state.ui, sessionDetailCollapsed: Boolean(action.collapsed) } };
@@ -851,6 +858,9 @@ export function appReducer(state, action) {
                 && typeof settings.touchScale === "boolean";
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
+            const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
+                && settings.agentPickerUsage && typeof settings.agentPickerUsage === "object"
+                && !Array.isArray(settings.agentPickerUsage);
             const hasRightPaneMode = Object.prototype.hasOwnProperty.call(settings, "rightPaneMode")
                 && (settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes");
             // The two independent columns. A profile written by a build that
@@ -930,6 +940,9 @@ export function appReducer(state, action) {
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,
+                    agentPickerUsage: hasAgentPickerUsage
+                        ? settings.agentPickerUsage
+                        : selection.ui.agentPickerUsage,
                     rightPaneMode: hasRightPaneMode ? settings.rightPaneMode : selection.ui.rightPaneMode,
                     ...(nextDesktopPanes
                         ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true }

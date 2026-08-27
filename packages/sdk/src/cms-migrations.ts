@@ -345,6 +345,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "personal_credential_update_preserves_api_version",
             sql: migration_0066_personal_credential_update_preserves_api_version(schema),
         },
+        {
+            version: "0067",
+            name: "shared_provider_credential_update",
+            sql: migration_0067_shared_provider_credential_update(schema),
+        },
     ];
 }
 
@@ -13796,6 +13801,109 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
     END IF;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+`;
+}
+
+/**
+ * 0067: rotate a SHARED provider's key, and stop both update paths stomping
+ * anything but the key.
+ *
+ * Two things.
+ *
+ * 1. Shared providers had no way to rotate a credential at all — Update Key
+ *    was personal-only, so an expired cluster key meant delete-and-recreate,
+ *    which drops the CLUSTER DEFAULT flag, the allowance, any hold, the
+ *    system-use routing and the usage history. Exactly what the feature exists
+ *    to preserve. Admin-only, via the same cms_provider_assert_manage the
+ *    other shared mutations use: a personal name reads as absent even to an
+ *    admin, and a non-admin gets PROVIDER_FORBIDDEN on a shared one.
+ *
+ * 2. Both paths now MERGE rather than replace. 0066 special-cased apiVersion
+ *    because that was the field observed getting lost, but the shape of the
+ *    bug was general: the caller is a credential form, it sends one field, and
+ *    a whole-blob replace drops every other thing stored beside it — apiVersion
+ *    yesterday, whatever gets added tomorrow. `stored || incoming` keeps
+ *    everything and still lets a caller change any field by stating it.
+ *
+ * The row itself was never at risk on either path: the UPDATE only ever
+ * touched secret_ref, so base_url, class, owner, allowance, holds, defaults
+ * and system-use routing were always preserved. This is about the blob.
+ */
+function migration_0067_shared_provider_credential_update(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_update_personal_credential(
+    p_name TEXT, p_secret JSONB, p_actor BIGINT
+) RETURNS TABLE(name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT) AS $$
+BEGIN
+    IF p_actor IS NULL THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: sign in to update a provider of your own';
+    END IF;
+
+    RETURN QUERY
+    UPDATE ${s}.provider_instances pi
+       -- Merge, do not replace: metadata already stored survives unless the
+       -- caller states it. Supersedes 0066's apiVersion-only carry-forward.
+       --
+       -- But strip every credential-bearing key from the preserved side first.
+       -- A rotation must not leave the OLD secret sitting in the blob under
+       -- whatever name it was originally stored as. Merging naively kept
+       -- token/apiKey/githubToken from creation beside the new value, which is
+       -- a rotated key that did not actually retire.
+       SET secret_ref = (COALESCE(pi.secret_ref, '{}'::jsonb)
+                           - 'value' - 'kind' - 'token' - 'apiKey' - 'githubToken' - 'key' - 'ref' - 'source')
+                        || p_secret,
+           updated_at = now()
+     WHERE pi.name = p_name
+       AND pi.class = 'personal'
+       AND pi.owner_user_id = p_actor
+    RETURNING pi.name, pi.type_id, pi.class, pi.owner_user_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_update_shared_credential(
+    p_name TEXT, p_secret JSONB, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(name TEXT, type_id TEXT, class TEXT, owner_user_id BIGINT) AS $$
+DECLARE v_row ${s}.provider_instances;
+BEGIN
+    -- Reuses the shared manage gate, so the refusals match every other shared
+    -- mutation exactly: personal reads as NOT_FOUND even for an admin, and a
+    -- non-admin gets FORBIDDEN on a shared name.
+    v_row := ${s}.cms_provider_assert_manage(p_name, p_actor, p_is_admin);
+
+    IF v_row.class <> 'shared' THEN
+        RAISE EXCEPTION 'PROVIDER_NOT_FOUND: there is no provider named "%"', p_name;
+    END IF;
+
+    -- A provider seeded from the deployment's model-providers file holds a
+    -- POINTER to its secret (ref: env:AZURE_KEY, source: config-file), not the
+    -- secret. That is the one arrangement under which no key is ever copied
+    -- into the database, and rotating it here would silently replace the
+    -- pointer with a literal value: from then on rotating the environment
+    -- variable would do nothing for this provider. Refuse, and say where the
+    -- key actually lives.
+    IF v_row.secret_ref ->> 'source' = 'config-file' THEN
+        RAISE EXCEPTION 'PROVIDER_FORBIDDEN: "%" takes its key from the deployment configuration (%); rotate that variable instead',
+            p_name, COALESCE(v_row.secret_ref ->> 'ref', 'the model-providers file');
+    END IF;
+
+    RETURN QUERY
+    UPDATE ${s}.provider_instances pi
+       -- Same strip-then-merge as the personal path above: keep the metadata,
+       -- never carry the retired secret forward.
+       SET secret_ref = (COALESCE(pi.secret_ref, '{}'::jsonb)
+                           - 'value' - 'kind' - 'token' - 'apiKey' - 'githubToken' - 'key' - 'ref' - 'source')
+                        || p_secret,
+           updated_at = now()
+     WHERE pi.name = p_name
+       AND pi.class = 'shared'
+    RETURNING pi.name, pi.type_id, pi.class, pi.owner_user_id;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 `;

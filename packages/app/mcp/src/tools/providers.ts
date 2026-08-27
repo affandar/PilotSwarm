@@ -76,7 +76,8 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 "Create, update the credential on, or delete a provider.\n"
                 + "  create — needs a type and the credentials that type requires; the name is cluster-unique and "
                 + "cannot be changed afterwards\n"
-                + "  update_credential — replaces the key on your OWN personal provider (mine:true) and changes "
+                + "  update_credential — replaces the key on a provider (mine:true = your own; mine:false = a "
+                + "shared one, admins only) and changes "
                 + "nothing else: the name, type, base URL, defaults, system-session routing and usage history all "
                 + "stay. Use this to rotate an expired key rather than deleting and re-creating.\n"
                 + "  delete — sessions naming it are not moved anywhere: they wait until the name exists again, and "
@@ -97,8 +98,12 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
                 return jsonResult(await ctx.mgmt.clearProviderRoutingDependencies(viewer, name));
             }
             if (action === "update_credential") {
-                if (!mine) return errorResult("update_credential is available only for your own personal provider", { name });
-                return jsonResult(await ctx.mgmt.updateMyProviderCredential(viewer, { name, credentials: credentials ?? null }));
+                // Same mine:true/false split as delete just below: your own
+                // provider, or the cluster's. The shared one is admin-only and
+                // refused in SQL, not here.
+                return jsonResult(mine
+                    ? await ctx.mgmt.updateMyProviderCredential(viewer, { name, credentials: credentials ?? null })
+                    : await ctx.mgmt.updateSharedProviderCredential(viewer, { name, credentials: credentials ?? null }));
             }
             if (action === "delete") {
                 return jsonResult(mine

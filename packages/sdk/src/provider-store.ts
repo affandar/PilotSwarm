@@ -679,6 +679,27 @@ export class ProviderStore {
         return { name: r.name, typeId: r.type_id, class: r.class };
     }
 
+    /**
+     * Rotate a SHARED provider's key. Admin-only, enforced in SQL by the same
+     * manage gate every other shared mutation uses.
+     *
+     * Merges rather than replaces, like the personal path: the caller is a
+     * credential form and sends one field, so anything else stored in the blob
+     * (apiVersion, and whatever is added later) has to survive.
+     */
+    async updateSharedCredential(
+        name: string,
+        secretRef: Record<string, unknown> | null | undefined,
+        actor: number | null,
+        isAdmin: boolean,
+    ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_provider_update_shared_credential")}($1,$2,$3,$4)`,
+            [name, JSON.stringify(normalizeCallerSecret(secretRef)), actor, isAdmin]);
+        const r = rows[0] ?? {};
+        return { name: r.name, typeId: r.type_id, class: r.class };
+    }
+
     /** Returns how many sessions now name a provider that no longer exists. */
     async deleteProvider(name: string, actor: number | null, isAdmin: boolean): Promise<number> {
         const rows = await this.call(

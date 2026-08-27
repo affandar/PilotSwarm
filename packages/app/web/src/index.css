@@ -1290,27 +1290,25 @@ body.is-resizing-pane-y iframe {
   word-break: break-word;
 }
 
-/* Skip layout for transcript lines nobody can see.
+/* NOT content-visibility. It was tried here and reverted.
  *
- * The transcript is not virtualised — every loaded line is in the DOM — and a
- * pane resize changes the wrap width, so the browser re-lays-out all of them
- * on every frame of a splitter drag. That is what made dragging a long session
- * a slideshow.
+ * The win was real — 8.0ms to 2.3ms per re-layout on a 600-turn transcript —
+ * but the chat pane anchors to the bottom with pixel math over scrollHeight,
+ * and content-visibility makes scrollHeight an ESTIMATE for lines that have
+ * never rendered. Measured on that same fixture at 1440x900: scrollHeight
+ * 43,205 with the rule against 56,760 without, and the app's own
+ * scroll-to-bottom landed 251px short — permanently, because nothing
+ * re-triggers the correction once anchoring gives up. The last lines of a
+ * finished session were unreachable without a second gesture.
  *
- * This optimization existed once, on the rich renderer's message blocks. That
- * renderer was retired and the optimization went with it, leaving the
- * surviving transcript back at the un-optimized cost — invisible, because the
- * test guarding it still pointed at the deleted `.ps-rich-chat`.
+ * The scrollbar was also understating the transcript by ~24% and growing
+ * under the thumb as skipped lines rendered.
  *
- * Measured on a 600-turn transcript (1650 lines, 5.3k nodes): 8.0ms per
- * re-layout before, 2.3ms after. `auto` on contain-intrinsic-size remembers
- * each line's last rendered height, so wrapped lines do not make the
- * scrollbar jump when they scroll back into view.
+ * Anything reintroduced here has to survive `scrollHeight` being load-bearing:
+ * either make the anchoring element-relative (scrollIntoView on the last line)
+ * rather than pixel math, or virtualise properly. A CSS-only fix is not
+ * available while the pane measures itself this way.
  */
-.ps-chat-panel .ps-line {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 1.16rem;
-}
 
 .ps-panel.has-preserved-sticky .ps-panel-sticky .ps-line,
 .ps-scroll-panel.is-preserve .ps-line {
@@ -1772,10 +1770,14 @@ body.is-resizing-pane-y iframe {
 
 .ps-session-pane.ps-chat-focus-pane .ps-action-list.ps-session-list {
   overflow-x: auto;
-  /* ONE axis for the browser. Vertical keeps native momentum; horizontal is
-     driven by useAxisLockedPan only for a deliberate sideways swipe.
-     `pan-x pan-y` here offered both axes equally, and since no phone swipe is
-     perfectly vertical, scrolling down kept sliding the list sideways. */
+  /* A FALLBACK, not the mechanism. On a coarse pointer useAxisLockedPan owns
+     the whole gesture — both axes, its own momentum — and prevents native
+     scrolling from the first move, so this never engages there. It is what a
+     fine-pointer touchscreen gets (the hook stays off so drag-to-reorder can
+     have the finger), and what any device gets if the listeners fail to
+     attach: one native axis rather than an inert list. `pan-x pan-y` here
+     offered both axes equally, and since no phone swipe is perfectly
+     vertical, scrolling down kept sliding the list sideways. */
   touch-action: pan-y;
   /* Keep the horizontal scrollbar from overlaying the last row's meta, plus
      the scroll-past-end tail. Padding rather than a spacer element: it grows
@@ -2019,10 +2021,13 @@ body.is-resizing-pane-y iframe {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  /* In a narrow pane the marks would otherwise crush the title to one letter.
-     Wrapping costs a second line — still a tenth of the open box — and keeps
-     both halves readable. */
-  flex-wrap: wrap;
+  /* ONE line, always. This wrapped for a while so a narrow pane would not
+     crush the title to one letter, but a box that is one line for "now
+     (idle)" and two for "3 minutes ago (waiting on 12)" changes height per
+     selection — and the whole point of the folded box is that arrowing
+     through the list never shifts the rows under the cursor. Both halves
+     truncate instead: the title keeps a floor, the marks give way after it. */
+  flex-wrap: nowrap;
   width: 100%;
   padding: 5px 10px;
   border: 0;
@@ -2049,26 +2054,44 @@ body.is-resizing-pane-y iframe {
    rather than ellipsizing down to a single letter. */
 .ps-session-detail-summary-title {
   flex: 1 1 auto;
-  min-width: 10ch;
+  /* The marks are the reason the folded row is worth reading; the title is
+     repeated in the list row above. So the title gives way first, down to a
+     floor that still identifies it, and the marks are capped rather than
+     clipped to nothing. At the default pane width both used to truncate
+     ("PilotSwarm Sess… 22% 1h ag…"); now the marks read whole. */
+  min-width: 6ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* The marks sit at the end and never shrink: they are the reason the row is
-   worth reading at a glance, so the title gives up its width first. */
+/* The marks sit at the end. The title gives up width first (down to its
+   floor); past that the marks truncate too, rather than forcing a second
+   line. A mark that ellipsizes is still a mark; a row that grows is a jump. */
 .ps-session-detail-marks {
   margin-left: auto;
   display: flex;
   gap: 8px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 68%;
+  overflow: hidden;
 }
 
 .ps-session-detail-mark {
   color: var(--ps-muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  /* Each mark ellipsizes on its own rather than the group hard-clipping
+     mid-word ("3d ag"). The first mark is the context percentage — the one
+     number worth keeping whole — so it never gives way; the others do. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+
+.ps-session-detail-marks > .ps-session-detail-mark:first-child { flex: none; }
 
 .ps-session-detail-mark.is-warm { color: var(--ps-warning); }
 .ps-session-detail-mark.is-hot,
@@ -5678,6 +5701,30 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree__row.is-disabled .ps-admin-tree__name { color: var(--ps-muted); }
 .ps-admin-tree__name { overflow: hidden; text-overflow: ellipsis; }
 .ps-admin-tree__ver { margin-left: auto; color: var(--ps-muted); font-size: 11px; }
+
+/* On a SELECTED row the whole line sits on the selection fill, so every part
+   of it has to take the selection foreground — not just the label.
+   --ps-muted is chosen against the PANEL, and --ps-selection-background is a
+   fill; measured on the selection fill: version 1.13 in Cobalt2, 1.39 in
+   MS-DOS, and the shared badge an exact 1.00 in four themes, i.e. invisible.
+   That is the same bug that hid the label, one element to the right.
+
+   It bites hardest exactly where it matters: three installed packages share
+   the name `verify-rcakit` and are told apart ONLY by the version that
+   disappears when you select one. */
+.ps-admin-tree__row.is-selected .ps-admin-tree__ver,
+.ps-admin-tree__row.is-selected .ps-admin-tree__count,
+.ps-admin-tree__row.is-selected .ps-scope-badge,
+.ps-admin-ws__row.is-selected .ps-admin-ws__size,
+.ps-admin-ws__row.is-selected .ps-admin-ws__caret {
+  color: var(--ps-modal-selected-foreground);
+}
+
+/* The badge draws its own outline too, and a border in the fill colour is the
+   same disappearing act. */
+.ps-admin-tree__row.is-selected .ps-scope-badge {
+  border-color: color-mix(in srgb, var(--ps-modal-selected-foreground) 45%, transparent);
+}
 .ps-admin-tree__group {
     display: flex;
     gap: 8px;
@@ -8776,7 +8823,14 @@ textarea.ps-link-input {
    width (55px → 88px measured in the same pane), which is a worse trade for a
    list you scan. */
 .ps-admin-provider-row__identity > strong {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Not min-width: 0. With the actions refusing to shrink, zero is exactly
+     where this lands on a narrow pane — measured clientWidth 0 at 480px, so
+     both provider rows read "personal · Allow system sessions · Update key ·
+     [trash]" with nothing to say WHICH provider you are about to re-key or
+     delete. A title attribute does not save it: there is no element left to
+     hover, and no hover on a phone. */
+  min-width: 8ch;
 }
 
 .ps-admin-provider-row__identity strong { font-size: 0.98rem; }

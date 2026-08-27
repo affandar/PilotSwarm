@@ -364,6 +364,12 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // read, and most of it is looked up once per session, not per
             // glance. Expanding is one click and the choice persists.
             sessionDetailCollapsed: true,
+            // Per-person agent start counts, {agentName: n}. Drives the
+            // picker's default "Most used" sort. State-owned so every writer
+            // of the profile document sees the same value at the same moment;
+            // a preserved ref refreshed by a 5s poll lost the count to the
+            // very next save.
+            agentPickerUsage: {},
             modal: null,
             fullscreenPane: null,
             layout: {

@@ -82,14 +82,18 @@ test("every bootstrap send in the SDK stamps a sender", () => {
     // Four sites enqueue a bootstrap prompt, and each one starts a session
     // whose transcript somebody reads. An unstamped one renders as that
     // reader's own "You:" — the bug this fixes. Derived rather than listed so
-    // a fifth site cannot be added unstamped.
+    // a sixth site cannot be added unstamped.
     const proxy = readFileSync(
         fileURLToPath(new URL("../../../../sdk/src/session-proxy.ts", import.meta.url)),
         "utf8",
     );
     const unstamped = [];
     for (const source of [["client.ts", clientTs], ["session-proxy.ts", proxy]]) {
-        for (const m of source[1].matchAll(/\.send\(([^;]*?)\{[^;]*?bootstrap:\s*true[^;]*?\}/gs)) {
+        // `.send(` AND `._startTurn(`: the regen reseed path enqueues its
+        // bootstrap through _startTurn directly, and a regex that only knew
+        // .send( let that site ship unstamped while this test claimed to
+        // derive the full list. It did not — it derived the list of one shape.
+        for (const m of source[1].matchAll(/\.(?:send|_startTurn)\(([^;]*?)\{[^;]*?bootstrap:\s*true[^;]*?\}/gs)) {
             if (!/sender:/.test(m[0])) unstamped.push(`${source[0]}: ${m[0].slice(0, 70).replace(/\s+/g, " ")}`);
         }
     }

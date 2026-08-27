@@ -40,15 +40,33 @@ async function openTranscript(page) {
     await page.waitForTimeout(1500);
 }
 
-test("transcript blocks opt out of offscreen layout", async ({ page }) => {
+// This used to assert `content-visibility: auto` on transcript lines. That
+// optimization was tried, measured (8.0ms -> 2.3ms per re-layout), and then
+// REVERTED, because the chat pane anchors to the bottom with pixel math over
+// scrollHeight and content-visibility makes scrollHeight an estimate: measured
+// 43,205 against a true 56,760, and the app's own scroll-to-bottom landed 251px
+// short, permanently.
+//
+// So the assertion is inverted. The invariant that matters is not "is the
+// optimization on" but "can you actually reach the end of the transcript",
+// which is what the optimization broke and what nothing was guarding.
+test("opening a session lands at the BOTTOM of its transcript", async ({ page }) => {
     await openTranscript(page);
-    const applied = await page.evaluate(() => {
-        const el = document.querySelector(".ps-chat-panel .ps-line");
-        return el ? getComputedStyle(el).contentVisibility : null;
+    // Give the app's own anchoring, and the browser's scroll anchoring, time to
+    // settle — a short wait here reads a mid-flight position and passes.
+    await page.waitForTimeout(4000);
+
+    const { gap, lines } = await page.evaluate(() => {
+        const all = document.querySelectorAll(".ps-chat-panel .ps-line");
+        let p = all[0]?.parentElement;
+        while (p && p !== document.body && !(p.scrollHeight > p.clientHeight + 1)) p = p.parentElement;
+        return { gap: Math.round(p.scrollHeight - p.clientHeight - p.scrollTop), lines: all.length };
     });
-    // A base rule winning a specificity contest here would silently restore the
-    // old cost, which only a timing test would otherwise catch.
-    expect(applied, "chat blocks lost content-visibility").toBe("auto");
+
+    expect(lines, "expected a long transcript to measure against").toBeGreaterThan(100);
+    // 251px was the content-visibility regression; 0 is correct. A few px of
+    // slack for sub-pixel rounding, nothing like a line height.
+    expect(gap, `transcript settled ${gap}px short of the bottom over ${lines} lines`).toBeLessThan(8);
 });
 
 test("re-laying out the chat pane stays cheap on a long transcript", async ({ page }) => {
@@ -70,10 +88,15 @@ test("re-laying out the chat pane stays cheap on a long transcript", async ({ pa
         return Math.min(measure(), measure());
     });
 
-    // Measured on the surviving transcript at this size: 8.0ms without
-    // content-visibility, 2.3ms with. 4ms leaves room for CI noise while still
-    // failing if offscreen layout comes back.
-    expect(ms, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines`).toBeLessThan(4);
+    // HONEST NUMBER: 6-8ms at this size. The transcript is not virtualised and
+    // the content-visibility fix for it was reverted (see the test above), so
+    // this is the real cost today, not a target.
+    //
+    // The ceiling is therefore a REGRESSION CEILING, not a budget met with room
+    // to spare: it catches the cost going up by an order of magnitude — which
+    // is what an accidental re-layout of every block, or losing the block memo
+    // guarded below, would do. Tightening it needs a real fix first.
+    expect(ms, `${ms.toFixed(1)}ms to re-lay-out ${blocks} lines`).toBeLessThan(20);
 });
 
 test("dragging the pane splitter does not re-render the whole transcript", async ({ page }) => {

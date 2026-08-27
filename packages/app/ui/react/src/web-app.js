@@ -285,6 +285,28 @@ function normalizeProfileSettings(settings) {
     if (typeof candidate.sessionDetailCollapsed === "boolean") {
         normalized.sessionDetailCollapsed = candidate.sessionDetailCollapsed;
     }
+    // The agent picker's per-person usage counts, which drive its DEFAULT
+    // "Most used" sort. This whitelist drops anything unlisted, and the store
+    // REPLACES the settings document rather than merging — so leaving this out
+    // meant the controller wrote a count and the portal's next save erased it,
+    // within a second, every time. The sort had nothing to sort by and nobody
+    // saw an error.
+    //
+    // Kept as a plain {agentName: count} map, bounded so a long-lived profile
+    // cannot grow without limit: counts must be finite positive numbers, and
+    // only the busiest names survive.
+    if (candidate.agentPickerUsage && typeof candidate.agentPickerUsage === "object"
+        && !Array.isArray(candidate.agentPickerUsage)) {
+        const usage = {};
+        for (const [name, count] of Object.entries(candidate.agentPickerUsage)) {
+            const n = Number(count);
+            if (typeof name === "string" && name && Number.isFinite(n) && n > 0) {
+                usage[name] = Math.min(Math.round(n), 1e6);
+            }
+        }
+        const kept = Object.entries(usage).sort((a, b) => b[1] - a[1]).slice(0, 200);
+        if (kept.length > 0) normalized.agentPickerUsage = Object.fromEntries(kept);
+    }
     if (typeof candidate.touchScale === "boolean") {
         normalized.touchScale = candidate.touchScale;
     }
@@ -444,6 +466,16 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         ...(typeof preservedOtherTouchScale === "boolean"
             ? { [otherTouchScaleKey()]: preservedOtherTouchScale }
             : {}),
+        // State-owned (ui.agentPickerUsage), so the save effect, the poll's
+        // before/after comparisons and the defaults all build the SAME shape.
+        // A preserved ref here, refreshed only by the 5s poll, both lost the
+        // count to the next save and made the poll's comparison JSON differ
+        // from the save baseline forever — after which remote settings never
+        // applied again on that device.
+        ...(state.agentPickerUsage && typeof state.agentPickerUsage === "object"
+            && Object.keys(state.agentPickerUsage).length > 0
+            ? { agentPickerUsage: state.agentPickerUsage }
+            : {}),
     });
 }
 
@@ -552,6 +584,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // the person just made.
         ...(hasOwn(normalizedRemote, "sessionDetailCollapsed")
             ? { sessionDetailCollapsed: normalizedRemote.sessionDetailCollapsed }
+            : {}),
+        ...(hasOwn(normalizedRemote, "agentPickerUsage")
+            ? { agentPickerUsage: normalizedRemote.agentPickerUsage }
             : {}),
     });
 }
@@ -4590,10 +4625,17 @@ export function commitPanAxis(dx, dy) {
     return Math.abs(dx) > Math.abs(dy) * PAN_HORIZONTAL_RATIO ? "x" : "y";
 }
 
-function useAxisLockedPan(ref) {
+function useAxisLockedPan(ref, enabled = true) {
     React.useEffect(() => {
         const el = ref.current;
-        if (!el) return undefined;
+        // Coarse pointers only. On a touchscreen LAPTOP the pointer is fine,
+        // so drag-to-reorder is armed on the same rows — and because this hook
+        // prevents native scrolling, the browser never fires the pointercancel
+        // that would otherwise end that drag. Both would then own one finger:
+        // a ghost row appears, the list pans under it, and the drop resolves
+        // against a list that moved. Mirrors the gate reorder uses the other
+        // way round; a fine pointer scrolls natively under the pan-y CSS.
+        if (!el || !enabled) return undefined;
 
         let startX = 0;
         let startY = 0;
@@ -4601,8 +4643,9 @@ function useAxisLockedPan(ref) {
         let lastY = 0;
         let lastT = 0;
         let velocity = 0;   // px/ms along the committed axis, sign follows the finger
-        let axis = null;    // null = undecided, "x" | "y" = committed for this gesture
+        let axis = null;    // null = undecided, "x" | "y" = committed, "done" = not ours
         let flingFrame = null;
+        let swallowClick = false;
 
         const stopFling = () => {
             if (flingFrame !== null) {
@@ -4612,12 +4655,20 @@ function useAxisLockedPan(ref) {
         };
 
         const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+        const canScroll = (which) => (which === "x"
+            ? el.scrollWidth > el.clientWidth + 1
+            : el.scrollHeight > el.clientHeight + 1);
 
         const onTouchStart = (event) => {
+            // A tap that lands while the list is still gliding is "stop", not
+            // "open whatever is passing under my finger". Native momentum never
+            // opened a row on the arresting tap; ours must not either.
+            swallowClick = flingFrame !== null;
             stopFling();
-            // Two fingers is a pinch or a system gesture — leave it alone.
-            if (event.touches.length !== 1) { axis = "done"; return; }
-            const touch = event.touches[0];
+            // targetTouches, not touches: a thumb resting elsewhere on the page
+            // is not part of this gesture. Two fingers HERE is a pinch.
+            if (event.targetTouches.length !== 1) { axis = "done"; return; }
+            const touch = event.targetTouches[0];
             startX = lastX = touch.clientX;
             startY = lastY = touch.clientY;
             lastT = now();
@@ -4626,19 +4677,51 @@ function useAxisLockedPan(ref) {
         };
 
         const onTouchMove = (event) => {
-            if (axis === "done" || event.touches.length !== 1) return;
-            const touch = event.touches[0];
+            if (axis === "done" || event.targetTouches.length !== 1) return;
+            const touch = event.targetTouches[0];
             const dx = touch.clientX - startX;
             const dy = touch.clientY - startY;
 
             if (axis === null) {
+                // Decide BEFORE preventing. Preventing a touchmove prevents
+                // scrolling for every later move of that touch, so a hand-off
+                // after the commit cannot hand anything back — the browser has
+                // already been told no.
+                //
+                // Vertical is the browser's own axis here (touch-action:
+                // pan-y), and it has to be claimed from the FIRST move or not
+                // at all: the browser's slop is smaller than ours (5-8px
+                // against 10), so an un-prevented move past it starts a native
+                // pan-y scroll and marks the rest of the gesture
+                // non-cancelable — our preventDefault then no-ops while
+                // scrollTop -= step still runs, and vertical moved at double
+                // speed with two flings on release. So a list with vertical
+                // overflow is claimed now, inside the slop.
+                //
+                // A list WITHOUT vertical overflow leaves the early moves
+                // alone. The browser only ever takes the vertical under pan-y,
+                // so a sideways commit can still claim the gesture for the
+                // list's horizontal overflow (a short list of long titles),
+                // and a vertical commit hands the pane its scroll untouched.
+                const ownsVertical = canScroll("y");
+                if (!ownsVertical && !canScroll("x")) { axis = "done"; return; }
+                if (ownsVertical && event.cancelable) event.preventDefault();
                 axis = commitPanAxis(dx, dy);
                 if (axis === null) return;
+                // A list that cannot scroll on the committed axis is not ours
+                // to pan; and if the browser has already begun its own scroll
+                // (the event is no longer cancelable), the gesture is its.
+                if (!canScroll(axis) || !event.cancelable) { axis = "done"; return; }
                 // Measure from here, so the slop we ignored is not also applied.
                 lastX = touch.clientX;
                 lastY = touch.clientY;
                 lastT = now();
             }
+
+            // Ours: stop the browser doing it as well. A repeat of the
+            // first-move prevent for a list that owns vertical; the first
+            // prevent of the gesture for a sideways pan on a short list.
+            if (event.cancelable) event.preventDefault();
 
             const stepX = touch.clientX - lastX;
             const stepY = touch.clientY - lastY;
@@ -4658,8 +4741,6 @@ function useAxisLockedPan(ref) {
             lastX = touch.clientX;
             lastY = touch.clientY;
             lastT = t;
-            // We are the scroller now; stop the browser doing it as well.
-            if (event.cancelable) event.preventDefault();
         };
 
         const releaseFling = (committed) => {
@@ -4679,7 +4760,11 @@ function useAxisLockedPan(ref) {
             flingFrame = requestAnimationFrame(tick);
         };
 
-        const onTouchEnd = () => {
+        const onTouchEnd = (event) => {
+            // Lifting ONE finger of a pinch does not hand the survivor a pan:
+            // its start point belongs to a different gesture, and the commit
+            // would land on a large bogus delta. Stay out until all lift.
+            if (event.targetTouches.length > 0) { axis = "done"; return; }
             const committed = axis;
             axis = null;
             if (committed === "x" || committed === "y") releaseFling(committed);
@@ -4688,18 +4773,27 @@ function useAxisLockedPan(ref) {
 
         const onTouchCancel = () => { axis = null; velocity = 0; stopFling(); };
 
+        const onClickCapture = (event) => {
+            if (!swallowClick) return;
+            swallowClick = false;
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
         el.addEventListener("touchstart", onTouchStart, { passive: true });
         el.addEventListener("touchmove", onTouchMove, { passive: false });
         el.addEventListener("touchend", onTouchEnd, { passive: true });
         el.addEventListener("touchcancel", onTouchCancel, { passive: true });
+        el.addEventListener("click", onClickCapture, true);
         return () => {
             stopFling();
             el.removeEventListener("touchstart", onTouchStart);
             el.removeEventListener("touchmove", onTouchMove);
             el.removeEventListener("touchend", onTouchEnd);
             el.removeEventListener("touchcancel", onTouchCancel);
+            el.removeEventListener("click", onClickCapture, true);
         };
-    }, [ref]);
+    }, [ref, enabled]);
 }
 
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null }) {
@@ -4710,11 +4804,15 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
     // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
     const sessionListRef = React.useRef(null);
-    useAxisLockedPan(sessionListRef);
     // Selection reverts to plain taps wherever the primary input is a finger:
     // the mobile pane, and the chat-focus overlay's list on a phone. Matches
     // the `(pointer: fine)` guard on touch-action in the stylesheet.
-    const touchInput = isMobilePane || useCoarsePointer();
+    // Called unconditionally — `isMobilePane || useCoarsePointer()` skipped
+    // the hook whenever the left side was true, which is a hooks-order bug
+    // waiting for panelClassName to change under a mounted pane.
+    const coarsePointer = useCoarsePointer();
+    const touchInput = isMobilePane || coarsePointer;
+    useAxisLockedPan(sessionListRef, touchInput);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const detailCollapsed = useControllerSelector(
@@ -6121,7 +6219,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                                 : value === "shared_read" ? "everyone here can view"
                                     : "everyone here can view and send"))),
                 React.createElement("div", { className: "ps-share-section-label" }, "Special access"),
-                React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A person's grant wins over general access."),
+                React.createElement("div", { className: "ps-share-section-sub" }, "Give specific people more than the general level. A grant can only raise someone's access above it, never lower it — to restrict everyone, lower the general level."),
                 draftShares.length === 0
                     ? React.createElement("div", { className: "ps-share-empty" }, "No individual grants — everyone has the general access above.")
                     : draftShares.map((row) => React.createElement("div", { key: `${row.provider}/${row.subject}`, className: "ps-share-grant-row" },
@@ -8920,6 +9018,19 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         setHeaderSlot(!mobile ? document.getElementById("ps-header-toolbar-slot") : null);
     }, [mobile]);
     const adminVisible = useControllerSelector(controller, (state) => Boolean(state.admin?.visible));
+    // The same panel is Settings for a plain user — their own providers,
+    // default and packages — and the Admin Console for an admin, who also
+    // gets shared providers, workers and every user's packages. Calling it
+    // "Admin console" for someone who then finds nothing administrative in
+    // it reads as something missing or broken.
+    // Two sources, because they arrive at different times: the auth context
+    // carries the role from sign-in, before the console has ever opened; the
+    // admin profile carries it once it has. Reading only the profile left an
+    // admin's toolbar saying "Settings" until the first open.
+    const isAdminUser = useControllerSelector(controller, (state) => Boolean(
+        state.admin?.profile?.isAdmin || state.auth?.authorization?.role === "admin",
+    ));
+    const consoleName = isAdminUser ? "admin console" : "settings";
     const budgetOpen = useControllerSelector(controller, (state) => Boolean(state.ui?.budgetOpen));
     const canvasView = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const diagnosticsOpen = useControllerSelector(controller, (s) => s?.ui?.diagnosticsOpen === true);
@@ -9022,7 +9133,7 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         ...(mobile ? [] : [{
             key: "admin",
             icon: React.createElement(CogGlyph),
-            label: adminVisible ? "Close admin console" : "Admin console",
+            label: adminVisible ? `Close ${consoleName}` : (isAdminUser ? "Admin console" : "Settings"),
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
         }]),
@@ -11290,13 +11401,8 @@ function ModalLayer({ controller }) {
                     key: item?.id || `row:${rowIndex}`,
                     type: "button",
                     className: `ps-list-button ps-modal-list-button${itemIndex === modal.selectedIndex ? " is-selected" : ""}${usesHangingIndent ? " is-hanging" : ""}${item?.disabled ? " is-disabled" : ""}`,
-                    // A section header is a disclosure control: one click opens
-                    // or closes it. Selecting it and making the user hit the
-                    // footer button would be a two-step for something that
-                    // reads as a twisty.
                     onClick: () => {
                         controller.dispatch({ type: "ui/modalSelection", index: itemIndex });
-                        if (item?.kind === "section") controller.toggleAgentPickerSection(item.sectionKey);
                     },
                 },
                 React.createElement("div", { className: "ps-line ps-modal-list-line" },
@@ -11440,6 +11546,9 @@ function ModalLayer({ controller }) {
             React.createElement("input", {
                 type: "search",
                 className: "ps-agent-picker-search",
+                // The keyboard handler routes Escape/Enter/arrows from a
+                // marked search box to the modal; see useKeyboardShortcuts.
+                "data-modal-search": "true",
                 placeholder: "Search agents, packages, tools…",
                 value: modal.query || "",
                 autoFocus: true,
@@ -11498,6 +11607,7 @@ function ModalLayer({ controller }) {
                 ),
                 React.createElement("input", {
                     className: "ps-modal-input ps-modal-search",
+                    "data-modal-search": "true",
                     value: ownerFilterQuery,
                     placeholder: "Search people…",
                     autoFocus: true,
@@ -11863,6 +11973,48 @@ function useKeyboardShortcuts(controller, mobile) {
                 return;
             }
 
+            // An INPUT inside a list modal — the agent picker's search box, the
+            // filter dialog's people search — must still answer the keys that
+            // drive the modal. The block above is gated on !editable so that
+            // typing "j" filters instead of moving the selection, which is
+            // right; but it also swallowed Escape, Enter and the arrows, so
+            // with the box focused the dialog could not be closed, confirmed
+            // or navigated at all (its own hint said "Esc close" while Escape
+            // did nothing). Only those four keys, and only for a box marked
+            // as a modal's SEARCH field. Not every input in a modal: the
+            // rename and group-name boxes confirm on Enter themselves (a
+            // second confirm from here is a no-op only because the first
+            // closes the modal synchronously — not a contract worth leaning
+            // on), and in a text box the arrow keys mean the caret, not the
+            // list. A textarea keeps Enter for newlines.
+            // `editable` is a boolean, not the element — test the target.
+            if (modal && editable && target instanceof HTMLElement && target.dataset.modalSearch === "true") {
+                if (event.key === "Escape") {
+                    // An input with text clears itself first (its own handler
+                    // does that and stops propagation), so reaching here means
+                    // the box is empty and Escape means close.
+                    event.preventDefault();
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
+                    return;
+                }
+                if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    controller.handleCommand(UI_COMMANDS.MODAL_PREV).catch(() => {});
+                    return;
+                }
+                if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    controller.handleCommand(UI_COMMANDS.MODAL_NEXT).catch(() => {});
+                    return;
+                }
+                return;
+            }
+
             if (editable) {
                 return;
             }
@@ -12178,7 +12330,9 @@ function AdminConsolePanel({ controller, mobile = false }) {
         setProviderSheetBusy(true);
         setProviderSheetError(null);
         const outcome = providerSheet?.update
-            ? await controller.updateAdminProviderCredential({ name: input.name, credentials: input.credentials })
+            ? await controller.updateAdminProviderCredential({
+                name: input.name, credentials: input.credentials, shared: input.shared === true,
+            })
             : await controller.createAdminProvider(input);
         setProviderSheetBusy(false);
         if (!outcome?.ok) {
@@ -12191,14 +12345,14 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const principalLabel = formatAdminPrincipalLabel(view.principal);
 
     const header = React.createElement("header", { className: "ps-admin-console__header" },
-        React.createElement("h2", null, "Admin Console"),
+        React.createElement("h2", null, view.isAdmin ? "Admin Console" : "Settings"),
         React.createElement("span", { className: "ps-admin-console__who" }, principalLabel),
         React.createElement("button", {
             type: "button",
             className: "ps-mini-button is-icon",
             onClick: onClose,
-            title: "Close the admin console",
-            "aria-label": "Close the admin console",
+            title: view.isAdmin ? "Close the admin console" : "Close settings",
+            "aria-label": view.isAdmin ? "Close the admin console" : "Close settings",
         }, "\u2715"));
 
     const providerSection = React.createElement(AdminModelProvidersSection, {
@@ -12211,7 +12365,13 @@ function AdminConsolePanel({ controller, mobile = false }) {
         // greet the next one.
         onAddPersonal: () => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ shared: false, github: true }); },
         onAddShared: () => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ shared: true, github: false }); },
-        onUpdatePersonal: (provider) => { controller.dismissAdminModelProviderMutationError(); setProviderSheet({ update: provider }); },
+        // Carry the scope: a shared provider rotates through the admin-only op,
+        // a personal one through the owner's. Without this the sheet defaults
+        // to personal and a shared rotation would 404 on its own name.
+        onUpdatePersonal: (provider) => {
+            controller.dismissAdminModelProviderMutationError();
+            setProviderSheet({ update: provider, shared: provider.class === "shared" });
+        },
     });
 
     const tree = React.createElement(AdminSettingsTree, { controller, view });
@@ -13016,11 +13176,18 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
                     onChange: (event) => onSystemUse(provider.name, event.target.checked),
                 }),
                 "Allow system sessions") : null,
-            personal ? React.createElement("button", {
+            // Personal: the owner rotates their own key. Shared: an admin
+            // rotates the cluster's. A shared provider had no way to rotate at
+            // all, so an expired cluster key meant delete-and-recreate — which
+            // drops the cluster-default flag, the allowance, any hold, the
+            // system-use routing and the usage history, i.e. everything this
+            // feature exists to preserve.
+            (personal || isAdmin) ? React.createElement("button", {
                 type: "button",
                 className: "ps-mini-button",
-                // Three providers means three identical "Update Key" buttons
-                // to a screen reader. The trash below already names its row.
+                // Several providers means several identical "Update Key"
+                // buttons to a screen reader. The trash below already names
+                // its row.
                 "aria-label": `Update key for ${provider.name}`,
                 title: `Update key for ${provider.name}`,
                 disabled: busy,
@@ -13352,6 +13519,7 @@ export function PilotSwarmWebApp({ controller }) {
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
+        agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
         pinnedIds: rootState.sessions.pinnedIds,
         // Without this the profile-save effect reads undefined and a reorder
@@ -13531,6 +13699,16 @@ export function PilotSwarmWebApp({ controller }) {
             try {
                 const profile = await transport.getCurrentUserProfile();
                 if (!active) return;
+                // This is the same profile the Admin Console fetches, and it
+                // carries isAdmin in every auth mode — including the no-auth
+                // stub, where getAuthContext() reports nothing. Seed it into
+                // state once, so the toolbar can name itself (Settings vs
+                // Admin console) from the first poll instead of after the
+                // console has been opened. The console's own refresh still
+                // runs and replaces this with the fuller load.
+                if (profile && typeof profile.isAdmin === "boolean" && !controller.getState().admin?.profile) {
+                    controller.dispatch({ type: "admin/profile/loaded", profile });
+                }
                 // Recompute the fallback defaults from CURRENT state each poll:
                 // the principal is resolved by now (it was likely null at mount),
                 // so the "no persisted filter" fallback becomes the correct
@@ -13669,7 +13847,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.themeId, state.touchScale]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

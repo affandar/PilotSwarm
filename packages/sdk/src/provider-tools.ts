@@ -520,7 +520,13 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
                 return { name: args.name, ...(await store.clearRoutingDependencies(args.name, v.userId, v.isAdmin)) };
             }
             if (args.action === "update_credential") {
-                if (!args.mine) return { error: "manage_provider: update_credential is available only for your own personal provider." };
+                // mine:false is the SHARED provider, admin-only and enforced in
+                // SQL by the same manage gate the other shared mutations use —
+                // a non-admin gets PROVIDER_FORBIDDEN, and a personal name
+                // reads as absent even to an admin.
+                if (!args.mine) {
+                    return store.updateSharedCredential(args.name, args.credentials ?? null, v.userId, v.isAdmin);
+                }
                 // NOT AUDITED. The HTTP route writes an authz_audit row
                 // (management-client updateMyProviderCredential); this surface
                 // writes none, so a key rotated from inside a session leaves no

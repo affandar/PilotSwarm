@@ -55,6 +55,34 @@ function writeFifoBucket(ctx: any, index: number, items: any[]): void {
     }
 }
 
+/**
+ * Put an item back at the HEAD of the FIFO.
+ *
+ * decide() peeks by popping. When the popped item turns out not to be
+ * mergeable it has to go back — and appending it put it BEHIND everything
+ * still queued: a FIFO of [kickoff, "do X", "cancel X"] dispatched the
+ * kickoff and left ["cancel X", "do X"], so the next turn read the two in
+ * the wrong order. The item was just popped from the head of the first
+ * non-empty bucket, so the head of that bucket is exactly where it belongs.
+ * If it no longer fits there (it always should — the bucket only shrank),
+ * fall back to append rather than lose it.
+ */
+export function prependToFifo(runtime: DurableSessionRuntime, item: any): void {
+    const { ctx } = runtime;
+    let headIdx = 0;
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        if (readFifoBucket(ctx, i).length > 0) { headIdx = i; break; }
+    }
+    const bucket = readFifoBucket(ctx, headIdx);
+    bucket.unshift(item);
+    if (JSON.stringify(bucket).length <= MAX_BUCKET_BYTES) {
+        writeFifoBucket(ctx, headIdx, bucket);
+        return;
+    }
+    ctx.traceWarn?.(`[fifo] prepend did not fit bucket ${headIdx}; appending instead`);
+    appendToFifo(runtime, [item]);
+}
+
 export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): void {
     const { ctx } = runtime;
     let writeBucketIdx = 0;
@@ -692,7 +720,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     const peek = popFifoItem(runtime);
                     if (!peek) break;
                     if (peek.kind !== "prompt") {
-                        appendToFifo(runtime, [peek]);
+                        prependToFifo(runtime, peek);
                         break;
                     }
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
@@ -701,12 +729,33 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                         yield* recordCancelledMessageIds(runtime, peekIds, "decide-merge");
                         continue;
                     }
+                    // Never merge an agent's bootstrap kickoff with a person's
+                    // words. The merged prompt used to inherit `bootstrap` from
+                    // EITHER side, and bootstrap is what the record keys on: the
+                    // normal path refuses to record a bootstrap prompt as a
+                    // user.message at all, and the budget stash stamps one as
+                    // machine-authored and the portal folds it away. Both
+                    // outcomes hid the person's message. So a kickoff and a
+                    // person's prompt run as two turns; the person's is
+                    // recorded, attributed and visible as its own.
+                    //
+                    // Put back at the HEAD. An earlier version appended it,
+                    // reasoning that a bootstrap is only ever the first item of
+                    // a fresh session — true, and beside the point: with
+                    // [kickoff, B, C] queued, appending B left [C, B], and the
+                    // person's own two messages ran in the wrong order.
+                    if (Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
+                        prependToFifo(runtime, peek);
+                        break;
+                    }
                     const peekSender = noteMessageSender(runtime, peek.sender);
                     if (messageSenderKey(peekSender ?? null) !== messageSenderKey(turnSender ?? null)) {
                         mixedSenders = true;
                     }
                     mergedPrompt = `${mergedPrompt}\n\n${applySenderAttribution(runtime, peekSender, String(peek.prompt || ""))}`;
-                    mergedBootstrap = mergedBootstrap || (peek.bootstrap ?? false);
+                    // Same on both sides by construction now; kept as a plain
+                    // carry rather than an OR so the intent reads.
+                    mergedBootstrap = mergedBootstrap && (peek.bootstrap ?? false);
                     if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
                     for (const id of peekIds) mergedClientMessageIds.push(id);
                     // Merged messages pool their image attachments in arrival

@@ -4883,7 +4883,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 try {
                     await reseedClient.start();
                     await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
-                    await (reseedClient as any)._startTurn(distillerSessionId, seed, { bootstrap: true });
+                    // Stamped like the normal seed path below: a distiller
+                    // seed is machinery, and an unstamped user-role prompt is
+                    // rendered as the reader's own words.
+                    await (reseedClient as any)._startTurn(distillerSessionId, seed, {
+                        bootstrap: true,
+                        sender: { kind: "system", display: "regen distiller seed" },
+                    });
                 } finally {
                     await reseedClient.stop().catch(() => {});
                 }

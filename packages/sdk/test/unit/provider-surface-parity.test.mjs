@@ -318,6 +318,17 @@ const CAPABILITIES = [
             calls: ["updatePersonalCredential"],
         },
     },
+    {
+        n: 27,
+        op: "updateSharedProviderCredential",
+        http: { method: "PUT", path: "/management/providers/:name/credential", access: "fleet:admin" },
+        mcp: { tool: "manage_provider", args: { action: "update_credential", name: "team", mine: false, credentials: { apiKey: "new" } } },
+        agent: {
+            tool: "manage_provider",
+            args: { action: "update_credential", name: "team", mine: false, credentials: { apiKey: "new" } },
+            calls: ["updateSharedCredential"],
+        },
+    },
 ];
 
 const CAPABILITY_OPS = CAPABILITIES.map((cap) => cap.op);
@@ -392,6 +403,7 @@ function createRecordingProviderTools() {
         usageGrid: record("usageGrid", []),
         createProvider: record("createProvider", { name: "team" }),
         updatePersonalCredential: record("updatePersonalCredential", { name: "mine" }),
+        updateSharedCredential: record("updateSharedCredential", { name: "team" }),
         deleteProvider: record("deleteProvider", 0),
         setLimit: record("setLimit", { ruleId: 1, seededTokens: 0 }),
         removeLimit: record("removeLimit", true),
@@ -423,7 +435,7 @@ function createRecordingProviderTools() {
 // ─── The three surfaces ─────────────────────────────────────────
 
 test("every capability is an operation on the HTTP table", () => {
-    assert.equal(CAPABILITIES.length, 26, "the contract lists twenty-six capabilities");
+    assert.equal(CAPABILITIES.length, 27, "the contract lists twenty-seven capabilities");
 
     for (const cap of CAPABILITIES) {
         const op = OPERATIONS.find((row) => row.name === cap.op);

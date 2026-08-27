@@ -182,8 +182,19 @@ for (const theme of THEMES) {
         // :root[data-ps-theme=…] at (0,3,0), so the inspector tab row silently
         // kept its default styling while every other control was themed.
         await openPortal(page, { theme });
+        // The inspector tab row lives in the diagnostics column, which has
+        // defaulted CLOSED since the desktop columns became two independent
+        // toggles. Without opening it the selector matched nothing and every
+        // one of these skipped — five silent passes on the exact bug class
+        // this release fixed three instances of.
+        const diagnostics = page.getByRole("button", { name: /Show diagnostics/i });
+        if (await diagnostics.count() > 0) {
+            await diagnostics.first().click();
+            await page.waitForTimeout(400);
+        }
         const tab = await page.$(".ps-tab-row-icons .ps-toolbar-button");
-        test.skip(!tab, "no inspector tab row in this layout");
+        // A skip here is now a FAILURE: the row is expected to exist.
+        expect(tab, "no inspector tab row after opening diagnostics").not.toBeNull();
         // "Themed" means it paints SOMETHING: win95's selected tab is a
         // latched face drawn with a conic-gradient, and a gradient is a
         // background-image, so backgroundColor alone reads as transparent on a

@@ -956,6 +956,7 @@ export class PortalRuntime {
             case "createProvider":
             case "createMyProvider":
             case "updateMyProviderCredential":
+            case "updateSharedProviderCredential":
             case "deleteProvider":
             case "deleteMyProvider":
             case "clearProviderRoutingDependencies":
@@ -1311,6 +1312,11 @@ export class PortalRuntime {
                     });
                 case "updateMyProviderCredential":
                     return await mgmt.updateMyProviderCredential(viewer, {
+                        name: params.name,
+                        credentials: params.credentials,
+                    });
+                case "updateSharedProviderCredential":
+                    return await mgmt.updateSharedProviderCredential(viewer, {
                         name: params.name,
                         credentials: params.credentials,
                     });

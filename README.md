@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.46** — Shared agent packages gain editors, deployment-restricted MCP servers (`allowedAgents`) move into the platform, canvas apps gain a shared KV store several people write at once plus a catalog to publish them to, skills load on demand instead of being inlined into every session.
+> **Latest release: v0.5.47** — Provider keys rotate in place (personal by their owner, shared by an admin) without touching anything but the key; a flat, searchable agent picker; the session detail box folds to one line; one-axis touch scrolling on the session list; an agent's own opening instructions are no longer shown as "You"; readable selected rows in every theme.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
