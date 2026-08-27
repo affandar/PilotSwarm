@@ -365,6 +365,25 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
     );
 
     server.registerTool(
+        "get_provider_usage_summary",
+        {
+            title: "Get Cluster Usage Summary",
+            description:
+                "The cluster summary from the usage ledger: token totals for today, the last 7 and the last 30 UTC "
+                + "days (input, output, cache read, cache write, total, turns, sessions), a per-day series for a "
+                + "chart, and the per-MODEL pivot — one row per model name across every provider, reasoning effort "
+                + "and context tier. Admins see the whole cluster, system sessions included (the Providers meters "
+                + "count people's turns only; `classes` shows the split); everyone else sees their own turns.",
+            inputSchema: {
+                days: z.number().int().min(1).max(365).optional().describe("Days of history for the series and the model table (default 14; 14, 30 or 90 are the portal's choices)"),
+                providers: z.array(z.string()).optional().describe("Only these providers, by name; absent means all"),
+            },
+        },
+        withToolErrors(async ({ days, providers }) =>
+            jsonResult(await ctx.mgmt.getProviderUsageSummary(viewer, { days, providers }))),
+    );
+
+    server.registerTool(
         "get_provider_usage",
         {
             title: "Get Provider Usage",

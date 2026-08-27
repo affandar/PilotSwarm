@@ -110,41 +110,43 @@ test("the SDK stamps the kickoff so the UI has something to recognise", () => {
     assert.match(block, /bootstrap:\s*true/, "and must still be a bootstrap prompt");
 });
 
-// ── the system prompt gets a row, folded ────────────────────────────────────
+// ── the system prompt stays OUT of the chat pane ────────────────────────────
 
-test("the system prompt earns a collapsed row; other system chatter does not", async () => {
-    const { isSystemPromptNotice } = await import("../src/history.js");
+test("the per-turn system prompt notice is activity only, never a chat row", async () => {
+    const { buildHistoryModel, appendEventToHistory } = await import("../src/history.js");
 
-    // What the SDK actually writes (session-proxy.ts summarises the prompt
-    // rather than putting 170k chars in CMS).
-    const systemPrompt = {
+    // What the SDK actually writes, once per TURN (session-proxy.ts
+    // summarises the prompt rather than putting 170k chars in CMS). 0.5.47
+    // gave each one a collapsed chat row — a row per prompt, and opening it
+    // showed the 120-char snippet, not the prompt. The user does not want it
+    // in the conversation at all.
+    const systemPrompt = (seq) => ({
+        seq,
         eventType: "system.message",
+        timestamp: new Date(1_700_000_000_000 + seq * 1000).toISOString(),
         data: {
             role: "system",
             content: "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input. "
                 + "Full content omitted from CMS (170900 chars). Snippet: You are the GitHub Copilot CLI...]",
         },
-    };
-    assert.equal(isSystemPromptNotice(systemPrompt), true);
+    });
+    const user = (seq, content) => ({
+        seq, eventType: "user.message",
+        timestamp: new Date(1_700_000_000_000 + seq * 1000).toISOString(),
+        data: { role: "user", content },
+    });
+    const isPromptRow = (m) => /rebuilt the full system prompt/i.test(m?.text || "");
 
-    // Everything else in that stream stays where it was. Widening the match
-    // would drag all of this into the conversation.
-    const noise = [
-        "[SYSTEM: created top-level session abc running \"r2d-poller\".]",
-        "The session was dehydrated and has been rehydrated on a new worker.",
-        "[CHILD_UPDATE] child finished",
-        "Sub-agent spawned successfully.",
-        "[SESSION_MESSAGE from other-session]",
-    ];
-    for (const content of noise) {
-        assert.equal(
-            isSystemPromptNotice({ eventType: "system.message", data: { content } }),
-            false,
-            `must not treat this as the system prompt: ${content.slice(0, 40)}`,
-        );
-    }
+    // Bulk load: two turns, two echoes.
+    const bulk = buildHistoryModel([user(1, "ping"), systemPrompt(2), user(3, "ping again"), systemPrompt(4)]);
+    assert.equal(bulk.chat.filter(isPromptRow).length, 0, "no chat row for the prompt echo");
+    assert.equal(bulk.chat.filter((m) => m.role === "user").length, 2, "the person's messages still land");
+    assert.ok(
+        bulk.activity.some((item) => /rebuilt the full system prompt/i.test(JSON.stringify(item))),
+        "the echo still reaches the activity feed",
+    );
 
-    // Only system.message events qualify at all.
-    assert.equal(isSystemPromptNotice({ eventType: "user.message", data: { content: "rebuilt the full system prompt for model input" } }), false);
-    assert.equal(isSystemPromptNotice(null), false);
+    // Live append: same rule on the incremental path.
+    const appended = appendEventToHistory(bulk, systemPrompt(5));
+    assert.equal(appended.chat.filter(isPromptRow).length, 0, "no chat row on the live path either");
 });

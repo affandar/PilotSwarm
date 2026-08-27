@@ -157,6 +157,28 @@ test("Model Providers owns provider onboarding and all default routing controls"
             .toHaveText(["Future only", "Complete & restart", "Terminate & restart", "Hard delete & restart"]);
         await expect(page.getByRole("combobox", { name: "Model override for sweeper" }))
             .toHaveValue("copilot-shared:claude-sonnet-5");
+
+        // The SHARED row's button must actually open the sheet and rotate
+        // through the admin op. 0.5.47 rendered the button on shared rows
+        // but never passed the click handler to that instance of the rows,
+        // so the click threw "onUpdate is not a function" and nothing
+        // happened — the personal-row test above could not see it.
+        const sharedUpdate = page.getByRole("button", { name: "Update key for copilot-shared" });
+        await sharedUpdate.click();
+        await expect(page.locator(".ps-budget-sheet-title")).toHaveText("Update key for copilot-shared");
+        await page.locator('.ps-budget-sheet input[type="password"]').fill("rotated-shared-secret");
+        await page.locator('.ps-budget-sheet input[type="password"]').press("Enter");
+        await expect.poll(() => stub.calls.filter((call) => call.op === "updateSharedProviderCredential").length).toBe(1);
+        expect(stub.calls.find((call) => call.op === "updateSharedProviderCredential")).toMatchObject({
+            name: "copilot-shared",
+            method: "PUT",
+            // A GitHub Copilot provider's key is a token, so the sheet names
+            // it githubToken; the server normalises either.
+            body: { credentials: { githubToken: "rotated-shared-secret" } },
+        });
+        // And it did NOT go through the personal op.
+        expect(stub.calls.filter((call) => call.op === "updateMyProviderCredential" && call.name === "copilot-shared")).toHaveLength(0);
+        await expect(page.locator(".ps-budget-sheet")).toHaveCount(0);
     } finally {
         await stub.close();
     }

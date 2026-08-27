@@ -1011,10 +1011,13 @@ body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
    the adjacent panes by fractions of a pixel — with a 1px target, that wobble
    walked the pane boundary back and forth under a stationary pointer and the
    cursor flickered between resize and default. The z-index keeps the band
-   above the pane edges it overlaps. */
+   above the pane edges it overlaps. 3, not 2: the canvas layer is
+   position:absolute at z-index 2 in the same stacking context and came later
+   in the DOM, so it painted over the seam's canvas-side half of the band —
+   the hairline itself could only be grabbed from the chat side. */
 .ps-column-resizer,
 .ps-row-resizer {
-  z-index: 2;
+  z-index: 3;
 }
 
 .ps-column-resizer::after {
@@ -1710,7 +1713,13 @@ body.is-resizing-pane-y iframe {
 .ps-chat-table.is-fit-width.has-flex-column td,
 .ps-md-table.is-fit-width.has-flex-column th,
 .ps-md-table.is-fit-width.has-flex-column td {
-  overflow-wrap: normal;
+  /* Rigid columns wrap at spaces only — a budget sized to their longest
+     token (computeFitWidthColumnLayout) is what keeps a CamelCase test name
+     whole. `anywhere` is the LAST resort under a fixed layout: the `ch`
+     budget is an estimate against a proportional font, and a cell that
+     comes up a few pixels short must break the token rather than paint it
+     across the next column, which is what happened before. */
+  overflow-wrap: anywhere;
   word-break: normal;
 }
 
@@ -8766,6 +8775,18 @@ textarea.ps-link-input {
     font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
     font-weight: 700; color: var(--ps-muted);
   }
+  /* The split row's cells are cards too: the period label sits at the top
+     of the 2×2 mini-grid, and the grid reads left-to-right like the label,
+     not right-aligned as it is under a numeric column on the desktop. The
+     empty name cell would only be a blank block here. */
+  .ps-budget-grid-split td.ps-budget-grid-split-name { display: none; }
+  .ps-budget-grid-split td.ps-budget-grid-num::before { vertical-align: top; }
+  .ps-budget-grid-split .ps-budget-split {
+    text-align: left; vertical-align: top; justify-items: start;
+    /* First column at least "cache r 999.9K" wide, so the second column
+       starts at the same place under every period. */
+    grid-template-columns: minmax(15ch, auto) auto;
+  }
 
   .ps-budget-tl-x span { font-size: 8.5px; }
   .ps-budget-yaxis, .ps-budget-xaxis-spacer { width: 34px; }
@@ -8912,4 +8933,109 @@ textarea.ps-link-input {
   color: var(--ps-modal-selected-foreground);
   background: var(--ps-modal-selected-background);
   border-color: var(--ps-modal-selected-border);
+}
+
+/* ── Budget: tabs + the Cluster summary ──────────────────────────────────── */
+.ps-budget-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 16px 0;
+  border-bottom: 1px solid var(--ps-border);
+}
+.ps-budget-tab {
+  font: inherit;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+.ps-budget-tab.is-on {
+  color: var(--ps-foreground);
+  background: var(--ps-surface);
+  border-color: var(--ps-border);
+  position: relative;
+  top: 1px;
+}
+.ps-summary { display: grid; gap: 14px; padding: 14px 16px 18px; }
+.ps-summary.is-loading { opacity: 0.75; }
+.ps-summary__filters { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ps-summary__scope { color: var(--ps-muted); font-size: 12px; margin-left: auto; }
+.ps-summary__muted { color: var(--ps-muted); font-size: 12px; }
+.ps-summary__tag { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ps-muted); border: 1px solid var(--ps-border); border-radius: 999px; padding: 1px 7px; margin-left: auto; }
+.ps-summary__kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ps-summary-kpi { background: var(--ps-surface); border: 1px solid var(--ps-border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.ps-summary-kpi__label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ps-muted); }
+.ps-summary-kpi__value { font-size: 22px; font-weight: 600; margin: 2px 0; font-variant-numeric: tabular-nums; }
+.ps-summary-kpi__split { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--ps-muted); }
+.ps-summary-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: 0; }
+.ps-summary-dot.is-in, .ps-summary-chart__bar .is-in { background: var(--ps-accent); fill: var(--ps-accent); }
+.ps-summary-dot.is-out, .ps-summary-chart__bar .is-out { background: var(--ps-warning); fill: var(--ps-warning); }
+.ps-summary-dot.is-cache, .ps-summary-chart__bar .is-cache { background: var(--ps-muted); fill: var(--ps-muted); }
+.ps-summary-dot.is-cache-w, .ps-summary-chart__bar .is-cache-w { background: var(--ps-success); fill: var(--ps-success); }
+.ps-summary__card { background: var(--ps-surface); border: 1px solid var(--ps-border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.ps-summary__card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.ps-summary__card-head b { font-weight: 600; }
+.ps-summary__legend { display: flex; gap: 12px; color: var(--ps-muted); font-size: 11px; }
+.ps-summary-chart { width: 100%; height: auto; display: block; }
+.ps-summary-chart__grid { stroke: var(--ps-border); stroke-width: 1; }
+.ps-summary-chart__tick, .ps-summary-chart__day { fill: var(--ps-muted); font-size: 10px; font-family: inherit; }
+.ps-summary-chart__bar rect { opacity: 0.9; }
+.ps-summary-chart__bar:hover rect { opacity: 1; }
+.ps-summary__table-wrap { overflow-x: auto; }
+.ps-summary__table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.ps-summary__table th, .ps-summary__table td { padding: 6px 8px; border-bottom: 1px solid var(--ps-border); text-align: right; white-space: nowrap; }
+.ps-summary__table th { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ps-muted); font-weight: 500; }
+.ps-summary__table th:first-child, .ps-summary__table td:first-child, .ps-summary__table td.is-share, .ps-summary__table th:nth-child(8) { text-align: left; }
+.ps-summary__table td.is-model { font-weight: 600; }
+.ps-summary__table td.is-total { font-weight: 600; }
+.ps-summary-share { display: inline-block; height: 8px; background: var(--ps-accent); border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.ps-summary-spark { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 4px; gap: 1px; align-items: end; height: 14px; }
+.ps-summary-spark i { display: block; background: var(--ps-muted); min-height: 0; }
+/* the picker */
+.ps-summary-picker { position: relative; }
+.ps-summary-picker__menu {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 240px; max-height: 320px; overflow-y: auto;
+  background: var(--ps-modal-background); border: 1px solid var(--ps-border); border-radius: 8px; padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.ps-summary-picker__preset { display: block; width: 100%; text-align: left; font: inherit; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ps-foreground); cursor: pointer; }
+.ps-summary-picker__preset.is-on { background: var(--ps-modal-selected-background); color: var(--ps-modal-selected-foreground); }
+.ps-summary-picker__preset.is-clear { color: var(--ps-muted); }
+.ps-summary-picker__rule { height: 1px; background: var(--ps-border); margin: 4px 0; }
+.ps-summary-picker__row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
+.ps-summary-picker__row:hover { background: color-mix(in srgb, var(--ps-border) 40%, transparent); border-radius: 4px; }
+.ps-summary-picker__name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.ps-summary-picker__empty { color: var(--ps-muted); padding: 6px 8px; font-size: 12px; }
+@media (max-width: 720px) { .ps-summary__kpis { grid-template-columns: 1fr; } }
+
+/* The split row under a selected provider or model row: what each of its
+   three used figures is made of. Quiet on purpose — the row above carries
+   the numbers a limit is about; this one explains them. */
+.ps-budget-grid-split td {
+  padding-top: 0;
+  padding-bottom: 6px;
+  border-top: 0;
+  color: var(--ps-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ps-budget-grid-split-name {
+  text-align: right;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+  padding-right: 10px;
+}
+/* A 2×2 mini-grid — in / out on the first line, cache read / write on the
+   second — so every column's split is two lines tall whatever the numbers. */
+.ps-budget-split {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  column-gap: 10px;
+  row-gap: 1px;
+  white-space: nowrap;
+  text-align: right;
 }

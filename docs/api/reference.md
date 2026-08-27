@@ -274,6 +274,7 @@ data or reveals anyone else's grouping.
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listProviders | `GET /api/v1/providers` | — | Shared providers, the caller's personal providers, and admin-visible metadata. Credentials are never returned. |
+| getProviderUsageSummary | `GET /api/v1/providers/usage-summary` | days? (14/30/90), providers? (comma-separated names) | The cluster summary from the usage ledger: today / week / month token totals with the input, output and cache split, a per-UTC-day series, and the per-model pivot across providers, reasoning efforts and context tiers. Admins see the cluster, system sessions included; everyone else sees their own turns. |
 | createMyProvider | `POST /api/v1/me/providers` | name, type, credentials, baseUrl? (body) | Add a private BYOK provider for the authenticated user. |
 | updateMyProviderCredential | `PUT /api/v1/me/providers/:name/credential` | name (path), credentials (body) | Replace the credential on the caller's personal provider while preserving its name, defaults, routing references, and usage history. |
 | createProvider **[admin]** | `POST /api/v1/management/providers` | name, type, credentials, baseUrl? (body) | Add a shared cluster provider. |

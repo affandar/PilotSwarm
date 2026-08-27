@@ -4829,9 +4829,30 @@ function budgetCell(raw, overall, nowMs) {
     // At 100/100 the two numbers are the story; the case this exists for is a
     // cell reading 13% of your share on a provider that has nothing left.
     const blockedButLooksFine = !overall && providerExhausted && (pct == null || pct < 100);
+    // What the used figure is made of, for the pair on screen. A limit is on
+    // the total — input + output — and the cache figures are parts OF the
+    // input (what was served from the cache, what was written to it), not
+    // additions to it. The parts are the meter's own turns over the meter's
+    // own window, so input + output is the used figure beside them.
+    const part = (key) => {
+        const v = overall ? raw?.[key] : raw?.[`your${key[0].toUpperCase()}${key.slice(1)}`];
+        return v == null ? null : Number(v);
+    };
+    const splitInput = part("inputTokens");
+    const split = Number.isFinite(splitInput) ? {
+        input: splitInput,
+        output: part("outputTokens") || 0,
+        cacheRead: part("cacheReadTokens") || 0,
+        cacheWrite: part("cacheWriteTokens") || 0,
+    } : null;
+    const splitText = split
+        ? `in ${formatCompactNumber(split.input)} (cache r ${formatCompactNumber(split.cacheRead)} · w ${formatCompactNumber(split.cacheWrite)}) · out ${formatCompactNumber(split.output)}`
+        : null;
     return {
         providerExhausted: blockedButLooksFine,
         ruleId: raw?.ruleId || null,
+        split,
+        splitText,
         usedTokens: known ? usedTokens : null,
         quotaTokens: Number.isFinite(quotaTokens) ? quotaTokens : null,
         usedLabel,
@@ -4974,6 +4995,97 @@ function budgetTableRow(raw, { overall, selectedProvider, selectedScope = "*", n
  * Rows are NOT sorted here. The server returns them in render order and a
  * sort would move a model row out from under the provider it belongs to.
  */
+/**
+ * The Cluster summary tab's view: the filter as the picker shows it, the
+ * three KPI windows, a chart series with every day of the window present
+ * (the database returns only days that had turns), the per-model rows with
+ * a sparkline aligned to those same days, and the charge-class split.
+ */
+export function selectUsageSummary(state) {
+    const budget = state.budget || {};
+    const summary = budget.summary || {};
+    const data = summary.data && typeof summary.data === "object" ? summary.data : null;
+    const days = [14, 30, 90].includes(Number(summary.days)) ? Number(summary.days) : 14;
+
+    // Provider choices come from the grid the Providers tab already read:
+    // one entry per provider row, with its class, so the picker can offer
+    // Shared / Users as presets and each name as a checkbox.
+    const providers = [];
+    const seen = new Set();
+    for (const row of Array.isArray(budget.grid) ? budget.grid : []) {
+        if (row?.rowKind !== "provider" || !row?.providerName || seen.has(row.providerName)) continue;
+        seen.add(row.providerName);
+        providers.push({ name: row.providerName, class: row.class === "shared" ? "shared" : "personal" });
+    }
+    const selected = new Set(Array.isArray(summary.providers) ? summary.providers : []);
+    const preset = summary.preset || "all";
+
+    // Every UTC day of the window, oldest first, ending on the server's
+    // "today" — so a quiet day is a zero bar, not a missing one.
+    const today = typeof data?.today === "string" ? data.today : new Date().toISOString().slice(0, 10);
+    const dayKeys = [];
+    {
+        const end = new Date(`${today}T00:00:00Z`).getTime();
+        for (let i = days - 1; i >= 0; i -= 1) dayKeys.push(new Date(end - i * 86_400_000).toISOString().slice(0, 10));
+    }
+    const byDay = new Map((Array.isArray(data?.daily) ? data.daily : []).map((d) => [d.day, d]));
+    const series = dayKeys.map((day) => {
+        const d = byDay.get(day) || {};
+        return {
+            day,
+            input: Number(d.input) || 0,
+            output: Number(d.output) || 0,
+            cacheRead: Number(d.cacheRead) || 0,
+            cacheWrite: Number(d.cacheWrite) || 0,
+            total: Number(d.total) || 0,
+            turns: Number(d.turns) || 0,
+        };
+    });
+    const windowTotal = series.reduce((sum, d) => sum + d.total, 0);
+    const models = (Array.isArray(data?.models) ? data.models : []).map((m) => {
+        const spark = new Map((Array.isArray(m.daily) ? m.daily : []).map((d) => [d.day, Number(d.total) || 0]));
+        const total = Number(m.total) || 0;
+        return {
+            model: String(m.model || "?"),
+            providers: Number(m.providers) || 0,
+            turns: Number(m.turns) || 0,
+            input: Number(m.input) || 0,
+            output: Number(m.output) || 0,
+            cacheRead: Number(m.cacheRead) || 0,
+            cacheWrite: Number(m.cacheWrite) || 0,
+            total,
+            share: windowTotal > 0 ? total / windowTotal : 0,
+            sparkline: dayKeys.map((day) => spark.get(day) || 0),
+        };
+    });
+    const win = (key) => {
+        const w = data?.windows?.[key] || {};
+        return {
+            input: Number(w.input) || 0, output: Number(w.output) || 0,
+            cacheRead: Number(w.cacheRead) || 0, cacheWrite: Number(w.cacheWrite) || 0,
+            total: Number(w.total) || 0, turns: Number(w.turns) || 0, sessions: Number(w.sessions) || 0,
+        };
+    };
+    return {
+        loading: Boolean(summary.loading),
+        error: summary.error || null,
+        loaded: Boolean(data),
+        scope: data?.scope === "mine" ? "mine" : "cluster",
+        days,
+        today,
+        preset,
+        selectedProviders: Array.from(selected),
+        providers,
+        windows: { day: win("day"), week: win("week"), month: win("month") },
+        series,
+        windowTotal,
+        models,
+        classes: (Array.isArray(data?.classes) ? data.classes : []).map((c) => ({
+            chargeClass: String(c.chargeClass || "?"), total: Number(c.total) || 0, turns: Number(c.turns) || 0,
+        })),
+    };
+}
+
 export function selectProviderTable(state) {
     const budget = state.budget || {};
     const nowMs = Date.now();

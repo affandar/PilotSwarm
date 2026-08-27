@@ -1569,6 +1569,11 @@ export class NodeSdkTransport {
         return this.mgmt.updateMyProviderCredential(await this._modelProviderViewer(), input || {});
     }
 
+    /** The cluster summary: totals, a per-day series and the per-model pivot. */
+    async getProviderUsageSummary(query = {}) {
+        return this.mgmt.getProviderUsageSummary(await this._modelProviderViewer(), query || {});
+    }
+
     /** Rotate a SHARED provider's key. Admin-only, enforced in SQL. */
     async updateSharedProviderCredential(input) {
         return this.mgmt.updateSharedProviderCredential(await this._modelProviderViewer(), input || {});

@@ -11,6 +11,7 @@ tools:
   - list_providers
   - get_provider_status
   - get_provider_usage_grid
+  - get_provider_usage_summary
   - manage_provider
   - set_provider_limit
   - set_provider_allowance

@@ -87,6 +87,7 @@ export const UI_COMMANDS = {
     // Admin Console — swaps out sessions+chat for the per-user admin view.
     OPEN_ADMIN_CONSOLE: "openAdminConsole",
     CLOSE_ADMIN_CONSOLE: "closeAdminConsole",
+    OPEN_WORKSPACE: "openWorkspace",
     ADMIN_REFRESH_PROFILE: "adminRefreshProfile",
     ADMIN_SHOW_GHCP: "adminShowGhcp",
     ADMIN_SHOW_PACKAGES: "adminShowPackages",

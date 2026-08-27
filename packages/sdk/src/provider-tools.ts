@@ -378,6 +378,27 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
         },
     },
     {
+        name: "get_provider_usage_summary",
+        description:
+            "The cluster summary from the usage ledger: token totals for today, the last 7 and the last 30 UTC "
+            + "days (input, output, cache read, cache write, total, turns, sessions), a per-day series, and the "
+            + "per-MODEL pivot — one row per model name across every provider, reasoning effort and context tier, "
+            + "each with its own per-day totals. Admins see the whole cluster, system sessions included (the "
+            + "provider meters count people's turns only; `classes` shows the split); everyone else sees their "
+            + "own turns. One call; never iterate sessions to build this picture.",
+        parameters: {
+            type: "object",
+            properties: {
+                days: { type: "number", description: "Days of history for the series and the model table (default 14, max 365)" },
+                providers: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Only these providers, by name; absent means all",
+                },
+            },
+        },
+    },
+    {
         name: "get_provider_usage",
         description:
             "Where the tokens went: totals (tokens, turns, sessions), a per-day series, and one breakdown, all "
@@ -673,6 +694,17 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             const tuple = defaultTuple(args);
             await store.setSystemAgentModel(args.agent_id, v.userId, v.isAdmin, tuple);
             return { agentId: args.agent_id, ...tuple };
+        }),
+
+        get_provider_usage_summary: async (args: {
+            days?: number;
+            providers?: string[];
+        }) => call("get_provider_usage_summary", async (store, v) => {
+            const days = clampInteger(args?.days, 14, 1, 365);
+            const providers = Array.isArray(args?.providers)
+                ? args!.providers.map((p) => text(p)).filter((p): p is string => Boolean(p))
+                : null;
+            return store.usageSummary(v.userId, v.isAdmin, days, providers);
         }),
 
         get_provider_usage: async (args: {

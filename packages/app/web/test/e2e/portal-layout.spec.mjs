@@ -121,6 +121,9 @@ test("full-screen canvas moves the normal toolbar actions to the left rail", asy
     }
     await page.getByRole("button", { name: "Full screen canvas" }).click();
 
+    // The left rail carries the whole left cluster: the two actions and the
+    // two panel toggles (canvas, diagnostics). Theme moved to the right
+    // cluster with the modes.
     await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(4);
     await expect(page.locator(".ps-toolbar > .ps-toolbar-actions .ps-icon-button")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Restore canvas" })).toBeVisible();

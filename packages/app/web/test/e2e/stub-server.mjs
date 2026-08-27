@@ -120,7 +120,10 @@ const PARA = "The CPG migration workflow renamed durably stored disk attach/deta
 // notice, which makes it NON-rich-renderable — so it renders through the
 // terminal line builders as a "lines" block. Those are the width-dependent
 // ones, and a transcript full of them is the worst case for a resize.
-const makeTranscript = (count, systemEvery = 0) => Array.from({ length: count }, (_, i) => ({
+// `assistantMarkdown`, when given, is what EVERY assistant turn says — for a
+// test that needs one exact markdown shape (a table of long tokens) rendered
+// through the real chat pipeline.
+const makeTranscript = (count, systemEvery = 0, assistantMarkdown = null) => Array.from({ length: count }, (_, i) => ({
     seq: i + 1,
     eventType: i % 2 === 0 ? "user.message" : "assistant.message",
     timestamp: 1785000000000 + (i * 1000),
@@ -129,7 +132,8 @@ const makeTranscript = (count, systemEvery = 0) => Array.from({ length: count },
             ? `[SYSTEM: notice ${i}] ${PARA}\n\n${PARA}`
             : i % 2 === 0
                 ? `Turn ${i}: please review PR ${2160000 + i} and summarise the blocking risk.`
-                : `**Assessment ${i}**\n\n${PARA}\n\n- point one\n- point two\n\n\`\`\`js\nconst x = ${i};\n\`\`\`\n\n${PARA}`,
+                : (assistantMarkdown
+                    ?? `**Assessment ${i}**\n\n${PARA}\n\n- point one\n- point two\n\n\`\`\`js\nconst x = ${i};\n\`\`\`\n\n${PARA}`),
     },
 }));
 
@@ -183,13 +187,13 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
     let liveGroups = groups;
     let groupFetches = 0;
-    const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery);
+    const TRANSCRIPT = makeTranscript(Math.max(0, transcriptTurns), systemEvery, assistantMarkdown);
     // Placement calls the drag tests assert against: [{ sessionIds, groupId }].
     const placements = [];
     // Rename calls, [{ sessionId, title }], for the same reason.

@@ -319,6 +319,17 @@ const CAPABILITIES = [
         },
     },
     {
+        n: 28,
+        op: "getProviderUsageSummary",
+        http: { method: "GET", path: "/providers/usage-summary", access: "authed" },
+        mcp: { tool: "get_provider_usage_summary", args: { days: 14, providers: ["team"] } },
+        agent: {
+            tool: "get_provider_usage_summary",
+            args: { days: 14, providers: ["team"] },
+            calls: ["usageSummary"],
+        },
+    },
+    {
         n: 27,
         op: "updateSharedProviderCredential",
         http: { method: "PUT", path: "/management/providers/:name/credential", access: "fleet:admin" },
@@ -404,6 +415,7 @@ function createRecordingProviderTools() {
         createProvider: record("createProvider", { name: "team" }),
         updatePersonalCredential: record("updatePersonalCredential", { name: "mine" }),
         updateSharedCredential: record("updateSharedCredential", { name: "team" }),
+        usageSummary: record("usageSummary", { days: 14, windows: {}, daily: [], models: [], classes: [] }),
         deleteProvider: record("deleteProvider", 0),
         setLimit: record("setLimit", { ruleId: 1, seededTokens: 0 }),
         removeLimit: record("removeLimit", true),
@@ -434,8 +446,22 @@ function createRecordingProviderTools() {
 
 // ─── The three surfaces ─────────────────────────────────────────
 
+test("every capability is a method on HttpApiTransport — the browser's and CLI's only path", async () => {
+    // The HTTP table, the MCP and the agent tools are three surfaces; the
+    // portal and the CLI reach the table through HttpApiTransport, whose
+    // methods are hand-listed. 0.5.47 added updateSharedProviderCredential to
+    // the other three and not here, so the portal's Update Key on a shared
+    // row opened the sheet and then reported "not available on this
+    // transport". A capability the transport cannot call is not shipped.
+    const { HttpApiTransport } = await import("../../api/src/http-api-transport.js");
+    const missing = CAPABILITIES
+        .map((cap) => cap.op)
+        .filter((op) => typeof HttpApiTransport.prototype[op] !== "function");
+    assert.deepEqual(missing, [], `HttpApiTransport has no method for: ${missing.join(", ")}`);
+});
+
 test("every capability is an operation on the HTTP table", () => {
-    assert.equal(CAPABILITIES.length, 27, "the contract lists twenty-seven capabilities");
+    assert.equal(CAPABILITIES.length, 28, "the contract lists twenty-eight capabilities");
 
     for (const cap of CAPABILITIES) {
         const op = OPERATIONS.find((row) => row.name === cap.op);

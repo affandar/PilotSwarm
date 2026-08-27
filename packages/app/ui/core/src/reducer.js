@@ -1037,6 +1037,48 @@ export function appReducer(state, action) {
                 },
             };
 
+        // ── Budget screen: tab + the Cluster summary ─────────────────
+        case "budget/tab": {
+            const tab = action.tab === "summary" ? "summary" : "providers";
+            if (state.budget.tab === tab) return state;
+            return { ...state, budget: { ...state.budget, tab } };
+        }
+        case "budget/summary/filter": {
+            const prev = state.budget.summary;
+            const days = [14, 30, 90].includes(Number(action.days)) ? Number(action.days) : prev.days;
+            const providers = Array.isArray(action.providers)
+                ? action.providers.map((p) => String(p ?? "").trim()).filter(Boolean)
+                : prev.providers;
+            const preset = ["all", "shared", "users", "custom"].includes(action.preset) ? action.preset
+                : (Array.isArray(action.providers) ? "custom" : prev.preset);
+            return { ...state, budget: { ...state.budget, summary: { ...prev, days, providers, preset } } };
+        }
+        case "budget/summary/loading":
+            return { ...state, budget: { ...state.budget, summary: { ...state.budget.summary, loading: true } } };
+        case "budget/summary/loaded":
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    summary: {
+                        ...state.budget.summary,
+                        loading: false,
+                        error: null,
+                        fetchedAt: Number(action.fetchedAt) || Date.now(),
+                        data: action.data && typeof action.data === "object" ? action.data : null,
+                    },
+                },
+            };
+        case "budget/summary/failed":
+            // Keep the last answer on screen; say the read failed beside it.
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    summary: { ...state.budget.summary, loading: false, error: String(action.error || "The summary could not be read.") },
+                },
+            };
+
         case "ui/diagnosticsSplitAdjust":
             return {
                 ...state,

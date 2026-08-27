@@ -520,9 +520,45 @@ export interface ProviderUsageQuery extends UsageFilters {
 }
 
 /** The whole usage view in one answer: totals, the daily chart, one breakdown. */
+/** What the cluster summary is asked for. */
+export interface ProviderUsageSummaryQuery {
+    /** Days of history for the chart and the model table: 1–365, default 14. */
+    days?: number;
+    /** Only these providers; empty or absent means all of them. */
+    providers?: string[];
+}
+
+/** One window's four-way token split. */
+export interface ProviderUsageSummaryWindow {
+    input: number; output: number; cacheRead: number; cacheWrite: number;
+    total: number; turns: number; sessions: number;
+}
+
+/** The cluster summary, as `cms_provider_usage_summary` builds it. */
+export interface ProviderUsageSummary {
+    days: number;
+    /** The UTC day the windows and series count as "today". */
+    today: string;
+    /** "cluster" for an admin, "mine" for everyone else. */
+    scope: "cluster" | "mine";
+    windows: { day: ProviderUsageSummaryWindow; week: ProviderUsageSummaryWindow; month: ProviderUsageSummaryWindow };
+    daily: Array<{ day: string; input: number; output: number; cacheRead: number; cacheWrite: number; total: number; turns: number }>;
+    /** Pivoted on the model NAME, across providers, efforts and context tiers. */
+    models: Array<{
+        model: string; providers: number; turns: number;
+        input: number; output: number; cacheRead: number; cacheWrite: number; total: number;
+        daily: Array<{ day: string; total: number }>;
+    }>;
+    classes: Array<{ chargeClass: string; total: number; turns: number }>;
+}
+
 export interface ProviderUsageReport {
     totals: { tokensTotal: number; turns: number; sessions: number };
-    daily: Array<{ dayUtc: string; tokensTotal: number; turns: number }>;
+    daily: Array<{
+        dayUtc: string; tokensTotal: number; turns: number;
+        /** The four parts of tokensTotal. */
+        tokensInput: number; tokensOutput: number; tokensCacheRead: number; tokensCacheWrite: number;
+    }>;
     breakdown: Array<{ key: string; label: string; tokensTotal: number; turns: number }>;
     /** The dimension actually grouped by, which is the default when the request named an unknown one. */
     dimension: ProviderUsageDimension;
@@ -3856,6 +3892,19 @@ export class PilotSwarmManagementClient {
             dimension,
             truncated: breakdown.length > limit,
         };
+    }
+
+    /**
+     * The cluster summary: totals for today / the week / the month, a per-day
+     * series and the per-model pivot, over every provider (or the ones named).
+     * Read from the ledger, so system sessions are in it — unlike the meters
+     * the Providers tab reads, which count people's turns only.
+     */
+    async getProviderUsageSummary(viewer: ProviderViewer, query: ProviderUsageSummaryQuery = {}): Promise<ProviderUsageSummary> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const days = clampInteger(query.days ?? undefined, 14, 1, 365);
+        const providers = Array.isArray(query.providers) ? query.providers : null;
+        return await store.usageSummary(actor, isAdmin, days, providers) as unknown as ProviderUsageSummary;
     }
 
     /** Sessions waiting on a limit right now, with what is holding each one. */

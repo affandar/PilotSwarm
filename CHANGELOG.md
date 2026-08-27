@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.5.48 — 2026-08-27
+
+Token accounting stops charging cached prompts twice. A turn's total is
+input + output, and the cache figures are shown as what the input was made
+of. Providers & Budgets gains a Cluster summary tab and a per-cell token
+split; the desktop toolbar separates the workspace's own buttons from the
+mode buttons; the Sequence/Activity divider, the chat↔canvas seam, long
+markdown tables and Update Key on a shared provider are fixed.
+
+### Added
+
+- **Cluster summary** — a second tab on Providers & Budgets. Token totals
+  for today, the last 7 and the last 30 UTC days (input, output, cache read,
+  cache write, turns, sessions), a 14/30/90-day stacked chart, and a report
+  per model — one row per model name, folded across providers, reasoning
+  efforts and context tiers, with cache reads and writes as separate
+  columns, its share and a sparkline. The provider count is distinct
+  provider names in the ledger for the window, deleted ones included:
+  accounting is keyed by name and survives a provider's deletion, its
+  owner's deletion and a key rotation (tested). A provider
+  picker at the top: **All**, **Shared**, **Users**, or any hand-picked set.
+  Read from the usage ledger (migration 0068,
+  `cms_provider_usage_summary`), so it includes system sessions — the
+  Providers tab's meters count people's turns only, and the summary says how
+  the total splits. Op `getProviderUsageSummary`
+  (`GET /providers/usage-summary`), MCP and agent tool
+  `get_provider_usage_summary`. Admins see the cluster; everyone else their
+  own turns.
+
+- **The Providers table says what each used figure is made of.** A limit is
+  on the total — input + output — and every period cell showed only that
+  total. Each cell now carries the parts (migration 0069; for everyone and
+  for the viewer, over the meter's own window, scope and turns): input and
+  output, which add up to the figure beside them, and how much of that
+  input was read from and written to the cache. Shown under the figure on
+  the selected row, and on hover on every cell. The daily series under a
+  selected provider carries the same parts.
+
+### Changed
+
+- **The desktop toolbar is two clusters.** Left, the workspace's own
+  buttons as one run: new session, filter, canvas, diagnostics. Right, the
+  modes: Workspace, Budget, Admin console (Settings for a plain
+  user) │ theme, sign-out. Budget and the Admin Console are one mode at a
+  time (the controller closes one when the other opens), the Workspace
+  button is the way back, and the whole left cluster exists only in
+  Workspace mode — nothing on it applies to Budget or Admin. The phone
+  toolbar is unchanged: its own view cycle, no admin console.
+
+- **Budget and Admin headers lost their ✕ and their duplicates.** The
+  Budget head keeps Refresh only (its gear and ✕ repeated the Mode
+  cluster); the Admin Console header is the title alone (the signed-in
+  person is already in the portal header). Esc still leaves Budget.
+
+- **The default workspace is sessions + chat.** A first visit on a wide
+  desktop no longer opens the canvas column by itself; a stored choice is
+  honoured, and an agent drawing still brings its canvas up.
+
+- **The system prompt notice is back to the activity feed only.** 0.5.47
+  gave it a collapsed row in the chat pane, but the Copilot SDK echoes the
+  prompt on every turn and the worker keeps a 120-character snippet of it,
+  so the row repeated per prompt and opened to a snippet, not the prompt.
+
+### Fixed
+
+- **Budgets charged cached prompts twice.** A turn's total was
+  input + output + cache read + cache write, but as the Copilot SDK reports
+  usage the cache figures are parts *of* the input — in every recorded turn,
+  on every vendor, `cache_read + cache_write ≤ input`, and equal to it when
+  a turn wrote to the cache. So a cached prompt was counted once inside
+  input and again as cache read: chk's last 30 days read 3.62B tokens for
+  1.97B consumed, and every limit was biting at roughly half its stated
+  size. Migration 0070 makes the total input + output, rewrites
+  `tokens_total` on the ledger, and rebuilds the meters for their live
+  windows from the corrected ledger. Every "used" figure drops by the
+  cached amount; limits tuned against the old figures are looser from here.
+  The cache figures are still recorded and shown — as what the input was
+  made of, not as extra.
+
+- **The Sequence/Activity divider drags again.** Its handle called a
+  `clamp()` helper that v0.5.39 deleted, so every drag, arrow key and
+  double-click on that seam threw `clamp is not defined` before dispatching
+  — six releases with no test on the seam. One now drags it and fails on
+  any uncaught page error.
+
+- **Dragging the chat↔canvas seam moved the canvas↔diagnostics seam.** The
+  right block was capped at 60% of the window, which a 640px canvas beside
+  a 320px diagnostics column already reaches on a 1600px screen; past the
+  cap the canvas kept its fixed pixels and the flex diagnostics column gave
+  them up. The block now grows until chat is at its floor, the drag stops
+  there instead of inflating the stored width, and the hairline seams sit
+  above the canvas layer so both halves of their grab band are theirs.
+
+- **A markdown table with long unbreakable tokens painted across its
+  neighbour.** Fit-width tables give rigid columns a budget capped at 32
+  characters of the longest cell and wrap them at spaces only; a
+  60-character CamelCase test name got a 32ch column, could not break, and
+  overflowed. A rigid column is now never budgeted below its longest token,
+  so the table widens and the wrapper scrolls; `overflow-wrap: anywhere`
+  is the fixed layout's last resort. The layout algorithm moved to
+  `ui-core` (`table-layout.js`) where it is unit-tested.
+
+- **Update Key on a shared provider did nothing.** Two gaps behind one
+  button: the shared rows were rendered without the click handler (the
+  click threw `onUpdate is not a function`), and the browser's
+  `HttpApiTransport` had no `updateSharedProviderCredential` method, so
+  even an opened sheet reported "not available on this transport". The e2e
+  suite now rotates a shared key through the admin op, and the surface
+  parity test requires every provider capability to be a transport method.
+
 ## 0.5.47 — 2026-08-27
 
 Provider keys can be rotated in place — personal by their owner, shared by

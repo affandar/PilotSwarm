@@ -45,12 +45,26 @@ const dayKey = (back, nowMs = Date.now()) => new Date(nowMs - (back * DAY)).toIS
  * and the used figure beside it is still real, which is the whole point of
  * keying a meter by what it measures instead of by a limit's id.
  */
+// The parts of each used figure (0069, corrected in 0070): used = input +
+// output, and the cache figures are parts OF the input — 70% of it served
+// from the cache, 5% written to it — so a test can check both identities.
+const split = (total, prefix = "") => {
+    if (total == null) return {};
+    const input = Math.round(total * 0.98);
+    const output = total - input;
+    const cacheRead = Math.round(input * 0.70);
+    const cacheWrite = Math.round(input * 0.05);
+    const k = (name) => (prefix ? prefix + name[0].toUpperCase() + name.slice(1) : name);
+    return { [k("inputTokens")]: input, [k("outputTokens")]: output, [k("cacheReadTokens")]: cacheRead, [k("cacheWriteTokens")]: cacheWrite };
+};
 const cell = ({ used, quota = null, yourUsed, yourQuota = null }, resetsAtUtc, windowStartUtc) => ({
     ruleId: quota == null ? null : `rule-${resetsAtUtc}-${quota}`,
     quotaTokens: quota,
     usedTokens: used,
     yourQuotaTokens: yourQuota,
     yourUsedTokens: yourUsed,
+    ...split(used),
+    ...split(yourUsed, "your"),
     windowStartUtc,
     resetsAtUtc,
 });
@@ -367,6 +381,41 @@ function dailyFixture(provider, days, nowMs, model = null) {
 }
 
 /** The usage report the chart under a selected row reads. */
+
+/**
+ * What GET /providers/usage-summary answers. Fixed numbers: 14 days of
+ * series (only some days have turns, like the real ledger), three models
+ * whose totals sum to the 30-day window, and a windows block whose month is
+ * exactly the models' sum. `days` and `providers` are echoed back so a
+ * test can see the filter took.
+ */
+function summaryFixture(query, { nowMs, admin }) {
+    const days = [14, 30, 90].includes(Number(query.days)) ? Number(query.days) : 14;
+    const today = new Date(nowMs).toISOString().slice(0, 10);
+    const dayKey = (back) => new Date(nowMs - back * 86_400_000).toISOString().slice(0, 10);
+    const daily = [
+        { day: dayKey(6), input: 25_000_000, output: 640_000, cacheRead: 2_390_000, cacheWrite: 0, total: 25_640_000, turns: 20 },
+        { day: dayKey(3), input: 6_540_000, output: 9_000, cacheRead: 3_280_000, cacheWrite: 0, total: 6_549_000, turns: 48 },
+        { day: dayKey(0), input: 322_000, output: 610, cacheRead: 63_000, cacheWrite: 0, total: 322_610, turns: 3 },
+    ];
+    const models = [
+        { model: "gpt-5.4", providers: 3, turns: 60, input: 30_000_000, output: 600_000, cacheRead: 5_000_000, cacheWrite: 0, total: 30_600_000, daily: [{ day: dayKey(6), total: 25_640_000 }, { day: dayKey(3), total: 4_960_000 }] },
+        { model: "gpt-5.4-nano", providers: 2, turns: 10, input: 2_000_000, output: 2_000, cacheRead: 600_000, cacheWrite: 0, total: 2_002_000, daily: [{ day: dayKey(3), total: 1_589_000 }, { day: dayKey(0), total: 413_000 }] },
+        { model: "claude-sonnet-5", providers: 1, turns: 1, input: 40_000, output: 2_610, cacheRead: 0, cacheWrite: 0, total: 42_610, daily: [{ day: dayKey(0), total: 42_610 }] },
+    ];
+    const sum = (rows, key) => rows.reduce((acc, r) => acc + (r[key] || 0), 0);
+    const window = (rows) => ({ input: sum(rows, "input"), output: sum(rows, "output"), cacheRead: sum(rows, "cacheRead"), cacheWrite: 0, total: sum(rows, "total"), turns: sum(rows, "turns"), sessions: rows.length });
+    return {
+        days,
+        today,
+        scope: admin ? "cluster" : "mine",
+        windows: { day: window(daily.slice(2)), week: window(daily), month: window(daily) },
+        daily,
+        models,
+        classes: [{ chargeClass: "user", total: 30_000_000, turns: 50 }, { chargeClass: "system", total: 8_244_610, turns: 21 }],
+    };
+}
+
 function usageReport(query, { emptyUsage, nowMs }) {
     const days = Number(query.days) || 14;
     const provider = query.provider ? String(query.provider) : null;
@@ -437,6 +486,8 @@ export async function startProviderBudgetStub({
     let GRID = grid || gridFixture(nowMs);
     const PAUSED = paused || pausedFixture(nowMs);
     const usageQueries = [];
+    // Every GET /providers/usage-summary query, in order.
+    const summaryQueries = [];
     const calls = [];
 
     const json = (res, result) => {
@@ -519,6 +570,14 @@ export async function startProviderBudgetStub({
         if (method === "GET" && /\/providers\/paused$/.test(p)) {
             return answer(res, "listPausedSessions", { sessions: PAUSED });
         }
+        // The Cluster summary: one deterministic answer, shaped exactly as
+        // cms_provider_usage_summary builds it, so a test can check the tab
+        // against known arithmetic. The query is recorded so a test can prove
+        // what the picker and the range buttons asked for.
+        if (method === "GET" && /\/providers\/usage-summary$/.test(p)) {
+            summaryQueries.push(query);
+            return answer(res, "getProviderUsageSummary", summaryFixture(query, { nowMs, admin }));
+        }
         if (method === "GET" && /\/providers\/usage$/.test(p)) {
             usageQueries.push(query);
             return answer(res, "getProviderUsage", usageReport(query, { emptyUsage, nowMs }));
@@ -559,6 +618,7 @@ export async function startProviderBudgetStub({
         const deleteSharedMatch = /\/management\/providers\/([^/]+)$/.exec(p);
         const deleteMineMatch = /\/me\/providers\/([^/]+)$/.exec(p);
         const updateCredentialMatch = /\/me\/providers\/([^/]+)\/credential$/.exec(p);
+        const updateSharedCredentialMatch = /\/management\/providers\/([^/]+)\/credential$/.exec(p);
 
         let spec = null;
         let result = {};
@@ -566,6 +626,9 @@ export async function startProviderBudgetStub({
         else if (method === "POST" && /\/me\/providers$/.test(p)) { spec = change("createMyProvider"); }
         else if (method === "PUT" && updateCredentialMatch) {
             spec = change("updateMyProviderCredential", decodeURIComponent(updateCredentialMatch[1]));
+        }
+        else if (method === "PUT" && updateSharedCredentialMatch) {
+            spec = change("updateSharedProviderCredential", decodeURIComponent(updateSharedCredentialMatch[1]));
         }
         else if (method === "DELETE" && deleteSharedMatch) {
             spec = change("deleteProvider", decodeURIComponent(deleteSharedMatch[1]));
@@ -622,6 +685,7 @@ export async function startProviderBudgetStub({
     return {
         port: server.address().port,
         usageQueries,
+        summaryQueries,
         calls,
         /** What the NEXT read of the table answers with. */
         setGrid: (rows) => { GRID = rows; },

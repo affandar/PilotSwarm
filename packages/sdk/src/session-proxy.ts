@@ -517,11 +517,15 @@ function buildUsageSummaryUpsert(data: unknown): {
     tokensCacheReadIncrement?: number;
     tokensCacheWriteIncrement?: number;
 } | null {
-    // Convention: tokensInputIncrement is the *inclusive* prompt-token count
-    // (i.e. it INCLUDES tokensCacheReadIncrement). This matches the
-    // OpenAI/Anthropic billing shape and is what computeCacheHitRatio() in
-    // cms.ts assumes when it derives cache_read / input. If a future provider
-    // ever reports input_tokens excluding the cached prefix, normalize here
+    // Convention: tokensInputIncrement is the *inclusive* prompt-token count:
+    // it INCLUDES tokensCacheReadIncrement AND tokensCacheWriteIncrement.
+    // That is how the Copilot SDK reports usage for every vendor it fronts —
+    // verified on 2026-08-27 across GPT, Claude, Grok and MAI: in every
+    // recorded turn cache_read + cache_write <= input, and equal to it when
+    // a turn wrote to the cache. computeCacheHitRatio() in cms.ts (cache_read
+    // / input) and cms_provider_settle_turn (total = input + output, since
+    // 0070) both rest on it. If a future provider ever reports input_tokens
+    // EXCLUDING the cached prefix (Anthropic's raw API does), normalize here
     // BEFORE storing — do not invert the convention downstream.
     const usage = (data ?? {}) as Record<string, unknown>;
     const tokensInputIncrement = finiteMetricNumber(usage.inputTokens ?? usage.prompt_tokens);

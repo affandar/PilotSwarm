@@ -14,6 +14,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import pg from "pg";
 import { randomBytes } from "node:crypto";
 import { runCmsMigrations } from "../../src/cms-migrator.ts";
+import { CMS_MIGRATIONS } from "../../src/cms-migrations.ts";
 
 const DATABASE_URL = process.env.PS_TEST_DATABASE_URL
     || process.env.TEST_DATABASE_URL
@@ -1007,14 +1008,21 @@ describe("settlement is exactly once", () => {
         expect(await meter("team")).toBe(100);
     });
 
-    it("every token kind is counted", async () => {
+    it("the total is input + output; the cache kinds are parts of the input, not additions (0070)", async () => {
+        // As usage is stored, input already contains what was read from and
+        // written to the cache (cache_read + cache_write <= input in every
+        // recorded turn). Before 0070 the four were summed and a cached
+        // prompt was charged twice. The cache figures are recorded, not billed.
         await createShared("team");
         await setLimit("team", "day", null, 1_000_000);
         await settle("s1", 0, {
             provider: "team", model: "team:gpt",
-            input: 1, output: 2, cacheRead: 4, cacheWrite: 8,
+            input: 10, output: 2, cacheRead: 7, cacheWrite: 3,
         });
-        expect(await meter("team")).toBe(15);
+        expect(await meter("team")).toBe(12);
+        const row = await one(`SELECT tokens_total, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write
+                                 FROM @provider_usage_ledger WHERE session_id = 's1'`);
+        expect(row).toMatchObject({ tokens_total: "12", tokens_input: "10", tokens_output: "2", tokens_cache_read: "7", tokens_cache_write: "3" });
     });
 
     it("system spend is recorded and shown, but consumes no budget", async () => {
@@ -1647,5 +1655,317 @@ describe("the deployment bootstrap runs once", () => {
             .toEqual({ claimed: true, created: 1 });
         expect((await sql(`SELECT name FROM @provider_instances ORDER BY name`)).map((row) => row.name))
             .toEqual(["azure", "github"]);
+    });
+});
+
+// ─── 0068: the cluster summary ─────────────────────────────────────────
+//
+// One SQL function feeds the Cluster summary tab: today / week / month
+// windows, a per-UTC-day series, the per-MODEL pivot and the charge-class
+// split, all over ONE scope and ONE provider filter. Read from the ledger,
+// so system sessions are in it; the meters (the Providers tab) are not.
+
+describe("cluster usage summary (0068)", () => {
+    const summary = (viewer, isAdmin, days = 14, providers = null) =>
+        one(`SELECT @cms_provider_usage_summary($1,$2,$3,$4) AS s`, [viewer, isAdmin, days, providers])
+            .then((r) => r.s);
+
+    async function seed() {
+        const ada = await makeUser("ada");
+        const alice = await makeUser("alice");
+        await createShared("team-a", { type: "azure" });
+        await createShared("team-b", { type: "azure" });
+        await createPersonal("alice-own", alice);
+        await makeSession("s-alice-1", { model: "team-a:gpt-5.4", userId: alice });
+        await makeSession("s-alice-2", { model: "alice-own:gpt-5.4", userId: alice });
+        await makeSession("s-ada-1", { model: "team-b:gpt-5.4-nano", userId: ada });
+        await makeSession("s-system", { model: "team-a:gpt-5.4", isSystem: true });
+        // gpt-5.4 across THREE providers, one of them personal; nano on one.
+        await settle("s-alice-1", 0, { provider: "team-a", model: "team-a:gpt-5.4", owner: alice, input: 1000, output: 100, cacheRead: 50 });
+        await settle("s-alice-1", 1, { provider: "team-b", model: "team-b:gpt-5.4", owner: alice, input: 2000, output: 200, cacheRead: 0 });
+        await settle("s-alice-2", 0, { provider: "alice-own", model: "alice-own:gpt-5.4", owner: alice, input: 4000, output: 400, cacheWrite: 10 });
+        await settle("s-ada-1", 0, { provider: "team-b", model: "team-b:gpt-5.4-nano", owner: ada, input: 300, output: 30 });
+        await settle("s-system", 0, { provider: "team-a", model: "team-a:gpt-5.4", owner: null, chargeClass: "system", agentId: "sweeper", input: 8000, output: 800 });
+        return { ada, alice };
+    }
+
+    it("an admin sees the cluster: providers fold into the model, system turns included", async () => {
+        const { ada } = await seed();
+        const s = await summary(ada, true, 14);
+        expect(s.scope).toBe("cluster");
+        expect(s.days).toBe(14);
+        const byModel = Object.fromEntries(s.models.map((m) => [m.model, m]));
+        // gpt-5.4: three providers (team-a, team-b, alice-own) and the system turn.
+        expect(byModel["gpt-5.4"]).toMatchObject({ providers: 3, turns: 4, input: 15000, output: 1500, cacheRead: 50, cacheWrite: 10 });
+        expect(byModel["gpt-5.4"].total).toBe(15000 + 1500);
+        expect(byModel["gpt-5.4-nano"]).toMatchObject({ providers: 1, turns: 1, total: 330 });
+        // The month window is the whole seed; today's window is too (all just settled).
+        expect(s.windows.month).toMatchObject({ total: 16500 + 330, turns: 5, sessions: 4 });
+        expect(s.windows.day.total).toBe(s.windows.month.total);
+        // The series has today, and today carries everything.
+        expect(s.daily).toHaveLength(1);
+        expect(s.daily[0]).toMatchObject({ day: s.today, total: 16830, turns: 5 });
+        // Each model carries its own sparkline days.
+        expect(byModel["gpt-5.4"].daily).toEqual([{ day: s.today, total: 16500 }]);
+        // And the split says how much of it was system machinery.
+        const classes = Object.fromEntries(s.classes.map((c) => [c.chargeClass, c.total]));
+        expect(classes).toEqual({ user: 8030, system: 8800 });
+    });
+
+    it("everyone else sees their own turns only", async () => {
+        const { alice } = await seed();
+        const s = await summary(alice, false, 14);
+        expect(s.scope).toBe("mine");
+        expect(s.windows.month).toMatchObject({ total: 1100 + 2200 + 4400, turns: 3, sessions: 2 });
+        expect(s.models.map((m) => m.model)).toEqual(["gpt-5.4"]);
+        expect(s.models[0]).toMatchObject({ providers: 3, turns: 3 });
+        // No system row, no other person's row.
+        expect(s.classes).toEqual([{ chargeClass: "user", total: 7700, turns: 3 }]);
+    });
+
+    it("a provider list narrows every part of the answer to those providers", async () => {
+        const { ada } = await seed();
+        const s = await summary(ada, true, 14, ["team-b"]);
+        const byModel = Object.fromEntries(s.models.map((m) => [m.model, m]));
+        expect(Object.keys(byModel).sort()).toEqual(["gpt-5.4", "gpt-5.4-nano"]);
+        expect(byModel["gpt-5.4"]).toMatchObject({ providers: 1, turns: 1, total: 2200 });
+        expect(s.windows.month).toMatchObject({ total: 2200 + 330, turns: 2 });
+        expect(s.daily[0].total).toBe(2530);
+        // An empty list means all, the same as no list.
+        expect((await summary(ada, true, 14, [])).windows.month.total).toBe(16830);
+    });
+
+    it("the windows are UTC-day windows: a turn from 40 days ago is in none of them, nor in the series", async () => {
+        const { ada } = await seed();
+        await sql(`UPDATE @provider_usage_ledger SET created_at = now() - interval '40 days' WHERE session_id = 's-system'`);
+        const s = await summary(ada, true, 30);
+        expect(s.windows.month.total).toBe(16830 - 8800);
+        expect(s.windows.week.total).toBe(16830 - 8800);
+        expect(s.daily).toHaveLength(1);
+        expect(s.daily[0].total).toBe(16830 - 8800);
+        // A 90-day window reaches it again — the series then has two days.
+        const wide = await summary(ada, true, 90);
+        expect(wide.daily).toHaveLength(2);
+        expect(wide.models.find((m) => m.model === "gpt-5.4").total).toBe(16500);
+        // ...but the month window is still the month.
+        expect(wide.windows.month.total).toBe(16830 - 8800);
+    });
+
+    it("an empty window is an empty answer, not an error", async () => {
+        const { ada } = await seed();
+        const s = await summary(ada, true, 14, ["no-such-provider"]);
+        expect(s.windows.month).toMatchObject({ total: 0, turns: 0, sessions: 0 });
+        expect(s.daily).toEqual([]);
+        expect(s.models).toEqual([]);
+        expect(s.classes).toEqual([]);
+    });
+});
+
+// ─── 0069: the four parts of every period cell ───────────────────────────
+
+describe("the grid's period cells carry the token split (0069)", () => {
+    it("the four parts add up to the used figure, for everyone and for the viewer, per scope", async () => {
+        const alice = await makeUser("alice");
+        const bob = await makeUser("bob");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await makeSession("s-b", { model: "team:gpt-5.4-nano", userId: bob });
+        await makeSession("s-sys", { model: "team:gpt-5.4", isSystem: true });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100, cacheRead: 50, cacheWrite: 5 });
+        await settle("s-b", 0, { provider: "team", model: "team:gpt-5.4-nano", owner: bob, input: 300, output: 30, cacheRead: 0, cacheWrite: 0 });
+        // A system turn is charged to the ledger but never to a meter — and
+        // so never to the split either, which must add up to the meter.
+        await settle("s-sys", 0, { provider: "team", model: "team:gpt-5.4", owner: null, chargeClass: "system", input: 9000, output: 900 });
+        // A per-model limit makes gpt-5.4 a row of its own.
+        await setLimit("team", "day", "team:gpt-5.4", 100000);
+
+        const rows = await sql(`SELECT * FROM @cms_provider_usage_grid($1, FALSE)`, [alice]);
+        const team = rows.find((r) => r.row_kind === "provider" && r.provider_name === "team");
+        const model = rows.find((r) => r.row_kind === "model" && r.scope === "team:gpt-5.4");
+        for (const period of ["day", "week", "month"]) {
+            const c = team.periods[period];
+            // Everyone: alice + bob, not the system turn. Adds up to the meter.
+            expect(c.usedTokens).toBe(1100 + 330);
+            expect(c).toMatchObject({ inputTokens: 1300, outputTokens: 130, cacheReadTokens: 50, cacheWriteTokens: 5 });
+            // input + output IS the used figure; the cache figures are parts of input.
+            expect(c.inputTokens + c.outputTokens).toBe(c.usedTokens);
+            expect(c.cacheReadTokens + c.cacheWriteTokens).toBeLessThanOrEqual(c.inputTokens);
+            // The viewer: alice alone.
+            expect(c.yourUsedTokens).toBe(1100);
+            expect(c).toMatchObject({ yourInputTokens: 1000, yourOutputTokens: 100, yourCacheReadTokens: 50, yourCacheWriteTokens: 5 });
+        }
+        // The model row is scoped to its own turns.
+        expect(model.periods.day).toMatchObject({ usedTokens: 1100, inputTokens: 1000, outputTokens: 100, cacheReadTokens: 50, cacheWriteTokens: 5 });
+        // Nobody signed in: the viewer's parts are unknown, not zero.
+        const anon = await sql(`SELECT * FROM @cms_provider_usage_grid(NULL, FALSE)`);
+        const anonTeam = anon.find((r) => r.row_kind === "provider" && r.provider_name === "team");
+        expect(anonTeam.periods.day.yourInputTokens).toBeNull();
+        expect(anonTeam.periods.day.inputTokens).toBe(1300);
+    });
+
+    it("the daily series carries the same four parts", async () => {
+        const alice = await makeUser("alice");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100, cacheRead: 50, cacheWrite: 5 });
+        const days = await sql(`SELECT * FROM @cms_provider_usage_daily($1, FALSE, 7, NULL, 'team', NULL, NULL, NULL)`, [alice]);
+        expect(days).toHaveLength(1);
+        expect(days[0]).toMatchObject({ tokens_total: "1100", tokens_input: "1000", tokens_output: "100", tokens_cache_read: "50", tokens_cache_write: "5" });
+    });
+});
+
+// The store is the one layer between the SQL and every surface, and it
+// shapes each period cell field by field — so a column the SQL adds is
+// dropped on the floor unless the store names it. 0069's split was, for a
+// moment, exactly that: green in SQL, green against a stub, absent live.
+describe("ProviderStore.usageGrid passes the split through (0069)", () => {
+    it("every period cell reaches the caller with its eight parts", async () => {
+        const { ProviderStore } = await import("../../src/provider-store.ts");
+        const alice = await makeUser("alice");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100, cacheRead: 50, cacheWrite: 5 });
+        const store = new ProviderStore(pool, SCHEMA);
+        const rows = await store.usageGrid(alice, false);
+        const team = rows.find((r) => r.rowKind === "provider" && r.providerName === "team");
+        expect(team.periods.day).toMatchObject({
+            usedTokens: 1100, inputTokens: 1000, outputTokens: 100, cacheReadTokens: 50, cacheWriteTokens: 5,
+            yourUsedTokens: 1100, yourInputTokens: 1000, yourOutputTokens: 100, yourCacheReadTokens: 50, yourCacheWriteTokens: 5,
+        });
+        // Nobody signed in: the viewer's parts stay null through the mapping too.
+        const anon = (await store.usageGrid(null, false)).find((r) => r.rowKind === "provider" && r.providerName === "team");
+        expect(anon.periods.day.yourInputTokens).toBeNull();
+        expect(anon.periods.day.inputTokens).toBe(1000);
+    });
+});
+
+// ─── Accounting survives the things that change a provider ───────────────
+//
+// The ledger is keyed by NAME and has no foreign key to provider_instances
+// or users, so what a provider spent stays on the books after the provider
+// (or the person) is gone. The meters do cascade — the Providers tab has no
+// row to show once the provider is deleted, and a recreated name starts at
+// zero — but the Cluster summary reads the ledger, and the ledger keeps it.
+
+describe("accounting survives provider deletion, owner deletion and key rotation", () => {
+    const summary = (viewer, isAdmin, days = 14, providers = null) =>
+        one(`SELECT @cms_provider_usage_summary($1,$2,$3,$4) AS s`, [viewer, isAdmin, days, providers])
+            .then((r) => r.s);
+
+    it("a rotated key changes no number anywhere", async () => {
+        const ada = await makeUser("ada");
+        const alice = await makeUser("alice");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100 });
+        const before = await summary(ada, true);
+        const meterBefore = await meter("team", "day");
+        await one(`SELECT * FROM @cms_provider_update_shared_credential($1,$2,$3,$4)`,
+            ["team", JSON.stringify({ kind: "apiKey", value: "rotated" }), ada, true]);
+        expect(await summary(ada, true)).toEqual(before);
+        expect((await meter("team", "day")).used_tokens).toBe(meterBefore.used_tokens);
+        // And the grid still shows the row with its figures.
+        const rows = await sql(`SELECT * FROM @cms_provider_usage_grid($1, TRUE)`, [ada]);
+        expect(rows.find((r) => r.provider_name === "team").periods.day.usedTokens).toBe(1100);
+    });
+
+    it("a deleted provider's turns stay in the summary; its meters and its row are gone", async () => {
+        const ada = await makeUser("ada");
+        const alice = await makeUser("alice");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100 });
+        expect((await summary(ada, true)).windows.month.total).toBe(1100);
+
+        await sql(`SELECT @cms_provider_delete('team', NULL, TRUE)`);
+        // Ledger: still there. Summary: still counts it, still names the provider.
+        expect(await sql(`SELECT 1 FROM @provider_usage_ledger WHERE provider_name = 'team'`)).toHaveLength(1);
+        const after = await summary(ada, true);
+        expect(after.windows.month.total).toBe(1100);
+        expect(after.models[0]).toMatchObject({ model: "gpt-5.4", providers: 1, total: 1100 });
+        // Meters: cascaded away with the provider. Grid: no row.
+        expect(await sql(`SELECT 1 FROM @provider_meters WHERE provider_name = 'team'`)).toHaveLength(0);
+        expect((await sql(`SELECT * FROM @cms_provider_usage_grid($1, TRUE)`, [ada])).some((r) => r.provider_name === "team")).toBe(false);
+
+        // A recreated name starts from zero on the Providers tab — the old
+        // holder's turns are before its created_at — while the summary
+        // keeps counting the history under that name.
+        await createShared("team");
+        const rows = await sql(`SELECT * FROM @cms_provider_usage_grid($1, TRUE)`, [ada]);
+        expect(rows.find((r) => r.provider_name === "team").periods.day).toMatchObject({ usedTokens: 0, inputTokens: 0 });
+        expect((await summary(ada, true, 14, ["team"])).windows.month.total).toBe(1100);
+    });
+
+    it("a deleted person's turns stay in the cluster summary", async () => {
+        const ada = await makeUser("ada");
+        const alice = await makeUser("alice");
+        await createShared("team");
+        await makeSession("s-a", { model: "team:gpt-5.4", userId: alice });
+        await settle("s-a", 0, { provider: "team", model: "team:gpt-5.4", owner: alice, input: 1000, output: 100 });
+        await sql(`DELETE FROM @session_owners WHERE user_id = $1`, [alice]);
+        await sql(`DELETE FROM @users WHERE user_id = $1`, [alice]);
+        const after = await summary(ada, true);
+        expect(after.windows.month.total).toBe(1100);
+        expect(after.classes).toEqual([{ chargeClass: "user", total: 1100, turns: 1 }]);
+    });
+});
+
+describe("0070 repairs what the double-count wrote", () => {
+    // The migration list applies to an EMPTY test schema, so the backfill and
+    // the meter rebuild have nothing to do there. This plants the shape the
+    // old function left behind — a ledger total of in + out + cache r + cache w
+    // and meters holding that same inflated figure — and runs 0070's repair
+    // steps against it. The function step is skipped: it is the live one.
+    const repairSteps = () => CMS_MIGRATIONS(SCHEMA).find((m) => m.version === "0070").steps.slice(1);
+
+    it("rewrites the ledger total and rebuilds both meters from it, over the live window only", async () => {
+        const bob = await makeUser("bob-0070");
+        await createShared("team");
+        await setLimit("team", "day", null, 1_000_000);
+        await setLimit("team", "week", null, 1_000_000);
+        await settle("s1", 0, { provider: "team", model: "team:gpt", owner: bob, input: 10, output: 2, cacheRead: 7, cacheWrite: 3 });
+        await settle("s2", 0, { provider: "team", model: "team:gpt", owner: bob, input: 100, output: 20, cacheRead: 70, cacheWrite: 30 });
+        // s2 happened before today's window: the day meter must not count it, the week meter must.
+        // The provider is backdated with it — the rebuild counts nothing from
+        // before a provider's creation, the same rule the Providers tab uses,
+        // so a recreated name does not inherit a deleted namesake's spend.
+        await sql(`UPDATE @provider_instances SET created_at = now() - interval '8 days' WHERE name = 'team'`);
+        await sql(`UPDATE @provider_usage_ledger
+                      SET created_at = (SELECT window_start FROM @cms_provider_window_bounds('day', now())) - interval '1 hour'
+                    WHERE session_id = 's2'`);
+        // Yesterday is in this week's window on every day but Monday (UTC).
+        const inWeek = (await one(`SELECT (SELECT window_start FROM @cms_provider_window_bounds('day', now())) - interval '1 hour'
+                                        >= (SELECT window_start FROM @cms_provider_window_bounds('week', now())) AS yes`)).yes;
+        const week = inWeek ? 132 : 12;
+        // What 0069-era code left: totals and meters with the cache added on.
+        await sql(`UPDATE @provider_usage_ledger SET tokens_total = tokens_input + tokens_output + tokens_cache_read + tokens_cache_write`);
+        await sql(`UPDATE @provider_meters SET used_tokens = 999`);
+        await sql(`UPDATE @provider_meters_user SET used_tokens = 999`);
+
+        for (const step of repairSteps()) await pool.query(step);
+
+        const rows = await sql(`SELECT session_id, tokens_total FROM @provider_usage_ledger ORDER BY session_id`);
+        expect(rows.map((r) => [r.session_id, Number(r.tokens_total)])).toEqual([["s1", 12], ["s2", 120]]);
+        expect(await meter("team", "day")).toBe(12);
+        expect(await meter("team", "week")).toBe(week);
+        expect(await userMeter("team", bob, "day")).toBe(12);
+        expect(await userMeter("team", bob, "week")).toBe(week);
+    });
+
+    it("a meter whose window has no ledger rows goes to zero, and a deleted provider's ledger stays", async () => {
+        await createShared("gone");
+        await setLimit("gone", "day", null, 1_000_000);
+        await settle("s1", 0, { provider: "gone", model: "gone:gpt", input: 10, output: 2, cacheRead: 7, cacheWrite: 3 });
+        await sql(`UPDATE @provider_usage_ledger SET tokens_total = 22`);
+        // A meter with a scope nothing matches: the rebuild must write 0, not leave 999.
+        await sql(`INSERT INTO @provider_meters (provider_name, period, scope, window_key_utc, window_start_utc, resets_at_utc, used_tokens)
+                   SELECT 'gone', 'day', 'gone:other', window_key, window_start, resets_at, 999
+                     FROM @cms_provider_window_bounds('day', now())`);
+        await sql(`SELECT * FROM @cms_provider_delete('gone', NULL, TRUE)`);
+        for (const step of repairSteps()) await pool.query(step);
+        // Meters cascaded away with the provider; the ledger row is corrected, not dropped.
+        expect(await meter("gone", "day")).toBe(null);
+        const row = await one(`SELECT tokens_total FROM @provider_usage_ledger WHERE provider_name = 'gone'`);
+        expect(Number(row.tokens_total)).toBe(12);
     });
 });

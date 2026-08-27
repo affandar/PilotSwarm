@@ -173,7 +173,16 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
         const after = await store.embedderStatus();
         assert.equal(after.running, true, "both loops remain running after isolating failure");
         assert.ok(after.loops.every((loop) => loop.running), "batch and retry loops both still running");
-    }, 420_000);
+    // Ten minutes. This ceiling exists only so the poll above owns the
+    // deadline: it must clear the poll's own 360s budget PLUS the setup
+    // before it (stop, reconfigure, store two rows, start — about 90s
+    // against the live service). At 420s the ceiling fired first, so a
+    // slow run reported a bare vitest timeout instead of the poll's
+    // "oversized row terminally fails while good row retries" label, and
+    // the run had no headroom at all when the earlier tests in this file
+    // left the service a backlog. Alone this test finishes in ~160s;
+    // inside the full file it needed more than 420s on 2026-08-27.
+    }, 600_000);
 
     it("S3 (neg) semantic with no endpoint configured throws (fresh store)", async () => {
         const fresh = await makeStore({ tag: "noembed", embeddingDim: 4 });

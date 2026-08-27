@@ -97,6 +97,14 @@ export interface UsageGridCell {
     quotaTokens: number | null;
     usedTokens: number;
     yourQuotaTokens: number | null;
+    /**
+     * The four parts of usedTokens / yourUsedTokens (0069): same window,
+     * scope and turns as the meter, so they add up to it. The viewer's four
+     * are null when nobody is signed in, like yourUsedTokens.
+     */
+    inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+    yourInputTokens: number | null; yourOutputTokens: number | null;
+    yourCacheReadTokens: number | null; yourCacheWriteTokens: number | null;
     yourUsedTokens: number | null;
     windowStartUtc: string;
     resetsAtUtc: string;
@@ -466,6 +474,14 @@ export class ProviderStore {
             yourUsedTokens: x?.yourUsedTokens === null || x?.yourUsedTokens === undefined
                 ? null : Number(x.yourUsedTokens),
             windowStartUtc: String(x?.windowStartUtc ?? ""),
+            inputTokens: Number(x?.inputTokens ?? 0),
+            outputTokens: Number(x?.outputTokens ?? 0),
+            cacheReadTokens: Number(x?.cacheReadTokens ?? 0),
+            cacheWriteTokens: Number(x?.cacheWriteTokens ?? 0),
+            yourInputTokens: x?.yourInputTokens === null || x?.yourInputTokens === undefined ? null : Number(x.yourInputTokens),
+            yourOutputTokens: x?.yourOutputTokens === null || x?.yourOutputTokens === undefined ? null : Number(x.yourOutputTokens),
+            yourCacheReadTokens: x?.yourCacheReadTokens === null || x?.yourCacheReadTokens === undefined ? null : Number(x.yourCacheReadTokens),
+            yourCacheWriteTokens: x?.yourCacheWriteTokens === null || x?.yourCacheWriteTokens === undefined ? null : Number(x.yourCacheWriteTokens),
             resetsAtUtc: String(x?.resetsAtUtc ?? ""),
         });
         return rows.map((r) => ({
@@ -633,6 +649,11 @@ export class ProviderStore {
             dayUtc: iso(r.day_utc)?.slice(0, 10) ?? "",
             tokensTotal: Number(r.tokens_total ?? 0),
             turns: Number(r.turns ?? 0),
+            // The four parts of tokensTotal (0069).
+            tokensInput: Number(r.tokens_input ?? 0),
+            tokensOutput: Number(r.tokens_output ?? 0),
+            tokensCacheRead: Number(r.tokens_cache_read ?? 0),
+            tokensCacheWrite: Number(r.tokens_cache_write ?? 0),
         }));
     }
 
@@ -650,6 +671,25 @@ export class ProviderStore {
             tokensTotal: Number(r.tokens_total ?? 0),
             turns: Number(r.turns ?? 0),
         }));
+    }
+
+    /**
+     * The cluster summary: today / week / month totals, a per-UTC-day series
+     * and the per-MODEL pivot, all from the ledger over one scope and one
+     * provider filter. An admin sees the cluster; anyone else their own
+     * turns. `providers` empty or absent means every provider.
+     */
+    async usageSummary(
+        viewer: number | null, isAdmin: boolean, days = 14, providers: string[] | null = null,
+    ): Promise<Record<string, unknown>> {
+        const names = Array.isArray(providers)
+            ? providers.map((p) => String(p ?? "").trim()).filter(Boolean)
+            : [];
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_usage_summary")}($1,$2,$3,$4) AS summary`,
+            [viewer, isAdmin, days, names.length ? names : null]);
+        const summary = rows[0]?.summary;
+        return summary && typeof summary === "object" ? summary : {};
     }
 
     // ── management ───────────────────────────────────────────────────

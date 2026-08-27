@@ -350,6 +350,21 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "shared_provider_credential_update",
             sql: migration_0067_shared_provider_credential_update(schema),
         },
+        {
+            version: "0068",
+            name: "provider_usage_summary",
+            sql: migration_0068_provider_usage_summary(schema),
+        },
+        {
+            version: "0069",
+            name: "provider_grid_token_split",
+            sql: migration_0069_provider_grid_token_split(schema),
+        },
+        {
+            version: "0070",
+            name: "token_total_is_input_plus_output",
+            steps: migration_0070_token_total_is_input_plus_output(schema),
+        },
     ];
 }
 
@@ -13907,4 +13922,432 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 `;
+}
+
+/**
+ * 0068: the cluster summary — every provider at once, pivoted by model.
+ *
+ * The Providers tab answers "how much of THIS provider's limit is used",
+ * one provider at a time, from the meters. This answers the other question:
+ * how many tokens the cluster burned today / this week / this month, per
+ * UTC day for a chart, and per MODEL — folded across providers, reasoning
+ * efforts and context tiers, because a person planning capacity thinks in
+ * models, not in the routes tokens took to reach them.
+ *
+ * Read from the ledger, not the meters. The meters count only 'user'
+ * charges (system sessions are exempt from limits by design), so a summary
+ * built on them would silently omit the sweeper, the token manager and
+ * every other system agent — on a real cluster the larger half. The ledger
+ * has every turn; `classes` says how the total splits so nobody has to
+ * wonder why this number is bigger than the Providers tab's.
+ *
+ * Scope: an admin sees the cluster; anyone else sees their own turns. The
+ * provider filter is a plain list of names — the portal turns "Shared" and
+ * "Users" into names before asking, so the database never has to guess
+ * what a preset meant.
+ */
+function migration_0068_provider_usage_summary(schema: string): string {
+    const s = schema;
+    return `
+-- The rows every aggregate below reads: one place for the scope and the
+-- provider filter, so the KPIs, the chart and the model table can never
+-- disagree about which turns were counted.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_rows(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_since TIMESTAMPTZ, p_providers TEXT[]
+) RETURNS SETOF ${s}.provider_usage_ledger AS $$
+    SELECT l.*
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= p_since
+       AND (COALESCE(p_is_admin, FALSE) OR l.owner_user_id IS NOT DISTINCT FROM p_viewer)
+       AND (p_providers IS NULL OR cardinality(p_providers) = 0 OR l.provider_name = ANY(p_providers));
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_window(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_since TIMESTAMPTZ, p_providers TEXT[]
+) RETURNS JSONB AS $$
+    SELECT jsonb_build_object(
+        'input', COALESCE(sum(r.tokens_input), 0),
+        'output', COALESCE(sum(r.tokens_output), 0),
+        'cacheRead', COALESCE(sum(r.tokens_cache_read), 0),
+        'cacheWrite', COALESCE(sum(r.tokens_cache_write), 0),
+        'total', COALESCE(sum(r.tokens_total), 0),
+        'turns', count(*),
+        'sessions', count(DISTINCT r.session_id))
+      FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, p_since, p_providers) r;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days    INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    -- UTC days, today included: the ledger stores UTC and the meters' day /
+    -- week / month windows are UTC, so "today" here is the same today.
+    v_today   DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from    TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_month   TIMESTAMPTZ := ((v_today - 29) :: timestamp) AT TIME ZONE 'UTC';
+    v_since   TIMESTAMPTZ := LEAST(v_from, v_month);
+    v_windows JSONB;
+    v_daily   JSONB;
+    v_models  JSONB;
+    v_classes JSONB;
+BEGIN
+    -- Today / last 7 UTC days / last 30 UTC days, each with the four-way
+    -- split. The month window is what the ledger is read for at minimum.
+    SELECT jsonb_build_object(
+        'day',   ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, ((v_today)::timestamp) AT TIME ZONE 'UTC', p_providers),
+        'week',  ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, ((v_today - 6)::timestamp) AT TIME ZONE 'UTC', p_providers),
+        'month', ${s}.cms_provider_usage_summary_window(p_viewer, p_is_admin, v_month, p_providers))
+      INTO v_windows;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'),
+               'input', d.i, 'output', d.o, 'cacheRead', d.cr, 'cacheWrite', d.cw,
+               'total', d.t, 'turns', d.n) ORDER BY d.day), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day,
+               sum(r.tokens_input) i, sum(r.tokens_output) o,
+               sum(r.tokens_cache_read) cr, sum(r.tokens_cache_write) cw,
+               sum(r.tokens_total) t, count(*) n
+          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1) d;
+
+    -- The pivot: the model NAME, whatever provider carried it. model_qualified
+    -- is provider:model, and a model name never holds a colon, so the part
+    -- after the first colon is the model. Each row carries its own per-day
+    -- totals for a sparkline.
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'model', m.model, 'providers', m.providers, 'turns', m.n,
+               'input', m.i, 'output', m.o, 'cacheRead', m.cr, 'cacheWrite', m.cw, 'total', m.t,
+               'daily', m.daily) ORDER BY m.t DESC, m.model), '[]'::jsonb)
+      INTO v_models
+      FROM (
+        SELECT g.model, count(DISTINCT g.provider_name) providers, count(*) n,
+               sum(g.tokens_input) i, sum(g.tokens_output) o,
+               sum(g.tokens_cache_read) cr, sum(g.tokens_cache_write) cw, sum(g.tokens_total) t,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (x.created_at AT TIME ZONE 'UTC')::date AS day, sum(x.tokens_total) t
+                          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) x
+                         WHERE substr(x.model_qualified, position(':' IN x.model_qualified) + 1) = g.model
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, substr(r.model_qualified, position(':' IN r.model_qualified) + 1) AS model
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.model) m;
+
+    -- How the window's total splits by who was charged: people, the
+    -- machinery PilotSwarm runs for itself, or turns with no provider.
+    SELECT COALESCE(jsonb_agg(jsonb_build_object('chargeClass', c.charge_class, 'total', c.t, 'turns', c.n) ORDER BY c.t DESC), '[]'::jsonb)
+      INTO v_classes
+      FROM (SELECT r.charge_class, sum(r.tokens_total) t, count(*) n
+              FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+             GROUP BY 1) c;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'windows', v_windows,
+        'daily', v_daily,
+        'models', v_models,
+        'classes', v_classes);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+`;
+}
+
+/**
+ * 0069: the four-way token split on the Providers page.
+ *
+ * The grid's period cells carried one number per pair (used / quota, yours /
+ * your share) because the METERS hold one number: a limit is on the total,
+ * and the total is input + output + cache read + cache write
+ * (cms_provider_settle_turn, v_total). What went into that total was only
+ * visible on the Cluster summary. Each cell now also carries the split, for
+ * everyone and for the viewer, read from the ledger over the SAME window
+ * and scope the meter covers and over the same 'user' turns the meter
+ * counts — so the four parts add up to the number beside them.
+ *
+ * The per-day series under a selected provider gets the same split, which
+ * widens its RETURNS TABLE, hence DROP + CREATE with the same arguments.
+ */
+function migration_0069_provider_grid_token_split(schema: string): string {
+    const s = schema;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_grid(
+    p_viewer BIGINT, p_is_admin BOOLEAN
+) RETURNS TABLE(
+    provider_name TEXT, row_kind TEXT, scope TEXT, class TEXT,
+    allowance_pct SMALLINT, hold_until_utc TIMESTAMPTZ, hold_indefinite BOOLEAN,
+    model_row_count INTEGER, owned_by_me BOOLEAN, manageable BOOLEAN,
+    owner_label TEXT, periods JSONB
+) AS $$
+    WITH windows AS (
+        SELECT per.period, wb.window_start, wb.resets_at, wb.window_key
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+    ),
+    model_scopes AS (
+        SELECT r.provider_name, r.model_qualified AS scope
+          FROM ${s}.provider_budget_rules r
+         WHERE r.model_qualified IS NOT NULL
+        UNION
+        SELECT m.provider_name, m.scope
+          FROM ${s}.provider_meters m
+          JOIN windows w ON w.period = m.period AND w.window_key = m.window_key_utc
+         WHERE m.scope <> '*'
+    ),
+    visible AS (
+        SELECT pi.name, pi.class, pi.allowance_pct, pi.hold_until_utc, pi.hold_indefinite,
+               pi.created_at AS named_at,
+               (pi.class = 'shared' OR pi.owner_user_id IS NOT DISTINCT FROM p_viewer) AS owned_by_me,
+               (CASE WHEN pi.class = 'shared' THEN COALESCE(p_is_admin, FALSE)
+                     ELSE pi.owner_user_id IS NOT DISTINCT FROM p_viewer END) AS manageable,
+               (CASE WHEN pi.class = 'shared' OR pi.owner_user_id IS NULL THEN NULL
+                     ELSE COALESCE(
+                         NULLIF(BTRIM(u.display_name), ''),
+                         NULLIF(BTRIM(u.email), ''),
+                         'user ' || pi.owner_user_id::text) END) AS owner_label,
+               (SELECT count(*)::INTEGER FROM model_scopes ms WHERE ms.provider_name = pi.name) AS model_rows
+          FROM ${s}.provider_instances pi
+          LEFT JOIN ${s}.users u ON u.user_id = pi.owner_user_id
+         WHERE pi.class = 'shared' OR pi.owner_user_id = p_viewer OR COALESCE(p_is_admin, FALSE)
+    ),
+    grid_rows AS (
+        SELECT v.*, 'provider'::TEXT AS row_kind, '*'::TEXT AS scope FROM visible v
+        UNION ALL
+        SELECT v.*, 'model'::TEXT, ms.scope
+          FROM visible v
+          JOIN model_scopes ms ON ms.provider_name = v.name
+    )
+    SELECT g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+           g.hold_until_utc, g.hold_indefinite,
+           CASE WHEN g.row_kind = 'provider' THEN g.model_rows ELSE 0 END,
+           g.owned_by_me, g.manageable,
+           CASE WHEN g.row_kind = 'provider' THEN g.owner_label ELSE NULL END,
+           jsonb_object_agg(w.period, jsonb_build_object(
+               'ruleId', r.rule_id,
+               'quotaTokens', r.limit_tokens,
+               'usedTokens', COALESCE(m.used_tokens, 0),
+               'yourQuotaTokens', CASE
+                   WHEN r.limit_tokens IS NULL OR p_viewer IS NULL THEN NULL
+                   WHEN NOT g.owned_by_me THEN NULL
+                   WHEN g.allowance_pct < 100
+                        THEN ${s}.cms_provider_ceiling(r.limit_tokens, g.allowance_pct)
+                   ELSE r.limit_tokens END,
+               'yourUsedTokens', CASE WHEN p_viewer IS NULL THEN NULL
+                                      ELSE COALESCE(mu.used_tokens, 0) END,
+               -- What the used figure is made of. Same window, same scope,
+               -- same 'user' turns as the meter, so the four add up to it.
+               'inputTokens', COALESCE(ls.i, 0),
+               'outputTokens', COALESCE(ls.o, 0),
+               'cacheReadTokens', COALESCE(ls.cr, 0),
+               'cacheWriteTokens', COALESCE(ls.cw, 0),
+               'yourInputTokens', CASE WHEN p_viewer IS NULL THEN NULL ELSE COALESCE(lu.i, 0) END,
+               'yourOutputTokens', CASE WHEN p_viewer IS NULL THEN NULL ELSE COALESCE(lu.o, 0) END,
+               'yourCacheReadTokens', CASE WHEN p_viewer IS NULL THEN NULL ELSE COALESCE(lu.cr, 0) END,
+               'yourCacheWriteTokens', CASE WHEN p_viewer IS NULL THEN NULL ELSE COALESCE(lu.cw, 0) END,
+               'windowStartUtc', to_char(w.window_start AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'resetsAtUtc', to_char(w.resets_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
+      FROM grid_rows g
+      CROSS JOIN windows w
+      LEFT JOIN ${s}.provider_budget_rules r
+             ON r.provider_name = g.name AND r.period = w.period
+            AND COALESCE(r.model_qualified, '*') = g.scope
+      LEFT JOIN ${s}.provider_meters m
+             ON m.provider_name = g.name AND m.period = w.period
+            AND m.scope = g.scope AND m.window_key_utc = w.window_key
+      LEFT JOIN ${s}.provider_meters_user mu
+             ON mu.provider_name = g.name AND mu.period = w.period
+            AND mu.scope = g.scope AND mu.window_key_utc = w.window_key
+            AND mu.user_id = p_viewer
+      LEFT JOIN LATERAL (
+            SELECT sum(l.tokens_input) i, sum(l.tokens_output) o,
+                   sum(l.tokens_cache_read) cr, sum(l.tokens_cache_write) cw
+              FROM ${s}.provider_usage_ledger l
+             WHERE l.provider_name = g.name AND l.charge_class = 'user'
+               AND l.created_at >= GREATEST(w.window_start, g.named_at) AND l.created_at < w.resets_at
+               AND (g.scope = '*' OR l.model_qualified = g.scope)) ls ON TRUE
+      LEFT JOIN LATERAL (
+            SELECT sum(l.tokens_input) i, sum(l.tokens_output) o,
+                   sum(l.tokens_cache_read) cr, sum(l.tokens_cache_write) cw
+              FROM ${s}.provider_usage_ledger l
+             WHERE l.provider_name = g.name AND l.charge_class = 'user'
+               AND l.owner_user_id = p_viewer
+               AND l.created_at >= GREATEST(w.window_start, g.named_at) AND l.created_at < w.resets_at
+               AND (g.scope = '*' OR l.model_qualified = g.scope)) lu ON TRUE
+     GROUP BY g.name, g.row_kind, g.scope, g.class, g.allowance_pct,
+              g.hold_until_utc, g.hold_indefinite, g.model_rows,
+              g.owned_by_me, g.manageable, g.owner_label
+     ORDER BY (g.class = 'shared') DESC, g.name, (g.row_kind = 'model'), g.scope;
+$$ LANGUAGE sql STABLE;
+
+DROP FUNCTION IF EXISTS ${s}.cms_provider_usage_daily(BIGINT, BOOLEAN, INTEGER, BIGINT, TEXT, TEXT, TEXT, TEXT);
+
+CREATE FUNCTION ${s}.cms_provider_usage_daily(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT
+) RETURNS TABLE(
+    day_utc DATE, tokens_total BIGINT, turns BIGINT,
+    tokens_input BIGINT, tokens_output BIGINT, tokens_cache_read BIGINT, tokens_cache_write BIGINT
+) AS $$
+    SELECT (l.created_at AT TIME ZONE 'UTC')::date, COALESCE(sum(l.tokens_total), 0), count(*)::BIGINT,
+           COALESCE(sum(l.tokens_input), 0), COALESCE(sum(l.tokens_output), 0),
+           COALESCE(sum(l.tokens_cache_read), 0), COALESCE(sum(l.tokens_cache_write), 0)
+      FROM ${s}.provider_usage_ledger l
+     WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+       AND (COALESCE(p_is_admin, FALSE)
+            OR l.owner_user_id IS NOT DISTINCT FROM p_viewer
+            OR (p_provider IS NOT NULL AND p_owner IS NULL AND p_session IS NULL
+                AND EXISTS (
+                    SELECT 1 FROM ${s}.provider_instances pi
+                     WHERE pi.name = p_provider AND pi.class = 'shared')))
+       AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+       AND (p_provider IS NULL OR l.provider_name = p_provider)
+       AND (p_provider IS NULL OR l.created_at >= COALESCE(
+               (SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = p_provider),
+               '-infinity'::timestamptz))
+       AND (p_model IS NULL OR l.model_qualified = p_model)
+       AND (p_session IS NULL OR l.session_id = p_session)
+       AND (p_class IS NULL OR l.charge_class = p_class)
+     GROUP BY 1 ORDER BY 1;
+$$ LANGUAGE sql STABLE;
+`;
+}
+
+/**
+ * 0070: a turn's total is input + output. Cache reads and writes are parts
+ * of the input, not additions to it.
+ *
+ * `buildUsageSummaryUpsert` (session-proxy.ts) stores the INCLUSIVE prompt
+ * count: `tokens_input` already contains what was served from the cache and
+ * what was written to it. The ledger and the meters proved it — in every row
+ * on the local database and on chk, across GPT, Claude, Grok and MAI,
+ * `tokens_cache_read + tokens_cache_write <= tokens_input`, and when a turn
+ * wrote to the cache the two sides were equal. Yet `cms_provider_settle_turn`
+ * summed all four into `tokens_total`, so every cached prompt was charged
+ * twice: chk's last 30 days read 3.62B tokens for 1.97B consumed. That
+ * total is what the meters hold and what every limit is compared against,
+ * so quotas were biting at roughly half their stated size.
+ *
+ * Three things, as separate steps: the function, the ledger backfill, and
+ * the meters rebuilt from the corrected ledger for their live windows (the
+ * meters are a cache of the ledger; the reconciliation that showed them
+ * exact is the same query, so nothing here invents a number). After this,
+ * every "used" figure drops by the cached amount — limits that were tuned
+ * against the inflated figures are looser in practice from here on.
+ */
+function migration_0070_token_total_is_input_plus_output(schema: string): string[] {
+    const s = schema;
+    return [
+        `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_settle_turn(
+    p_session_id TEXT, p_turn_index INTEGER, p_provider TEXT, p_model TEXT,
+    p_owner BIGINT, p_charge_class TEXT, p_agent_id TEXT,
+    p_in BIGINT, p_out BIGINT, p_cache_read BIGINT, p_cache_write BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    -- input + output. The cache figures are NOT added: as the Copilot SDK
+    -- reports usage, cache_read and cache_write are parts OF the input
+    -- (cache_read + cache_write <= input in every row ever recorded, and
+    -- equal to it when writes occur), so adding them again charged a
+    -- cached prompt twice — chk was over-counting by 84% (0070).
+    v_total BIGINT := COALESCE(p_in,0) + COALESCE(p_out,0);
+    v_class TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_charge_class,'')), ''), 'user');
+    v_scope TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_model,'')), ''), '*');
+    -- The lifetime offset. Stable for the whole turn: only a restart moves
+    -- it, and a restart deletes the orchestration mid-turn anyway.
+    v_index INTEGER := COALESCE(p_turn_index, 0) + COALESCE(
+        (SELECT ss.provider_ledger_base FROM ${s}.sessions ss
+          WHERE ss.session_id = p_session_id), 0);
+    v_first INTEGER;
+BEGIN
+    IF p_provider IS NULL THEN v_class := 'unattributed'; END IF;
+
+    INSERT INTO ${s}.provider_usage_ledger
+        (session_id, turn_index, provider_name, model_qualified, owner_user_id,
+         charge_class, tokens_input, tokens_output, tokens_cache_read,
+         tokens_cache_write, tokens_total, agent_id)
+    VALUES (p_session_id, v_index, p_provider, p_model, p_owner,
+            v_class, COALESCE(p_in,0), COALESCE(p_out,0), COALESCE(p_cache_read,0),
+            COALESCE(p_cache_write,0), v_total, p_agent_id)
+    ON CONFLICT (session_id, turn_index) DO NOTHING;
+    GET DIAGNOSTICS v_first = ROW_COUNT;
+    IF v_first = 0 THEN RETURN FALSE; END IF;
+
+    IF v_class <> 'user' OR p_provider IS NULL OR v_total <= 0 THEN
+        RETURN TRUE;
+    END IF;
+
+    PERFORM 1 FROM ${s}.provider_instances pi
+     WHERE pi.name = p_provider FOR KEY SHARE;
+    IF NOT FOUND THEN RETURN TRUE; END IF;
+
+    INSERT INTO ${s}.provider_meters
+        (provider_name, period, scope, window_key_utc, used_tokens,
+         window_start_utc, resets_at_utc)
+    SELECT p_provider, per.period, sc.scope, wb.window_key, v_total,
+           wb.window_start, wb.resets_at
+      FROM (VALUES ('day'),('week'),('month')) AS per(period)
+      CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+      CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+     ORDER BY per.period, sc.scope
+    ON CONFLICT (provider_name, period, scope, window_key_utc) DO UPDATE
+        SET used_tokens = ${s}.provider_meters.used_tokens + EXCLUDED.used_tokens,
+            updated_at = now();
+
+    IF p_owner IS NOT NULL THEN
+        INSERT INTO ${s}.provider_meters_user
+            (provider_name, period, scope, window_key_utc, user_id, used_tokens,
+             window_start_utc, resets_at_utc)
+        SELECT p_provider, per.period, sc.scope, wb.window_key, p_owner, v_total,
+               wb.window_start, wb.resets_at
+          FROM (VALUES ('day'),('week'),('month')) AS per(period)
+          CROSS JOIN LATERAL ${s}.cms_provider_window_bounds(per.period, now()) wb
+          CROSS JOIN (SELECT DISTINCT v.s FROM (VALUES ('*'), (v_scope)) AS v(s)) AS sc(scope)
+         ORDER BY per.period, sc.scope
+        ON CONFLICT (provider_name, period, scope, window_key_utc, user_id) DO UPDATE
+            SET used_tokens = ${s}.provider_meters_user.used_tokens + EXCLUDED.used_tokens,
+                updated_at = now();
+    END IF;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+`,
+        `
+SET lock_timeout = '5s';
+UPDATE ${s}.provider_usage_ledger
+   SET tokens_total = tokens_input + tokens_output
+ WHERE tokens_total IS DISTINCT FROM tokens_input + tokens_output;
+`,
+        `
+UPDATE ${s}.provider_meters m
+   SET used_tokens = COALESCE((
+        SELECT sum(l.tokens_total)
+          FROM ${s}.provider_usage_ledger l
+         WHERE l.provider_name = m.provider_name
+           AND l.charge_class = 'user'
+           AND l.created_at >= GREATEST(m.window_start_utc,
+                 COALESCE((SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = m.provider_name), '-infinity'::timestamptz))
+           AND l.created_at < m.resets_at_utc
+           AND (m.scope = '*' OR l.model_qualified = m.scope)), 0),
+       updated_at = now();
+`,
+        `
+UPDATE ${s}.provider_meters_user m
+   SET used_tokens = COALESCE((
+        SELECT sum(l.tokens_total)
+          FROM ${s}.provider_usage_ledger l
+         WHERE l.provider_name = m.provider_name
+           AND l.charge_class = 'user'
+           AND l.owner_user_id = m.user_id
+           AND l.created_at >= GREATEST(m.window_start_utc,
+                 COALESCE((SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = m.provider_name), '-infinity'::timestamptz))
+           AND l.created_at < m.resets_at_utc
+           AND (m.scope = '*' OR l.model_qualified = m.scope)), 0),
+       updated_at = now();
+`,
+    ];
 }

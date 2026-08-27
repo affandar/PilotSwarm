@@ -530,6 +530,26 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         // why on the session row too, not only on this screen. See
         // docs/proposals/providers-and-budgets-meters.md.
         budget: {
+            // Which tab of the Budget screen is up: the per-provider table
+            // ("providers") or the cluster summary ("summary").
+            tab: "providers",
+            // The Cluster summary tab: totals for today / week / month, the
+            // per-day series and the per-model pivot, over a provider filter.
+            summary: {
+                loading: false,
+                error: null,
+                fetchedAt: 0,
+                // 14, 30 or 90 — the chart's and the model table's window.
+                days: 14,
+                // Provider filter. `preset` is what the picker shows as the
+                // headline choice; `providers` is the exact list the request
+                // carried (empty = every provider). A custom pick clears the
+                // preset.
+                preset: "all",
+                providers: [],
+                // The last answer, verbatim from getProviderUsageSummary.
+                data: null,
+            },
             // A first load, with nothing on screen yet.
             loading: false,
             // A re-read WITH numbers already on screen. Separate from

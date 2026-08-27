@@ -3171,6 +3171,8 @@ export class PilotSwarmUiController {
      * admin view) and refresh the user profile so the UI is current.
      */
     async openAdminConsole() {
+        // One MODE at a time — see openBudget.
+        if (this.getState().ui?.budgetOpen) this.closeBudget();
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
         void this.refreshAdminModelProviders().catch(() => {});
@@ -3180,6 +3182,24 @@ export class PilotSwarmUiController {
     /** Close the Admin Console and return to the standard workspace. */
     closeAdminConsole() {
         this.dispatch({ type: "admin/visibility", visible: false });
+    }
+
+    /**
+     * The Workspace mode: sessions, chat and the panels. Closes whichever
+     * other mode is up. A real destination, so the toolbar can offer "back
+     * to the workspace" as a button rather than "close whatever is open".
+     */
+    openWorkspace() {
+        if (this.getState().admin?.visible) this.closeAdminConsole();
+        if (this.getState().ui?.budgetOpen) this.closeBudget();
+    }
+
+    /** Which mode is on screen: "workspace" | "budget" | "admin". */
+    currentMode() {
+        const state = this.getState();
+        if (state.admin?.visible) return "admin";
+        if (state.ui?.budgetOpen) return "budget";
+        return "workspace";
     }
 
     /**
@@ -4094,6 +4114,10 @@ export class PilotSwarmUiController {
      * row it names is in it.
      */
     async openBudget({ provider = undefined } = {}) {
+        // One MODE at a time: Workspace, Budget or the Admin Console. The two
+        // flags used to be independent, so Budget could open behind an open
+        // Admin Console and the toolbar showed both as active.
+        if (this.getState().admin?.visible) this.closeAdminConsole();
         this.dispatch({
             type: "ui/budgetOpen",
             open: true,
@@ -4113,6 +4137,45 @@ export class PilotSwarmUiController {
     /** Close the surface and return to the standard workspace. */
     closeBudget() {
         this.dispatch({ type: "ui/budgetOpen", open: false });
+    }
+
+    /** Which tab of the Budget screen: "providers" or "summary". */
+    setBudgetTab(tab) {
+        this.dispatch({ type: "budget/tab", tab });
+        if (tab === "summary") this.loadUsageSummary().catch(() => {});
+    }
+
+    /**
+     * Change the Cluster summary's window or provider filter and re-read.
+     * `providers` is the exact list to ask for (empty = all); `preset` is
+     * what the picker shows ("all" | "shared" | "users" | "custom").
+     */
+    async setUsageSummaryFilter({ days, providers, preset } = {}) {
+        this.dispatch({ type: "budget/summary/filter", days, providers, preset });
+        await this.loadUsageSummary();
+    }
+
+    /**
+     * Read the Cluster summary for the current filter. One request; the
+     * database builds the windows, the series and the model pivot over the
+     * same rows, so the three can never disagree.
+     */
+    async loadUsageSummary() {
+        if (typeof this.transport.getProviderUsageSummary !== "function") {
+            this.dispatch({ type: "budget/summary/failed", error: "The cluster summary is not available on this transport." });
+            return;
+        }
+        const filter = this.getState().budget?.summary || {};
+        this.dispatch({ type: "budget/summary/loading" });
+        try {
+            const data = await this.transport.getProviderUsageSummary({
+                days: filter.days || 14,
+                ...(Array.isArray(filter.providers) && filter.providers.length ? { providers: filter.providers } : {}),
+            });
+            this.dispatch({ type: "budget/summary/loaded", data, fetchedAt: Date.now() });
+        } catch (error) {
+            this.dispatch({ type: "budget/summary/failed", error: budgetRefusalMessage(error) });
+        }
     }
 
     /**
@@ -10401,6 +10464,9 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.CLOSE_ADMIN_CONSOLE:
                 this.closeAdminConsole();
+                return;
+            case UI_COMMANDS.OPEN_WORKSPACE:
+                this.openWorkspace();
                 return;
             case UI_COMMANDS.ADMIN_REFRESH_PROFILE:
                 await this.refreshAdminProfile();

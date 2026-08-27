@@ -112,7 +112,9 @@ test("the toolbar coin opens one table, and nothing else", async ({ page }) => {
 
         // One tab, one list, nothing else. Each of these was a surface of its
         // own and each is deleted, so their absence is the shape of the screen.
-        await expect(page.locator(".ps-budget-tabs")).toHaveCount(0);
+        // Two tabs and nothing else: the provider table, and the Cluster
+        // summary (its own spec). No stats strip, no filter bar, no pivot.
+        await expect(page.getByRole("tab")).toHaveText(["Providers", "Cluster summary"]);
         await expect(page.locator(".ps-budget-stats")).toHaveCount(0);
         await expect(page.locator(".ps-budget-filters")).toHaveCount(0);
         await expect(page.locator(".ps-budget-pivot")).toHaveCount(0);
@@ -497,7 +499,9 @@ test("provider lifecycle and defaults link to Admin Console instead of mutating 
 
         await expect(actions(page).getByRole("button", { name: "+ Add" })).toHaveCount(0);
         await expect(actions(page).getByRole("button", { name: "Remove" })).toHaveCount(0);
-        await expect(page.getByRole("button", { name: "Model providers" })).toBeVisible();
+        // The head keeps only Refresh: leaving for the admin console or the
+        // workspace is the toolbar's Mode cluster.
+        await expect(page.locator(".ps-budget-head-actions button")).toHaveCount(1);
         await expect(edit).toBeDisabled();
         await expect(actions(page).locator(".ps-budget-sub")).toHaveText("No provider selected");
 
@@ -769,7 +773,7 @@ test("a namespace that really is empty points provider onboarding to Admin Conso
         // may report one.
         await expect(page.locator(".ps-budget-empty.is-error")).toHaveCount(0);
         await expect(actions(page).getByRole("button", { name: "+ Add" })).toHaveCount(0);
-        await expect(page.getByRole("button", { name: "Model providers" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Refresh providers and budgets" })).toBeVisible();
     });
 });
 
@@ -782,13 +786,13 @@ test("every clock on the surface is written the same way: how long, and when", a
         // — and, on this row, the reason a 24% cell is marked: the PROVIDER's
         // own limit is spent, so nothing runs whatever the share says.
         await expect(numCell(row(page, "copilot-shared"), 0)).toHaveAttribute(
-            "title", /^copilot-shared · Day — 2\.4M of 10\.0M \(24%\)\. It resets in \d+h \d{2}m \(\d{2}:\d{2} UTC\)\. The provider's own limit for this period is spent, so nothing runs against it whatever your share says\.$/);
+            "title", /^copilot-shared · Day — 2\.4M of 10\.0M \(24%\)\. It resets in \d+h \d{2}m \(\d{2}:\d{2} UTC\)\. The provider\x27s own limit for this period is spent, so nothing runs against it whatever your share says\.( Made of in .*\.)?$/);
         // The row with room says nothing extra.
         await expect(numCell(row(page, "azure-prod"), 0)).toHaveAttribute(
-            "title", /^azure-prod · Day — 512\.0K of 4\.0M \(13%\)\. It resets in \d+h \d{2}m \(\d{2}:\d{2} UTC\)\.$/);
+            "title", /^azure-prod · Day — 512\.0K of 4\.0M \(13%\)\. It resets in \d+h \d{2}m \(\d{2}:\d{2} UTC\)\.( Made of in .*\.)?$/);
         // An uncapped period says it is uncapped rather than inventing a cap.
         await expect(numCell(row(page, "paused-vendor"), 1)).toHaveAttribute(
-            "title", /^paused-vendor · Week — no limit for this period\. It resets in \d+d \d{2}h \(\d{2}:\d{2} UTC\)\.$/);
+            "title", /^paused-vendor · Week — no limit for this period\. It resets in \d+d \d{2}h \(\d{2}:\d{2} UTC\)\.( Made of in .*\.)?$/);
 
         await selectProvider(page, "azure-prod");
         await actions(page).getByRole("button", { name: "Edit usage policy" }).click();
@@ -920,4 +924,32 @@ test("clicking the backdrop closes the sheet and saves nothing", async ({ page }
         // div nothing can focus. preventDefault settles it.
         await expect(edit).toBeFocused();
     });
+});
+
+// ── 0069: the four parts of a used figure ────────────────────────────────
+
+test("a selected row shows what its used figures are made of, and every cell says it on hover", async ({ page }) => {
+    const stub = await startProviderBudgetStub({ admin: true });
+    try {
+        await page.goto(`http://127.0.0.1:${stub.port}`, { waitUntil: "networkidle" });
+        await page.locator(".ps-session-list-button").first().waitFor();
+        await page.getByRole("button", { name: /Budget — providers/i }).click();
+        const azure = row(page, "azure-prod");
+        await azure.waitFor();
+        // Unselected: one number per cell, no split row, the split on hover.
+        await expect(page.locator("tr.ps-budget-grid-split")).toHaveCount(0);
+        await expect(numCell(azure, 0)).toHaveAttribute("title", /Made of in [\d.]+[KM]? \(cache r [\d.]+[KM]? · w [\d.]+[KM]?\) · out [\d.]+[KM]?/);
+        // Selected: the parts appear under the figure, and add up to it. The
+        // fixture makes used = 98% input + 2% output, with 70% of the input
+        // read from the cache and 5% written to it; the viewer's day figure on
+        // azure-prod is 512.0K.
+        await numCell(azure, 0).click();
+        const splitRow = page.locator("tr.ps-budget-grid-split");
+        await expect(splitRow).toHaveCount(1);
+        await expect(splitRow.locator("td.is-split").nth(0)).toHaveText(/in 501\.8K.*out 10\.2K.*cache r 351\.2K.*w 25\.1K/);
+        // The cell above it still reads as two numbers and nothing else.
+        await expect(numCell(azure, 0)).toHaveText("512.0K / 4.0M");
+    } finally {
+        await stub.close();
+    }
 });

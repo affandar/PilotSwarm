@@ -47,6 +47,7 @@ import {
     selectModelPickerModal,
     selectNavigationError,
     selectProviderTable,
+    selectUsageSummary,
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
@@ -63,6 +64,8 @@ import {
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
+    computeFitWidthColumnLayout,
+    normalizeTableCellText,
 } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
@@ -642,31 +645,6 @@ const PORTAL_COLUMN_RESIZER_PX = 16;
  * normal document column. The inherited fr split left it near 200px.
  */
 const PORTAL_CANVAS_MIN_PX = 480;
-
-/**
- * Wide enough to OPEN the canvas by default on a first visit.
- *
- * Sessions and chat need roughly 224px + 500px to stay comfortable, and the
- * canvas wants PORTAL_CANVAS_MIN_PX beside them. 1440 clears that with room to
- * spare and is a real device width (a 14" MacBook, a 900p desktop), so the
- * common laptop gets a canvas and a small window does not get three cramped
- * columns.
- */
-const PORTAL_CANVAS_DEFAULT_MIN_VIEWPORT_PX = 1440;
-
-/**
- * Whether this profile has ever expressed a preference about the two columns.
- *
- * The width-based default must fire only in its absence: someone who CLOSED
- * the canvas has stored `{canvasOpen: false}`, which is a choice and reads
- * nothing like "unset". A legacy rightPaneMode counts too — it is the same
- * preference in the older shape.
- */
-function hasStoredDesktopPanes(settings) {
-    if (!settings || typeof settings !== "object") return false;
-    if (settings.desktopPanes && typeof settings.desktopPanes === "object") return true;
-    return settings.rightPaneMode === "canvas" || settings.rightPaneMode === "panes";
-}
 
 /**
  * The widths the two optional columns OPEN at, in pixels. 2:1 — the canvas is
@@ -2252,139 +2230,6 @@ function renderInlineMarkdown(source, theme, keyPrefix = "md") {
         }
         return React.createElement(React.Fragment, { key }, token.text);
     });
-}
-
-function normalizeTableCellText(value = "") {
-    return String(value || "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
-
-const FIT_WIDTH_FLEX_HEADER_KEYWORDS = [
-    "description",
-    "mechanism",
-    "details",
-    "notes",
-    "summary",
-    "message",
-    "comment",
-    "reason",
-    "body",
-    "content",
-    "explanation",
-    "rationale",
-    "one-liner",
-];
-
-const FIT_WIDTH_FLEX_MIN_MAX_LEN = 24;
-const FIT_WIDTH_RIGID_CHAR_CAP = 32;
-const FIT_WIDTH_MIN_RIGID_CHARS = 6;
-const FIT_WIDTH_FLEX_MIN_CHARS = 30;
-const FIT_WIDTH_FLEX_MAX_CHARS = 56;
-const FIT_WIDTH_FLEX_MIN_FRACTION = 0.4;
-const FIT_WIDTH_FLEX_TO_RIGID_RATIO = 1.4;
-const FIT_WIDTH_MIN_EXTRA_CHARS = 2;
-
-/**
- * Compute per-column layout for a fit-width markdown / chat table.
- *
- * Strategy:
- *   1. Measure max cell length and "wrappability" (cells with whitespace) per column.
- *   2. Identify a single "flex" column — long, prose-like, ideally with a
- *      header keyword like Description / Mechanism / Notes. This column
- *      absorbs overflow by wrapping aggressively.
- *   3. Give every other column a budget = clamp(maxLen + padding, MIN, RIGID_CAP),
- *      so rigid columns stay at their content-fit width even when one
- *      sibling column has hundreds of characters of prose.
- *   4. Give the flex column a bounded share of the rigid-column budget. A
- *      very long cell should wrap; it should not steal so much percentage
- *      width that compact columns like Count / Status collapse on phones.
- *   5. Return a minimum table width in ch so the wrapper can scroll
- *      horizontally rather than forcing all columns below readable size.
- *
- * Returns { widths: ["12.34%", ...], flexIndex: number, minWidth: "64ch" }
- * when a flex column is identified — the table renderer then forces
- * table-layout: fixed, adds an `is-flex-column` class to the chosen column,
- * and gives the table a readable minimum width. Returns null when no flex
- * column is found, in which case the renderer falls back to the browser's
- * auto-table-layout (which is already good for short / uniform tables).
- *
- * Background: the previous behavior used the browser's auto-table-layout
- * unconditionally. That works well when columns are uniform but is biased
- * toward wide columns when one column has prose hundreds of characters
- * long (e.g. a Mechanism / Description column) — auto-layout distributes
- * width proportional to (max-content − min-content), which lets the prose
- * column squeeze the rigid columns down to a few characters each.
- */
-function computeFitWidthColumnLayout(rows = []) {
-    const columnCount = Math.max(0, ...rows.map((row) => row.length));
-    if (columnCount <= 0) return null;
-
-    const headerRow = rows[0] || [];
-    const dataRowCount = Math.max(1, rows.length - 1);
-
-    const stats = Array.from({ length: columnCount }, () => ({
-        max: 0,
-        spaceCells: 0,
-    }));
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-        const row = rows[rowIndex];
-        for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
-            const text = normalizeTableCellText(row[columnIndex] || "");
-            if (text.length > stats[columnIndex].max) stats[columnIndex].max = text.length;
-            if (rowIndex > 0 && /\s/.test(text)) stats[columnIndex].spaceCells += 1;
-        }
-    }
-
-    let flexIndex = -1;
-    let flexScore = 0;
-    for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
-        const stat = stats[columnIndex];
-        if (stat.max < FIT_WIDTH_FLEX_MIN_MAX_LEN) continue;
-        const spaceRatio = stat.spaceCells / dataRowCount;
-        if (spaceRatio < 0.4) continue;
-        const headerText = normalizeTableCellText(headerRow[columnIndex] || "").toLowerCase();
-        const headerBonus = FIT_WIDTH_FLEX_HEADER_KEYWORDS.some((keyword) => headerText.includes(keyword)) ? 60 : 0;
-        const score = stat.max + headerBonus;
-        if (score > flexScore) {
-            flexScore = score;
-            flexIndex = columnIndex;
-        }
-    }
-
-    if (flexIndex < 0) return null;
-
-    const rigidBudgets = stats.map((stat, columnIndex) => {
-        if (columnIndex === flexIndex) return 0;
-        return Math.max(FIT_WIDTH_MIN_RIGID_CHARS, Math.min(stat.max + 2, FIT_WIDTH_RIGID_CHAR_CAP));
-    });
-    const sumRigid = rigidBudgets.reduce((sum, value) => sum + value, 0);
-    const flexStat = stats[flexIndex];
-    const flexBudget = Math.max(
-        FIT_WIDTH_FLEX_MIN_CHARS,
-        Math.min(
-            flexStat.max * 0.45,
-            FIT_WIDTH_FLEX_MAX_CHARS,
-            Math.max(FIT_WIDTH_FLEX_MIN_CHARS, sumRigid * FIT_WIDTH_FLEX_TO_RIGID_RATIO),
-        ),
-    );
-    const budgets = rigidBudgets.map((value, columnIndex) => (
-        columnIndex === flexIndex ? flexBudget : value
-    ));
-
-    const totalBudget = budgets.reduce((sum, value) => sum + value, 0);
-    if (totalBudget > 0 && budgets[flexIndex] / totalBudget < FIT_WIDTH_FLEX_MIN_FRACTION) {
-        const sumRigid = totalBudget - budgets[flexIndex];
-        budgets[flexIndex] = sumRigid * (FIT_WIDTH_FLEX_MIN_FRACTION / (1 - FIT_WIDTH_FLEX_MIN_FRACTION));
-    }
-
-    const finalTotal = budgets.reduce((sum, value) => sum + value, 0);
-    if (!(finalTotal > 0)) return null;
-    return {
-        widths: budgets.map((value) => `${((value / finalTotal) * 100).toFixed(2)}%`),
-        flexIndex,
-        minWidth: `${Math.ceil(finalTotal + FIT_WIDTH_MIN_EXTRA_CHARS)}ch`,
-    };
 }
 
 function buildTableColumnLabels(headerRows = [], columnCount = 0) {
@@ -9137,6 +8982,17 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             onClick: () => controller.handleCommand(adminVisible ? UI_COMMANDS.CLOSE_ADMIN_CONSOLE : UI_COMMANDS.OPEN_ADMIN_CONSOLE).catch(() => {}),
             active: adminVisible,
         }]),
+        // The Workspace MODE button. Budget and the Admin Console replace the
+        // workspace; this is the way back, as a destination of its own rather
+        // than "close whatever is open". Desktop only — the phone has no
+        // admin console and its view cycle already sits in the header.
+        ...(mobile ? [] : [{
+            key: "workspace",
+            icon: React.createElement(MainLayoutGlyph),
+            label: "Workspace — sessions, chat and panels",
+            onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {}),
+            active: !adminVisible && !budgetOpen,
+        }]),
     ];
 
     const renderButton = (def) => {
@@ -9206,17 +9062,27 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         );
     }
 
-    // Two groups. Budget, Diagnostics and the admin console are TOOLS — they
-    // act on the app rather than on the conversation — so they sit apart from
-    // the session controls, hard right. Everything else keeps its order.
-    const RIGHT_GROUP = new Set(["budget", "diagnostics", "admin"]);
+    // Two kinds of button, two clusters (desktop only):
+    //
+    //   left  : the workspace's — new, filter, canvas, diagnostics
+    //   right : modes [workspace, budget, admin] │ theme · sign-out
+    //
+    // The whole left cluster belongs to the workspace — new session, filter,
+    // canvas and diagnostics all act on it — so it exists only in Workspace
+    // mode. Budget and the Admin Console replace the workspace; nothing on
+    // the left applies there. Modes are exclusive (the controller closes one
+    // when the other opens) and the Workspace button is the way back.
+    const mode = adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
+    const ACTIONS = ["new", "filter"];
+    const PANELS = ["canvas", "diagnostics"];
+    const MODES = ["workspace", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
     // happen behind a canvas — or watching a panel open where you cannot see
     // it — is the confusing half of every full-screen mode. The Canvas toggle
-    // is exempt: it already means "put the canvas away", and closing drops the
-    // flag in the reducer.
+    // is exempt: it already means "put the canvas away", and closing drops
+    // the flag in the reducer.
     const withRestore = (def) => (!canvasMaximized || def.key === "canvas" ? def : {
         ...def,
         onClick: (...args) => {
@@ -9224,21 +9090,35 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             return def.onClick?.(...args);
         },
     });
+    const pick = (keys) => keys
+        .map((key) => buttonDefs.find((d) => d.key === key))
+        .filter(Boolean)
+        .map(withRestore)
+        .map(renderButton);
+    const divider = (key) => React.createElement("span", { key, className: "ps-toolbar-divider", "aria-hidden": "true" });
 
-    const leftButtons = buttonDefs.filter((d) => !RIGHT_GROUP.has(d.key)).map(withRestore);
-    const rightButtons = buttonDefs.filter((d) => RIGHT_GROUP.has(d.key)).map(withRestore);
+    // One run, no bar: all four act on the workspace.
+    const leftCluster = mode === "workspace"
+        ? [...pick(ACTIONS), ...pick(PANELS)]
+        : [];
+    const rightCluster = [
+        ...pick(MODES),
+        divider("mode-divider"),
+        ...pick(["theme"]),
+    ];
+
     const toolbar = React.createElement("div", { className: "ps-toolbar" },
         // Three columns: left rail | main controls | right rail. Full-screen
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            canvasMaximized ? leftButtons.map(renderButton) : null),
+            canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
-            canvasMaximized ? null : leftButtons.map(renderButton)),
+            canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
             // The portal header parks its version/status meta here, LEFT of
             // the tool buttons, and its sign-out glyph in the slot after
-            // them — one right-aligned cluster: meta · bug · settings · out.
+            // them — one right-aligned cluster: meta · mode · theme · out.
             React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
             // While the canvas is full screen its header controls (rev, zoom,
             // zen, restore) portal INTO this slot from CanvasPane — zoom state
@@ -9250,9 +9130,7 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             canvasMaximized
                 ? React.createElement("span", { className: "ps-toolbar-divider", "aria-hidden": "true" })
                 : null,
-            rightButtons.length
-                ? React.createElement("div", { className: "ps-toolbar-actions is-tools" }, rightButtons.map(renderButton))
-                : null,
+            React.createElement("div", { className: "ps-toolbar-actions is-tools" }, rightCluster),
             React.createElement("span", { className: "ps-toolbar-signout-slot", id: "ps-toolbar-signout-slot" })),
     );
 
@@ -9723,7 +9601,12 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             const st = dragStateRef.current;
             if (!st) return;
             // Pointer right = chat grows = the neighbour gives up the pixels.
-            controller.dispatch({ type: actionType, [key]: st.startAdjust - (event.clientX - st.startX) });
+            // Pointer left stops where chat reaches its floor: past that the
+            // grid cannot give the right block more pixels, and an adjust
+            // that keeps climbing anyway only inflates the stored width so
+            // the next drag has to unwind it before anything moves.
+            const next = st.startAdjust - (event.clientX - st.startX);
+            controller.dispatch({ type: actionType, [key]: Math.min(next, st.maxAdjust) });
         };
         const onUp = () => {
             const st = dragStateRef.current;
@@ -9751,7 +9634,18 @@ function ChatRightResizeHandle({ controller, target, adjust = 0 }) {
             if (event.button !== 0) return;
             event.preventDefault();
             capturePointerForDrag(event);
-            dragStateRef.current = { startX: event.clientX, startAdjust: Number(adjust) || 0 };
+            // How far the right block may still grow: exactly what chat can
+            // give before it reaches its floor. Measured at drag start from
+            // the chat slot (the main grid's last column), the same element
+            // the grid template protects with its own minimum.
+            const chatSlot = document.querySelector(".ps-workspace-main-grid > .ps-workspace-pane-slot:last-child");
+            const chatWidth = chatSlot ? chatSlot.getBoundingClientRect().width : Number.POSITIVE_INFINITY;
+            const startAdjust = Number(adjust) || 0;
+            dragStateRef.current = {
+                startX: event.clientX,
+                startAdjust,
+                maxAdjust: startAdjust + Math.max(0, chatWidth - PORTAL_MIN_CHAT_COLUMN_PX),
+            };
             setDragging(true);
             document.body.classList.add("is-resizing-pane-x");
         },
@@ -9788,7 +9682,7 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             // real space between the two panes. Its bounds are asymmetric:
             // -column/2 makes Inspector 0px; column/2-divider makes Activity
             // 0px. Using one symmetric half-range left an 8-9px pane remnant.
-            const next = clamp(st.start + (event.clientY - st.startY), st.minAdjust, st.maxAdjust);
+            const next = clampNumber(st.start + (event.clientY - st.startY), st.minAdjust, st.maxAdjust);
             controller.dispatch({ type: "ui/diagnosticsSplitAdjust", diagnosticsSplitAdjust: next });
         };
         const onUp = () => {
@@ -9821,7 +9715,7 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
             dragStateRef.current = {
                 startY: event.clientY,
-                start: clamp(Number(splitAdjust) || 0, minAdjust, maxAdjust),
+                start: clampNumber(Number(splitAdjust) || 0, minAdjust, maxAdjust),
                 minAdjust,
                 maxAdjust,
             };
@@ -9838,7 +9732,7 @@ function DiagnosticsSplitResizeHandle({ controller, splitAdjust = 0 }) {
             const { minAdjust, maxAdjust } = getDiagnosticsSplitAdjustBounds(columnHeight, dividerHeight);
             controller.dispatch({
                 type: "ui/diagnosticsSplitAdjust",
-                diagnosticsSplitAdjust: clamp(
+                diagnosticsSplitAdjust: clampNumber(
                     (Number(splitAdjust) || 0) + (event.key === "ArrowDown" ? dividerHeight : -dividerHeight),
                     minAdjust,
                     maxAdjust,
@@ -10131,7 +10025,25 @@ function budgetCellEl(cell) {
         }, `/ ${cell.quotaLabel}`));
 }
 
-/** What a cell says on hover: the period, its reset, and whether it is capped. */
+/**
+ * The four parts of a period cell's used figure, in one cell of the split
+ * row under a SELECTED provider or model row. A limit is on the total, so
+ * the table's cell stays the one number a limit is about; this row says
+ * what went into it, column by column.
+ */
+function budgetSplitCellEl(cell) {
+    if (!cell.split) return React.createElement("span", { className: "ps-budget-split" }, "—");
+    // Top row: the two parts that add up to the figure. Bottom row: what
+    // the input was made of — served from the cache, written to it.
+    const cacheTitle = "Parts of the input, not additions to it: the total is input + output.";
+    return React.createElement("span", { className: "ps-budget-split" },
+        React.createElement("span", null, "in ", formatCompactNumber(cell.split.input)),
+        React.createElement("span", null, "out ", formatCompactNumber(cell.split.output)),
+        React.createElement("span", { title: cacheTitle }, "cache r ", formatCompactNumber(cell.split.cacheRead)),
+        React.createElement("span", { title: cacheTitle }, "w ", formatCompactNumber(cell.split.cacheWrite)));
+}
+
+/** What a cell says on hover: the period, its reset, whether it is capped, and what the figure is made of. */
 function budgetCellTitle(row, column, cell) {
     const who = row.kind === "model" ? `${row.providerName} · ${row.label}` : row.providerName;
     const cap = cell.uncapped
@@ -10142,7 +10054,8 @@ function budgetCellTitle(row, column, cell) {
     const blocked = cell.providerExhausted
         ? " The provider's own limit for this period is spent, so nothing runs against it whatever your share says."
         : "";
-    return `${who} · ${column.label} — ${cap}. It ${budgetResetPhrase(cell.resetsLabel)}.${blocked}`;
+    const split = cell.splitText ? ` Made of ${cell.splitText}.` : "";
+    return `${who} · ${column.label} — ${cap}. It ${budgetResetPhrase(cell.resetsLabel)}.${blocked}${split}`;
 }
 
 /**
@@ -10247,6 +10160,19 @@ function ProviderTable({ controller, view, defaults = null }) {
         title: budgetCellTitle(row, column, row.cells[column.id]),
     }, budgetCellEl(row.cells[column.id]))));
 
+    // Under a selected row: what each of its three figures is made of.
+    const splitRow = (row) => React.createElement("tr", {
+        key: `${row.key}:split`,
+        className: `ps-budget-grid-split${row.kind === "model" ? " is-model" : ""}`,
+        "aria-label": `What ${row.kind === "model" ? row.label : row.providerName} spent, by kind of token`,
+    },
+    // Empty on purpose: the name column keeps the split cells under their
+    // period columns; the numbers explain themselves.
+    React.createElement("td", { className: "ps-budget-grid-split-name" }),
+    view.columns.map((column) => React.createElement("td", {
+        key: column.id, className: "ps-budget-grid-num is-split", "data-period": column.label,
+    }, budgetSplitCellEl(row.cells[column.id]))));
+
     return React.createElement(React.Fragment, null,
         React.createElement("div", { className: "ps-budget-table-head" },
             React.createElement("span", { className: "ps-budget-label" },
@@ -10279,7 +10205,8 @@ function ProviderTable({ controller, view, defaults = null }) {
                         view.columns.map((column) => React.createElement("th", {
                             key: column.id, className: "ps-budget-grid-h is-num", scope: "col",
                         }, column.label)))),
-                React.createElement("tbody", null, view.rows.map(bodyRow))));
+                // A selected row is followed by its split row.
+                React.createElement("tbody", null, view.rows.flatMap((row) => (row.selected ? [bodyRow(row), splitRow(row)] : [bodyRow(row)])))));
 }
 
 /**
@@ -10941,8 +10868,287 @@ function budgetViewDeps(state) {
         Boolean(state.ui?.budgetOpen), budget.loading, budget.refreshing, budget.loaded,
         budget.error, budget.grid, budget.paused, budget.overall, budget.selectedProvider,
         budget.selectedScope, budget.missingProvider, budget.series,
+        budget.tab, budget.summary,
         state.auth?.authorization?.role, state.admin?.profile,
     ];
+}
+
+// ─── Cluster summary tab ────────────────────────────────────────────────
+
+const SUMMARY_RANGES = [14, 30, 90];
+const SUMMARY_PRESETS = [
+    { id: "all", label: "All providers" },
+    { id: "shared", label: "Shared providers" },
+    { id: "users", label: "User providers" },
+];
+
+function summaryPresetLabel(view) {
+    if (view.preset === "all") return "All providers";
+    if (view.preset === "shared") return "Shared providers";
+    if (view.preset === "users") return "User providers";
+    const n = view.selectedProviders.length;
+    return n === 0 ? "No providers" : (n === 1 ? view.selectedProviders[0] : `${n} providers`);
+}
+
+/**
+ * The provider picker: three presets and a checkbox per provider. A preset
+ * expands to an exact list of names before the request goes out — the
+ * database never has to know what "Shared" meant on the day.
+ */
+function SummaryProviderPicker({ view, onChange }) {
+    const [open, setOpen] = React.useState(false);
+    const ref = React.useRef(null);
+    React.useEffect(() => {
+        if (!open) return undefined;
+        const onDown = (event) => { if (ref.current && !ref.current.contains(event.target)) setOpen(false); };
+        const onKey = (event) => { if (event.key === "Escape") setOpen(false); };
+        document.addEventListener("pointerdown", onDown);
+        document.addEventListener("keydown", onKey);
+        return () => { document.removeEventListener("pointerdown", onDown); document.removeEventListener("keydown", onKey); };
+    }, [open]);
+
+    const namesFor = (preset) => (preset === "all" ? [] : view.providers
+        .filter((p) => (preset === "shared" ? p.class === "shared" : p.class !== "shared"))
+        .map((p) => p.name));
+    const checked = new Set(view.preset === "all"
+        ? view.providers.map((p) => p.name)
+        : (view.preset === "custom" ? view.selectedProviders : namesFor(view.preset)));
+
+    // A preset is a whole answer, so the menu closes on it; a checkbox is
+    // one step of a hand-picked list, so the menu stays open for the next.
+    const choosePreset = (preset) => { onChange({ preset, providers: namesFor(preset) }); setOpen(false); };
+    const toggle = (name) => {
+        const next = new Set(checked);
+        if (next.has(name)) next.delete(name); else next.add(name);
+        onChange({ preset: "custom", providers: Array.from(next) });
+    };
+
+    return React.createElement("div", { className: "ps-summary-picker", ref },
+        React.createElement("button", {
+            type: "button",
+            className: `ps-mini-button ps-summary-picker__button${open ? " is-open" : ""}`,
+            "aria-haspopup": "listbox",
+            "aria-expanded": open,
+            "aria-label": "Providers filter",
+            onClick: () => setOpen((v) => !v),
+        }, summaryPresetLabel(view), " ", React.createElement("span", { "aria-hidden": "true" }, "▾")),
+        open ? React.createElement("div", { className: "ps-summary-picker__menu", role: "listbox", "aria-label": "Providers" },
+            SUMMARY_PRESETS.map((preset) => React.createElement("button", {
+                key: preset.id,
+                type: "button",
+                role: "option",
+                "aria-selected": view.preset === preset.id,
+                className: `ps-summary-picker__preset${view.preset === preset.id ? " is-on" : ""}`,
+                onClick: () => choosePreset(preset.id),
+            }, preset.label)),
+            React.createElement("div", { className: "ps-summary-picker__rule", "aria-hidden": "true" }),
+            React.createElement("button", {
+                type: "button", className: "ps-summary-picker__preset is-clear",
+                onClick: () => onChange({ preset: "custom", providers: [] }),
+            }, "Clear all"),
+            view.providers.length === 0
+                ? React.createElement("div", { className: "ps-summary-picker__empty" }, "No providers to choose from.")
+                : view.providers.map((p) => React.createElement("label", { key: p.name, className: "ps-summary-picker__row" },
+                    React.createElement("input", {
+                        type: "checkbox",
+                        checked: checked.has(p.name),
+                        onChange: () => toggle(p.name),
+                        "aria-label": `Include ${p.name}`,
+                    }),
+                    React.createElement("span", { className: "ps-summary-picker__name" }, p.name),
+                    React.createElement("span", { className: `ps-scope-badge is-${p.class}` }, p.class === "shared" ? "shared" : "user")))) : null);
+}
+
+function summaryTokens(n) {
+    return formatCompactNumber(Number(n) || 0);
+}
+
+/**
+ * The stacked bar chart: one bar per UTC day, drawn as SVG so it needs no
+ * library and scales with the pane. A bar is the day's total, input +
+ * output; the input segment is drawn as two — the part that was not in
+ * the cache, and the part served from or written to it — because the cache
+ * figures are parts of the input, not additions to it.
+ * Linear by default; when one day is more than ten times the median of the
+ * others, the axis goes to log10(1 + n) so the rest are not hairlines.
+ */
+/**
+ * Log or linear? Log when one day is more than ten times the median of the
+ * days that had anything — otherwise a spike turns every other day into a
+ * hairline. Shared by the chart and the card header that names the scale.
+ */
+function summaryLogScale(series) {
+    const totals = series.map((d) => d.total);
+    const max = Math.max(0, ...totals);
+    const sorted = totals.filter((t) => t > 0).sort((a, b) => a - b);
+    const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+    return median > 0 && max > median * 10;
+}
+
+function SummaryChart({ series }) {
+    const W = 720; const H = 190; const padL = 58; const padB = 22; const padT = 8;
+    const totals = series.map((d) => d.total);
+    const max = Math.max(0, ...totals);
+    const log = summaryLogScale(series);
+    const scale = (v) => (log ? Math.log10(1 + v) : v);
+    const top = scale(max) || 1;
+    const innerH = H - padB - padT;
+    const y = (v) => innerH - (scale(v) / top) * innerH;
+    const n = Math.max(1, series.length);
+    const slot = (W - padL) / n;
+    const barW = Math.max(3, slot * 0.66);
+    // Ticks: quarters of the range on a linear axis; powers of ten on a log
+    // axis, so the labels are numbers a person recognises (10K, 1M) rather
+    // than wherever a quarter of log10(max) happens to land.
+    const ticks = log
+        ? [0, ...Array.from({ length: Math.floor(Math.log10(Math.max(10, max))) }, (_, i) => Math.pow(10, i + 1))]
+            .filter((v) => v <= max || v === 0)
+            .map((v) => ({ f: scale(v) / top, label: summaryTokens(v) }))
+        : [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, label: summaryTokens(f * max) }));
+    const labelEvery = n > 40 ? 10 : (n > 20 ? 5 : 1);
+    return React.createElement("svg", {
+        className: "ps-summary-chart", viewBox: `0 0 ${W} ${H}`, role: "img",
+        "aria-label": `Tokens per day, ${series.length} days${log ? ", log scale" : ""}`,
+    },
+        ticks.map((t) => React.createElement("g", { key: t.label + t.f },
+            React.createElement("line", { x1: padL, x2: W, y1: padT + innerH - t.f * innerH, y2: padT + innerH - t.f * innerH, className: "ps-summary-chart__grid" }),
+            React.createElement("text", { x: padL - 6, y: padT + innerH - t.f * innerH + 3, className: "ps-summary-chart__tick", textAnchor: "end" }, t.label))),
+        series.map((d, i) => {
+            const x = padL + i * slot + (slot - barW) / 2;
+            // Stack bottom-up: uncached input, cache read, cache write,
+            // output. The four add up to input + output — the day's total —
+            // because the two cache parts are carved out of the input. Under
+            // a log axis the stack is the log of the running total, so
+            // segment heights stay honest to the whole bar.
+            const cr = Math.min(d.input, d.cacheRead);
+            const cw = Math.min(d.input - cr, d.cacheWrite);
+            const cum1 = d.input - cr - cw; const cum2 = cum1 + cr; const cum3 = d.input; const cum4 = cum3 + d.output;
+            const yb = padT + innerH;
+            const y1 = padT + y(cum1); const y2 = padT + y(cum2); const y3 = padT + y(cum3); const y4 = padT + y(cum4);
+            const title = `${d.day}: ${summaryTokens(d.total)} tokens · in ${summaryTokens(d.input)} (cache r ${summaryTokens(d.cacheRead)} · w ${summaryTokens(d.cacheWrite)}) · out ${summaryTokens(d.output)} · ${d.turns} turns`;
+            return React.createElement("g", { key: d.day, className: "ps-summary-chart__bar" },
+                React.createElement("title", null, title),
+                React.createElement("rect", { x, y: y1, width: barW, height: Math.max(0, yb - y1), className: "is-in" }),
+                React.createElement("rect", { x, y: y2, width: barW, height: Math.max(0, y1 - y2), className: "is-cache" }),
+                React.createElement("rect", { x, y: y3, width: barW, height: Math.max(0, y2 - y3), className: "is-cache-w" }),
+                React.createElement("rect", { x, y: y4, width: barW, height: Math.max(0, y3 - y4), className: "is-out" }),
+                (i % labelEvery === 0 || i === n - 1)
+                    ? React.createElement("text", { x: x + barW / 2, y: H - 6, className: "ps-summary-chart__day", textAnchor: "middle" }, d.day.slice(5))
+                    : null);
+        }));
+}
+
+function SummarySparkline({ values }) {
+    const max = Math.max(0, ...values);
+    // 90 days at 4px is a 450px column; narrower bars past a month.
+    return React.createElement("span", {
+        className: "ps-summary-spark", "aria-hidden": "true",
+        style: { gridAutoColumns: values.length > 30 ? "2px" : "4px" },
+    },
+        values.map((v, i) => React.createElement("i", { key: i, style: { height: `${max > 0 ? Math.max(v > 0 ? 8 : 0, (v / max) * 100) : 0}%` } })));
+}
+
+function SummaryKpi({ label, w }) {
+    return React.createElement("div", { className: "ps-summary-kpi" },
+        React.createElement("div", { className: "ps-summary-kpi__label" }, label),
+        React.createElement("div", { className: "ps-summary-kpi__value" }, summaryTokens(w.total)),
+        // total = in + out; the cache pair is what the input was made of.
+        React.createElement("div", { className: "ps-summary-kpi__split", title: "Total is input + output. Cache read and write are parts of the input, not additions to it." },
+            React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-in" }), "in ", summaryTokens(w.input)),
+            React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache" }), "cache r ", summaryTokens(w.cacheRead)),
+            React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-cache-w" }), "w ", summaryTokens(w.cacheWrite)),
+            React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-out" }), "out ", summaryTokens(w.output)),
+            React.createElement("span", null, `· ${w.turns} turns`)));
+}
+
+function summaryViewDeps(state) {
+    const s = state.budget?.summary || {};
+    return [s.loading, s.error, s.fetchedAt, s.days, s.preset, (s.providers || []).join(","), (state.budget?.grid || []).length];
+}
+
+/**
+ * The Cluster summary tab. Everything on it comes from ONE answer to
+ * getProviderUsageSummary, so the KPIs, the chart and the model table can
+ * never disagree about which turns were counted.
+ */
+function ClusterSummaryPane({ controller }) {
+    const deps = useControllerSelector(controller, summaryViewDeps, shallowEqualObject);
+    const view = React.useMemo(() => selectUsageSummary(controller.getState()), [controller, deps]);
+    React.useEffect(() => {
+        if (!view.loaded && !view.loading && !view.error) controller.loadUsageSummary().catch(() => {});
+    }, [controller]);
+
+    const setRange = (days) => controller.setUsageSummaryFilter({ days }).catch(() => {});
+    const setProviders = ({ preset, providers }) => controller.setUsageSummaryFilter({ preset, providers }).catch(() => {});
+    const classes = view.classes.filter((c) => c.total > 0);
+    const rangeLabel = `last ${view.days} days`;
+
+    return React.createElement("div", { className: `ps-summary${view.loading ? " is-loading" : ""}` },
+        React.createElement("div", { className: "ps-summary__filters" },
+            React.createElement(SummaryProviderPicker, { view, onChange: setProviders }),
+            React.createElement("div", { className: "ps-budget-seg", role: "group", "aria-label": "Window" },
+                SUMMARY_RANGES.map((days) => React.createElement("button", {
+                    key: days, type: "button",
+                    className: `ps-budget-seg__button${view.days === days ? " is-on" : ""}`,
+                    "aria-pressed": view.days === days,
+                    "aria-label": `Last ${days} days`,
+                    onClick: () => setRange(days),
+                }, `${days}d`))),
+            React.createElement("span", { className: "ps-summary__scope" },
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+        view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+            React.createElement("div", null, "The summary could not be read. "),
+            React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
+        React.createElement("div", { className: "ps-summary__kpis" },
+            React.createElement(SummaryKpi, { label: "Today (UTC)", w: view.windows.day }),
+            React.createElement(SummaryKpi, { label: "Last 7 days", w: view.windows.week }),
+            React.createElement(SummaryKpi, { label: "Last 30 days", w: view.windows.month })),
+        React.createElement("div", { className: "ps-summary__card" },
+            React.createElement("div", { className: "ps-summary__card-head" },
+                React.createElement("b", null, "Tokens per day"),
+                React.createElement("span", { className: "ps-summary__legend" },
+                    React.createElement("span", { title: "Prompt tokens that were neither served from nor written to the cache" }, React.createElement("i", { className: "ps-summary-dot is-in" }), "input"),
+                    React.createElement("span", { title: "The part of the input served from the cache" }, React.createElement("i", { className: "ps-summary-dot is-cache" }), "cache read"),
+                    React.createElement("span", { title: "The part of the input written to the cache" }, React.createElement("i", { className: "ps-summary-dot is-cache-w" }), "cache write"),
+                    React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-out" }), "output")),
+                React.createElement("span", { className: "ps-summary__muted" }, `${rangeLabel} · ${summaryTokens(view.windowTotal)} tokens`),
+                // Named here, not painted over the bars: a spike is exactly
+                // when the tallest bar reaches the top-right corner.
+                summaryLogScale(view.series)
+                    ? React.createElement("span", { className: "ps-summary__tag", title: "One day is more than ten times the median, so the axis is log10 — otherwise every other day is a hairline." }, "log scale")
+                    : null),
+            view.windowTotal > 0 || view.loaded
+                ? React.createElement(SummaryChart, { series: view.series })
+                : null,
+            classes.length > 1 ? React.createElement("div", { className: "ps-summary__muted" },
+                "By charge: ", classes.map((c, i) => `${i ? " · " : ""}${c.chargeClass} ${summaryTokens(c.total)}`).join("")) : null),
+        React.createElement("div", { className: "ps-summary__card" },
+            React.createElement("div", { className: "ps-summary__card-head" },
+                React.createElement("b", null, "By model"),
+                React.createElement("span", { className: "ps-summary__muted" }, `${rangeLabel} · across providers, efforts and context tiers`)),
+            view.models.length === 0
+                ? React.createElement("div", { className: "ps-budget-empty" }, view.loaded ? "No token usage in this window." : (view.loading ? "Reading…" : ""))
+                : React.createElement("div", { className: "ps-summary__table-wrap" },
+                    React.createElement("table", { className: "ps-summary__table" },
+                        React.createElement("thead", null, React.createElement("tr", null,
+                            [["Model"], ["Turns"], ["Providers", "Distinct provider names in the ledger for this window — including providers since deleted"],
+                                ["Input", "Prompt tokens, including what was served from and written to the cache"], ["Output"],
+                                ["Cache read", "The part of Input served from the cache"], ["Cache write", "The part of Input written to the cache"],
+                                ["Total", "Input + Output"], ["Share"], ["Trend"]]
+                                .map(([h, title]) => React.createElement("th", { key: h, title }, h)))),
+                        React.createElement("tbody", null, view.models.map((m) => React.createElement("tr", { key: m.model },
+                            React.createElement("td", { className: "is-model" }, m.model),
+                            React.createElement("td", null, m.turns),
+                            React.createElement("td", null, m.providers),
+                            React.createElement("td", null, summaryTokens(m.input)),
+                            React.createElement("td", null, summaryTokens(m.output)),
+                            React.createElement("td", null, summaryTokens(m.cacheRead)),
+                            React.createElement("td", null, summaryTokens(m.cacheWrite)),
+                            React.createElement("td", { className: "is-total" }, summaryTokens(m.total)),
+                            React.createElement("td", { className: "is-share" },
+                                React.createElement("i", { className: "ps-summary-share", style: { width: `${Math.max(1, Math.round(m.share * 100))}px` } }),
+                                `${(m.share * 100).toFixed(m.share < 0.1 ? 1 : 0)}%`),
+                            React.createElement("td", null, React.createElement(SummarySparkline, { values: m.sparkline })))))))));
 }
 
 /**
@@ -11146,24 +11352,17 @@ function ProviderBudgetView({ controller }) {
             React.createElement("span", { className: "ps-budget-coin", "aria-hidden": "true" }, "◎"),
             React.createElement("h2", { className: "ps-budget-h" }, "Providers & Budgets"),
             React.createElement("span", { className: "ps-budget-sub" }, "Usage and limits")),
+        // Refresh only. Leaving (to the workspace, or to the admin console)
+        // is the toolbar's Mode cluster; a ✕ and a gear here were second,
+        // unlabelled copies of buttons already on screen. Esc still closes.
         React.createElement("div", { className: "ps-budget-head-actions" },
-            React.createElement(IconButton, {
-                icon: React.createElement(CogGlyph),
-                label: "Model providers",
-                className: "ps-mini-button",
-                onClick: () => { controller.closeBudget(); void controller.openAdminConsole(); },
-            }),
             React.createElement(IconButton, {
                 icon: "↻",
                 label: "Refresh providers and budgets",
                 className: "ps-mini-button",
                 disabled: view.loading || view.refreshing,
                 onClick: () => controller.refreshProviderTable().catch(() => {}),
-            }),
-            React.createElement("button", {
-                type: "button", className: "ps-budget-close", onClick: () => controller.closeBudget(),
-                "aria-label": "Close providers and budgets", title: "Close (Esc)",
-            }, "✕")));
+            })));
 
     // A read that FAILED is never dressed up as an empty one: "no providers"
     // and "we could not find out" are different facts, and only one of them is
@@ -11255,7 +11454,18 @@ function ProviderBudgetView({ controller }) {
 
     return React.createElement("div", { className: "ps-budget-surface" },
         head,
-        React.createElement("div", { className: "ps-budget" }, body),
+        // Two tabs: the per-provider table (meters, people's turns, limits)
+        // and the Cluster summary (the ledger, every turn, by model).
+        React.createElement("div", { className: "ps-budget-tabs", role: "tablist" },
+            [["providers", "Providers"], ["summary", "Cluster summary"]].map(([id, label]) => React.createElement("button", {
+                key: id, type: "button", role: "tab",
+                "aria-selected": (controller.getState().budget?.tab || "providers") === id,
+                className: `ps-budget-tab${(controller.getState().budget?.tab || "providers") === id ? " is-on" : ""}`,
+                onClick: () => controller.setBudgetTab(id),
+            }, label))),
+        (controller.getState().budget?.tab || "providers") === "summary"
+            ? React.createElement("div", { className: "ps-budget" }, React.createElement(ClusterSummaryPane, { controller }))
+            : React.createElement("div", { className: "ps-budget" }, body),
         sheetEl);
 }
 
@@ -12342,18 +12552,11 @@ function AdminConsolePanel({ controller, mobile = false }) {
         closeProviderSheet();
     }, [closeProviderSheet, controller, providerSheet]);
 
-    const principalLabel = formatAdminPrincipalLabel(view.principal);
-
+    // Title only. The signed-in person is already in the portal header, and
+    // the way out is the toolbar's Mode cluster (Workspace) \u2014 a \u2715 here was a
+    // second, unlabelled way to do the same thing.
     const header = React.createElement("header", { className: "ps-admin-console__header" },
-        React.createElement("h2", null, view.isAdmin ? "Admin Console" : "Settings"),
-        React.createElement("span", { className: "ps-admin-console__who" }, principalLabel),
-        React.createElement("button", {
-            type: "button",
-            className: "ps-mini-button is-icon",
-            onClick: onClose,
-            title: view.isAdmin ? "Close the admin console" : "Close settings",
-            "aria-label": view.isAdmin ? "Close the admin console" : "Close settings",
-        }, "\u2715"));
+        React.createElement("h2", null, view.isAdmin ? "Admin Console" : "Settings"));
 
     const providerSection = React.createElement(AdminModelProvidersSection, {
         controller,
@@ -13279,6 +13482,12 @@ function AdminModelProvidersSection({ controller, view, onAddPersonal, onAddShar
             React.createElement(AdminProviderRows, {
                 providers: providers.sharedProviders || [], isAdmin: true, personal: false, busy: pending,
                 onSystemUse: () => {}, onDelete: deleteProvider,
+                // The same handler as the personal rows: it reads
+                // provider.class and opens the sheet in shared mode. 0.5.47
+                // showed the button on shared rows without wiring this, so
+                // the click threw "onUpdate is not a function" and nothing
+                // opened.
+                onUpdate: onUpdatePersonal,
             })),
         React.createElement("div", { className: "ps-admin-provider-block" },
             React.createElement(AdminDefaultSelect, {
@@ -13728,29 +13937,15 @@ export function PilotSwarmWebApp({ controller }) {
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
-                // First visit on a desktop wide enough to hold it: open the
-                // canvas. A workspace that opens as chat alone hides the thing
-                // most sessions are FOR, and the canvas needs real width to be
-                // worth showing — below the breakpoint chat alone is better.
-                //
-                // Folded into the settings rather than dispatched separately.
-                // A separate dispatch raced the re-baseline at the end of this
-                // same poll: the new value was recorded as "already saved",
-                // never written, and the next poll put it back. Going through
-                // the settings means the normal apply-and-save path carries it.
-                //
-                // Only when NOTHING is stored. An explicit choice, including
-                // closing the canvas, is a preference from then on. Not
-                // live-responsive either: narrowing the window never closes a
-                // canvas the user opened on purpose.
-                const wantsDefaultCanvas = !hasStoredDesktopPanes(remoteNormalized)
-                    && !isNarrowViewport()
-                    && window.innerWidth >= PORTAL_CANVAS_DEFAULT_MIN_VIEWPORT_PX;
+                // The default workspace is sessions + chat, nothing else. A
+                // first visit on a wide desktop used to open the canvas as
+                // well; that was withdrawn (2026-08-27) — the canvas and
+                // diagnostics open when a person opens them (or an agent
+                // draws, see canvas/flip), and a stored choice is honoured.
                 const settings = materializeProfileSettings(
                     profile?.profileSettings,
                     defaultProfileSettingsRef.current,
                 );
-                if (wantsDefaultCanvas) settings.desktopPanes = { canvasOpen: true, diagnosticsOpen: false };
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
@@ -14014,7 +14209,16 @@ export function PilotSwarmWebApp({ controller }) {
                     // rail width is remembered for THIS session only.
                     ? `${zenRailPx}px var(--ps-resizer-track, 16px) minmax(0, 1fr)`
                     : (rightSideActive
-                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, 60%)`
+                        // The right block gets its pixels until CHAT is at its
+                        // floor — not "60% of the window". With canvas and
+                        // diagnostics both open, a 60% cap bound early (a
+                        // 640px canvas + 320px diagnostics is 60% of a
+                        // 1600px window), and past it a drag on the chat
+                        // seam could not widen the block: the canvas kept its
+                        // fixed pixels and the diagnostics column, the flex
+                        // one, gave them up — so the chat↔canvas seam moved
+                        // the canvas↔diagnostics seam instead.
+                        ? `minmax(0, 1fr) var(--ps-resizer-track, 16px) min(${rightSidePx}px, calc(100% - var(--ps-resizer-track, 16px) - ${PORTAL_MIN_CHAT_COLUMN_PX}px))`
                         : "minmax(0, 1fr)")),
         },
     },

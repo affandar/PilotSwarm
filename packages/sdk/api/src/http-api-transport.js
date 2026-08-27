@@ -431,10 +431,21 @@ export class HttpApiTransport {
     listProviders() { return this.api.call("listProviders"); }
     getProviderStatus(names) { return this.api.call("getProviderStatus", { names: providerNamesParam(names) }); }
     getProviderUsageGrid() { return this.api.call("getProviderUsageGrid"); }
+    getProviderUsageSummary({ days, providers } = {}) {
+        // The wire carries the provider list as one comma-separated query
+        // value; the server splits it. Names never contain commas.
+        const list = Array.isArray(providers) ? providers.filter(Boolean).join(",") : (providers || undefined);
+        return this.api.call("getProviderUsageSummary", { ...(days ? { days } : {}), ...(list ? { providers: list } : {}) });
+    }
     createProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createProvider", { name, type, credentials, baseUrl, displayName }); }
     deleteProvider(name) { return this.api.call("deleteProvider", { name }); }
     createMyProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createMyProvider", { name, type, credentials, baseUrl, displayName }); }
     updateMyProviderCredential({ name, credentials } = {}) { return this.api.call("updateMyProviderCredential", { name, credentials }); }
+    // Admin-only; the server refuses everyone else. This is the browser's and
+    // the CLI's path to the shared rotation — 0.5.47 shipped the op on the
+    // HTTP table, the MCP and the agent tools but not here, so the portal's
+    // Update Key on a shared row reported "not available on this transport".
+    updateSharedProviderCredential({ name, credentials } = {}) { return this.api.call("updateSharedProviderCredential", { name, credentials }); }
     deleteMyProvider(name) { return this.api.call("deleteMyProvider", { name }); }
     clearProviderRoutingDependencies(name) { return this.api.call("clearProviderRoutingDependencies", { name }); }
     setProviderLimit({ name, period, model, tokens } = {}) { return this.api.call("setProviderLimit", { name, period, model: model ?? null, tokens }); }

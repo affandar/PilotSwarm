@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.47** — Provider keys rotate in place (personal by their owner, shared by an admin) without touching anything but the key; a flat, searchable agent picker; the session detail box folds to one line; one-axis touch scrolling on the session list; an agent's own opening instructions are no longer shown as "You"; readable selected rows in every theme.
+> **Latest release: v0.5.48** — Token budgets stop charging cached prompts twice: a turn's total is input + output, with the cache figures shown as what the input was made of. A Cluster summary tab on Providers & Budgets (totals per day/week/month, a 14/30/90-day chart, a per-model pivot), every period cell says what its figure is made of, a desktop toolbar split into workspace buttons and mode buttons, and fixes for the Sequence/Activity divider, the chat↔canvas seam, long markdown tables and Update Key on shared providers.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

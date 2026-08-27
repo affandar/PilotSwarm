@@ -63,6 +63,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getProviderStatus",
     "getProviderUsage",
     "getProviderUsageGrid",
+    "getProviderUsageSummary",
     "getSession",
     "getSessionAccess",
     "getSessionCreationPolicy",
@@ -668,6 +669,15 @@ export interface ManagementOps {
      * @remarks `GET /providers/usage-grid` — access: `authed`
      */
     getProviderUsageGrid(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * The cluster summary from the usage ledger: today / week / month token totals with the input, output and cache split, a per-UTC-day series, and the per-model pivot across providers, reasoning efforts and context tiers. `providers` is a comma-separated list of names; absent means all. Admins see the whole cluster (system sessions included); everyone else sees their own turns.
+     * @remarks `GET /providers/usage-summary` — access: `authed`
+     */
+    getProviderUsageSummary(params: {
+        days?: number;
+        providers?: string;
+    }): Promise<any>;
 
     /**
      * Get one session view (live orchestration status).
@@ -1629,6 +1639,7 @@ export function createManagementOps(
         getProviderStatus: (params: Record<string, unknown> = {}) => callOp("getProviderStatus", params),
         getProviderUsage: (params: Record<string, unknown> = {}) => callOp("getProviderUsage", params),
         getProviderUsageGrid: (params: Record<string, unknown> = {}) => callOp("getProviderUsageGrid", params),
+        getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
