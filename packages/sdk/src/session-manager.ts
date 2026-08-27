@@ -1540,10 +1540,17 @@ export class SessionManager {
         // table MCP path in _getOrCreateUnlocked). The client must have minted a token
         // for that audience up front (opt-in additional audience); an audience absent
         // from the caller's map is skipped and the tool fails closed on its own. This
-        // sets the worker process env, which the stdio CLI child inherits at spawn; it
-        // applies to EVERY session on this repo-pinned worker (PILOTSWARM_WORKER_-
-        // CONCURRENCY=1, so one caller owns the pod at a time). Only fleets that set
-        // CALLER_AUTH_ENV_TOKENS pay the Key Vault read (skipped otherwise).
+        // sets the worker process env as a LEGACY FALLBACK, but that env is a
+        // one-time SNAPSHOT frozen into the cached CopilotClient at construction
+        // (ensureClient, `env: {...process.env}`), so after the FIRST session it
+        // never reaches a later session's stdio child — a stale token from the
+        // pod's first caller would leak into every subsequent session. The
+        // AUTHORITATIVE per-session delivery is injecting each resolved token into
+        // THAT session's `mcpServers[server].env` map (see the stdio injection
+        // after effectiveMcpServers is built below): that map rides in every
+        // createSession call, so the runtime spawns the session's stdio child with
+        // the session's own token. Only fleets that set CALLER_AUTH_ENV_TOKENS pay
+        // the Key Vault read (skipped otherwise).
         const callerAuthVault = (process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim();
         const callerAuthEnvTokenSpecs = (process.env.CALLER_AUTH_ENV_TOKENS || "")
             .split(";")
@@ -1559,6 +1566,10 @@ export class SessionManager {
                 return { name, audience };
             })
             .filter((s): s is { name: string; audience: string } => s != null);
+        // Resolved delegated tokens keyed by their target ENV-VAR NAME, captured
+        // for the authoritative per-session stdio-MCP `env` injection below. The
+        // process.env exports in the loop are the legacy fallback only.
+        const callerAuthEnvVars: Record<string, string> = {};
         if (callerAuthVault && callerAuthEnvTokenSpecs.length > 0) {
             const envAudienceTokens = await resolveCallerAuth({
                 vaultName: callerAuthVault,
@@ -1570,7 +1581,11 @@ export class SessionManager {
                     const tok = envAudienceTokens[spec.audience];
                     if (tok) {
                         // NEVER log the token value — only the mapping + length.
+                        // Legacy fallback (frozen into the client env snapshot after
+                        // session 1); the per-session mcpServers[].env injection below
+                        // is what actually reaches each session's stdio child.
                         process.env[spec.name] = tok;
+                        callerAuthEnvVars[spec.name] = tok;
                         const msg = `[caller-auth] exported delegated token for audience ${spec.audience} as $${spec.name} (len=${tok.length})`;
                         console.log(msg);
                         emitSessionManagerTrace(sessionId, msg, { trace });
@@ -1877,6 +1892,44 @@ export class SessionManager {
                 });
                 effectiveMcpServers = result.servers;
             }
+        }
+
+        // ── Per-session delegated-token injection for STDIO MCP servers ──────
+        // Caller-delegated tokens (resolved above into callerAuthEnvVars, keyed by
+        // env-var NAME) must reach each stdio MCP server as an ENVIRONMENT VARIABLE
+        // (e.g. the flakebuster Kusto shim reads $KUSTO_ACCESS_TOKEN / the aria shim
+        // reads $ARIA_KUSTO_ACCESS_TOKEN / the WinDbg proxy reads $SYMWEB_TOKEN).
+        // The process.env export earlier is a one-time snapshot frozen into the
+        // cached CopilotClient, so it only reaches the FIRST session's child. Here we
+        // instead layer the tokens onto each stdio server's per-session `env` map,
+        // which travels in sessionConfig.mcpServers on EVERY createSession call — so
+        // the runtime spawns each session's shim with THAT session's token, with no
+        // dependence on process.env inheritance (WI 5485938 / delegated-auth fix).
+        //
+        // We DEEP-CLONE each server's env before writing: effectiveMcpServers entries
+        // are references into the shared workerDefaults template, and mutating them in
+        // place would re-leak one session's token into the next. Only stdio/command
+        // servers get env; http/sse servers carry caller auth via the Authorization
+        // header (resolveMcpServerAuth) above. Tokens are never logged.
+        if (Object.keys(callerAuthEnvVars).length > 0) {
+            const injectedServers: string[] = [];
+            for (const [serverName, serverCfg] of Object.entries(effectiveMcpServers)) {
+                const cfg = serverCfg as any;
+                const isStdio = cfg && typeof cfg.command === "string" && !cfg.url
+                    && cfg.type !== "http" && cfg.type !== "sse";
+                if (!isStdio) continue;
+                const mergedEnv: Record<string, string> = { ...(cfg.env ?? {}) };
+                for (const [name, tok] of Object.entries(callerAuthEnvVars)) {
+                    mergedEnv[name] = tok;
+                }
+                effectiveMcpServers[serverName] = { ...cfg, env: mergedEnv };
+                injectedServers.push(serverName);
+            }
+            emitSessionManagerTrace(
+                sessionId,
+                `[caller-auth] injected ${Object.keys(callerAuthEnvVars).length} delegated token(s) into per-session stdio MCP env (servers=[${injectedServers.join(",")}])`,
+                { trace },
+            );
         }
 
         const sessionConfig: any = {
