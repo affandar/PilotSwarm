@@ -7389,6 +7389,12 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
  * maximized / onToggleMaximized are the phone's full-screen state, owned by
  * MobileCanvasLayer. Passing no handler simply omits the button.
  */
+// Match the session-list settle: the canvas follows the selection, and the
+// selection is a keypress away from changing again. Slightly longer than
+// SESSION_NAV_SETTLE_MS (140) so the snapshot rides just behind the load that
+// invalidates it, rather than racing it.
+const CANVAS_SNAPSHOT_SETTLE_MS = 160;
+
 function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
     const zoom = useControllerSelector(controller, (state) => Number(state.files.htmlZoom) || 1);
@@ -7397,11 +7403,33 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     }, [controller]);
 
     // Belt to the selection-burst braces: a pane mounted before the burst's
-    // snapshot resolves (deep link straight into canvas mode) fetches it here;
-    // the memo makes the duplicate call free.
+    // snapshot resolves (deep link straight into canvas mode) fetches it here.
+    //
+    // Gated on `visible`, and that gate is load-bearing. This pane is MOUNTED
+    // even when the canvas is closed — hidden with inert + an off-screen
+    // transform rather than unmounted, so re-showing it does not reload the
+    // frame. So this effect runs on every selection change whether or not
+    // anyone can see the canvas, and the memo it leans on is only free for a
+    // REPEAT of the same session: each new one is a real fetch.
+    //
+    // Arrowing down a session list is a selection change per keypress. That
+    // turned a 30-row traversal into 30 `events-before` round trips against a
+    // pane nobody had opened — free on a stub, the whole network latency on a
+    // remote deployment, which is exactly what session-list-perf guards.
+    // A hidden canvas needs no snapshot; becoming visible re-runs this.
+    //
+    // And it waits for the selection to SETTLE. loadSession already debounces
+    // its own burst behind SESSION_NAV_SETTLE_MS for exactly this reason —
+    // this effect keyed straight off the selection and so re-armed the cost
+    // the debounce had just removed. Arrowing 30 rows fired 30 snapshot
+    // fetches; the cleanup cancels every one but the row you stop on.
     React.useEffect(() => {
-        if (view.sessionId) controller.ensureCanvasSnapshot(view.sessionId).catch(() => {});
-    }, [controller, view.sessionId]);
+        if (!visible || !view.sessionId) return undefined;
+        const timer = setTimeout(() => {
+            controller.ensureCanvasSnapshot(view.sessionId).catch(() => {});
+        }, CANVAS_SNAPSHOT_SETTLE_MS);
+        return () => clearTimeout(timer);
+    }, [controller, view.sessionId, visible]);
 
     const zenOn = useControllerSelector(controller, (s) => s?.ui?.canvasZen === true);
     const [shareOpen, setShareOpen] = React.useState(false);
