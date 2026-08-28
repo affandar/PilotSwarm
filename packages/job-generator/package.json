@@ -1,0 +1,28 @@
+{
+  "name": "pilotswarm-job-generator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pilotswarm-job-generator": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:integration": "npm run build && node --env-file=../../.env.remote --test test/postgres.integration.test.mjs",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "pilotswarm-sdk": "0.5.37"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
