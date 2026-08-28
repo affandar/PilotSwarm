@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig, hydrateGitWorkspace, dehydrateGitWorkspace } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig, hydrateGitWorkspace, dehydrateGitWorkspace, normalizeRef, GitStore, Runner } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -107,6 +107,13 @@ const gitCacheRoot = process.env.GIT_CACHE_ROOT || "/mnt/git-cache";
 const gitCacheRepo = process.env.GIT_CACHE_REPO || undefined;
 const gitCacheMirror = process.env.GIT_CACHE_MIRROR
     || (gitCacheRepo ? `${gitCacheRoot}/${gitCacheRepo}.git` : undefined);
+
+// Devbox / local self-fetch worktree mode (Shape C). Reachable ONLY when there
+// is NO node-local mirror AND the operator explicitly opts in — so it can never
+// activate on AKS, where every DaemonSet sets GIT_CACHE_MIRROR to a literal.
+const devboxSelfFetch = !gitCacheMirror
+    && ["1", "true", "yes", "on"].includes((process.env.GIT_ENLISTMENT_SELF_FETCH || "").trim().toLowerCase())
+    && !!(process.env.GIT_SHARED_STORE || process.env.REPO_URL);
 
 // beforeRunTurn reconcile hook — wired into the worker config below only when a
 // mirror is configured. Plain (non-git-cache) deployments leave it undefined.
@@ -404,6 +411,199 @@ if (gitCacheMirror) {
 
     console.log(`[git-repo-worker] git-cache mirror: ${gitCacheMirror}`);
     console.log(`[git-repo-worker] enlistment: ${enlistmentDir} (reconcile-before-job; clean=${cleanEachJob})`);
+} else if (devboxSelfFetch) {
+    // ── Devbox / local self-fetch worktree mode (Shape C) ────────────────
+    // No node-local mirror. The worker hangs a single detached git WORKTREE off
+    // an EXISTING local enlistment's shared object store (GIT_SHARED_STORE, e.g.
+    // C:\src\dsmaindev) — so there is no multi-GB re-clone, only a one-time
+    // working-tree checkout. A background Phase-A fetch keeps that shared store
+    // warm (additive; never disturbs a running worktree — see src/git-store.ts
+    // + its unit test), so a new job claim is a local checkout only. Auth to ADO
+    // is the developer's az token (no PAT). Unreachable on AKS by construction:
+    // requires GIT_CACHE_MIRROR unset AND the GIT_ENLISTMENT_SELF_FETCH opt-in.
+    const sharedStore = process.env.GIT_SHARED_STORE;
+    if (!sharedStore) {
+        console.error("[git-repo-worker] FATAL devbox self-fetch requires GIT_SHARED_STORE (path to an existing local enlistment).");
+        process.exit(1);
+    }
+    if (!fs.existsSync(sharedStore)) {
+        console.error(`[git-repo-worker] FATAL GIT_SHARED_STORE not found: ${sharedStore}`);
+        process.exit(1);
+    }
+    const cleanEachJob = ["1", "true", "yes", "on"].includes(
+        (process.env.GIT_ENLISTMENT_CLEAN || "").trim().toLowerCase());
+
+    // Network git commands get a fresh ADO bearer token injected via env (NOT
+    // argv — so the token never appears in a process listing); local commands
+    // don't. The az token is minted as the developer (popup-free); no PAT.
+    const ADO_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798"; // Azure DevOps AAD app id
+    // On Windows the Azure CLI ships as `az.cmd`; Node's execFile can't spawn a
+    // .cmd without a shell (and won't PATHEXT-resolve a bare `az`), so run az
+    // through the shell there. Args are all fixed literals (no injection).
+    const AZ_WIN = process.platform === "win32";
+    const mintAdoToken = () => execFileSync(AZ_WIN ? "az.cmd" : "az",
+        ["account", "get-access-token", "--resource", ADO_RESOURCE, "--query", "accessToken", "-o", "tsv"],
+        { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", shell: AZ_WIN }).trim();
+    const NETWORK_GIT = new Set(["fetch", "clone", "ls-remote", "push", "pull"]);
+    const runGit = (cwd, args) => {
+        const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+        if (NETWORK_GIT.has(args[0])) {
+            const token = mintAdoToken();
+            env.GIT_CONFIG_COUNT = "1";
+            env.GIT_CONFIG_KEY_0 = "http.extraheader";
+            env.GIT_CONFIG_VALUE_0 = `AUTHORIZATION: bearer ${token}`;
+        }
+        return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env }).trim();
+    };
+
+    const worktreeName = process.env.GIT_WORKTREE_NAME || gitCacheRepo || podName;
+    const enlistmentDir = process.env.GIT_WORKTREE_DIR
+        || path.join(process.env.GIT_WORKTREE_ROOT || path.join(path.dirname(sharedStore), "ps-worktrees"), worktreeName);
+    const originUrl = process.env.REPO_URL || runGit(sharedStore, ["remote", "get-url", "origin"]);
+
+    const store = new GitStore({ dir: sharedStore, runGit, trace: (m) => console.log(m) });
+    const runner = new Runner({ dir: enlistmentDir, runGit });
+    store.applyConfig(); // gc.auto=0 (protects worktrees) + benign checkout accelerators
+
+    console.log(`[git-repo-worker] devbox self-fetch: shared store ${sharedStore}`);
+    console.log(`[git-repo-worker] devbox origin: ${originUrl.replace(/\/\/[^/@]*@/, "//")}`);
+
+    // Self-serializing lock — serializes reconcile, hydrate/dehydrate, AND the
+    // background fetch tick so no two writers race on packed-refs.
+    let lockTail = Promise.resolve();
+    const withEnlistmentLock = (fn) => {
+        const run = lockTail.then(fn, fn);
+        lockTail = run.then(() => {}, () => {});
+        return run;
+    };
+
+    const resolveTargetRef = (sessionGitRef) => {
+        const explicit = (sessionGitRef && String(sessionGitRef).trim())
+            || (process.env.GIT_ENLISTMENT_REF && process.env.GIT_ENLISTMENT_REF.trim());
+        if (explicit) return normalizeRef(explicit);
+        try { return runGit(sharedStore, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]); }
+        catch {
+            for (const b of ["origin/main", "origin/master"]) {
+                try { runGit(sharedStore, ["rev-parse", "--verify", b]); return b; } catch { /* next */ }
+            }
+            throw new Error("could not resolve a default ref (set GIT_ENLISTMENT_REF)");
+        }
+    };
+    const localSha = (rev) => { try { return store.revParse(rev); } catch { return undefined; } };
+
+    const worktreeHealthy = () => {
+        if (!fs.existsSync(enlistmentDir)) return false;
+        try { runGit(enlistmentDir, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]); return true; }
+        catch { return false; }
+    };
+
+    const ensureWorktree = (initialSha) => {
+        store.pruneWorktrees(); // drop registrations for any dir removed out from under git
+        if (worktreeHealthy()) {
+            for (const lock of ["index.lock", "HEAD.lock"]) {
+                try { fs.rmSync(path.join(enlistmentDir, ".git", lock), { force: true }); } catch { /* ignore */ }
+            }
+            console.log(`[git-repo-worker] reusing existing worktree at ${enlistmentDir}`);
+            return;
+        }
+        if (fs.existsSync(enlistmentDir)) {
+            store.removeWorktree(enlistmentDir);
+            fs.rmSync(enlistmentDir, { recursive: true, force: true });
+        }
+        fs.mkdirSync(path.dirname(enlistmentDir), { recursive: true });
+        console.log(`[git-repo-worker] materializing worktree ${enlistmentDir} @ ${initialSha.slice(0, 12)} (one-time; large monorepo checkout may take minutes)`);
+        const t0 = Date.now();
+        store.addWorktree(enlistmentDir, initialSha);
+        console.log(`[git-repo-worker] worktree ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    };
+
+    const reconcile = (trace, sessionGitRef) => withEnlistmentLock(() => {
+        const ref = resolveTargetRef(sessionGitRef);
+        const log = (m) => { console.log(m); if (trace) trace(m); };
+        log(`[git-repo-worker] devbox reconciling ${enlistmentDir} -> ${ref} (worker UNAVAILABLE)`);
+        const t0 = Date.now();
+        // Phase A: no-op when the tip is already local (warm store from the tick);
+        // narrow fetch only on a miss (e.g. a session pinned to a not-yet-local SHA).
+        const sha = store.ensureObjects({ ref, sha: localSha(ref) });
+        runner.checkout(sha, { clean: cleanEachJob }); // Phase B: local checkout
+        store.keep(`wt/${worktreeName}`, sha);          // keepalive: shield the active base from prune
+        log(`[git-repo-worker] devbox reconciled to ${sha.slice(0, 12)} in ${Date.now() - t0}ms (READY)`);
+    });
+
+    beforeRunTurn = async ({ trace, gitStateIO, gitBlobs, config }) => {
+        const sessionGitRef = config?.gitRef;
+        if (gitStateIO && gitBlobs) {
+            await withEnlistmentLock(async () => {
+                const res = await hydrateGitWorkspace({
+                    enlistmentDir, blobs: gitBlobs, state: gitStateIO,
+                    targetRef: resolveTargetRef(sessionGitRef), trace,
+                });
+                store.keep(`wt/${worktreeName}`, res.baseSha);
+                const log = (m) => { console.log(m); if (trace) trace(m); };
+                log(`[git-repo-worker] devbox hydrated (${res.mode}) base=${res.baseSha.slice(0, 12)} head=${res.headSha.slice(0, 12)} epoch=${res.epoch}`);
+            });
+            return;
+        }
+        await reconcile(trace, sessionGitRef);
+    };
+
+    afterRunTurn = async ({ trace, gitStateIO, gitBlobs }) => {
+        if (!gitStateIO || !gitBlobs) return;
+        await withEnlistmentLock(async () => {
+            const res = await dehydrateGitWorkspace({ enlistmentDir, blobs: gitBlobs, state: gitStateIO, trace });
+            const log = (m) => { console.log(m); if (trace) trace(m); };
+            log(`[git-repo-worker] devbox dehydrated epoch=${res.epoch} head=${res.headSha.slice(0, 12)} base=${res.baseSha.slice(0, 12)}`);
+        });
+    };
+
+    // Startup: ensure objects for the initial ref, materialize/reuse the worktree,
+    // chdir in, sync. Runs BEFORE worker.start() so readiness is honest.
+    const initialRef = resolveTargetRef();
+    const initialSha = store.ensureObjects({ ref: initialRef, sha: localSha(initialRef) });
+    ensureWorktree(initialSha);
+    process.chdir(enlistmentDir);
+    console.log(`[git-repo-worker] cwd -> ${enlistmentDir} (CLI discovery root)`);
+    await reconcile();
+
+    // Background Phase-A freshener: keep the shared store warm so claims are
+    // checkout-only. Additive + lock-serialized; disable with GIT_FETCH_INTERVAL_MS=0.
+    const fetchIntervalMs = parseInt(process.env.GIT_FETCH_INTERVAL_MS || "90000", 10);
+    if (Number.isFinite(fetchIntervalMs) && fetchIntervalMs > 0) {
+        const scheduleTick = () => {
+            const delay = Math.round(fetchIntervalMs * (0.85 + Math.random() * 0.3)); // jitter
+            const t = setTimeout(() => {
+                withEnlistmentLock(() => { store.tick(); })
+                    .then(() => console.log("[git-repo-worker] devbox fetch tick ok"))
+                    .catch((e) => console.warn(`[git-repo-worker] devbox fetch tick failed (continuing): ${e?.message ?? e}`))
+                    .finally(scheduleTick);
+            }, delay);
+            t.unref?.();
+        };
+        scheduleTick();
+        console.log(`[git-repo-worker] devbox background fetch every ~${Math.round(fetchIntervalMs / 1000)}s`);
+    }
+
+    // Repo-stored MCP servers from the worktree's .vscode/mcp.json (same as mirror mode).
+    if (!["0", "false", "off", "no"].includes((process.env.REPO_MCP_ENABLED || "").trim().toLowerCase())) {
+        try {
+            repoMcpServers = loadRepoMcpConfig(enlistmentDir, {
+                remoteOnly: !["0", "false", "off", "no"].includes((process.env.REPO_MCP_REMOTE_ONLY || "").trim().toLowerCase()),
+                allow: (process.env.REPO_MCP_ALLOW || "").split(",").map((s) => s.trim()).filter(Boolean),
+                credentialedNuGetFeeds: process.platform === "win32"
+                    ? (process.env.ADO_NUGET_FEED_URLS || "").split(/[;,]/).map((s) => s.trim()).filter(Boolean)
+                    : [],
+                trace: (m) => console.log(m),
+            });
+            const names = Object.keys(repoMcpServers);
+            console.log(names.length > 0
+                ? `[git-repo-worker] repo MCP servers (every-session): ${names.join(", ")}`
+                : `[git-repo-worker] no repo MCP servers loaded from ${enlistmentDir}/.vscode/mcp.json`);
+        } catch (err) {
+            console.warn(`[git-repo-worker] repo MCP load error (continuing): ${err?.message ?? err}`);
+        }
+    }
+
+    console.log(`[git-repo-worker] devbox worktree: ${enlistmentDir} (shared store ${sharedStore}; reconcile-before-job; clean=${cleanEachJob})`);
 }
 
 // Plugin directories: env override or auto-detect bundled/default Docker plugin dirs.

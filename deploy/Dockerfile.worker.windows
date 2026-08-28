@@ -51,7 +51,9 @@ COPY packages/sdk/dist/ ./packages/sdk/dist/
 COPY packages/sdk/plugins/ ./packages/sdk/plugins/
 COPY packages/sdk/examples/worker.js ./packages/sdk/examples/
 # git-repo-worker entrypoint (AKS git-hydration): selected via a `command:`
-# override in the Windows git-repo-worker DaemonSet; harmless otherwise.
+# override in the Windows git-repo-worker DaemonSet; harmless otherwise. Its
+# shared git primitives (GitStore/Runner) live in the SDK, so they ship in
+# packages/sdk/dist/ (COPY'd above) — no separate examples/lib layer needed.
 COPY packages/sdk/examples/git-repo-worker.js ./packages/sdk/examples/
 # git-cache-daemon: the cross-platform Node port of the Linux git-cache shell
 # ConfigMap. The Windows git-cache DaemonSet runs THIS worker image with a
