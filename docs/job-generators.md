@@ -1,5 +1,18 @@
 # JobGenerator controller
 
+## Purpose and audience
+
+This document is the implementation and operations reference for the existing
+JobGenerator materialization subsystem. It is intended for PilotSwarm
+engineers who maintain the controller and persistence layer, integrate with
+the REST or SDK APIs, configure source providers, or run the controller.
+
+It describes the currently implemented path from source evaluation through
+exactly-once Job creation and initial JobSession induction. It is not an
+authoring guide for lifecycle Markdown or a description of the future
+state-machine user experience. Those concepts are covered by
+[JobGenerator lifecycle state machines](./job-generator-lifecycles.md).
+
 JobGenerator is a durable CMS aggregate that periodically evaluates an external
 source and materializes one Job for each stable provider key. Definitions are
 immutable versions; publishing a definition atomically makes it active.
