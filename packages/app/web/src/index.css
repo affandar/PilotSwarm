@@ -6040,6 +6040,14 @@ body.is-resizing-pane-y iframe {
   overflow: visible;
 }
 
+/* Work-index tabs share the fixed header row with tab-specific actions. The
+   earlier 100% title basis pushed the Job Generator create button outside the
+   clipped header once headers became single-line. */
+.ps-panel-header:has(.ps-work-index-tabs) > .ps-panel-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
 /* Narrow panes: tighten the icon buttons so five of them plus a title still
    fit on one row rather than being clipped. */
 @media (max-width: 920px) {

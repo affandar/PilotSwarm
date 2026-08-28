@@ -6485,14 +6485,14 @@ function WorkIndexPane({
     const [jobGeneratorsLoading, setJobGeneratorsLoading] = React.useState(false);
     const [jobGeneratorsError, setJobGeneratorsError] = React.useState("");
     const loadSequenceRef = React.useRef(0);
-    const refreshJobGenerators = React.useCallback(async () => {
+    const refreshJobGenerators = React.useCallback(async ({ background = false } = {}) => {
         const transport = controller.transport;
         if (typeof transport?.listJobGenerators !== "function") {
             setJobGeneratorsError("This portal server does not expose JobGenerator APIs.");
             return [];
         }
         const sequence = ++loadSequenceRef.current;
-        setJobGeneratorsLoading(true);
+        if (!background) setJobGeneratorsLoading(true);
         setJobGeneratorsError("");
         try {
             const generators = await loadPersistedJobGenerators(transport);
@@ -6504,13 +6504,26 @@ function WorkIndexPane({
             }
             throw error;
         } finally {
-            if (sequence === loadSequenceRef.current) setJobGeneratorsLoading(false);
+            if (!background && sequence === loadSequenceRef.current) setJobGeneratorsLoading(false);
         }
     }, [controller]);
     React.useEffect(() => {
         if (activeTab !== "jobGenerators") return undefined;
         refreshJobGenerators().catch(() => {});
+        let polling = false;
+        const timer = window.setInterval(async () => {
+            if (polling || document.visibilityState === "hidden") return;
+            polling = true;
+            try {
+                await refreshJobGenerators({ background: true });
+            } catch {
+                // The pane surfaces the load error; keep the polling loop alive.
+            } finally {
+                polling = false;
+            }
+        }, 10_000);
         return () => {
+            window.clearInterval(timer);
             loadSequenceRef.current += 1;
         };
     }, [activeTab, refreshJobGenerators]);
