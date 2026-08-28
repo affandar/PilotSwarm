@@ -3871,7 +3871,9 @@ function Panel({ title, titleRight = null, color = "gray", focused = false, acti
     },
     hasHeader ? React.createElement("header", { className: "ps-panel-header" },
         React.createElement("div", { className: "ps-panel-title" },
-            Array.isArray(title)
+            React.isValidElement(title)
+                ? title
+                : Array.isArray(title)
                 ? React.createElement(Runs, { runs: title, theme })
                 : flattenTitleText(title)),
         titleRight || actions
@@ -4969,7 +4971,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null, title = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -5755,7 +5757,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     return React.createElement(React.Fragment, null,
     dragGhost,
     actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
-        title: [{ text: "Sessions", color: "yellow", bold: true }],
+        title: title || [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
         theme,
@@ -5848,6 +5850,707 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             onClose: () => setLinkModal(null),
         })
         : null);
+}
+
+function WorkIndexTabs({ activeTab, onChange, panelId }) {
+    const tabs = [
+        { id: "sessions", label: "Sessions" },
+        { id: "jobGenerators", label: "Job Generators" },
+    ];
+    const selectRelative = (currentId, delta) => {
+        const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
+        const nextIndex = (currentIndex + delta + tabs.length) % tabs.length;
+        onChange(tabs[nextIndex].id);
+        requestAnimationFrame(() => {
+            document.getElementById(`ps-work-index-tab-${tabs[nextIndex].id}`)?.focus();
+        });
+    };
+    return React.createElement("div", {
+        className: "ps-work-index-tabs",
+        role: "tablist",
+        "aria-label": "Work index",
+    },
+    tabs.map((tab) => React.createElement("button", {
+        key: tab.id,
+        id: `ps-work-index-tab-${tab.id}`,
+        type: "button",
+        role: "tab",
+        className: `ps-work-index-tab${activeTab === tab.id ? " is-active" : ""}`,
+        "aria-selected": activeTab === tab.id,
+        "aria-controls": panelId,
+        tabIndex: activeTab === tab.id ? 0 : -1,
+        onClick: () => onChange(tab.id),
+        onKeyDown: (event) => {
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                selectRelative(tab.id, -1);
+            } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                selectRelative(tab.id, 1);
+            } else if (event.key === "Home") {
+                event.preventDefault();
+                onChange(tabs[0].id);
+                requestAnimationFrame(() => document.getElementById(`ps-work-index-tab-${tabs[0].id}`)?.focus());
+            } else if (event.key === "End") {
+                event.preventDefault();
+                onChange(tabs[tabs.length - 1].id);
+                requestAnimationFrame(() => document.getElementById(`ps-work-index-tab-${tabs[tabs.length - 1].id}`)?.focus());
+            }
+        },
+    }, tab.label)));
+}
+
+function previewExecutionStatus(session) {
+    const state = String(session?.status || session?.state || "").toLowerCase();
+    if (state === "input_required" || state === "waiting") return "PARKED";
+    if (state === "failed" || state === "error") return "FAILED";
+    if (state === "completed" || state === "replaced") return "DONE";
+    if (state === "cancelled") return "ABANDONED";
+    if (state === "unacked") return "UNACKED";
+    return state === "running" || state === "active" ? "RUNNING" : "READY";
+}
+
+function persistedGeneratorStatus(generator) {
+    if (generator.operationalState === "paused") return "PAUSED";
+    if (generator.operationalState === "disabled") return "STOPPED";
+    if (generator.lastError) return "DEGRADED";
+    return generator.totalCycles > 0 ? "RUNNING" : "REGISTERED";
+}
+
+function persistedJobStatus(job) {
+    switch (job.lifecycleState) {
+        case "active": return "RUNNING";
+        case "blocked": return "PARKED";
+        case "completed": return "DONE";
+        case "cancelled": return "ABANDONED";
+        default: return "READY";
+    }
+}
+
+async function loadPersistedJobGenerators(transport) {
+    const generatorRows = await transport.listJobGenerators();
+    return Promise.all(generatorRows.map(async (generator) => {
+        const [activeDefinition, jobRows] = await Promise.all([
+            generator.activeDefinitionId
+                ? transport.getJobGeneratorDefinition(generator.activeDefinitionId)
+                : null,
+            transport.listJobGeneratorJobs(generator.generatorId),
+        ]);
+        const jobs = await Promise.all(jobRows.map(async (job) => {
+            const sessions = await transport.listJobSessions(job.jobId);
+            return {
+                id: job.jobId,
+                label: `${generator.name}_${job.jobKey}`,
+                lifecycleState: job.lifecycleState,
+                status: persistedJobStatus(job),
+                definitionId: job.definitionId,
+                sessions: sessions.map((session) => ({
+                    id: session.sessionId,
+                    title: `Execution session ${session.ordinal}`,
+                    status: previewExecutionStatus(session),
+                    current: session.isCurrent,
+                })),
+            };
+        }));
+        return {
+            id: generator.generatorId,
+            name: generator.name,
+            repo: activeDefinition?.affinities?.repo || "Any repo",
+            cadenceSeconds: generator.cadenceSeconds,
+            status: persistedGeneratorStatus(generator),
+            definitionVersion: activeDefinition?.version ?? 0,
+            definition: activeDefinition,
+            jobs,
+        };
+    }));
+}
+
+const JOB_GENERATOR_CREATE_SECTIONS = [
+    {
+        id: "registration",
+        title: "Registration",
+        description: "Mutable JobGenerator identity and schedule. Owner is assigned from the signed-in user.",
+        open: true,
+        fields: [
+            { key: "name", label: "Name", kind: "text", placeholder: "IncidentFix", required: true },
+            { key: "cadenceSeconds", label: "Materialization cadence (seconds)", kind: "number", min: 30 },
+        ],
+    },
+    {
+        id: "source",
+        title: "Expansion source",
+        description: "Immutable definition fields that discover inputs and produce stable JobKeys.",
+        open: true,
+        fields: [
+            {
+                key: "sourceType",
+                label: "Source type",
+                kind: "select",
+                options: [
+                    { value: "ado_wiql", label: "Work item query" },
+                    { value: "icm", label: "IcM" },
+                    { value: "kusto", label: "Kusto" },
+                ],
+            },
+            { key: "expansionAgent", label: "Expansion agent", kind: "text", placeholder: "incidentfix-expand" },
+            {
+                key: "sourceConfig",
+                label: "Source configuration (JSON)",
+                kind: "textarea",
+                rows: 5,
+                help: "Provider-specific and extensible. Include the query/filter and any stable-key configuration.",
+            },
+        ],
+    },
+    {
+        id: "affinities",
+        title: "Inherited affinities",
+        description: "Placement and execution settings inherited by every Job pinned to this definition.",
+        fields: [
+            { key: "repoAffinity", label: "Repository affinity", kind: "text", placeholder: "DsMainDev" },
+            { key: "gitRef", label: "Git ref", kind: "text", placeholder: "dev/<you>/job-generator" },
+            {
+                key: "computeAffinity",
+                label: "Compute affinity",
+                kind: "select",
+                options: [
+                    { value: "devbox", label: "Devbox" },
+                    { value: "cluster", label: "Cluster" },
+                    { value: "devbox,cluster", label: "Devbox and cluster" },
+                ],
+            },
+            { key: "userAffinity", label: "User affinity", kind: "text", placeholder: "Optional user or group" },
+            { key: "modelAffinity", label: "Model affinity", kind: "text", placeholder: "Optional model" },
+        ],
+    },
+    {
+        id: "lifecycle",
+        title: "Lifecycle and blocking",
+        description: "Per-state agent/prompt bindings and the principals allowed to unblock generated Jobs.",
+        fields: [
+            {
+                key: "states",
+                label: "Lifecycle states (JSON)",
+                kind: "textarea",
+                rows: 7,
+                help: "Each state may be prompt-driven, automatic, or system-event-driven.",
+            },
+            {
+                key: "blockingPrincipals",
+                label: "Blocking principals",
+                kind: "text",
+                placeholder: "jobCreator, team:SQL ES",
+                help: "Comma-separated users, groups, or symbolic principals.",
+            },
+        ],
+    },
+    {
+        id: "validation",
+        title: "Validation gates",
+        description: "Build, test, approval, or system-event gates represented as an extensible array.",
+        fields: [
+            {
+                key: "validationGates",
+                label: "Validation gates (JSON)",
+                kind: "textarea",
+                rows: 5,
+            },
+        ],
+    },
+    {
+        id: "guardrails",
+        title: "Guardrails",
+        description: "Initial count and anti-thrash limits from the orchestration vision.",
+        fields: [
+            { key: "maxOutstandingJobs", label: "Maximum outstanding Jobs", kind: "number", min: 1 },
+            { key: "maxBlockedJobs", label: "Maximum blocked Jobs", kind: "number", min: 1 },
+            { key: "maxItemsPerCycle", label: "Maximum items per cycle", kind: "number", min: 1 },
+            { key: "maxAttemptsPerState", label: "Maximum attempts per state", kind: "number", min: 1 },
+            { key: "maxTotalSteps", label: "Maximum total Job steps", kind: "number", min: 1 },
+        ],
+    },
+];
+
+const JOB_GENERATOR_CREATE_DEFAULTS = {
+    name: "",
+    cadenceSeconds: "300",
+    sourceType: "ado_wiql",
+    expansionAgent: "",
+    sourceConfig: '{\n  "wiql": "SELECT [System.Id] FROM WorkItems",\n  "keyField": "System.Id"\n}',
+    repoAffinity: "DsMainDev",
+    gitRef: "",
+    computeAffinity: "devbox",
+    userAffinity: "",
+    modelAffinity: "",
+    states: '{\n  "Work Details Gathered": {\n    "kind": "prompt",\n    "prompt": "job/work-details"\n  },\n  "Done": {\n    "kind": "auto"\n  }\n}',
+    blockingPrincipals: "jobCreator",
+    validationGates: "[]",
+    maxOutstandingJobs: "5",
+    maxBlockedJobs: "2",
+    maxItemsPerCycle: "100",
+    maxAttemptsPerState: "3",
+    maxTotalSteps: "50",
+};
+
+function parseJobGeneratorJson(value, label, expected) {
+    let parsed;
+    try {
+        parsed = JSON.parse(value);
+    } catch (error) {
+        throw new Error(`${label} must be valid JSON: ${error.message}`);
+    }
+    if (expected === "array" && !Array.isArray(parsed)) {
+        throw new Error(`${label} must be a JSON array.`);
+    }
+    if (expected === "object" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) {
+        throw new Error(`${label} must be a JSON object.`);
+    }
+    return parsed;
+}
+
+function JobGeneratorCreateField({ field, value, onChange, autoFocus = false }) {
+    const common = {
+        className: field.kind === "textarea" ? "ps-modal-input ps-job-generator-textarea" : "ps-modal-input",
+        value,
+        onChange: (event) => onChange(event.target.value),
+        required: Boolean(field.required),
+        autoFocus,
+    };
+    const control = field.kind === "select"
+        ? React.createElement("select", common,
+            field.options.map((option) => React.createElement("option", {
+                key: option.value,
+                value: option.value,
+            }, option.label)))
+        : field.kind === "textarea"
+            ? React.createElement("textarea", {
+                ...common,
+                rows: field.rows,
+                spellCheck: false,
+            })
+            : React.createElement("input", {
+                ...common,
+                type: field.kind,
+                min: field.min,
+                placeholder: field.placeholder,
+            });
+    return React.createElement("label", { className: "ps-job-generator-field" },
+        React.createElement("span", null, field.label),
+        control,
+        field.help
+            ? React.createElement("small", { className: "ps-job-generator-field-help" }, field.help)
+            : null);
+}
+
+function JobGeneratorCreateModal({ onCreate, onClose }) {
+    const [draft, setDraft] = React.useState(JOB_GENERATOR_CREATE_DEFAULTS);
+    const [error, setError] = React.useState("");
+    const [submitting, setSubmitting] = React.useState(false);
+    const dialogRef = React.useRef(null);
+    const previousFocusRef = React.useRef(typeof document === "undefined" ? null : document.activeElement);
+    const stop = (event) => event.stopPropagation();
+    React.useEffect(() => () => {
+        const previousFocus = previousFocusRef.current;
+        if (previousFocus instanceof HTMLElement) {
+            requestAnimationFrame(() => previousFocus.focus());
+        }
+    }, []);
+    const handleKeyDown = (event) => {
+        event.stopPropagation();
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = [...(dialogRef.current?.querySelectorAll(
+            "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ) || [])];
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    };
+    const submit = async (event) => {
+        event.preventDefault();
+        const trimmedName = draft.name.trim();
+        if (!trimmedName) return;
+        setSubmitting(true);
+        try {
+            const sourceConfig = parseJobGeneratorJson(draft.sourceConfig, "Source configuration", "object");
+            const states = parseJobGeneratorJson(draft.states, "Lifecycle states", "object");
+            const validationGates = parseJobGeneratorJson(draft.validationGates, "Validation gates", "array");
+            const positiveInteger = (value, label) => {
+                const parsed = Number(value);
+                if (!Number.isInteger(parsed) || parsed < 1) {
+                    throw new Error(`${label} must be a positive integer.`);
+                }
+                return parsed;
+            };
+            await onCreate({
+                name: trimmedName,
+                cadenceSeconds: Math.max(30, positiveInteger(draft.cadenceSeconds, "Cadence")),
+                definition: {
+                    sourceType: draft.sourceType,
+                    sourceConfig,
+                    affinities: {
+                        repo: draft.repoAffinity.trim() || null,
+                        gitRef: draft.gitRef.trim() || null,
+                        compute: draft.computeAffinity.split(","),
+                        user: draft.userAffinity.trim() || null,
+                        model: draft.modelAffinity.trim() || null,
+                    },
+                    lifecycleDefinition: {
+                        expansionAgent: draft.expansionAgent.trim() || null,
+                        states,
+                        blockingPrincipals: draft.blockingPrincipals
+                            .split(",")
+                            .map((value) => value.trim())
+                            .filter(Boolean),
+                    },
+                    validationGates,
+                    guardrails: {
+                        maxOutstandingJobs: positiveInteger(draft.maxOutstandingJobs, "Maximum outstanding Jobs"),
+                        maxBlockedJobs: positiveInteger(draft.maxBlockedJobs, "Maximum blocked Jobs"),
+                        maxItemsPerCycle: positiveInteger(draft.maxItemsPerCycle, "Maximum items per cycle"),
+                        maxAttemptsPerState: positiveInteger(draft.maxAttemptsPerState, "Maximum attempts per state"),
+                        maxTotalSteps: positiveInteger(draft.maxTotalSteps, "Maximum total Job steps"),
+                    },
+                },
+            });
+        } catch (submitError) {
+            setError(submitError instanceof Error ? submitError.message : String(submitError));
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    const setValue = (key) => (value) => {
+        setDraft((current) => ({ ...current, [key]: value }));
+        setError("");
+    };
+
+    return React.createElement("div", { className: "ps-share-overlay", onClick: onClose },
+        React.createElement("form", {
+            ref: dialogRef,
+            className: "ps-job-generator-modal",
+            role: "dialog",
+            "aria-modal": "true",
+            "aria-labelledby": "ps-job-generator-create-title",
+            onClick: stop,
+            onKeyDown: handleKeyDown,
+            onSubmit: submit,
+        },
+            React.createElement("div", { className: "ps-share-modal-head" },
+                React.createElement("span", { id: "ps-job-generator-create-title" }, "Create Job Generator"),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-modal-close",
+                    onClick: onClose,
+                    "aria-label": "Close",
+                    title: "Close",
+                }, "✕")),
+            React.createElement("p", { className: "ps-job-generator-modal-note" },
+                "Registration creates a durable JobGenerator and immutable definition version 1. Owner is your signed-in identity."),
+            React.createElement("div", { className: "ps-job-generator-form-sections" },
+                JOB_GENERATOR_CREATE_SECTIONS.map((section) => React.createElement("details", {
+                    key: section.id,
+                    className: "ps-job-generator-form-section",
+                    open: section.open,
+                },
+                React.createElement("summary", null,
+                    React.createElement("strong", null, section.title),
+                    React.createElement("span", null, section.description)),
+                React.createElement("div", { className: "ps-job-generator-form-grid" },
+                    section.fields.map((field, fieldIndex) => React.createElement(JobGeneratorCreateField, {
+                        key: field.key,
+                        field,
+                        value: draft[field.key],
+                        onChange: setValue(field.key),
+                        autoFocus: section.id === "registration" && fieldIndex === 0,
+                    })))))),
+            error
+                ? React.createElement("div", {
+                    className: "ps-job-generator-form-error",
+                    role: "alert",
+                }, error)
+                : null,
+            React.createElement("div", { className: "ps-job-generator-modal-actions" },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onClose,
+                }, "Cancel"),
+                React.createElement("button", {
+                    type: "submit",
+                    className: "ps-mini-button is-primary",
+                    disabled: submitting || !draft.name.trim(),
+                }, submitting ? "Registering..." : "Register Job Generator"))));
+}
+
+function JobGeneratorPane({
+    controller,
+    title,
+    panelClassName = "",
+    showDetailBox = true,
+    generators,
+    loading,
+    loadError,
+    onCreateGenerator,
+}) {
+    const viewState = useControllerSelector(controller, (state) => ({
+        focused: state.ui.focusRegion === "sessions",
+    }), shallowEqualObject);
+    const [expandedGenerators, setExpandedGenerators] = React.useState(() => new Set());
+    const [expandedJobs, setExpandedJobs] = React.useState(() => new Set());
+    const [selected, setSelected] = React.useState({ kind: "none", generatorId: null });
+    const [createOpen, setCreateOpen] = React.useState(false);
+
+    const toggle = (setter, id) => {
+        setter((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const selectJob = (generator, job) => {
+        setSelected({ kind: "job", generatorId: generator.id, jobId: job.id });
+        const currentSession = job.sessions.find((session) => session.current && session.id)
+            || job.sessions.find((session) => session.id);
+        if (currentSession?.id) controller.loadSession(currentSession.id).catch(() => {});
+        controller.setFocus("sessions");
+    };
+
+    const selectSession = (generator, job, session) => {
+        setSelected({
+            kind: "session",
+            generatorId: generator.id,
+            jobId: job.id,
+            sessionId: session.id,
+        });
+        if (session.id) controller.loadSession(session.id).catch(() => {});
+        controller.setFocus("sessions");
+    };
+
+    const selectedGenerator = generators.find((generator) => generator.id === selected.generatorId) || null;
+    const selectedJob = selectedGenerator?.jobs.find((job) => job.id === selected.jobId) || null;
+    const selectedSession = selectedJob?.sessions.find((session) => session.id === selected.sessionId) || null;
+    const selectionTitle = selectedSession?.title || selectedJob?.label || selectedGenerator?.name || "Nothing selected";
+    const selectionMeta = selectedSession
+        ? `${selectedSession.current ? "Current" : "Prior"} session · ${selectedSession.status}`
+        : selectedJob
+            ? `${selectedJob.lifecycleState} · ${selectedJob.status} · ${selectedJob.sessions.length} session${selectedJob.sessions.length === 1 ? "" : "s"}`
+            : selectedGenerator
+                ? `${selectedGenerator.status} · definition v${selectedGenerator.definitionVersion} · ${selectedGenerator.definition?.sourceType || "preview source"} · ${selectedGenerator.jobs.length} job${selectedGenerator.jobs.length === 1 ? "" : "s"}`
+                : "";
+
+    const actions = React.createElement(IconButton, {
+        className: "ps-mini-button",
+        icon: React.createElement(PlusGlyph),
+        label: "Create Job Generator",
+        onClick: () => setCreateOpen(true),
+    });
+
+    return React.createElement(React.Fragment, null,
+        React.createElement(Panel, {
+            title,
+            color: "yellow",
+            focused: viewState.focused,
+            actions,
+            className: `ps-job-generator-pane${panelClassName ? ` ${panelClassName}` : ""}`,
+        },
+        React.createElement("div", { className: "ps-job-generator-preview-note" },
+            "Persisted JobGenerators · Jobs retain identity across replacement sessions"),
+        React.createElement("div", { className: "ps-action-list ps-job-generator-list" },
+            loading
+                ? React.createElement("div", { className: "ps-job-tree-empty" }, "Loading JobGenerators...")
+                : loadError
+                    ? React.createElement("div", {
+                        className: "ps-job-generator-load-error",
+                        role: "alert",
+                    }, loadError)
+                    : generators.length === 0
+                        ? React.createElement("div", { className: "ps-job-tree-empty" }, "No registered JobGenerators")
+                        : generators.map((generator) => {
+                const generatorExpanded = expandedGenerators.has(generator.id);
+                const generatorSelected = selected.kind === "generator" && selected.generatorId === generator.id;
+                return React.createElement(React.Fragment, { key: generator.id },
+                    React.createElement("div", { className: "ps-job-tree-row is-generator" },
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-job-tree-toggle",
+                            onClick: () => toggle(setExpandedGenerators, generator.id),
+                            "aria-label": generatorExpanded ? `Collapse ${generator.name}` : `Expand ${generator.name}`,
+                        }, generatorExpanded ? "▼" : "▶"),
+                        React.createElement("button", {
+                            type: "button",
+                            className: `ps-job-tree-content${generatorSelected ? " is-selected" : ""}`,
+                            onClick: () => setSelected({ kind: "generator", generatorId: generator.id }),
+                        },
+                        React.createElement("span", { className: `ps-job-generator-status is-${generator.status.toLowerCase()}` }, "●"),
+                        React.createElement("span", { className: "ps-job-tree-primary" }, generator.name),
+                        React.createElement("span", { className: "ps-job-tree-state" }, generator.status),
+                        React.createElement("span", { className: "ps-job-tree-meta" },
+                            `v${generator.definitionVersion} · ${generator.jobs.length} job${generator.jobs.length === 1 ? "" : "s"}`))),
+                    generatorExpanded
+                        ? generator.jobs.length === 0
+                            ? React.createElement("div", { className: "ps-job-tree-empty" }, "No materialized jobs")
+                            : generator.jobs.map((job) => {
+                                const jobExpanded = expandedJobs.has(job.id);
+                                const jobSelected = selected.kind === "job"
+                                    && selected.generatorId === generator.id
+                                    && selected.jobId === job.id;
+                                return React.createElement(React.Fragment, { key: job.id },
+                                    React.createElement("div", { className: "ps-job-tree-row is-job" },
+                                        React.createElement("button", {
+                                            type: "button",
+                                            className: "ps-job-tree-toggle",
+                                            onClick: () => toggle(setExpandedJobs, job.id),
+                                            "aria-label": jobExpanded ? `Collapse ${job.label}` : `Expand ${job.label}`,
+                                        }, jobExpanded ? "▼" : "▶"),
+                                        React.createElement("button", {
+                                            type: "button",
+                                            className: `ps-job-tree-content${jobSelected ? " is-selected" : ""}`,
+                                            onClick: () => selectJob(generator, job),
+                                        },
+                                        React.createElement("span", { className: "ps-job-tree-primary" }, job.label),
+                                        React.createElement("span", { className: "ps-job-tree-state" }, job.status),
+                                        React.createElement("span", { className: "ps-job-tree-meta" },
+                                            `${job.lifecycleState} · ${job.sessions.length} session${job.sessions.length === 1 ? "" : "s"}`))),
+                                    jobExpanded
+                                        ? job.sessions.map((session, index) => {
+                                            const sessionSelected = selected.kind === "session"
+                                                && selected.generatorId === generator.id
+                                                && selected.jobId === job.id
+                                                && selected.sessionId === session.id;
+                                            return React.createElement("button", {
+                                                type: "button",
+                                                key: session.id || `${job.id}:placeholder:${index}`,
+                                                className: `ps-job-session-row${sessionSelected ? " is-selected" : ""}`,
+                                                onClick: () => selectSession(generator, job, session),
+                                                disabled: !session.id,
+                                                title: session.id ? "Open this PilotSwarm session" : "Illustrative session",
+                                            },
+                                            React.createElement("span", { className: "ps-job-session-branch" }, "└"),
+                                            React.createElement("span", { className: "ps-job-tree-primary" }, session.title),
+                                            session.current
+                                                ? React.createElement("span", { className: "ps-job-session-current" }, "CURRENT")
+                                                : null,
+                                            React.createElement("span", { className: "ps-job-tree-meta" },
+                                                session.id
+                                                    ? `${session.id.slice(0, 8)} · ${session.status}`
+                                                    : session.status));
+                                        })
+                                        : null);
+                            })
+                        : null);
+            })),
+        showDetailBox
+            ? React.createElement("div", { className: "ps-job-generator-detail" },
+                React.createElement("strong", null, selectionTitle),
+                React.createElement("span", null, selectionMeta),
+                selectedJob
+                    ? React.createElement("span", null, "Selecting a Job opens its current session; expand it to inspect prior sessions.")
+                    : null)
+            : null),
+        createOpen
+            ? React.createElement(JobGeneratorCreateModal, {
+                onClose: () => setCreateOpen(false),
+                onCreate: async (input) => {
+                    const generator = await onCreateGenerator(input);
+                    setExpandedGenerators((current) => new Set(current).add(generator.id));
+                    setSelected({ kind: "generator", generatorId: generator.id });
+                    setCreateOpen(false);
+                },
+            })
+            : null);
+}
+
+function WorkIndexPane({
+    controller,
+    activeTab,
+    onTabChange,
+    panelClassName = "",
+    structuredRows = false,
+    showDetailBox = null,
+}) {
+    const [jobGenerators, setJobGenerators] = React.useState([]);
+    const [jobGeneratorsLoading, setJobGeneratorsLoading] = React.useState(false);
+    const [jobGeneratorsError, setJobGeneratorsError] = React.useState("");
+    const loadSequenceRef = React.useRef(0);
+    const refreshJobGenerators = React.useCallback(async () => {
+        const transport = controller.transport;
+        if (typeof transport?.listJobGenerators !== "function") {
+            setJobGeneratorsError("This portal server does not expose JobGenerator APIs.");
+            return [];
+        }
+        const sequence = ++loadSequenceRef.current;
+        setJobGeneratorsLoading(true);
+        setJobGeneratorsError("");
+        try {
+            const generators = await loadPersistedJobGenerators(transport);
+            if (sequence === loadSequenceRef.current) setJobGenerators(generators);
+            return generators;
+        } catch (error) {
+            if (sequence === loadSequenceRef.current) {
+                setJobGeneratorsError(error instanceof Error ? error.message : String(error));
+            }
+            throw error;
+        } finally {
+            if (sequence === loadSequenceRef.current) setJobGeneratorsLoading(false);
+        }
+    }, [controller]);
+    React.useEffect(() => {
+        if (activeTab !== "jobGenerators") return undefined;
+        refreshJobGenerators().catch(() => {});
+        return () => {
+            loadSequenceRef.current += 1;
+        };
+    }, [activeTab, refreshJobGenerators]);
+    const createJobGenerator = React.useCallback(async (input) => {
+        const result = await controller.transport.createJobGenerator(input);
+        const generators = await refreshJobGenerators();
+        const created = generators.find((generator) => generator.id === result.generator.generatorId);
+        if (!created) throw new Error("JobGenerator was created but could not be reloaded.");
+        return created;
+    }, [controller, refreshJobGenerators]);
+    const panelId = "ps-work-index-panel";
+    const title = React.createElement(WorkIndexTabs, {
+        activeTab,
+        onChange: onTabChange,
+        panelId,
+    });
+    const content = activeTab === "jobGenerators"
+        ? React.createElement(JobGeneratorPane, {
+            controller,
+            title,
+            panelClassName,
+            showDetailBox: showDetailBox === null ? !panelClassName.includes("ps-mobile-session-pane") : showDetailBox,
+            generators: jobGenerators,
+            loading: jobGeneratorsLoading,
+            loadError: jobGeneratorsError,
+            onCreateGenerator: createJobGenerator,
+        })
+        : React.createElement(SessionPane, {
+            controller,
+            title,
+            panelClassName,
+            structuredRows,
+            showDetailBox,
+        });
+    return React.createElement("div", {
+        id: panelId,
+        className: "ps-work-index-panel",
+        role: "tabpanel",
+        "aria-labelledby": `ps-work-index-tab-${activeTab}`,
+    }, content);
 }
 
 // Compact confirmation dialog for the Copy link button: shows the copied URL
@@ -7044,10 +7747,12 @@ function useKeyboardTakeover(enabled) {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
-    const sessionPane = React.createElement(SessionPane, {
+function MobileWorkspace({ controller, layout = "split", workIndexTab, onWorkIndexTabChange, onEnterZen }) {
+    const sessionPane = React.createElement(WorkIndexPane, {
         controller,
         panelClassName: "ps-mobile-session-pane",
+        activeTab: workIndexTab,
+        onTabChange: onWorkIndexTabChange,
     });
     if (layout === "chat") {
         return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
@@ -7056,10 +7761,12 @@ function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
     }
     if (layout === "sessions") {
         return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
-            React.createElement(SessionPane, {
+            React.createElement(WorkIndexPane, {
                 controller,
                 panelClassName: "ps-mobile-session-pane",
                 showDetailBox: true,
+                activeTab: workIndexTab,
+                onTabChange: onWorkIndexTabChange,
             }));
     }
     return React.createElement("div", { className: "ps-mobile-workspace" },
@@ -12942,7 +13649,7 @@ function ScopedModalLayer({ controller }) {
     return React.createElement(ModalLayer, { controller });
 }
 
-function useKeyboardShortcuts(controller, mobile, suspended = false) {
+function useKeyboardShortcuts(controller, mobile, suspended = false, workIndexTab = "sessions") {
     React.useEffect(() => {
         if (suspended) return undefined;
         const handler = (event) => {
@@ -12972,12 +13679,6 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
                 controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
                 return;
             }
-            if (!editable && isShiftModel) {
-                event.preventDefault();
-                controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
-                return;
-            }
-
             if (modal && !editable) {
                 if (event.key === "Escape" || (modal.type === "confirm" && event.key === "n")) {
                     event.preventDefault();
@@ -13054,6 +13755,16 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             }
 
             if (editable) {
+                return;
+            }
+
+            if (workIndexTab === "jobGenerators") {
+                return;
+            }
+
+            if (isShiftModel) {
+                event.preventDefault();
+                controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
                 return;
             }
 
@@ -13289,7 +14000,7 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [controller, mobile, suspended]);
+    }, [controller, mobile, suspended, workIndexTab]);
 }
 
 function formatAdminPrincipalLabel(principal) {
@@ -14558,6 +15269,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     // The phone's Main layout: split | chat | sessions (cycled by the Main
     // toolbar button). Desktop has real columns and needs no such cycle.
     const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
+    const [workIndexTab, setWorkIndexTab] = React.useState("sessions");
     const state = useControllerSelector(controller, (rootState) => ({
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
@@ -14630,7 +15342,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
-    useKeyboardShortcuts(controller, mobile, suspended);
+    useKeyboardShortcuts(controller, mobile, suspended, workIndexTab);
 
     const lastCreatedSessionRef = React.useRef(state.revealedCreatedSessionId);
     React.useEffect(() => {
@@ -15098,7 +15810,12 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "1" },
     },
-        React.createElement(SessionPane, { controller, structuredRows: true })) : null,
+        React.createElement(WorkIndexPane, {
+            controller,
+            structuredRows: true,
+            activeTab: workIndexTab,
+            onTabChange: setWorkIndexTab,
+        })) : null,
     React.createElement("div", {
         style: {
             gridColumn: "2",
@@ -15235,7 +15952,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
+    else mobileContent = React.createElement(MobileWorkspace, {
+        controller,
+        layout: mobileMainLayout,
+        workIndexTab,
+        onWorkIndexTabChange: setWorkIndexTab,
+        onEnterZen: moa?.openMobileZen,
+    });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the

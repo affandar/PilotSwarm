@@ -17,6 +17,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "completeSession",
     "completeSessionGroup",
     "copyArtifact",
+    "createJobGenerator",
     "createMyProvider",
     "createProvider",
     "createSession",
@@ -54,6 +55,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getFleetSkillUsage",
     "getFleetStats",
     "getGraphNamespace",
+    "getJob",
+    "getJobGenerator",
+    "getJobGeneratorDefinition",
     "getLatestResponse",
     "getLegacyProviderMigrationStatus",
     "getLive",
@@ -102,6 +106,11 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listChildOutcomes",
     "listCreatableAgents",
     "listGraphNamespaces",
+    "listJobGeneratorCycles",
+    "listJobGeneratorDefinitions",
+    "listJobGeneratorJobs",
+    "listJobGenerators",
+    "listJobSessions",
     "listKnownUsers",
     "listModels",
     "listPausedSessions",
@@ -115,6 +124,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
     "pruneDeletedSummaries",
+    "publishJobGeneratorDefinition",
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
@@ -264,6 +274,16 @@ export interface ManagementOps {
         fromFilename?: any;
         toSessionId?: any;
         toFilename?: any;
+    }): Promise<any>;
+
+    /**
+     * Atomically register a JobGenerator and immutable definition version 1. Owner is the authenticated principal.
+     * @remarks `POST /job-generators` — access: `job-generator:create`
+     */
+    createJobGenerator(params: {
+        name?: any;
+        cadenceSeconds?: any;
+        definition?: any;
     }): Promise<any>;
 
     /**
@@ -606,6 +626,30 @@ export interface ManagementOps {
      */
     getGraphNamespace(params: {
         namespace: string;
+    }): Promise<any>;
+
+    /**
+     * Get one durable Job.
+     * @remarks `GET /jobs/:jobId` — access: `job-generator:read`
+     */
+    getJob(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
+     * Get a JobGenerator and its active immutable definition.
+     * @remarks `GET /job-generators/:generatorId` — access: `job-generator:read`
+     */
+    getJobGenerator(params: {
+        generatorId: string;
+    }): Promise<any>;
+
+    /**
+     * Get one immutable JobGeneratorDefinition.
+     * @remarks `GET /job-generator-definitions/:definitionId` — access: `job-generator:read`
+     */
+    getJobGeneratorDefinition(params: {
+        definitionId: string;
     }): Promise<any>;
 
     /**
@@ -1007,6 +1051,45 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * List recent materialization cycles for a JobGenerator.
+     * @remarks `GET /job-generators/:generatorId/cycles` — access: `job-generator:read`
+     */
+    listJobGeneratorCycles(params: {
+        generatorId: string;
+        limit?: number;
+    }): Promise<any>;
+
+    /**
+     * List immutable definition versions for a JobGenerator, newest first.
+     * @remarks `GET /job-generators/:generatorId/definitions` — access: `job-generator:read`
+     */
+    listJobGeneratorDefinitions(params: {
+        generatorId: string;
+    }): Promise<any>;
+
+    /**
+     * List durable Jobs materialized by a JobGenerator.
+     * @remarks `GET /job-generators/:generatorId/jobs` — access: `job-generator:read`
+     */
+    listJobGeneratorJobs(params: {
+        generatorId: string;
+    }): Promise<any>;
+
+    /**
+     * List JobGenerators owned by the caller; admins can list all.
+     * @remarks `GET /job-generators` — access: `job-generator:list`
+     */
+    listJobGenerators(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * List a Job's PilotSwarm session history in ordinal order.
+     * @remarks `GET /jobs/:jobId/sessions` — access: `job-generator:read`
+     */
+    listJobSessions(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
      * Member directory (provider/subject/email/displayName) for share autocomplete; excludes synthetic principals.
      * @remarks `GET /management/users` — access: `authed`
      */
@@ -1104,6 +1187,15 @@ export interface ManagementOps {
      */
     pruneDeletedSummaries(params: {
         olderThan?: any;
+    }): Promise<any>;
+
+    /**
+     * Publish a new immutable definition version and make it active for future Jobs.
+     * @remarks `POST /job-generators/:generatorId/definitions` — access: `job-generator:manage`
+     */
+    publishJobGeneratorDefinition(params: {
+        generatorId: string;
+        definition?: any;
     }): Promise<any>;
 
     /**
@@ -1620,6 +1712,7 @@ export function createManagementOps(
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
+        createJobGenerator: (params: Record<string, unknown> = {}) => callOp("createJobGenerator", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
@@ -1657,6 +1750,9 @@ export function createManagementOps(
         getFleetSkillUsage: (params: Record<string, unknown> = {}) => callOp("getFleetSkillUsage", params),
         getFleetStats: (params: Record<string, unknown> = {}) => callOp("getFleetStats", params),
         getGraphNamespace: (params: Record<string, unknown> = {}) => callOp("getGraphNamespace", params),
+        getJob: (params: Record<string, unknown> = {}) => callOp("getJob", params),
+        getJobGenerator: (params: Record<string, unknown> = {}) => callOp("getJobGenerator", params),
+        getJobGeneratorDefinition: (params: Record<string, unknown> = {}) => callOp("getJobGeneratorDefinition", params),
         getLatestResponse: (params: Record<string, unknown> = {}) => callOp("getLatestResponse", params),
         getLegacyProviderMigrationStatus: (params: Record<string, unknown> = {}) => callOp("getLegacyProviderMigrationStatus", params),
         getLive: (params: Record<string, unknown> = {}) => callOp("getLive", params),
@@ -1705,6 +1801,11 @@ export function createManagementOps(
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
+        listJobGeneratorCycles: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorCycles", params),
+        listJobGeneratorDefinitions: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorDefinitions", params),
+        listJobGeneratorJobs: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorJobs", params),
+        listJobGenerators: (params: Record<string, unknown> = {}) => callOp("listJobGenerators", params),
+        listJobSessions: (params: Record<string, unknown> = {}) => callOp("listJobSessions", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
@@ -1718,6 +1819,7 @@ export function createManagementOps(
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
+        publishJobGeneratorDefinition: (params: Record<string, unknown> = {}) => callOp("publishJobGeneratorDefinition", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),

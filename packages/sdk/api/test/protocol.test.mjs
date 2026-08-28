@@ -65,6 +65,40 @@ test("buildOperationRequest resolves path, query, and body placement", () => {
     assert.deepEqual(send.body, { prompt: "hello", options: { clientMessageIds: ["m1"] } });
 });
 
+test("JobGenerator operations use resource-shaped REST paths and bodies", () => {
+    const definition = {
+        sourceType: "ado_wiql",
+        sourceConfig: { wiql: "SELECT [System.Id] FROM WorkItems" },
+    };
+    const create = buildOperationRequest("createJobGenerator", {
+        name: "HelloWorld",
+        cadenceSeconds: 300,
+        definition,
+        owner: { provider: "forged", subject: "ignored" },
+    });
+    assert.equal(create.method, "POST");
+    assert.equal(create.path, `${API_PREFIX}/job-generators`);
+    assert.deepEqual(create.body, { name: "HelloWorld", cadenceSeconds: 300, definition });
+
+    const publish = buildOperationRequest("publishJobGeneratorDefinition", {
+        generatorId: "g/1",
+        definition,
+        createdBy: "forged",
+    });
+    assert.equal(publish.method, "POST");
+    assert.equal(publish.path, `${API_PREFIX}/job-generators/g%2F1/definitions`);
+    assert.deepEqual(publish.body, { definition });
+
+    const jobs = buildOperationRequest("listJobGeneratorJobs", { generatorId: "g/1" });
+    assert.equal(jobs.path, `${API_PREFIX}/job-generators/g%2F1/jobs`);
+
+    const cycles = buildOperationRequest("listJobGeneratorCycles", { generatorId: "g1", limit: 25 });
+    assert.equal(cycles.query.get("limit"), "25");
+
+    const sessions = buildOperationRequest("listJobSessions", { jobId: "job-1" });
+    assert.equal(sessions.path, `${API_PREFIX}/jobs/job-1/sessions`);
+});
+
 test("json query params round-trip through encode + coerce", () => {
     const cursor = { updatedAt: 1751500000000, sessionId: "abc" };
     const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursor, includeDeleted: true });

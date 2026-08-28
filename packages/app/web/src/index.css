@@ -2047,6 +2047,375 @@ body.is-resizing-pane-y iframe {
     0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 35%, transparent);
 }
 
+.ps-work-index-tabs {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ps-panel-header:has(.ps-work-index-tabs) {
+  flex-wrap: wrap;
+}
+
+.ps-panel-header:has(.ps-work-index-tabs) > .ps-panel-title {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+
+.ps-work-index-panel {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+}
+
+.ps-work-index-panel > .ps-panel {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+}
+
+.ps-work-index-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  color: var(--ps-muted);
+  padding: 4px 6px 3px;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ps-work-index-tab:hover {
+  color: var(--ps-foreground);
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 8%, transparent);
+}
+
+.ps-work-index-tab.is-active {
+  color: var(--ps-foreground);
+  border-bottom-color: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 85%, transparent);
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 12%, transparent);
+}
+
+.ps-work-index-tab:focus-visible {
+  outline: 1px solid var(--ps-accent);
+  outline-offset: 1px;
+}
+
+.ps-job-generator-pane .ps-panel-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 2px 8px 8px;
+}
+
+.ps-job-generator-preview-note {
+  flex: 0 0 auto;
+  margin: 2px 0 3px;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 28%, transparent);
+  border-radius: 3px;
+  color: var(--ps-muted);
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 7%, transparent);
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+
+.ps-job-generator-list {
+  gap: 1px;
+  padding: 2px 0 6px;
+}
+
+.ps-job-tree-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: stretch;
+  min-width: 0;
+}
+
+.ps-job-tree-row.is-job {
+  margin-left: 18px;
+}
+
+.ps-job-tree-toggle,
+.ps-job-tree-content,
+.ps-job-session-row {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.ps-job-tree-toggle {
+  display: grid;
+  place-items: center;
+  min-height: 2rem;
+  padding: 0;
+  color: var(--ps-muted);
+  cursor: pointer;
+}
+
+.ps-job-tree-toggle:hover {
+  color: var(--ps-foreground);
+}
+
+.ps-job-tree-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
+  min-width: 0;
+  padding: 5px 7px;
+  text-align: left;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ps-job-tree-content:hover,
+.ps-job-session-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 7%, transparent);
+}
+
+.ps-job-tree-content.is-selected,
+.ps-job-session-row.is-selected {
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 15%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 80%, transparent),
+    inset 3px 0 0 color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 90%, transparent);
+}
+
+.ps-job-tree-primary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-job-tree-state {
+  justify-self: end;
+  color: var(--ps-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.ps-job-tree-meta {
+  grid-column: 2 / -1;
+  min-width: 0;
+  color: var(--ps-muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-job-generator-status {
+  font-size: 0.72rem;
+}
+
+.ps-job-generator-status.is-running {
+  color: var(--ps-success, #3fb950);
+}
+
+.ps-job-generator-status.is-registered {
+  color: var(--ps-accent);
+}
+
+.ps-job-generator-status.is-degraded {
+  color: var(--ps-warning, #d29922);
+}
+
+.ps-job-session-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 44px);
+  min-width: 0;
+  margin-left: 44px;
+  padding: 4px 7px;
+  text-align: left;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ps-job-session-row:disabled {
+  opacity: 0.64;
+  cursor: default;
+}
+
+.ps-job-session-branch {
+  color: var(--ps-muted);
+}
+
+.ps-job-session-current {
+  color: var(--ps-accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.ps-job-tree-empty {
+  margin-left: 40px;
+  padding: 5px 7px;
+  color: var(--ps-muted);
+  font-size: 0.76rem;
+  font-style: italic;
+}
+
+.ps-job-generator-load-error {
+  padding: 10px;
+  color: var(--ps-danger);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.ps-job-generator-detail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  border-top: 1px solid var(--ps-border-strong);
+  background: var(--ps-chrome);
+  padding: 7px 10px;
+  font-size: var(--ps-font-size-dense);
+}
+
+.ps-job-generator-detail strong,
+.ps-job-generator-detail span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-job-generator-detail span {
+  color: var(--ps-muted);
+  font-size: 0.76rem;
+}
+
+.ps-job-generator-modal {
+  width: min(760px, calc(100vw - 28px));
+  max-height: min(880px, calc(100vh - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--ps-border-strong);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-surface);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.48);
+  padding: 14px;
+}
+
+.ps-job-generator-form-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.ps-job-generator-form-section {
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-chrome);
+}
+
+.ps-job-generator-form-section > summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  cursor: pointer;
+}
+
+.ps-job-generator-form-section > summary strong {
+  color: var(--ps-foreground);
+  font-size: 0.82rem;
+}
+
+.ps-job-generator-form-section > summary span {
+  color: var(--ps-muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.ps-job-generator-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  border-top: 1px solid var(--ps-border);
+  padding: 11px;
+}
+
+.ps-job-generator-field:has(.ps-job-generator-textarea) {
+  grid-column: 1 / -1;
+}
+
+.ps-job-generator-textarea {
+  min-height: 84px;
+  resize: vertical;
+  font-family: var(--ps-mono);
+  line-height: 1.35;
+}
+
+.ps-job-generator-field-help {
+  color: var(--ps-muted);
+  font-size: 0.7rem;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.ps-job-generator-form-error {
+  border: 1px solid color-mix(in srgb, var(--ps-danger) 60%, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-danger) 10%, var(--ps-surface));
+  color: var(--ps-danger);
+  padding: 8px 10px;
+  font-size: 0.78rem;
+}
+
+.ps-job-generator-modal-note {
+  margin: 0;
+  color: var(--ps-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.ps-job-generator-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--ps-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.ps-job-generator-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ps-job-generator-modal-actions .ps-mini-button.is-primary {
+  border-color: color-mix(in srgb, var(--ps-accent) 70%, var(--ps-border));
+  background: color-mix(in srgb, var(--ps-accent) 22%, var(--ps-surface));
+}
+
+@media (max-width: 700px) {
+  .ps-job-generator-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .ps-session-row-content {
   display: block;
   min-width: 0;

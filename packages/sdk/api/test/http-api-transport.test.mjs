@@ -56,3 +56,40 @@ test("move/assign alias wrappers return the per-root result array", async () => 
     assert.deepEqual(await transport.moveSessionsToGroup(null, ["a"]), results);
     assert.deepEqual(await transport.assignSessionsToGroup("g1", ["a"]), results);
 });
+
+test("JobGenerator transport registers, publishes, and lists through generated REST routes", async () => {
+    const created = {
+        generator: { generatorId: "g1", name: "HelloWorld" },
+        definition: { definitionId: "d1", version: 1 },
+    };
+    const { transport, calls } = createTransport({
+        responses: [
+            jsonResponse({ ok: true, result: created }),
+            jsonResponse({ ok: true, result: { definitionId: "d2", generatorId: "g1", version: 2 } }),
+            jsonResponse({ ok: true, result: [created.generator] }),
+        ],
+    });
+    const input = {
+        name: "HelloWorld",
+        cadenceSeconds: 300,
+        definition: {
+            sourceType: "ado_wiql",
+            sourceConfig: { wiql: "SELECT [System.Id] FROM WorkItems" },
+        },
+    };
+    assert.deepEqual(await transport.createJobGenerator(input), created);
+    assert.deepEqual(JSON.parse(calls[0].options.body), input);
+    assert.equal(new URL(calls[0].url).pathname, `${API_PREFIX}/job-generators`);
+
+    const published = await transport.publishJobGeneratorDefinition("g1", input.definition);
+    assert.equal(published.version, 2);
+    assert.equal(
+        new URL(calls[1].url).pathname,
+        `${API_PREFIX}/job-generators/g1/definitions`,
+    );
+    assert.deepEqual(JSON.parse(calls[1].options.body), { definition: input.definition });
+
+    assert.deepEqual(await transport.listJobGenerators(), [created.generator]);
+    assert.equal(new URL(calls[2].url).pathname, `${API_PREFIX}/job-generators`);
+    assert.equal(calls[2].options.method, "GET");
+});

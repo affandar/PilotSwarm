@@ -155,6 +155,48 @@ export class HttpApiTransport {
         return this.bootstrap?.sessionCreationPolicy || null;
     }
 
+    // ── Job generators ──────────────────────────────────────────────────
+
+    async createJobGenerator(input) {
+        return this.api.call("createJobGenerator", input);
+    }
+
+    async listJobGenerators() {
+        return this.api.call("listJobGenerators");
+    }
+
+    async getJobGenerator(generatorId) {
+        return this.api.call("getJobGenerator", { generatorId });
+    }
+
+    async listJobGeneratorDefinitions(generatorId) {
+        return this.api.call("listJobGeneratorDefinitions", { generatorId });
+    }
+
+    async getJobGeneratorDefinition(definitionId) {
+        return this.api.call("getJobGeneratorDefinition", { definitionId });
+    }
+
+    async publishJobGeneratorDefinition(generatorId, definition) {
+        return this.api.call("publishJobGeneratorDefinition", { generatorId, definition });
+    }
+
+    async listJobGeneratorJobs(generatorId) {
+        return this.api.call("listJobGeneratorJobs", { generatorId });
+    }
+
+    async listJobGeneratorCycles(generatorId, limit) {
+        return this.api.call("listJobGeneratorCycles", { generatorId, limit });
+    }
+
+    async getJob(jobId) {
+        return this.api.call("getJob", { jobId });
+    }
+
+    async listJobSessions(jobId) {
+        return this.api.call("listJobSessions", { jobId });
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
     async listSessions() {

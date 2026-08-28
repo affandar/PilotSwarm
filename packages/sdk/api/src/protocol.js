@@ -27,6 +27,10 @@
  *   - "session:share"   owner or admin (visibility + share grants)
  *   - "group:list"      owner-scoped group listing for non-admins
  *   - "group:manage"    group owner or admin
+ *   - "job-generator:list"   owner-scoped JobGenerator listing
+ *   - "job-generator:create" create with authenticated principal as owner
+ *   - "job-generator:read"   JobGenerator owner or admin
+ *   - "job-generator:manage" mutate aggregate or publish definitions; owner/admin
  *   - "facts:read"|"facts:write"  facts data-plane (role/session-scoped)
  *   - "fleet:read"      admin-only observability
  *   - "fleet:admin"     Tier-2 operational surface (admin)
@@ -61,6 +65,18 @@ const body = () => ({ in: "body" });
  * }>}
  */
 export const OPERATIONS = [
+    // ── Job generators ────────────────────────────────────────────────
+    { name: "listJobGenerators", access: "job-generator:list", method: "GET", path: "/job-generators", summary: "List JobGenerators owned by the caller; admins can list all." },
+    { name: "createJobGenerator", access: "job-generator:create", method: "POST", path: "/job-generators", params: { name: body(), cadenceSeconds: body(), definition: body() }, summary: "Atomically register a JobGenerator and immutable definition version 1. Owner is the authenticated principal." },
+    { name: "getJobGenerator", access: "job-generator:read", method: "GET", path: "/job-generators/:generatorId", params: { generatorId: path("generatorId") }, summary: "Get a JobGenerator and its active immutable definition." },
+    { name: "listJobGeneratorDefinitions", access: "job-generator:read", method: "GET", path: "/job-generators/:generatorId/definitions", params: { generatorId: path("generatorId") }, summary: "List immutable definition versions for a JobGenerator, newest first." },
+    { name: "publishJobGeneratorDefinition", access: "job-generator:manage", method: "POST", path: "/job-generators/:generatorId/definitions", params: { generatorId: path("generatorId"), definition: body() }, summary: "Publish a new immutable definition version and make it active for future Jobs." },
+    { name: "getJobGeneratorDefinition", access: "job-generator:read", method: "GET", path: "/job-generator-definitions/:definitionId", params: { definitionId: path("definitionId") }, summary: "Get one immutable JobGeneratorDefinition." },
+    { name: "listJobGeneratorJobs", access: "job-generator:read", method: "GET", path: "/job-generators/:generatorId/jobs", params: { generatorId: path("generatorId") }, summary: "List durable Jobs materialized by a JobGenerator." },
+    { name: "listJobGeneratorCycles", access: "job-generator:read", method: "GET", path: "/job-generators/:generatorId/cycles", params: { generatorId: path("generatorId"), limit: query("number") }, summary: "List recent materialization cycles for a JobGenerator." },
+    { name: "getJob", access: "job-generator:read", method: "GET", path: "/jobs/:jobId", params: { jobId: path("jobId") }, summary: "Get one durable Job." },
+    { name: "listJobSessions", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/sessions", params: { jobId: path("jobId") }, summary: "List a Job's PilotSwarm session history in ordinal order." },
+
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },
     { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), repo: body(), gitRef: body(), callerAuth: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. Optional repo pins the session to a git-hydration repo enlistment (routes turns only to matching git-repo-workers). Optional gitRef pins the session's git enlistment to a non-default branch/tag/commit (bare branch names are resolved against origin; defaults to origin/HEAD). Optional callerAuth ({ audienceTokens: { <aud>: <token> }, allowedServers?, ttlSeconds? }) supplies delegated per-audience bearers presented to repo-declared remote MCP servers as the caller." },
