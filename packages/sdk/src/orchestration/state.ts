@@ -18,6 +18,7 @@ export interface ActiveTimer {
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
+    resumePrompt?: string;
     question?: string;
     choices?: string[];
     allowFreeform?: boolean;
@@ -65,6 +66,7 @@ export interface DurableSessionState {
     iteration: number;
     loopIteration: number;
     retryCount: number;
+    callerReauthWaitCount: number;
 
     needsHydration: boolean;
     /**
@@ -302,6 +304,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         iteration: input.iteration ?? 0,
         loopIteration: 0,
         retryCount: input.retryCount ?? 0,
+        callerReauthWaitCount: input.callerReauthWaitCount ?? 0,
 
         needsHydration: input.needsHydration ?? false,
         snapshotVersion: input.snapshotVersion ?? 0,

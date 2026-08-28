@@ -33,6 +33,11 @@
  * @module
  */
 
+import {
+    isCallerAuthConfigurationError,
+    isCallerReauthRequiredError,
+} from "./caller-auth-errors.js";
+
 // ─── WWW-Authenticate (RFC 6750 §3) ─────────────────────────────
 
 export interface WwwAuthenticate {
@@ -501,6 +506,8 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
             try {
                 token = await provider({ appIdUri: discovered.appIdUri, scope: discovered.scope });
             } catch (e: any) {
+                if (isCallerReauthRequiredError(e)) throw e;
+                if (isCallerAuthConfigurationError(e)) throw e;
                 trace(`[mcp-auth] server "${name}": token provider error: ${e?.message ?? e}`);
                 token = null;
             }

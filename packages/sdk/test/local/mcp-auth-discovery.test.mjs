@@ -11,6 +11,7 @@ import {
     multiTokenProvider,
     McpAuthFastFailError,
 } from "../../dist/mcp-auth-discovery.js";
+import { CallerReauthRequiredError } from "../../dist/caller-auth-errors.js";
 
 let passed = 0;
 const t = (name, fn) => { fn(); passed++; console.log(`  ok - ${name}`); };
@@ -252,6 +253,23 @@ await (async () => {
     } catch (e) { threw = e; }
     assert.ok(threw instanceof McpAuthFastFailError, "server whose audience is absent -> FAST-FAIL (no MI fallback)");
     passed++; console.log("  ok - multiTokenProvider: e2e inject for mapped audience, fast-fail for unmapped");
+})();
+
+await (async () => {
+    // Re-auth is operationally distinct from a missing audience. It must
+    // propagate so the activity can park and retry after the developer logs in.
+    const expected = new CallerReauthRequiredError("sign in again");
+    let threw = null;
+    try {
+        await resolveMcpServerAuth({
+            servers: { adoServer: { type: "http", url: "https://ado.example.com/mcp" } },
+            getCallerToken: async () => { throw expected; },
+            http: makeHttp(),
+            trace: () => {},
+        });
+    } catch (e) { threw = e; }
+    assert.equal(threw, expected, "typed re-auth error must propagate unchanged");
+    passed++; console.log("  ok - resolve: caller re-auth requirement propagates");
 })();
 
 await (async () => {

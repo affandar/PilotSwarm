@@ -83,6 +83,7 @@
     },
     "dependencies": {
         "@azure/identity": "^4.13.1",
+        "@azure/msal-node": "^5.2.4",
         "@azure/storage-blob": "^12.31.0",
         "@github/copilot": "1.0.83",
         "@github/copilot-sdk": "1.0.13",

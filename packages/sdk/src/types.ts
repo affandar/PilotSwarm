@@ -24,7 +24,7 @@ export interface CycleReport {
 
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
-    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
+    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; resumePrompt?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -62,7 +62,7 @@ type TurnResultVariant =
     // it, but a budget pause must not be — that turn already re-asked the
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; resumePrompt?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -599,6 +599,8 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
+    /** Consecutive automatic waits for caller sign-in, carried across continue-as-new. */
+    callerReauthWaitCount?: number;
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -620,6 +622,7 @@ export interface OrchestrationInput {
         shouldRehydrate?: boolean;
         waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
         content?: string;
+        resumePrompt?: string;
         question?: string;
         choices?: string[];
         allowFreeform?: boolean;

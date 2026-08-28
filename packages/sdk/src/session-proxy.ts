@@ -1,6 +1,10 @@
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
+import {
+    isCallerAuthConfigurationError,
+    isCallerReauthRequiredError,
+} from "./caller-auth-errors.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
@@ -30,6 +34,7 @@ import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
+import { extractPromptSystemContext } from "./orchestration/utils.js";
 import {
     archiveName,
     artifactExists,
@@ -1691,6 +1696,38 @@ export function registerActivities(
                 lockHeld: true,
             });
         } catch (err: any) {
+            if (isCallerAuthConfigurationError(err)) {
+                return {
+                    type: "error",
+                    message: err.message,
+                } as TurnResult;
+            }
+            if (isCallerReauthRequiredError(err)) {
+                const reason = "needs re-auth";
+                trace(
+                    `session=${input.sessionId} delegated caller credential requires sign-in; ` +
+                    "parking the turn for automatic retry",
+                );
+                if (catalog) {
+                    await cmsRetryBestEffort(
+                        `runTurn.recordEvent caller-reauth session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [{
+                            eventType: "session.caller_reauth_required",
+                            data: {
+                                reason,
+                                message: err.message,
+                            },
+                        }], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+                return {
+                    type: "wait",
+                    seconds: 60,
+                    reason,
+                    resumePrompt: extractPromptSystemContext(input.prompt).prompt || input.prompt,
+                } as TurnResult;
+            }
             const message = err?.message || String(err);
             if (isMissingSessionStateErrorMessage(message) || isLiveSessionLostErrorMessage(message)) {
                 const detail = isMissingSessionStateErrorMessage(message)

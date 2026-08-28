@@ -16,7 +16,8 @@ import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { resolveCallerAuth } from "./caller-auth.js";
-import { resolveMcpServerAuth, multiTokenProvider } from "./mcp-auth-discovery.js";
+import { CallerAuthConfigurationError } from "./caller-auth-errors.js";
+import { appIdUriFromScope, resolveMcpServerAuth, multiTokenProvider, type CallerTokenProvider } from "./mcp-auth-discovery.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
@@ -192,6 +193,24 @@ export function pickAgentCopyForOwner(
         ?? undefined;
 }
 
+export function delegatedMcpAuthFingerprint(servers: Record<string, any>): string {
+    const material = Object.keys(servers).sort().flatMap((serverName) => {
+        const config = servers[serverName] ?? {};
+        const authorization = typeof config.headers?.Authorization === "string"
+            ? config.headers.Authorization
+            : "";
+        const env = config.env && typeof config.env === "object"
+            ? Object.entries(config.env)
+                .filter(([, value]) => typeof value === "string")
+                .sort(([left], [right]) => left.localeCompare(right))
+            : [];
+        return authorization || env.length > 0
+            ? [{ serverName, authorization, env }]
+            : [];
+    });
+    return createHash("sha256").update(JSON.stringify(material)).digest("hex");
+}
+
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
@@ -239,6 +258,9 @@ export interface WorkerDefaults {
      * opt-ins plus direct worker-config servers (legacy semantics).
      */
     baseMcpServers?: Record<string, any>;
+    /** Optional caller-token seam. Devbox workers normally select the Azure CLI
+     * cache provider with `CALLER_AUTH_MODE=devbox`; tests may inject one here. */
+    callerTokenProvider?: CallerTokenProvider;
     /**
      * Catalog servers restricted with `allowedAgents` (server name → allowed
      * agent identities). Held BY REFERENCE from the worker, which clears and
@@ -448,6 +470,10 @@ export class SessionManager {
      * created/resumed in `_getOrCreateUnlocked`.
      */
     private sessionClientKeys = new Map<string, string>();
+    /** Delegated MCP auth material currently bound to each warm session. */
+    private sessionMcpAuthFingerprints = new Map<string, string>();
+    /** One expiry-aware provider per worker process. */
+    private devboxCallerTokenProvider: CallerTokenProvider | null | undefined;
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
@@ -502,6 +528,25 @@ export class SessionManager {
         this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
+    }
+
+    private async configuredCallerTokenProvider(): Promise<CallerTokenProvider | null> {
+        if (this.workerDefaults.callerTokenProvider) {
+            return this.workerDefaults.callerTokenProvider;
+        }
+        if ((process.env.CALLER_AUTH_MODE || "").trim().toLowerCase() !== "devbox") {
+            return null;
+        }
+        if ((process.env.CALLER_AUTH_KEYVAULT_NAME || "").trim()) {
+            throw new CallerAuthConfigurationError(
+                "CALLER_AUTH_MODE=devbox cannot be combined with CALLER_AUTH_KEYVAULT_NAME.",
+            );
+        }
+        if (this.devboxCallerTokenProvider === undefined) {
+            const { createAzureCliCacheCallerTokenProvider } = await import("./devbox-caller-token-provider.js");
+            this.devboxCallerTokenProvider = createAzureCliCacheCallerTokenProvider();
+        }
+        return this.devboxCallerTokenProvider;
     }
 
     /**
@@ -1036,6 +1081,7 @@ export class SessionManager {
         // CopilotClient (= which token) it was bound to; the next
         // getOrCreate will re-resolve.
         this.sessionClientKeys.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1071,6 +1117,7 @@ export class SessionManager {
         } catch {}
 
         this.sessionClientKeys.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
 
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         if (fs.existsSync(sessionDir)) {
@@ -1227,6 +1274,7 @@ export class SessionManager {
                     }
                     this.sessionLastTouchedAt.delete(sessionId);
                     this.sessionClientKeys.delete(sessionId);
+                    this.sessionMcpAuthFingerprints.delete(sessionId);
                     reclaimed++;
                 });
             } catch (error: unknown) {
@@ -1570,15 +1618,27 @@ export class SessionManager {
         // for the authoritative per-session stdio-MCP `env` injection below. The
         // process.env exports in the loop are the legacy fallback only.
         const callerAuthEnvVars: Record<string, string> = {};
-        if (callerAuthVault && callerAuthEnvTokenSpecs.length > 0) {
-            const envAudienceTokens = await resolveCallerAuth({
-                vaultName: callerAuthVault,
-                sessionId,
-                trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
-            });
-            if (envAudienceTokens) {
+        if (callerAuthEnvTokenSpecs.length > 0) {
+            const getCallerToken = await this.configuredCallerTokenProvider();
+            const envAudienceTokens = !getCallerToken && callerAuthVault
+                ? await resolveCallerAuth({
+                    vaultName: callerAuthVault,
+                    sessionId,
+                    trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+                })
+                : null;
+            if (getCallerToken || envAudienceTokens) {
                 for (const spec of callerAuthEnvTokenSpecs) {
-                    const tok = envAudienceTokens[spec.audience];
+                    const audience = spec.audience.replace(/\/+$/, "");
+                    const scope = audience.endsWith("/.default")
+                        ? audience
+                        : `${audience}/.default`;
+                    const tok = getCallerToken
+                        ? await getCallerToken({
+                            appIdUri: appIdUriFromScope(scope),
+                            scope,
+                        })
+                        : envAudienceTokens?.[spec.audience] ?? null;
                     if (tok) {
                         // NEVER log the token value — only the mapping + length.
                         // Legacy fallback (frozen into the client env snapshot after
@@ -1867,13 +1927,19 @@ export class SessionManager {
         const hasRemoteMcp = Object.values(effectiveMcpServers).some(
             (c: any) => c && (c.type === "http" || c.type === "sse" || (c.url && !c.command)),
         );
-        if (callerAuthVault && hasRemoteMcp) {
-            const audienceTokens = await resolveCallerAuth({
-                vaultName: callerAuthVault,
-                sessionId,
-                trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
-            });
-            if (audienceTokens && Object.keys(audienceTokens).length > 0) {
+        if (hasRemoteMcp) {
+            let getCallerToken = await this.configuredCallerTokenProvider();
+            if (!getCallerToken && callerAuthVault) {
+                const audienceTokens = await resolveCallerAuth({
+                    vaultName: callerAuthVault,
+                    sessionId,
+                    trace: (m) => emitSessionManagerTrace(sessionId, m, { trace }),
+                });
+                if (audienceTokens && Object.keys(audienceTokens).length > 0) {
+                    getCallerToken = multiTokenProvider(audienceTokens);
+                }
+            }
+            if (getCallerToken) {
                 const dualTrace = (m: string) => {
                     console.log(m);
                     emitSessionManagerTrace(sessionId, m, { trace });
@@ -1884,7 +1950,6 @@ export class SessionManager {
                 // server->audience table (public repo), no OBO exchange, and the
                 // worker identity is never presented upstream. A server whose
                 // audience is absent from the map FAST-FAILS (see mcp-auth-discovery.ts).
-                const getCallerToken = multiTokenProvider(audienceTokens);
                 const result = await resolveMcpServerAuth({
                     servers: effectiveMcpServers,
                     getCallerToken,
@@ -1932,6 +1997,7 @@ export class SessionManager {
             );
         }
 
+        const mcpAuthFingerprint = delegatedMcpAuthFingerprint(effectiveMcpServers);
         const sessionConfig: any = {
             sessionId,
             // Sole chokepoint where tool DECLARATIONS reach the CLI (create and
@@ -2160,8 +2226,20 @@ export class SessionManager {
                 );
                 await existing.destroy();
                 this.sessions.delete(sessionId);
+            } else if (
+                this.sessionMcpAuthFingerprints.has(sessionId)
+                && this.sessionMcpAuthFingerprints.get(sessionId) !== mcpAuthFingerprint
+            ) {
+                emitSessionManagerTrace(
+                    sessionId,
+                    "delegated MCP credentials changed; recycling warm session",
+                    { trace },
+                );
+                await existing.destroy();
+                this.sessions.delete(sessionId);
             } else {
                 existing.updateConfig(config);
+                this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
                 return existing;
             }
         }
@@ -2286,6 +2364,7 @@ export class SessionManager {
             agentId: effectiveSerializableConfig.agentIdentity ?? null,
         }));
         this.sessions.set(sessionId, managed);
+        this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
             void this.sessionCatalog.recordEvents(sessionId, [{
@@ -2314,9 +2393,13 @@ export class SessionManager {
      */
     async dropWarmSession(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
-        if (!existing) return;
+        if (!existing) {
+            this.sessionMcpAuthFingerprints.delete(sessionId);
+            return;
+        }
         try { await existing.destroy(); } catch {}
         this.sessions.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
     }
 
     /**
@@ -2603,6 +2686,7 @@ export class SessionManager {
             await session.destroy();
             this.sessions.delete(sessionId);
         }
+        this.sessionMcpAuthFingerprints.delete(sessionId);
     }
 
     /**
@@ -2615,11 +2699,15 @@ export class SessionManager {
             return this._withSessionLock(sessionId, "invalidateWarmSession", () => this.invalidateWarmSession(sessionId, { lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
-        if (!session) return;
+        if (!session) {
+            this.sessionMcpAuthFingerprints.delete(sessionId);
+            return;
+        }
         try {
             await session.destroy();
         } catch {}
         this.sessions.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
     }
 
     /**
