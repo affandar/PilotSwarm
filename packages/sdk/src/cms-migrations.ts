@@ -405,6 +405,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "fix_session_git_state_setter",
             sql: migration_0078_fix_session_git_state_setter(schema),
         },
+        {
+            version: "0047",
+            name: "job_generators",
+            sql: migration_0047_job_generators(schema),
+        },
+        {
+            version: "0048",
+            name: "job_session_acknowledgement",
+            sql: migration_0048_job_session_acknowledgement(schema),
+        },
     ];
 }
 
@@ -14907,5 +14917,168 @@ BEGIN
     RETURN v_rows > 0;
 END;
 $$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0047: durable JobGenerator registry ──────────────
+
+function migration_0047_job_generators(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.job_generators (
+    generator_id         TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL CHECK (BTRIM(name) <> ''),
+    owner_provider       TEXT NOT NULL CHECK (BTRIM(owner_provider) <> ''),
+    owner_subject        TEXT NOT NULL CHECK (BTRIM(owner_subject) <> ''),
+    owner_email          TEXT,
+    owner_display_name   TEXT,
+    cadence_seconds      INTEGER NOT NULL CHECK (cadence_seconds > 0),
+    operational_state    TEXT NOT NULL DEFAULT 'enabled'
+                         CHECK (operational_state IN ('enabled', 'paused', 'disabled')),
+    active_definition_id TEXT,
+    next_run_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    watermark            JSONB,
+    total_cycles         BIGINT NOT NULL DEFAULT 0,
+    successful_cycles    BIGINT NOT NULL DEFAULT 0,
+    failed_cycles        BIGINT NOT NULL DEFAULT 0,
+    materialized_jobs    BIGINT NOT NULL DEFAULT 0,
+    last_cycle_at        TIMESTAMPTZ,
+    last_error           TEXT,
+    lease_owner          TEXT,
+    lease_expires_at     TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (owner_provider, owner_subject, name)
+);
+
+CREATE TABLE IF NOT EXISTS ${s}.job_generator_definitions (
+    definition_id       TEXT PRIMARY KEY,
+    generator_id        TEXT NOT NULL REFERENCES ${s}.job_generators(generator_id) ON DELETE CASCADE,
+    version             INTEGER NOT NULL CHECK (version > 0),
+    source_type         TEXT NOT NULL CHECK (source_type IN ('ado_wiql', 'icm', 'kusto')),
+    source_config       JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(source_config) = 'object'),
+    lifecycle_definition JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(lifecycle_definition) = 'object'),
+    affinities          JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(affinities) = 'object'),
+    validation_gates    JSONB NOT NULL DEFAULT '[]'::jsonb
+                        CHECK (jsonb_typeof(validation_gates) = 'array'),
+    guardrails          JSONB NOT NULL DEFAULT '{}'::jsonb
+                        CHECK (jsonb_typeof(guardrails) = 'object'),
+    created_by          TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (generator_id, version),
+    UNIQUE (generator_id, definition_id)
+);
+
+ALTER TABLE ${s}.job_generators
+    DROP CONSTRAINT IF EXISTS job_generators_active_definition_id_fkey;
+ALTER TABLE ${s}.job_generators
+    ADD CONSTRAINT job_generators_active_definition_id_fkey
+    FOREIGN KEY (generator_id, active_definition_id)
+    REFERENCES ${s}.job_generator_definitions(generator_id, definition_id)
+    DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE IF NOT EXISTS ${s}.job_generator_cycles (
+    cycle_id             TEXT PRIMARY KEY,
+    generator_id         TEXT NOT NULL REFERENCES ${s}.job_generators(generator_id) ON DELETE CASCADE,
+    definition_id        TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'running'
+                         CHECK (status IN ('running', 'succeeded', 'failed')),
+    claimed_by           TEXT NOT NULL,
+    watermark_before     JSONB,
+    watermark_after      JSONB,
+    discovered_count     INTEGER NOT NULL DEFAULT 0 CHECK (discovered_count >= 0),
+    created_count        INTEGER NOT NULL DEFAULT 0 CHECK (created_count >= 0),
+    error                TEXT,
+    started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at         TIMESTAMPTZ,
+    UNIQUE (generator_id, cycle_id),
+    FOREIGN KEY (generator_id, definition_id)
+        REFERENCES ${s}.job_generator_definitions(generator_id, definition_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_generator_cycles_running
+    ON ${s}.job_generator_cycles(generator_id)
+    WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS ix_job_generator_cycles_generator_started
+    ON ${s}.job_generator_cycles(generator_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS ${s}.jobs (
+    job_id               TEXT PRIMARY KEY,
+    generator_id         TEXT NOT NULL REFERENCES ${s}.job_generators(generator_id) ON DELETE CASCADE,
+    definition_id        TEXT NOT NULL,
+    job_key              TEXT NOT NULL CHECK (BTRIM(job_key) <> ''),
+    source_payload       JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(source_payload) = 'object'),
+    lifecycle_state      TEXT NOT NULL DEFAULT 'pending_session'
+                         CHECK (lifecycle_state IN ('pending_session', 'active', 'blocked', 'completed', 'cancelled')),
+    first_seen_cycle_id  TEXT NOT NULL,
+    last_seen_cycle_id   TEXT NOT NULL,
+    first_discovered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    session_attempts     INTEGER NOT NULL DEFAULT 0 CHECK (session_attempts >= 0),
+    session_error        TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (generator_id, job_key),
+    FOREIGN KEY (generator_id, definition_id)
+        REFERENCES ${s}.job_generator_definitions(generator_id, definition_id),
+    FOREIGN KEY (generator_id, first_seen_cycle_id)
+        REFERENCES ${s}.job_generator_cycles(generator_id, cycle_id),
+    FOREIGN KEY (generator_id, last_seen_cycle_id)
+        REFERENCES ${s}.job_generator_cycles(generator_id, cycle_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_jobs_generator_state
+    ON ${s}.jobs(generator_id, lifecycle_state, created_at);
+
+CREATE TABLE IF NOT EXISTS ${s}.job_sessions (
+    association_id       TEXT PRIMARY KEY,
+    job_id               TEXT NOT NULL REFERENCES ${s}.jobs(job_id) ON DELETE CASCADE,
+    session_id           TEXT NOT NULL UNIQUE,
+    ordinal              INTEGER NOT NULL CHECK (ordinal > 0),
+    is_current           BOOLEAN NOT NULL DEFAULT TRUE,
+    status               TEXT NOT NULL DEFAULT 'reserved'
+                         CHECK (status IN ('reserved', 'active', 'failed', 'replaced')),
+    error                TEXT,
+    reserved_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attached_at          TIMESTAMPTZ,
+    ended_at             TIMESTAMPTZ,
+    UNIQUE (job_id, ordinal)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_sessions_one_current
+    ON ${s}.job_sessions(job_id)
+    WHERE is_current;
+CREATE INDEX IF NOT EXISTS ix_job_sessions_history
+    ON ${s}.job_sessions(job_id, ordinal DESC);
+
+CREATE OR REPLACE FUNCTION ${s}.cms_job_generator_definition_immutable()
+RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'JOB_GENERATOR_DEFINITION_IMMUTABLE';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_job_generator_definition_immutable
+    ON ${s}.job_generator_definitions;
+CREATE TRIGGER trg_job_generator_definition_immutable
+    BEFORE UPDATE ON ${s}.job_generator_definitions
+    FOR EACH ROW EXECUTE FUNCTION ${s}.cms_job_generator_definition_immutable();
+`;
+}
+
+// ─── Migration 0048: Job session acknowledgement ───────────────
+
+function migration_0048_job_session_acknowledgement(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.job_sessions
+    DROP CONSTRAINT IF EXISTS job_sessions_status_check;
+ALTER TABLE ${s}.job_sessions
+    ADD CONSTRAINT job_sessions_status_check
+    CHECK (status IN ('reserved', 'unacked', 'active', 'failed', 'replaced'));
 `;
 }

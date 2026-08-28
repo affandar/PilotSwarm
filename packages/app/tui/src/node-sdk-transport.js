@@ -1009,6 +1009,46 @@ export class NodeSdkTransport {
         return this.mgmt.listSessions(this._placementViewer());
     }
 
+    async createJobGenerator(input) {
+        return this.mgmt.createJobGenerator(input);
+    }
+
+    async listJobGenerators(owner) {
+        return this.mgmt.listJobGenerators(owner);
+    }
+
+    async getJobGenerator(generatorId) {
+        return this.mgmt.getJobGenerator(generatorId);
+    }
+
+    async getJobGeneratorDefinition(definitionId) {
+        return this.mgmt.getJobGeneratorDefinition(definitionId);
+    }
+
+    async publishJobGeneratorDefinition(input) {
+        return this.mgmt.publishJobGeneratorDefinition(input);
+    }
+
+    async listJobGeneratorDefinitions(generatorId) {
+        return this.mgmt.listJobGeneratorDefinitions(generatorId);
+    }
+
+    async listJobGeneratorJobs(generatorId) {
+        return this.mgmt.listJobGeneratorJobs(generatorId);
+    }
+
+    async listJobGeneratorCycles(generatorId, limit) {
+        return this.mgmt.listJobGeneratorCycles(generatorId, limit);
+    }
+
+    async getJob(jobId) {
+        return this.mgmt.getJob(jobId);
+    }
+
+    async listJobSessions(jobId) {
+        return this.mgmt.listJobSessions(jobId);
+    }
+
     async listSessionGroups() {
         return this.mgmt.listSessionGroups(this._placementViewer());
     }

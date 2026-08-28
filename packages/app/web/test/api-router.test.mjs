@@ -313,6 +313,7 @@ const VALID_ACCESS_CLASSES = new Set([
     // since copyArtifact stopped being /api/rpc-only.
     "session:copy",
     "group:list", "group:manage",
+    "job-generator:list", "job-generator:create", "job-generator:read", "job-generator:manage",
     "facts:read", "facts:write",
     "fleet:read", "fleet:admin",
     "authz:audit",

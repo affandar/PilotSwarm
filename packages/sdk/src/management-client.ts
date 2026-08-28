@@ -74,6 +74,12 @@ import type {
     SessionAccessSnapshot,
     AuthzAuditEntry,
     KnownUserInfo,
+    CreateJobGeneratorInput,
+    JobGeneratorRow,
+    JobGeneratorDefinitionRow,
+    JobGeneratorCycleRow,
+    JobRow,
+    JobSessionRow,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -902,6 +908,73 @@ export class PilotSwarmManagementClient {
             if (!isIgnorableCancelError(err)) throw err;
         }
         await this._deleteSystemOrchestrationInstance(sessionId);
+    }
+
+    // ─── Job generators ──────────────────────────────────────
+
+    async createJobGenerator(input: CreateJobGeneratorInput): Promise<{
+        generator: JobGeneratorRow;
+        definition: JobGeneratorDefinitionRow;
+    }> {
+        this._ensureStarted();
+        return this._catalog!.createJobGenerator(input);
+    }
+
+    async listJobGenerators(
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<JobGeneratorRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobGenerators(owner);
+    }
+
+    async getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getJobGenerator(generatorId);
+    }
+
+    async getJobGeneratorDefinition(definitionId: string): Promise<JobGeneratorDefinitionRow> {
+        this._ensureStarted();
+        return this._catalog!.getJobGeneratorDefinition(definitionId);
+    }
+
+    async publishJobGeneratorDefinition(input: {
+        definitionId?: string;
+        generatorId: string;
+        sourceType: import("./cms.js").JobGeneratorSourceType;
+        sourceConfig: Record<string, unknown>;
+        lifecycleDefinition?: Record<string, unknown>;
+        affinities?: Record<string, unknown>;
+        validationGates?: unknown[];
+        guardrails?: Record<string, unknown>;
+        createdBy?: string | null;
+    }): Promise<JobGeneratorDefinitionRow> {
+        this._ensureStarted();
+        return this._catalog!.publishJobGeneratorDefinition(input);
+    }
+
+    async listJobGeneratorDefinitions(generatorId: string): Promise<JobGeneratorDefinitionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobGeneratorDefinitions(generatorId);
+    }
+
+    async listJobGeneratorJobs(generatorId: string): Promise<JobRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobGeneratorJobs(generatorId);
+    }
+
+    async listJobGeneratorCycles(generatorId: string, limit?: number): Promise<JobGeneratorCycleRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobGeneratorCycles(generatorId, limit);
+    }
+
+    async getJob(jobId: string): Promise<JobRow | null> {
+        this._ensureStarted();
+        return this._catalog!.getJob(jobId);
+    }
+
+    async listJobSessions(jobId: string): Promise<JobSessionRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobSessions(jobId);
     }
 
     // ─── Session Listing ─────────────────────────────────────

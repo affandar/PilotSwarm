@@ -966,6 +966,120 @@ export interface FleetDirectiveRow {
     updatedBy: string | null;
 }
 
+export type JobGeneratorSourceType = "ado_wiql" | "icm" | "kusto";
+export type JobGeneratorOperationalState = "enabled" | "paused" | "disabled";
+export type JobLifecycleState = "pending_session" | "active" | "blocked" | "completed" | "cancelled";
+export type JobSessionStatus = "reserved" | "unacked" | "active" | "failed" | "replaced";
+
+export interface JobGeneratorRow {
+    generatorId: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    cadenceSeconds: number;
+    operationalState: JobGeneratorOperationalState;
+    activeDefinitionId: string | null;
+    nextRunAt: Date;
+    watermark: unknown;
+    totalCycles: number;
+    successfulCycles: number;
+    failedCycles: number;
+    materializedJobs: number;
+    lastCycleAt: Date | null;
+    lastError: string | null;
+    leaseOwner: string | null;
+    leaseExpiresAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface JobGeneratorDefinitionRow {
+    definitionId: string;
+    generatorId: string;
+    version: number;
+    sourceType: JobGeneratorSourceType;
+    sourceConfig: Record<string, unknown>;
+    lifecycleDefinition: Record<string, unknown>;
+    affinities: Record<string, unknown>;
+    validationGates: unknown[];
+    guardrails: Record<string, unknown>;
+    createdBy: string | null;
+    createdAt: Date;
+}
+
+export interface JobGeneratorCycleRow {
+    cycleId: string;
+    generatorId: string;
+    definitionId: string;
+    status: "running" | "succeeded" | "failed";
+    claimedBy: string;
+    watermarkBefore: unknown;
+    watermarkAfter: unknown;
+    discoveredCount: number;
+    createdCount: number;
+    error: string | null;
+    startedAt: Date;
+    completedAt: Date | null;
+}
+
+export interface JobRow {
+    jobId: string;
+    generatorId: string;
+    definitionId: string;
+    jobKey: string;
+    sourcePayload: Record<string, unknown>;
+    lifecycleState: JobLifecycleState;
+    firstSeenCycleId: string;
+    lastSeenCycleId: string;
+    firstDiscoveredAt: Date;
+    lastDiscoveredAt: Date;
+    sessionAttempts: number;
+    sessionError: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface JobSessionRow {
+    associationId: string;
+    jobId: string;
+    sessionId: string;
+    ordinal: number;
+    isCurrent: boolean;
+    status: JobSessionStatus;
+    error: string | null;
+    reservedAt: Date;
+    attachedAt: Date | null;
+    endedAt: Date | null;
+}
+
+export interface JobDiscovery {
+    key: string;
+    payload: Record<string, unknown>;
+}
+
+export interface ReconciledJob extends JobRow {
+    created: boolean;
+    needsSession: boolean;
+}
+
+export interface CreateJobGeneratorInput {
+    generatorId?: string;
+    definitionId?: string;
+    name: string;
+    owner: SessionOwnerInfo;
+    cadenceSeconds: number;
+    operationalState?: JobGeneratorOperationalState;
+    nextRunAt?: Date;
+    definition: {
+        sourceType: JobGeneratorSourceType;
+        sourceConfig: Record<string, unknown>;
+        lifecycleDefinition?: Record<string, unknown>;
+        affinities?: Record<string, unknown>;
+        validationGates?: unknown[];
+        guardrails?: Record<string, unknown>;
+        createdBy?: string | null;
+    };
+}
+
 export interface SessionCatalog {
     /**
      * Provider budgets (migrations 0049-0051). Optional, like every other
@@ -1064,6 +1178,61 @@ export interface SessionCatalog {
         updatedBy?: string | null;
     }): Promise<number>;
     getFleetDirectives(): Promise<FleetDirectiveRow[]>;
+
+    // ── Job generators (migration 0047) ─────────────────────
+
+    registerJobGenerator(input: {
+        generatorId?: string;
+        name: string;
+        owner: SessionOwnerInfo;
+        cadenceSeconds: number;
+        operationalState?: JobGeneratorOperationalState;
+        nextRunAt?: Date;
+    }): Promise<JobGeneratorRow>;
+    createJobGenerator(input: CreateJobGeneratorInput): Promise<{
+        generator: JobGeneratorRow;
+        definition: JobGeneratorDefinitionRow;
+    }>;
+    listJobGenerators(owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null): Promise<JobGeneratorRow[]>;
+    getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null>;
+    publishJobGeneratorDefinition(input: {
+        definitionId?: string;
+        generatorId: string;
+        sourceType: JobGeneratorSourceType;
+        sourceConfig: Record<string, unknown>;
+        lifecycleDefinition?: Record<string, unknown>;
+        affinities?: Record<string, unknown>;
+        validationGates?: unknown[];
+        guardrails?: Record<string, unknown>;
+        createdBy?: string | null;
+    }): Promise<JobGeneratorDefinitionRow>;
+    getJobGeneratorDefinition(definitionId: string): Promise<JobGeneratorDefinitionRow>;
+    listJobGeneratorDefinitions(generatorId: string): Promise<JobGeneratorDefinitionRow[]>;
+    listJobGeneratorJobs(generatorId: string): Promise<JobRow[]>;
+    listJobGeneratorCycles(generatorId: string, limit?: number): Promise<JobGeneratorCycleRow[]>;
+    getJob(jobId: string): Promise<JobRow | null>;
+    claimDueJobGenerators(workerId: string, limit?: number, leaseSeconds?: number): Promise<JobGeneratorRow[]>;
+    beginJobGeneratorCycle(generatorId: string, workerId: string): Promise<{
+        cycle: JobGeneratorCycleRow;
+        definition: JobGeneratorDefinitionRow;
+    }>;
+    completeJobGeneratorCycle(input: {
+        cycleId: string;
+        workerId: string;
+        status: "succeeded" | "failed";
+        watermark?: unknown;
+        discoveredCount?: number;
+        createdCount?: number;
+        error?: string | null;
+    }): Promise<void>;
+    reconcileJobGeneratorDiscoveries(cycleId: string, discoveries: JobDiscovery[]): Promise<ReconciledJob[]>;
+    listJobsNeedingSession(generatorId: string, limit?: number): Promise<JobRow[]>;
+    reserveJobSession(jobId: string, cycleId: string, workerId: string, sessionId?: string): Promise<JobSessionRow>;
+    replaceJobSession(jobId: string, sessionId?: string): Promise<JobSessionRow>;
+    attachJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string): Promise<void>;
+    acknowledgeJobSession(sessionId: string): Promise<void>;
+    failJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string, error: string): Promise<void>;
+    listJobSessions(jobId: string): Promise<JobSessionRow[]>;
 
     // ── Agent packages (migration 0038) ──────────────────────
 
@@ -1651,6 +1820,685 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+    }
+
+    // ── Job generators ───────────────────────────────────────
+
+    async registerJobGenerator(input: {
+        generatorId?: string;
+        name: string;
+        owner: SessionOwnerInfo;
+        cadenceSeconds: number;
+        operationalState?: JobGeneratorOperationalState;
+        nextRunAt?: Date;
+    }): Promise<JobGeneratorRow> {
+        const generatorId = input.generatorId ?? randomUUID();
+        const name = input.name.trim();
+        if (!name) throw new Error("JobGenerator name is required");
+        if (!input.owner.provider?.trim() || !input.owner.subject?.trim()) {
+            throw new Error("JobGenerator owner provider and subject are required");
+        }
+        if (!Number.isInteger(input.cadenceSeconds) || input.cadenceSeconds <= 0) {
+            throw new Error("JobGenerator cadenceSeconds must be a positive integer");
+        }
+        const { rows } = await this.pool.query(
+            `INSERT INTO "${this.sql.schema}".job_generators (
+                 generator_id, name, owner_provider, owner_subject, owner_email,
+                 owner_display_name, cadence_seconds, operational_state, next_run_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             ON CONFLICT (generator_id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 owner_provider = EXCLUDED.owner_provider,
+                 owner_subject = EXCLUDED.owner_subject,
+                 owner_email = EXCLUDED.owner_email,
+                 owner_display_name = EXCLUDED.owner_display_name,
+                 cadence_seconds = EXCLUDED.cadence_seconds,
+                 operational_state = EXCLUDED.operational_state,
+                 next_run_at = EXCLUDED.next_run_at,
+                 updated_at = now()
+             RETURNING *`,
+            [
+                generatorId,
+                name,
+                input.owner.provider.trim(),
+                input.owner.subject.trim(),
+                input.owner.email ?? null,
+                input.owner.displayName ?? null,
+                input.cadenceSeconds,
+                input.operationalState ?? "enabled",
+                input.nextRunAt ?? new Date(),
+            ],
+        );
+        return rowToJobGenerator(rows[0]);
+    }
+
+    async createJobGenerator(input: CreateJobGeneratorInput): Promise<{
+        generator: JobGeneratorRow;
+        definition: JobGeneratorDefinitionRow;
+    }> {
+        const generatorId = input.generatorId ?? randomUUID();
+        const definitionId = input.definitionId ?? randomUUID();
+        const name = input.name.trim();
+        if (!name) throw new Error("JobGenerator name is required");
+        if (!input.owner.provider?.trim() || !input.owner.subject?.trim()) {
+            throw new Error("JobGenerator owner provider and subject are required");
+        }
+        if (!Number.isInteger(input.cadenceSeconds) || input.cadenceSeconds <= 0) {
+            throw new Error("JobGenerator cadenceSeconds must be a positive integer");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const generatorResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_generators (
+                     generator_id, name, owner_provider, owner_subject, owner_email,
+                     owner_display_name, cadence_seconds, operational_state,
+                     active_definition_id, next_run_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 RETURNING *`,
+                [
+                    generatorId,
+                    name,
+                    input.owner.provider.trim(),
+                    input.owner.subject.trim(),
+                    input.owner.email ?? null,
+                    input.owner.displayName ?? null,
+                    input.cadenceSeconds,
+                    input.operationalState ?? "enabled",
+                    definitionId,
+                    input.nextRunAt ?? new Date(),
+                ],
+            );
+            const definitionResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_generator_definitions (
+                     definition_id, generator_id, version, source_type, source_config,
+                     lifecycle_definition, affinities, validation_gates, guardrails, created_by
+                 ) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$9)
+                 RETURNING *`,
+                [
+                    definitionId,
+                    generatorId,
+                    input.definition.sourceType,
+                    JSON.stringify(input.definition.sourceConfig ?? {}),
+                    JSON.stringify(input.definition.lifecycleDefinition ?? {}),
+                    JSON.stringify(input.definition.affinities ?? {}),
+                    JSON.stringify(input.definition.validationGates ?? []),
+                    JSON.stringify(input.definition.guardrails ?? {}),
+                    input.definition.createdBy ?? null,
+                ],
+            );
+            await client.query("COMMIT");
+            return {
+                generator: rowToJobGenerator(generatorResult.rows[0]),
+                definition: rowToJobGeneratorDefinition(definitionResult.rows[0]),
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async listJobGenerators(
+        owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null,
+    ): Promise<JobGeneratorRow[]> {
+        const { rows } = owner
+            ? await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".job_generators
+                 WHERE owner_provider = $1 AND owner_subject = $2
+                 ORDER BY created_at, generator_id`,
+                [owner.provider, owner.subject],
+            )
+            : await this.pool.query(
+                `SELECT * FROM "${this.sql.schema}".job_generators ORDER BY created_at, generator_id`,
+            );
+        return rows.map(rowToJobGenerator);
+    }
+
+    async getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_generators WHERE generator_id = $1`,
+            [generatorId],
+        );
+        return rows[0] ? rowToJobGenerator(rows[0]) : null;
+    }
+
+    async publishJobGeneratorDefinition(input: {
+        definitionId?: string;
+        generatorId: string;
+        sourceType: JobGeneratorSourceType;
+        sourceConfig: Record<string, unknown>;
+        lifecycleDefinition?: Record<string, unknown>;
+        affinities?: Record<string, unknown>;
+        validationGates?: unknown[];
+        guardrails?: Record<string, unknown>;
+        createdBy?: string | null;
+    }): Promise<JobGeneratorDefinitionRow> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const generator = await client.query(
+                `SELECT generator_id FROM "${this.sql.schema}".job_generators
+                 WHERE generator_id = $1 FOR UPDATE`,
+                [input.generatorId],
+            );
+            if (generator.rowCount !== 1) throw new Error(`JobGenerator not found: ${input.generatorId}`);
+            const versionResult = await client.query(
+                `SELECT COALESCE(MAX(version), 0) + 1 AS version
+                 FROM "${this.sql.schema}".job_generator_definitions WHERE generator_id = $1`,
+                [input.generatorId],
+            );
+            const definitionId = input.definitionId ?? randomUUID();
+            const version = Number(versionResult.rows[0].version);
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_generator_definitions (
+                     definition_id, generator_id, version, source_type, source_config,
+                     lifecycle_definition, affinities, validation_gates, guardrails, created_by
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 RETURNING *`,
+                [
+                    definitionId,
+                    input.generatorId,
+                    version,
+                    input.sourceType,
+                    JSON.stringify(input.sourceConfig ?? {}),
+                    JSON.stringify(input.lifecycleDefinition ?? {}),
+                    JSON.stringify(input.affinities ?? {}),
+                    JSON.stringify(input.validationGates ?? []),
+                    JSON.stringify(input.guardrails ?? {}),
+                    input.createdBy ?? null,
+                ],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_generators
+                 SET active_definition_id = $2, next_run_at = LEAST(next_run_at, now()), updated_at = now()
+                 WHERE generator_id = $1`,
+                [input.generatorId, definitionId],
+            );
+            await client.query("COMMIT");
+            return rowToJobGeneratorDefinition(rows[0]);
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async getJobGeneratorDefinition(definitionId: string): Promise<JobGeneratorDefinitionRow> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_generator_definitions
+             WHERE definition_id = $1`,
+            [definitionId],
+        );
+        if (!rows[0]) throw new Error(`JobGenerator definition not found: ${definitionId}`);
+        return rowToJobGeneratorDefinition(rows[0]);
+    }
+
+    async listJobGeneratorDefinitions(generatorId: string): Promise<JobGeneratorDefinitionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_generator_definitions
+             WHERE generator_id = $1
+             ORDER BY version DESC`,
+            [generatorId],
+        );
+        return rows.map(rowToJobGeneratorDefinition);
+    }
+
+    async listJobGeneratorJobs(generatorId: string): Promise<JobRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".jobs
+             WHERE generator_id = $1
+             ORDER BY first_discovered_at DESC, job_id`,
+            [generatorId],
+        );
+        return rows.map(rowToJob);
+    }
+
+    async listJobGeneratorCycles(generatorId: string, limit = 50): Promise<JobGeneratorCycleRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 200));
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_generator_cycles
+             WHERE generator_id = $1
+             ORDER BY started_at DESC, cycle_id
+             LIMIT $2`,
+            [generatorId, boundedLimit],
+        );
+        return rows.map(rowToJobGeneratorCycle);
+    }
+
+    async getJob(jobId: string): Promise<JobRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".jobs WHERE job_id = $1`,
+            [jobId],
+        );
+        return rows[0] ? rowToJob(rows[0]) : null;
+    }
+
+    async claimDueJobGenerators(workerId: string, limit = 10, leaseSeconds = 300): Promise<JobGeneratorRow[]> {
+        const normalizedWorkerId = workerId.trim();
+        if (!normalizedWorkerId) throw new Error("workerId is required");
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+        const boundedLease = Math.max(30, Math.min(Math.trunc(leaseSeconds), 3600));
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT generator_id
+                 FROM "${this.sql.schema}".job_generators
+                 WHERE operational_state = 'enabled'
+                   AND active_definition_id IS NOT NULL
+                   AND next_run_at <= now()
+                   AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+                 ORDER BY next_run_at, generator_id
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".job_generators g
+             SET lease_owner = $1,
+                 lease_expires_at = now() + make_interval(secs => $3),
+                 updated_at = now()
+             FROM due
+             WHERE g.generator_id = due.generator_id
+             RETURNING g.*`,
+            [normalizedWorkerId, boundedLimit, boundedLease],
+        );
+        return rows.map(rowToJobGenerator);
+    }
+
+    async beginJobGeneratorCycle(generatorId: string, workerId: string): Promise<{
+        cycle: JobGeneratorCycleRow;
+        definition: JobGeneratorDefinitionRow;
+    }> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const generatorResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_generators
+                 WHERE generator_id = $1 FOR UPDATE`,
+                [generatorId],
+            );
+            const generator = generatorResult.rows[0];
+            if (!generator) throw new Error(`JobGenerator not found: ${generatorId}`);
+            if (generator.lease_owner !== workerId || !generator.lease_expires_at || generator.lease_expires_at <= new Date()) {
+                throw new Error(`JobGenerator lease is not held by ${workerId}`);
+            }
+            if (!generator.active_definition_id) throw new Error("JobGenerator has no active definition");
+
+            const abandoned = await client.query(
+                `UPDATE "${this.sql.schema}".job_generator_cycles
+                 SET status = 'failed', error = COALESCE(error, 'controller lease expired'),
+                     completed_at = COALESCE(completed_at, now())
+                 WHERE generator_id = $1 AND status = 'running'`,
+                [generatorId],
+            );
+            if ((abandoned.rowCount ?? 0) > 0) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_generators
+                     SET failed_cycles = failed_cycles + $2, total_cycles = total_cycles + $2
+                     WHERE generator_id = $1`,
+                    [generatorId, abandoned.rowCount],
+                );
+            }
+
+            const definitionResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_generator_definitions
+                 WHERE definition_id = $1`,
+                [generator.active_definition_id],
+            );
+            const cycleId = randomUUID();
+            const cycleResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_generator_cycles (
+                     cycle_id, generator_id, definition_id, claimed_by, watermark_before
+                 ) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+                [cycleId, generatorId, generator.active_definition_id, workerId, generator.watermark],
+            );
+            await client.query("COMMIT");
+            return {
+                cycle: rowToJobGeneratorCycle(cycleResult.rows[0]),
+                definition: rowToJobGeneratorDefinition(definitionResult.rows[0]),
+            };
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeJobGeneratorCycle(input: {
+        cycleId: string;
+        workerId: string;
+        status: "succeeded" | "failed";
+        watermark?: unknown;
+        discoveredCount?: number;
+        createdCount?: number;
+        error?: string | null;
+    }): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const cycleResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_generator_cycles
+                 WHERE cycle_id = $1 FOR UPDATE`,
+                [input.cycleId],
+            );
+            const cycle = cycleResult.rows[0];
+            if (!cycle) throw new Error(`JobGenerator cycle not found: ${input.cycleId}`);
+            if (cycle.status !== "running") {
+                await client.query("ROLLBACK");
+                return;
+            }
+            if (cycle.claimed_by !== input.workerId) throw new Error("JobGenerator cycle is owned by another worker");
+            const discoveredCount = Math.max(0, Math.trunc(input.discoveredCount ?? 0));
+            const createdCount = Math.max(0, Math.trunc(input.createdCount ?? 0));
+            const watermark = input.watermark === undefined ? cycle.watermark_before : input.watermark;
+            const serializedWatermark = JSON.stringify(watermark ?? null);
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_generator_cycles
+                 SET status = $2, watermark_after = $3, discovered_count = $4,
+                     created_count = $5, error = $6, completed_at = now()
+                 WHERE cycle_id = $1`,
+                [
+                    input.cycleId,
+                    input.status,
+                    serializedWatermark,
+                    discoveredCount,
+                    createdCount,
+                    input.error ?? null,
+                ],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_generators
+                 SET watermark = CASE WHEN $2 = 'succeeded' THEN $3 ELSE watermark END,
+                     total_cycles = total_cycles + 1,
+                     successful_cycles = successful_cycles + CASE WHEN $2 = 'succeeded' THEN 1 ELSE 0 END,
+                     failed_cycles = failed_cycles + CASE WHEN $2 = 'failed' THEN 1 ELSE 0 END,
+                     materialized_jobs = materialized_jobs + $4,
+                     last_cycle_at = now(),
+                     last_error = CASE WHEN $2 = 'failed' THEN $5 ELSE NULL END,
+                     next_run_at = now() + make_interval(secs => cadence_seconds),
+                     lease_owner = NULL, lease_expires_at = NULL, updated_at = now()
+                 WHERE generator_id = $1 AND lease_owner = $6`,
+                [
+                    cycle.generator_id,
+                    input.status,
+                    serializedWatermark,
+                    createdCount,
+                    input.error ?? null,
+                    input.workerId,
+                ],
+            );
+            await client.query("COMMIT");
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async reconcileJobGeneratorDiscoveries(cycleId: string, discoveries: JobDiscovery[]): Promise<ReconciledJob[]> {
+        const unique = new Map<string, Record<string, unknown>>();
+        for (const discovery of discoveries) {
+            const key = String(discovery.key ?? "").trim();
+            if (!key) throw new Error("Job discovery key is required");
+            unique.set(key, discovery.payload ?? {});
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const cycleResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_generator_cycles
+                 WHERE cycle_id = $1 AND status = 'running' FOR UPDATE`,
+                [cycleId],
+            );
+            const cycle = cycleResult.rows[0];
+            if (!cycle) throw new Error(`Running JobGenerator cycle not found: ${cycleId}`);
+            const reconciled: ReconciledJob[] = [];
+            for (const [jobKey, payload] of unique) {
+                const { rows } = await client.query(
+                    `WITH upserted AS (
+                         INSERT INTO "${this.sql.schema}".jobs (
+                             job_id, generator_id, definition_id, job_key, source_payload,
+                             first_seen_cycle_id, last_seen_cycle_id
+                         ) VALUES ($1,$2,$3,$4,$5,$6,$6)
+                         ON CONFLICT (generator_id, job_key) DO UPDATE SET
+                             source_payload = EXCLUDED.source_payload,
+                             last_seen_cycle_id = EXCLUDED.last_seen_cycle_id,
+                             last_discovered_at = now(),
+                             updated_at = now()
+                         RETURNING *, (xmax = 0) AS was_created
+                     )
+                     SELECT upserted.*,
+                            NOT EXISTS (
+                                SELECT 1 FROM "${this.sql.schema}".job_sessions js
+                                WHERE js.job_id = upserted.job_id AND js.is_current
+                            ) AS needs_session
+                     FROM upserted`,
+                    [
+                        randomUUID(),
+                        cycle.generator_id,
+                        cycle.definition_id,
+                        jobKey,
+                        JSON.stringify(payload),
+                        cycleId,
+                    ],
+                );
+                reconciled.push({
+                    ...rowToJob(rows[0]),
+                    created: Boolean(rows[0].was_created),
+                    needsSession: Boolean(rows[0].needs_session),
+                });
+            }
+            await client.query("COMMIT");
+            return reconciled;
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async listJobsNeedingSession(generatorId: string, limit = 100): Promise<JobRow[]> {
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 1000));
+        const { rows } = await this.pool.query(
+            `SELECT j.*
+             FROM "${this.sql.schema}".jobs j
+             WHERE j.generator_id = $1
+               AND j.lifecycle_state IN ('pending_session', 'blocked')
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM "${this.sql.schema}".job_sessions js
+                   WHERE js.job_id = j.job_id
+                     AND js.is_current
+                     AND js.status IN ('unacked', 'active')
+               )
+             ORDER BY j.first_discovered_at, j.job_id
+             LIMIT $2`,
+            [generatorId, boundedLimit],
+        );
+        return rows.map(rowToJob);
+    }
+
+    async reserveJobSession(
+        jobId: string,
+        cycleId: string,
+        workerId: string,
+        sessionId = randomUUID(),
+    ): Promise<JobSessionRow> {
+        return this.createJobSessionAssociation(jobId, sessionId, false, { cycleId, workerId });
+    }
+
+    async replaceJobSession(jobId: string, sessionId = randomUUID()): Promise<JobSessionRow> {
+        return this.createJobSessionAssociation(jobId, sessionId, true);
+    }
+
+    private async createJobSessionAssociation(
+        jobId: string,
+        sessionId: string,
+        replace: boolean,
+        fence?: { cycleId: string; workerId: string },
+    ): Promise<JobSessionRow> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const job = fence
+                ? await client.query(
+                    `SELECT j.job_id
+                     FROM "${this.sql.schema}".jobs j
+                     JOIN "${this.sql.schema}".job_generator_cycles c
+                       ON c.cycle_id = $2
+                      AND c.generator_id = j.generator_id
+                      AND c.status = 'running'
+                      AND c.claimed_by = $3
+                     JOIN "${this.sql.schema}".job_generators g
+                       ON g.generator_id = j.generator_id
+                      AND g.lease_owner = $3
+                      AND g.lease_expires_at > now()
+                     WHERE j.job_id = $1
+                     FOR UPDATE OF j`,
+                    [jobId, fence.cycleId, fence.workerId],
+                )
+                : await client.query(
+                    `SELECT job_id FROM "${this.sql.schema}".jobs WHERE job_id = $1 FOR UPDATE`,
+                    [jobId],
+                );
+            if (job.rowCount !== 1) throw new Error(`Job not found: ${jobId}`);
+            const current = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_sessions
+                 WHERE job_id = $1 AND is_current FOR UPDATE`,
+                [jobId],
+            );
+            if (current.rows[0] && !replace) {
+                await client.query("COMMIT");
+                return rowToJobSession(current.rows[0]);
+            }
+            if (current.rows[0]) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_sessions
+                     SET is_current = FALSE, status = 'replaced', ended_at = now()
+                     WHERE association_id = $1`,
+                    [current.rows[0].association_id],
+                );
+            }
+            const ordinalResult = await client.query(
+                `SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
+                 FROM "${this.sql.schema}".job_sessions WHERE job_id = $1`,
+                [jobId],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_sessions (
+                     association_id, job_id, session_id, ordinal, is_current, status
+                 ) VALUES ($1,$2,$3,$4,TRUE,'reserved') RETURNING *`,
+                [randomUUID(), jobId, sessionId, Number(ordinalResult.rows[0].ordinal)],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".jobs
+                 SET lifecycle_state = 'pending_session', session_attempts = session_attempts + 1,
+                     session_error = NULL, updated_at = now()
+                 WHERE job_id = $1`,
+                [jobId],
+            );
+            await client.query("COMMIT");
+            return rowToJobSession(rows[0]);
+        } catch (err) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
+    async attachJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string): Promise<void> {
+        const result = await this.pool.query(
+            `WITH attached AS (
+                 UPDATE "${this.sql.schema}".job_sessions js
+                 SET status = 'unacked', error = NULL, attached_at = COALESCE(attached_at, now())
+                 WHERE js.job_id = $1 AND js.session_id = $2 AND js.is_current
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".jobs j
+                       JOIN "${this.sql.schema}".job_generator_cycles c
+                         ON c.cycle_id = $3
+                        AND c.generator_id = j.generator_id
+                        AND c.status = 'running'
+                        AND c.claimed_by = $4
+                       JOIN "${this.sql.schema}".job_generators g
+                         ON g.generator_id = j.generator_id
+                        AND g.lease_owner = $4
+                        AND g.lease_expires_at > now()
+                       WHERE j.job_id = js.job_id
+                   )
+                 RETURNING js.job_id
+             )
+             UPDATE "${this.sql.schema}".jobs j
+             SET lifecycle_state = 'pending_session', session_error = NULL, updated_at = now()
+             FROM attached WHERE j.job_id = attached.job_id`,
+            [jobId, sessionId, cycleId, workerId],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("Current Job session association not found");
+    }
+
+    async acknowledgeJobSession(sessionId: string): Promise<void> {
+        await this.pool.query(
+            `WITH acknowledged AS (
+                 UPDATE "${this.sql.schema}".job_sessions
+                 SET status = 'active'
+                 WHERE session_id = $1 AND is_current AND status = 'unacked'
+                 RETURNING job_id
+             )
+             UPDATE "${this.sql.schema}".jobs j
+             SET lifecycle_state = 'active', session_error = NULL, updated_at = now()
+             FROM acknowledged
+             WHERE j.job_id = acknowledged.job_id`,
+            [sessionId],
+        );
+    }
+
+    async failJobSession(
+        jobId: string,
+        sessionId: string,
+        cycleId: string,
+        workerId: string,
+        error: string,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `WITH failed AS (
+                 UPDATE "${this.sql.schema}".job_sessions js
+                 SET status = 'failed', error = $5
+                 WHERE js.job_id = $1 AND js.session_id = $2 AND js.is_current
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".jobs j
+                       JOIN "${this.sql.schema}".job_generator_cycles c
+                         ON c.cycle_id = $3
+                        AND c.generator_id = j.generator_id
+                        AND c.status = 'running'
+                        AND c.claimed_by = $4
+                       JOIN "${this.sql.schema}".job_generators g
+                         ON g.generator_id = j.generator_id
+                        AND g.lease_owner = $4
+                        AND g.lease_expires_at > now()
+                       WHERE j.job_id = js.job_id
+                   )
+                 RETURNING js.job_id
+             )
+             UPDATE "${this.sql.schema}".jobs j
+             SET lifecycle_state = 'blocked', session_error = $5, updated_at = now()
+             FROM failed WHERE j.job_id = failed.job_id`,
+            [jobId, sessionId, cycleId, workerId, error],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("Current Job session association not found");
+    }
+
+    async listJobSessions(jobId: string): Promise<JobSessionRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_sessions
+             WHERE job_id = $1 ORDER BY ordinal`,
+            [jobId],
+        );
+        return rows.map(rowToJobSession);
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -3882,6 +4730,101 @@ function rowToSessionRow(row: any): SessionRow {
         owner,
         visibility: row.visibility ?? "private",
         rootSessionId: row.root_session_id ?? row.session_id ?? null,
+    };
+}
+
+function rowToJobGenerator(row: any): JobGeneratorRow {
+    return {
+        generatorId: row.generator_id,
+        name: row.name,
+        owner: {
+            provider: row.owner_provider,
+            subject: row.owner_subject,
+            email: row.owner_email ?? null,
+            displayName: row.owner_display_name ?? null,
+        },
+        cadenceSeconds: Number(row.cadence_seconds),
+        operationalState: row.operational_state,
+        activeDefinitionId: row.active_definition_id ?? null,
+        nextRunAt: row.next_run_at,
+        watermark: row.watermark ?? null,
+        totalCycles: Number(row.total_cycles),
+        successfulCycles: Number(row.successful_cycles),
+        failedCycles: Number(row.failed_cycles),
+        materializedJobs: Number(row.materialized_jobs),
+        lastCycleAt: row.last_cycle_at ?? null,
+        lastError: row.last_error ?? null,
+        leaseOwner: row.lease_owner ?? null,
+        leaseExpiresAt: row.lease_expires_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToJobGeneratorDefinition(row: any): JobGeneratorDefinitionRow {
+    return {
+        definitionId: row.definition_id,
+        generatorId: row.generator_id,
+        version: Number(row.version),
+        sourceType: row.source_type,
+        sourceConfig: row.source_config ?? {},
+        lifecycleDefinition: row.lifecycle_definition ?? {},
+        affinities: row.affinities ?? {},
+        validationGates: Array.isArray(row.validation_gates) ? row.validation_gates : [],
+        guardrails: row.guardrails ?? {},
+        createdBy: row.created_by ?? null,
+        createdAt: row.created_at,
+    };
+}
+
+function rowToJobGeneratorCycle(row: any): JobGeneratorCycleRow {
+    return {
+        cycleId: row.cycle_id,
+        generatorId: row.generator_id,
+        definitionId: row.definition_id,
+        status: row.status,
+        claimedBy: row.claimed_by,
+        watermarkBefore: row.watermark_before ?? null,
+        watermarkAfter: row.watermark_after ?? null,
+        discoveredCount: Number(row.discovered_count),
+        createdCount: Number(row.created_count),
+        error: row.error ?? null,
+        startedAt: row.started_at,
+        completedAt: row.completed_at ?? null,
+    };
+}
+
+function rowToJob(row: any): JobRow {
+    return {
+        jobId: row.job_id,
+        generatorId: row.generator_id,
+        definitionId: row.definition_id,
+        jobKey: row.job_key,
+        sourcePayload: row.source_payload ?? {},
+        lifecycleState: row.lifecycle_state,
+        firstSeenCycleId: row.first_seen_cycle_id,
+        lastSeenCycleId: row.last_seen_cycle_id,
+        firstDiscoveredAt: row.first_discovered_at,
+        lastDiscoveredAt: row.last_discovered_at,
+        sessionAttempts: Number(row.session_attempts),
+        sessionError: row.session_error ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToJobSession(row: any): JobSessionRow {
+    return {
+        associationId: row.association_id,
+        jobId: row.job_id,
+        sessionId: row.session_id,
+        ordinal: Number(row.ordinal),
+        isCurrent: Boolean(row.is_current),
+        status: row.status,
+        error: row.error ?? null,
+        reservedAt: row.reserved_at,
+        attachedAt: row.attached_at ?? null,
+        endedAt: row.ended_at ?? null,
     };
 }
 

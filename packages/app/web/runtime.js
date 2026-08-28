@@ -33,6 +33,61 @@ function normalizeParams(params) {
     return params && typeof params === "object" ? params : {};
 }
 
+function invalidRequest(message) {
+    return Object.assign(new Error(message), { code: "INVALID_REQUEST", status: 400 });
+}
+
+function objectParam(value, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw invalidRequest(`${label} must be an object.`);
+    }
+    return value;
+}
+
+function normalizeJobGeneratorDefinition(definitionParam, createdBy) {
+    const definition = objectParam(definitionParam, "definition");
+    const sourceType = String(definition.sourceType || "").trim();
+    if (!["ado_wiql", "icm", "kusto"].includes(sourceType)) {
+        throw invalidRequest("definition.sourceType must be ado_wiql, icm, or kusto.");
+    }
+    const sourceConfig = objectParam(definition.sourceConfig ?? {}, "definition.sourceConfig");
+    const lifecycleDefinition = objectParam(
+        definition.lifecycleDefinition ?? {},
+        "definition.lifecycleDefinition",
+    );
+    const affinities = objectParam(definition.affinities ?? {}, "definition.affinities");
+    const validationGates = definition.validationGates ?? [];
+    if (!Array.isArray(validationGates)) {
+        throw invalidRequest("definition.validationGates must be an array.");
+    }
+    const guardrails = objectParam(definition.guardrails ?? {}, "definition.guardrails");
+    return {
+        sourceType,
+        sourceConfig,
+        lifecycleDefinition,
+        affinities,
+        validationGates,
+        guardrails,
+        createdBy,
+    };
+}
+
+function normalizeJobGeneratorCreateParams(params, owner) {
+    const name = String(params.name || "").trim();
+    if (!name) throw invalidRequest("name is required.");
+    if (name.length > 120) throw invalidRequest("name must be 120 characters or fewer.");
+    const cadenceSeconds = Number(params.cadenceSeconds);
+    if (!Number.isInteger(cadenceSeconds) || cadenceSeconds < 30 || cadenceSeconds > 86_400) {
+        throw invalidRequest("cadenceSeconds must be an integer from 30 through 86400.");
+    }
+    return {
+        name,
+        cadenceSeconds,
+        owner,
+        definition: normalizeJobGeneratorDefinition(params.definition, owner.subject),
+    };
+}
+
 // ── Repo-affinity fail-fast (git-hydration) ──────────────────────────────
 // A session may declare a target repo enlistment; turns are then routed only
 // to git-repo-workers tagged for that repo. If the repo is unknown/unserviced
@@ -476,7 +531,15 @@ export class PortalRuntime {
         const spec = getMethodAccess(method);
         const access = spec?.access || "authed";
 
-        if (access === "authed" || access === "session:create" || access === "facts:read" || access === "group:list" || access === "session:list") {
+        if (
+            access === "authed"
+            || access === "session:create"
+            || access === "facts:read"
+            || access === "group:list"
+            || access === "session:list"
+            || access === "job-generator:list"
+            || access === "job-generator:create"
+        ) {
             // List/read scoping happens in the case handlers (viewer-scoped
             // catalog paths); creation stamps owner+visibility there too.
             return { snapshot: null };
@@ -521,6 +584,11 @@ export class PortalRuntime {
 
         if (access === "group:manage") {
             await this._authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin });
+            return { snapshot: null };
+        }
+
+        if (access === "job-generator:read" || access === "job-generator:manage") {
+            await this._authorizeJobGeneratorRead(method, safeParams, authContext, { owner, isAdmin });
             return { snapshot: null };
         }
 
@@ -681,6 +749,45 @@ export class PortalRuntime {
         const sessionIds = Array.isArray(safeParams.sessionIds) ? safeParams.sessionIds : [];
         for (const sessionId of sessionIds) {
             await this._gateSession(method, "session:manage", sessionId, authContext, { owner, isAdmin });
+        }
+    }
+
+    async _authorizeJobGeneratorRead(method, safeParams, authContext, { owner, isAdmin }) {
+        let generatorId = safeParams.generatorId ? String(safeParams.generatorId) : null;
+        if (!generatorId && safeParams.definitionId) {
+            const definition = await this.transport.getJobGeneratorDefinition(
+                String(safeParams.definitionId),
+            ).catch(() => null);
+            generatorId = definition?.generatorId ?? null;
+        }
+        if (!generatorId && safeParams.jobId) {
+            const job = await this.transport.getJob(String(safeParams.jobId)).catch(() => null);
+            generatorId = job?.generatorId ?? null;
+        }
+        if (!generatorId) {
+            throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        const generator = await this.transport.getJobGenerator(generatorId).catch(() => null);
+        if (!generator) {
+            throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
+        }
+        if (isAdmin) return;
+        const generatorOwner = normalizeOwnerPrincipal(generator.owner);
+        const allowed = Boolean(
+            owner
+            && generatorOwner
+            && owner.provider === generatorOwner.provider
+            && owner.subject === generatorOwner.subject,
+        );
+        if (!allowed) {
+            this._recordAudit({
+                actor: this._auditActor(authContext),
+                action: method,
+                target: generatorId,
+                decision: "deny",
+                reason: "JobGenerator owner access required.",
+            });
+            throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
         }
     }
 
@@ -871,6 +978,52 @@ export class PortalRuntime {
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
+            case "listJobGenerators":
+                if (!owner && !isAdmin) requireUserPrincipal(authContext, method);
+                return this.transport.listJobGenerators(isAdmin ? null : owner);
+            case "createJobGenerator": {
+                const generatorOwner = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.createJobGenerator(
+                    normalizeJobGeneratorCreateParams(safeParams, generatorOwner),
+                );
+            }
+            case "getJobGenerator": {
+                const generator = await this.transport.getJobGenerator(safeParams.generatorId);
+                if (!generator) {
+                    throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
+                }
+                return generator;
+            }
+            case "listJobGeneratorDefinitions":
+                return this.transport.listJobGeneratorDefinitions(safeParams.generatorId);
+            case "publishJobGeneratorDefinition":
+                return this.transport.publishJobGeneratorDefinition({
+                    generatorId: safeParams.generatorId,
+                    ...normalizeJobGeneratorDefinition(
+                        safeParams.definition,
+                        owner?.subject ?? null,
+                    ),
+                });
+            case "getJobGeneratorDefinition":
+                return this.transport.getJobGeneratorDefinition(safeParams.definitionId);
+            case "listJobGeneratorJobs":
+                return this.transport.listJobGeneratorJobs(safeParams.generatorId);
+            case "listJobGeneratorCycles":
+                return this.transport.listJobGeneratorCycles(
+                    safeParams.generatorId,
+                    clampInteger(safeParams.limit, 50, 1, 200),
+                );
+            case "getJob": {
+                const job = await this.transport.getJob(safeParams.jobId);
+                if (!job) {
+                    throw Object.assign(new Error("Job not found."), { code: "NOT_FOUND", status: 404 });
+                }
+                return job;
+            }
+            case "listJobSessions":
+                return this.transport.listJobSessions(safeParams.jobId);
             case "listSessions":
                 return listViewer
                     ? this.transport.mgmt.listSessionsVisible(listViewer, placementPrincipal(authContext))
