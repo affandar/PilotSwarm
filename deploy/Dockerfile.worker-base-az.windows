@@ -1,0 +1,59 @@
+# escape=`
+# =============================================================================
+# PilotSwarm Windows worker BASE — Azure CLI overlay (FAST interim layer).
+#
+# A THIN derivative that adds ONLY the Azure CLI on top of an already-cached
+# base (pilotswarm-worker-base:dotnet10), so we get an az-enabled base in a few
+# minutes WITHOUT re-running the slow servercore / Node / MinGit / .NET layers.
+#
+# SOURCE OF TRUTH: the az install here MIRRORS the canonical steps already folded
+# into deploy/Dockerfile.worker-base.windows (search "Azure CLI (delegated devbox
+# auth"). The canonical base is authoritative — the NEXT full base rebuild
+# (`build-windows-worker.ps1 -RebuildBase`) produces az on its own and SUPERSEDES
+# this overlay. Keep this file only while we are deliberately avoiding a full base
+# rebuild; deleting it never loses the az step (it lives in the canonical base).
+#
+# WHY az is in the base — devbox delegated auth (WI 5565172): a devbox worker
+# container has no managed identity, so both credential paths fall through to
+# AzureCliCredential (which shells `az account get-access-token`):
+#   * the store plane — duroxide's Rust chain WorkloadIdentity -> ManagedIdentity
+#     -> DeveloperTools, and
+#   * the JS DefaultAzureCredential used for blob (blob-store.ts) + CMS/facts pg.
+# az mints the PG (ossrdbms-aad) and Storage tokens from the developer's
+# bind-mounted, UNENCRYPTED az token cache (mounted at AZURE_CONFIG_DIR), no popup.
+# Inert on AKS: the workload-identity / managed-identity stages resolve first.
+#
+# Build:
+#   az acr build --registry pssqlwus2acr --platform windows `
+#     --image pilotswarm-worker-base:dotnet10-az `
+#     --file deploy/Dockerfile.worker-base-az.windows `
+#     --build-arg BASE_IMAGE=pssqlwus2acr.azurecr.io/pilotswarm-worker-base:dotnet10 .
+# =============================================================================
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+# --- Azure CLI (x64 MSI) — pinned onto the machine PATH ----------------------
+# The MSI's own PATH edit is not guaranteed visible to later build layers, so the
+# next RUN sets it explicitly (same pattern the canonical base uses for every tool).
+ARG AZ_CLI_MSI_URL=https://aka.ms/installazurecliwindowsx64
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:AZ_CLI_MSI_URL -OutFile C:\azcli.msi; `
+    $proc = Start-Process msiexec.exe -ArgumentList '/i','C:\azcli.msi','/qn','/norestart' -Wait -PassThru; `
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw ('az CLI MSI install failed with exit code ' + $proc.ExitCode) }; `
+    Remove-Item C:\azcli.msi
+
+RUN $azwbin = 'C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin'; `
+    if (-not (Test-Path (Join-Path $azwbin 'az.cmd'))) { throw ('az.cmd not found at ' + $azwbin + ' after MSI install') }; `
+    $p = [Environment]::GetEnvironmentVariable('PATH','Machine'); `
+    [Environment]::SetEnvironmentVariable('PATH', ($azwbin + ';' + $p), 'Machine')
+
+# Quiet, reproducible CLI (no telemetry / first-run survey noise) and fail the
+# build loudly if az did not land or cannot run.
+ENV AZURE_CORE_COLLECT_TELEMETRY=0 `
+    AZURE_CORE_ONLY_SHOW_ERRORS=true
+RUN az version --output table; `
+    if ($LASTEXITCODE -ne 0) { throw 'az version failed after install' }; `
+    Write-Host 'azure-cli installed and on PATH'
+
+WORKDIR C:\app

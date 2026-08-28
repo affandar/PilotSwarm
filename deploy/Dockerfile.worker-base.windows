@@ -169,4 +169,38 @@ RUN $v = (& 'C:\Program Files\dotnet\dotnet.exe' --version); `
     if (-not $v.StartsWith('10.')) { throw ('unexpected dotnet SDK version (need 10.x for dnx): ' + $v) }; `
     Write-Host ('dotnet SDK ' + $v + ' installed at C:\Program Files\dotnet (dnx available)')
 
+# --- Azure CLI (delegated devbox auth — the DeveloperTools credential stage) ---
+# On a devbox host the worker container has NO managed identity, so both credential
+# paths fall through to AzureCliCredential (which shells `az account get-access-token`):
+#   * the store plane — duroxide's Rust chain WorkloadIdentity -> ManagedIdentity ->
+#     DeveloperTools, and
+#   * the JS `DefaultAzureCredential` used for blob (blob-store.ts) and CMS/facts pg.
+# Baking `az` in lets the container mint the PG (ossrdbms-aad) and Storage tokens from
+# the developer's bind-mounted, UNENCRYPTED az token cache (mounted at AZURE_CONFIG_DIR)
+# with no popup — see WI 5565172 and docs/proposals-impl/delegated-mcp-upstream-auth.md.
+# On AKS this is inert: the workload-identity / managed-identity stages resolve first,
+# so `az` is never invoked there. Installed from the x64 MSI and pinned onto the machine
+# PATH (the MSI's own PATH edit is not guaranteed visible to later build layers).
+ARG AZ_CLI_MSI_URL=https://aka.ms/installazurecliwindowsx64
+RUN Invoke-WebRequest -UseBasicParsing -Uri $env:AZ_CLI_MSI_URL -OutFile C:\azcli.msi; `
+    $proc = Start-Process msiexec.exe -ArgumentList '/i','C:\azcli.msi','/qn','/norestart' -Wait -PassThru; `
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw ('az CLI MSI install failed with exit code ' + $proc.ExitCode) }; `
+    Remove-Item C:\azcli.msi
+
+# Put az on the MACHINE PATH so every later layer, the running container, and any
+# credential provider that shells `az` (any user) resolves it. The x64 MSI installs
+# to C:\Program Files\Microsoft SDKs\Azure\CLI2.
+RUN $azwbin = 'C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin'; `
+    if (-not (Test-Path (Join-Path $azwbin 'az.cmd'))) { throw ('az.cmd not found at ' + $azwbin + ' after MSI install') }; `
+    $p = [Environment]::GetEnvironmentVariable('PATH','Machine'); `
+    [Environment]::SetEnvironmentVariable('PATH', ($azwbin + ';' + $p), 'Machine')
+
+# Quiet, reproducible CLI (no telemetry / first-run survey noise) and fail the base
+# build loudly if az did not land or cannot run.
+ENV AZURE_CORE_COLLECT_TELEMETRY=0 `
+    AZURE_CORE_ONLY_SHOW_ERRORS=true
+RUN az version --output table; `
+    if ($LASTEXITCODE -ne 0) { throw 'az version failed after install' }; `
+    Write-Host 'azure-cli installed and on PATH'
+
 WORKDIR C:\app
