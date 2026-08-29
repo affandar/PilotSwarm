@@ -6,6 +6,12 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import { describeJobTransitionBookkeepingEvent } from "./job-transition-bookkeeping.js";
+import {
+    buildVisibleJobGeneratorTreeRows,
+    jobGeneratorTreeRowKey,
+    jobGeneratorTreeSelectionKey,
+    navigateJobGeneratorTree,
+} from "./job-generator-tree-navigation.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
     normalizeMoa,
@@ -5937,7 +5943,7 @@ function persistedStateRunStatus(run) {
         case "completed": return "DONE";
         case "failed": return "FAILED";
         case "unacked": return "READY";
-        default: return "RESERVED";
+        default: return "PREPARING";
     }
 }
 
@@ -6555,6 +6561,7 @@ function JobGeneratorPane({
         events: [],
     });
     const timelineRequestRef = React.useRef(0);
+    const treeItemRefs = React.useRef(new Map());
 
     const toggle = (setter, id) => {
         setter((current) => {
@@ -6627,6 +6634,79 @@ function JobGeneratorPane({
         }
     };
 
+    const treeRows = React.useMemo(
+        () => buildVisibleJobGeneratorTreeRows(
+            generators,
+            expandedGenerators,
+            expandedJobs,
+        ),
+        [generators, expandedGenerators, expandedJobs],
+    );
+    const selectedTreeKey = jobGeneratorTreeSelectionKey(selected);
+    const activeTreeKey = treeRows.some((row) => row.key === selectedTreeKey)
+        ? selectedTreeKey
+        : null;
+    const registerTreeItem = (key, node) => {
+        if (node) treeItemRefs.current.set(key, node);
+        else treeItemRefs.current.delete(key);
+    };
+    const focusTreeItem = (key) => {
+        requestAnimationFrame(() => treeItemRefs.current.get(key)?.focus());
+    };
+    const selectTreeRow = (row) => {
+        const generator = generators.find((candidate) => candidate.id === row.generatorId);
+        if (!generator) return;
+        if (row.kind === "generator") {
+            setSelected({ kind: "generator", generatorId: generator.id });
+            focusTreeItem(row.key);
+            return;
+        }
+        const job = generator.jobs.find((candidate) => candidate.id === row.jobId);
+        if (!job) return;
+        if (row.kind === "job") {
+            selectJob(generator, job);
+            focusTreeItem(row.key);
+            return;
+        }
+        const transition = job.transitions.find(
+            (candidate) => candidate.id === row.transitionId,
+        );
+        if (!transition) return;
+        selectTransition(generator, job, transition);
+        focusTreeItem(row.key);
+    };
+    const handleTreeKeyDown = (event) => {
+        if (
+            event.altKey
+            || event.ctrlKey
+            || event.metaKey
+            || event.shiftKey
+            || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+        ) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const action = navigateJobGeneratorTree(treeRows, activeTreeKey, event.key);
+        if (!action) return;
+        if (action.type === "select") {
+            selectTreeRow(action.row);
+            return;
+        }
+        const setter = action.row.kind === "generator"
+            ? setExpandedGenerators
+            : setExpandedJobs;
+        const id = action.row.kind === "generator"
+            ? action.row.generatorId
+            : action.row.jobId;
+        setter((current) => {
+            const next = new Set(current);
+            if (action.type === "expand") next.add(id);
+            else next.delete(id);
+            return next;
+        });
+    };
+
     const selectedGenerator = generators.find((generator) => generator.id === selected.generatorId) || null;
     const selectedJob = selectedGenerator?.jobs.find((job) => job.id === selected.jobId) || null;
     const selectedTransition = selectedJob?.transitions.find(
@@ -6662,7 +6742,13 @@ function JobGeneratorPane({
         },
         React.createElement("div", { className: "ps-job-generator-preview-note" },
             "Persisted JobGenerators · Jobs retain identity across replacement sessions"),
-        React.createElement("div", { className: "ps-action-list ps-job-generator-list" },
+        React.createElement("div", {
+            className: "ps-action-list ps-job-generator-list",
+            role: "tree",
+            "aria-label": "Job Generators",
+            tabIndex: activeTreeKey ? -1 : 0,
+            onKeyDown: handleTreeKeyDown,
+        },
             loading
                 ? React.createElement("div", { className: "ps-job-tree-empty" }, "Loading JobGenerators...")
                 : loadError
@@ -6675,17 +6761,27 @@ function JobGeneratorPane({
                         : generators.map((generator) => {
                 const generatorExpanded = expandedGenerators.has(generator.id);
                 const generatorSelected = selected.kind === "generator" && selected.generatorId === generator.id;
+                const generatorKey = jobGeneratorTreeRowKey("generator", generator.id);
                 return React.createElement(React.Fragment, { key: generator.id },
-                    React.createElement("div", { className: "ps-job-tree-row is-generator" },
+                    React.createElement("div", {
+                        className: "ps-job-tree-row is-generator",
+                        role: "treeitem",
+                        "aria-level": 1,
+                        "aria-expanded": generator.jobs.length > 0 ? generatorExpanded : undefined,
+                        "aria-selected": generatorSelected,
+                    },
                         React.createElement("button", {
                             type: "button",
                             className: "ps-job-tree-toggle",
+                            tabIndex: -1,
                             onClick: () => toggle(setExpandedGenerators, generator.id),
                             "aria-label": generatorExpanded ? `Collapse ${generator.name}` : `Expand ${generator.name}`,
                         }, generatorExpanded ? "▼" : "▶"),
                         React.createElement("button", {
                             type: "button",
                             className: `ps-job-tree-content${generatorSelected ? " is-selected" : ""}`,
+                            ref: (node) => registerTreeItem(generatorKey, node),
+                            tabIndex: activeTreeKey === generatorKey ? 0 : -1,
                             onClick: () => setSelected({ kind: "generator", generatorId: generator.id }),
                         },
                         React.createElement("span", { className: `ps-job-generator-status is-${generator.status.toLowerCase()}` }, "●"),
@@ -6701,17 +6797,27 @@ function JobGeneratorPane({
                                 const jobSelected = selected.kind === "job"
                                     && selected.generatorId === generator.id
                                     && selected.jobId === job.id;
+                                const jobKey = jobGeneratorTreeRowKey("job", generator.id, job.id);
                                 return React.createElement(React.Fragment, { key: job.id },
-                                    React.createElement("div", { className: "ps-job-tree-row is-job" },
+                                    React.createElement("div", {
+                                        className: "ps-job-tree-row is-job",
+                                        role: "treeitem",
+                                        "aria-level": 2,
+                                        "aria-expanded": job.transitions.length > 0 ? jobExpanded : undefined,
+                                        "aria-selected": jobSelected,
+                                    },
                                         React.createElement("button", {
                                             type: "button",
                                             className: "ps-job-tree-toggle",
+                                            tabIndex: -1,
                                             onClick: () => toggle(setExpandedJobs, job.id),
                                             "aria-label": jobExpanded ? `Collapse ${job.label}` : `Expand ${job.label}`,
                                         }, jobExpanded ? "▼" : "▶"),
                                         React.createElement("button", {
                                             type: "button",
                                             className: `ps-job-tree-content${jobSelected ? " is-selected" : ""}`,
+                                            ref: (node) => registerTreeItem(jobKey, node),
+                                            tabIndex: activeTreeKey === jobKey ? 0 : -1,
                                             onClick: () => selectJob(generator, job),
                                         },
                                         React.createElement("span", { className: "ps-job-tree-primary" }, job.label),
@@ -6727,10 +6833,21 @@ function JobGeneratorPane({
                                                 && selected.generatorId === generator.id
                                                 && selected.jobId === job.id
                                                 && selected.transitionId === transition.id;
+                                            const transitionKey = jobGeneratorTreeRowKey(
+                                                "transition",
+                                                generator.id,
+                                                job.id,
+                                                transition.id,
+                                            );
                                             return React.createElement("button", {
                                                 type: "button",
                                                 key: transition.id,
                                                 className: `ps-job-transition-row${transitionSelected ? " is-selected" : ""}`,
+                                                ref: (node) => registerTreeItem(transitionKey, node),
+                                                role: "treeitem",
+                                                "aria-level": 3,
+                                                "aria-selected": transitionSelected,
+                                                tabIndex: activeTreeKey === transitionKey ? 0 : -1,
                                                 onClick: () => selectTransition(generator, job, transition),
                                                 title: "Inspect this state run's durable timeline",
                                             },
