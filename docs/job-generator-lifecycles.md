@@ -200,7 +200,9 @@ User-authored diagnostic fragment:
   WorkDetailsGathered <-> Diagnosed -> FixProposed
 
 Platform-owned delivery profile:
-  FixProposed -> ... -> Integrated
+  FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+       |
+       +-- significant findings --> Diagnosed
 ```
 
 Under that policy:
@@ -208,7 +210,8 @@ Under that policy:
 - The user owns instructions and outgoing transitions before `FixProposed`.
 - `FixProposed` is the handoff boundary.
 - The platform owns instructions and transitions from `FixProposed` onward.
-- A user-authored `FixProposed.md` or `Integrated.md` is rejected.
+- A user-authored platform state such as `FixProposed.md` or `PRPublished.md`
+  is rejected.
 
 This is not a universal loader restriction. Another policy can select a
 different handoff, different owned states, or allow a fully user-defined
@@ -470,7 +473,8 @@ persisted state.
 ### 6. Wait for human input and request attention
 
 If state instructions require human input, the agent invokes the existing
-durable `ask_user` tool.
+durable `ask_user` tool. This is the explicit human-wait boundary; platform
+events use `system_wait` instead.
 
 ```text
 Job current state: WorkDetailsGathered
@@ -615,10 +619,11 @@ questions.
 
 While a human-input gate blocks `WorkDetailsGathered -> Diagnosed`, the Job
 remains in `WorkDetailsGathered`. `blocked` is an operational status, not an
-official business state. An external-system wait is also dehydrated but does
-not imply that a human is blocking the Job. A nonhuman wait may retain the
-broad Job lifecycle status `active` while the state-run status is `waiting`;
-only an unresolved human-input dependency projects the Job as `blocked`.
+official business state. Both human and external-system waits project the
+broad Job lifecycle status as `blocked`, which excludes the Job from runnable
+work. The state-run status distinguishes the reason: `input_required` means the
+Job is parked for a human, while `waiting` means it is frozen for a system
+event. Resuming the same state run returns the Job to `active`.
 
 ## Persistence model
 
@@ -889,9 +894,12 @@ discoverable without making notification delivery part of session correctness.
 
 ### External-system waits
 
-The durable state run records the operation correlation and wake condition.
-Callbacks, event consumers, or scheduled polling make the run eligible again.
-No worker is pinned while waiting for the external system.
+The agent calls `system_wait(signal_key, reason)` after starting or locating the
+external operation. The durable state run records the operation correlation and
+wake condition. Only a platform signal carrying the matching key thaws the
+wait; unrelated messages and mismatched signals do not satisfy it. Callbacks,
+event consumers, or scheduled polling deliver that signal. No worker is pinned
+while waiting for the external system.
 
 ### Duplicate tool calls
 
@@ -953,12 +961,26 @@ state.
 platform-owned profile:
 
 ```text
-FixProposed -> Integrated
+FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+     |
+     +-- significant findings --> Diagnosed
 ```
 
-The initial platform profile may use this minimal transition for plumbing
-validation. A later version can insert additional standard delivery states
-without changing the user fragment or state loader.
+Platform automation starts the configured code-review agent for `FixProposed`.
+The state consumes its result and enters a durable `wait_for_agents` wait while
+the review is running. It does not poll or repeatedly attempt the transition.
+Significant findings return the Job to user-owned `Diagnosed`; otherwise the
+state advances only when the latest review has no blocking findings.
+
+`AutomatedCodeReviewApproved` submits the reviewed commit to the Private
+Validation Service exactly once, records the validation-run identity in its
+durable session, and calls `system_wait` with the PVS run identity. Only the
+matching completion signal thaws that state run. A successful result advances
+to `Validated`.
+
+`PRPublished` is terminal for the initial platform profile. A later version
+can append policy, merge, deployment, or remediation states without changing
+the user fragment or state loader.
 
 The demonstration proves:
 
