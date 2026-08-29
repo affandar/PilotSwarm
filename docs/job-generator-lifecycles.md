@@ -994,6 +994,25 @@ The demonstration proves:
 - User-to-platform lifecycle handoff.
 - Terminal Job completion.
 
+### Running the two-Job demo
+
+With the portal backend, JobGenerator controller, and a matching worker already
+running, the standalone runner acts only as a portal user:
+
+```powershell
+python scripts\job-generator-lifecycle-demo.py `
+  --repository-path Q:\src\<lifecycle-repository> `
+  <work-item-id-1> <work-item-id-2>
+```
+
+It canonicalizes legacy HTTPS or SSH Azure DevOps remotes, resolves both
+lifecycle branches to immutable commits, registers the JobGenerator through
+the portal API, and waits until both Jobs reach the durable
+`WorkDetailsGathered` human-input gate. It does not reset databases, build
+components, launch services, control the browser, or stop backend processes.
+Use `--portal-url` or `PILOTSWARM_PORTAL_URL` when the portal is not available
+at `http://localhost:4311`.
+
 ## Implementation sequence
 
 1. Implement exact current-state Markdown loading from separate pinned user and
