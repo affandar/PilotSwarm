@@ -1189,6 +1189,42 @@ export function* handleTurnResult(
             yield* applyCronAtAction(runtime, result, sourcePrompt);
             return;
 
+        case "system_wait": {
+            ensureTaskContext(runtime, sourcePrompt);
+            yield* releaseAffinity(runtime, "system_wait", { signalKey: result.signalKey });
+            state.pendingSystemWait = {
+                signalKey: result.signalKey,
+                reason: result.reason,
+            };
+
+            const waitStartedAt: number = yield ctx.utcNow();
+            if (result.content) {
+                yield* writeLatestResponse(runtime, {
+                    iteration: state.iteration,
+                    type: "wait",
+                    content: result.content,
+                    waitReason: result.reason,
+                    waitStartedAt,
+                    model: (result as any).model,
+                });
+            }
+            publishStatus(runtime, "waiting", {
+                waitReason: result.reason,
+                waitStartedAt,
+                signalKey: result.signalKey,
+                waitKind: "system",
+            });
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.system_wait_started",
+                data: {
+                    signalKey: result.signalKey,
+                    reason: result.reason,
+                    waitStartedAt,
+                },
+            }]);
+            return;
+        }
+
         case "wait": {
             state.interruptedWaitTimer = null;
             ensureTaskContext(runtime, sourcePrompt);

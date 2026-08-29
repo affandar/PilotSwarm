@@ -3114,6 +3114,28 @@ export class PilotSwarmManagementClient {
     }
 
     /**
+     * Resume a keyed platform system wait. Signals with a different key are
+     * durably observed but cannot thaw the waiting operation.
+     */
+    async sendSystemSignal(sessionId: string, signalKey: string, payload?: unknown): Promise<void> {
+        this._ensureStarted();
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        const orchId = `session-${sessionId}`;
+        await this._assertOrchestrationLive(orchId, sessionId, "sendSystemSignal");
+        await this._duroxideClient.enqueueEvent(
+            orchId,
+            "messages",
+            JSON.stringify({
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            }),
+        );
+    }
+
+    /**
      * Cancel one or more queued (durable) pending messages by their
      * UI-generated client message ids.
      *

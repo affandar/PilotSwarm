@@ -30,6 +30,29 @@ const DEFAULT_WAIT_TOOL_DESCRIPTION ="The ONLY way to wait, pause, delay, or pau
     "For recurring or periodic schedules, use the cron tool instead (cron_at for wall-clock schedules); if it is " +
     "genuinely ambiguous whether the task should become an ongoing monitor, clarify first.";
 
+const SYSTEM_WAIT_TOOL_SPEC = {
+    description:
+        "Freeze the current platform operation until a matching system signal arrives. " +
+        "Use this for event-driven waits owned by an external service, such as validation, deployment, or policy completion. " +
+        "The signal_key must be the durable identifier that the platform callback will use. " +
+        "Do not use this for human input; use ask_user instead. Do not poll or create a timer after calling this tool.",
+    parameters: {
+        type: "object",
+        properties: {
+            signal_key: {
+                type: "string",
+                description: "Durable correlation key expected from the external service, such as pvs:<validation-run-id>.",
+            },
+            reason: {
+                type: "string",
+                description: "Short description of the external result being awaited.",
+            },
+        },
+        required: ["signal_key", "reason"],
+    },
+    handler: async () => "stub",
+} as const;
+
 /**
  * show_artifact — the declaration AND the per-turn handler both build from this
  * one spec.
@@ -742,6 +765,8 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
+        const systemWaitTool = defineTool("system_wait", SYSTEM_WAIT_TOOL_SPEC);
+
         const cronTool = defineTool("cron", {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
@@ -805,7 +830,8 @@ export class ManagedSession {
             overridesBuiltInTool: true,
             description:
                 "Ask the user a question and wait for their response. " +
-                "Use this when you need clarification or user input before proceeding.",
+                "Use this as the human-wait boundary when a workflow cannot proceed without a person. " +
+                "For platform-owned external events, use system_wait instead.",
             parameters: {
                 type: "object",
                 properties: {
@@ -977,7 +1003,7 @@ export class ManagedSession {
         const findCanvasAppTool = defineTool("find_canvas_app", FIND_CANVAS_APP_TOOL_SPEC);
         const loadSkillTool = defineTool("load_skill", LOAD_SKILL_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool,
+        return [waitTool, waitOnWorkerTool, systemWaitTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool,
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
     }
 
@@ -1433,6 +1459,31 @@ export class ManagedSession {
             },
         });
 
+        const systemWaitTool = defineTool("system_wait", {
+            ...SYSTEM_WAIT_TOOL_SPEC,
+            handler: async (args: { signal_key?: string; reason?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("system_wait");
+                const signalKey = typeof args.signal_key === "string" ? args.signal_key.trim() : "";
+                const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+                if (!signalKey) return "Error: system_wait requires signal_key.";
+                if (!reason) return "Error: system_wait requires reason.";
+                if (opts?.onEvent) {
+                    try {
+                        opts.onEvent({
+                            eventType: "session.system_wait_requested",
+                            data: { signalKey, reason },
+                        });
+                    } catch {}
+                }
+                turnState.pendingActions.push({
+                    type: "system_wait",
+                    signalKey,
+                    reason,
+                });
+                return acknowledgeTurnBoundary("system_wait");
+            },
+        });
+
         const cronTool = defineTool("cron", {
             description:
                 "Declare a recurring durable schedule owned by the orchestration. " +
@@ -1575,7 +1626,8 @@ export class ManagedSession {
             overridesBuiltInTool: true,
             description:
                 "Ask the user a question and wait for their response. " +
-                "Use this when you need clarification or user input before proceeding.",
+                "Use this as the human-wait boundary when a workflow cannot proceed without a person. " +
+                "For platform-owned external events, use system_wait instead.",
             parameters: {
                 type: "object",
                 properties: {
@@ -2415,7 +2467,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "system_wait", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2467,6 +2519,7 @@ export class ManagedSession {
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
             waitOnWorkerTool,
+            systemWaitTool,
             cronTool,
             cronAtTool,
             askUserTool,
@@ -3215,6 +3268,8 @@ export class ManagedSession {
                 case "input_required":
                     return { ...firstAction, events: collectedEvents, queuedActions };
                 case "wait":
+                    return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
+                case "system_wait":
                     return { ...firstAction, content: finalContent, events: collectedEvents, queuedActions };
                 case "cron":
                     return { ...firstAction, events: collectedEvents, queuedActions };

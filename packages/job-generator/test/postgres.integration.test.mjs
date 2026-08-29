@@ -131,6 +131,22 @@ test("controller materialization and durable Job lifecycle transitions", {
             cycle.cycleId,
             lifecycleWorker,
         );
+        await catalog.setJobSessionExecutionStatus(firstSession.sessionId, "waiting");
+        assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "blocked");
+        await assert.rejects(
+            catalog.completeJobState({
+                sessionId: firstSession.sessionId,
+                outcome: "Fixed",
+                summary: "A system-waiting state must not advance.",
+            }),
+            /not the active current run/,
+        );
+        await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
+        assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "active");
+        await catalog.setJobSessionExecutionStatus(firstSession.sessionId, "input_required");
+        assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "blocked");
+        await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
+        assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "active");
         await assert.rejects(
             catalog.completeJobState({
                 sessionId: firstSession.sessionId,

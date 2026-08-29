@@ -1333,6 +1333,10 @@ export interface SessionCatalog {
     attachJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string): Promise<void>;
     prepareJobStateRun(input: PrepareJobStateRunInput): Promise<JobStateRunRow>;
     acknowledgeJobSession(sessionId: string, workerId?: string): Promise<void>;
+    setJobSessionExecutionStatus(
+        sessionId: string,
+        status: "active" | "waiting" | "input_required",
+    ): Promise<void>;
     failJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string, error: string): Promise<void>;
     listJobStateRuns(jobId: string): Promise<JobStateRunRow[]>;
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
@@ -2682,7 +2686,7 @@ export class PgSessionCatalog implements SessionCatalog {
                      updated_at = now()
                  FROM acknowledged
                  WHERE sr.state_run_id = acknowledged.state_run_id
-                   AND sr.status IN ('reserved', 'unacked', 'active')
+                   AND sr.status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required')
                  RETURNING sr.job_id
              )
              UPDATE "${this.sql.schema}".jobs j
@@ -2691,6 +2695,48 @@ export class PgSessionCatalog implements SessionCatalog {
              WHERE j.job_id = activated_run.job_id`,
             [sessionId, workerId ?? null],
         );
+    }
+
+    async setJobSessionExecutionStatus(
+        sessionId: string,
+        status: "active" | "waiting" | "input_required",
+    ): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const stateRun = await client.query(
+                `UPDATE "${this.sql.schema}".job_state_runs sr
+                 SET status = $2,
+                     lease_owner = CASE WHEN $2 = 'active' THEN lease_owner ELSE NULL END,
+                     lease_expires_at = CASE WHEN $2 = 'active' THEN lease_expires_at ELSE NULL END,
+                     updated_at = now()
+                 FROM "${this.sql.schema}".job_sessions js
+                 WHERE js.session_id = $1
+                   AND js.is_current
+                   AND js.state_run_id = sr.state_run_id
+                   AND sr.status IN ('active', 'waiting', 'input_required')
+                 RETURNING sr.job_id`,
+                [sessionId, status],
+            );
+            if (stateRun.rows[0]) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".jobs
+                     SET lifecycle_state = $2,
+                         updated_at = now()
+                     WHERE job_id = $1`,
+                    [
+                        stateRun.rows[0].job_id,
+                        status === "active" ? "active" : "blocked",
+                    ],
+                );
+            }
+            await client.query("COMMIT");
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     async failJobSession(

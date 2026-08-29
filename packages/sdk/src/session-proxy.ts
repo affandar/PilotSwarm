@@ -3977,6 +3977,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }
+                const jobExecutionStatus = result.type === "input_required"
+                    ? "input_required"
+                    : result.type === "wait" || result.type === "wait_for_agents" || result.type === "system_wait"
+                        ? "waiting"
+                        : null;
+                if (jobExecutionStatus) {
+                    await cmsRetryBestEffort(
+                        `runTurn.postTurn setJobSessionExecutionStatus status=${jobExecutionStatus} session=${input.sessionId}`,
+                        () => catalog!.setJobSessionExecutionStatus(input.sessionId, jobExecutionStatus),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
             }
 
             return result;

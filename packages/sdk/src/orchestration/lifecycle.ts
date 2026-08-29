@@ -493,6 +493,7 @@ export function buildContinueInput(
         ...(input.agentId ? { agentId: input.agentId } : {}),
         retryCount: 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
+        ...(state.pendingSystemWait ? { pendingSystemWait: state.pendingSystemWait } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,

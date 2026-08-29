@@ -388,6 +388,21 @@ export class WebPilotSwarmManagementClient {
         await this._api.call("sendAnswer", { sessionId, answer, options });
     }
 
+    async sendSystemSignal(sessionId: string, signalKey: string, payload?: unknown): Promise<void> {
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        await this._api.call("sendSessionEvent", {
+            sessionId,
+            eventName: "system_signal",
+            data: {
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            },
+        });
+    }
+
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {
         await this._api.call("cancelPendingMessage", { sessionId, clientMessageIds });
     }

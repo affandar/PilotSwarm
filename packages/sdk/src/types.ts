@@ -25,6 +25,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; resumePrompt?: string; events?: CapturedEvent[] }
+    | { type: "system_wait"; signalKey: string; reason: string; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -63,6 +64,7 @@ type TurnResultVariant =
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; resumePrompt?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "system_wait"; signalKey: string; reason: string; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -639,6 +641,8 @@ export interface OrchestrationInput {
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
     budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string }>;
+    /** Platform-owned event wait. Only a matching system signal resumes it. */
+    pendingSystemWait?: { signalKey: string; reason: string };
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;

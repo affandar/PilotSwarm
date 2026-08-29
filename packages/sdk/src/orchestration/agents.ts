@@ -352,6 +352,7 @@ export function* completeSession(
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
+    runtime.state.pendingSystemWait = null;
     clearPendingChildDigest(runtime);
     runtime.state.activeTimer = null;
 
@@ -383,6 +384,7 @@ export function* cancelSession(
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
+    runtime.state.pendingSystemWait = null;
     clearPendingChildDigest(runtime);
     runtime.state.activeTimer = null;
 
@@ -446,6 +448,7 @@ export function* failPendingShutdown(
     const shutdown = runtime.state.pendingShutdown;
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
+    runtime.state.pendingSystemWait = null;
     clearPendingChildDigest(runtime);
     runtime.state.activeTimer = null;
 

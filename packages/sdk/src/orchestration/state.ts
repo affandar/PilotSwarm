@@ -31,6 +31,7 @@ export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["m
 export type PendingShutdownState = NonNullable<OrchestrationInput["pendingShutdown"]>;
 export type PendingChildDigest = NonNullable<OrchestrationInput["pendingChildDigest"]>;
 export type PendingInputQuestion = NonNullable<OrchestrationInput["pendingInputQuestion"]>;
+export type PendingSystemWait = NonNullable<OrchestrationInput["pendingSystemWait"]>;
 export type CronSchedule = NonNullable<OrchestrationInput["cronSchedule"]>;
 export type CronAtSchedule = NonNullable<OrchestrationInput["cronAtSchedule"]>;
 
@@ -104,6 +105,7 @@ export interface DurableSessionState {
 
     activeTimer: ActiveTimer | null;
     pendingInputQuestion: PendingInputQuestion | null;
+    pendingSystemWait: PendingSystemWait | null;
     waitingForAgentIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
     /**
@@ -334,6 +336,7 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         activeTimer: null,
         pendingInputQuestion: input.pendingInputQuestion ?? null,
+        pendingSystemWait: input.pendingSystemWait ?? null,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,

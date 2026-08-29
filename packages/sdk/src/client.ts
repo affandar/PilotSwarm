@@ -1426,6 +1426,24 @@ export class PilotSwarmSession {
         }
     }
 
+    async sendSystemSignal(signalKey: string, payload?: unknown): Promise<void> {
+        const normalizedKey = signalKey.trim();
+        if (!normalizedKey) throw new Error("signalKey is required");
+        const duroxideClient = this.client._getDuroxideClient();
+        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
+        if (!duroxideClient) throw new Error("PilotSwarm client is not started");
+        await duroxideClient.enqueueEvent(
+            orchestrationId,
+            "messages",
+            JSON.stringify({
+                systemSignal: {
+                    signalKey: normalizedKey,
+                    payload: payload ?? null,
+                },
+            }),
+        );
+    }
+
     /**
      * Cancel one or more queued (durable) pending messages by their
      * UI-generated client message ids.
