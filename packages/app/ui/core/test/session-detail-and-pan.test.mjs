@@ -34,7 +34,14 @@ import { fileURLToPath } from "node:url";
 import { appReducer } from "../src/reducer.js";
 import { createInitialState } from "../src/state.js";
 import { selectSessionStatusSummary } from "../src/selectors.js";
-import { commitPanAxis, visibleWaitReason } from "../../react/src/web-app.js";
+import {
+    clampWaitReason,
+    commitPanAxis,
+    visibleWaitReason,
+    waitReasonLabel,
+    WAIT_REASON_MAX_CHARS,
+    WAIT_REASON_MAX_WORDS,
+} from "../../react/src/web-app.js";
 
 const webApp = readFileSync(
     fileURLToPath(new URL("../../react/src/web-app.js", import.meta.url)),
@@ -262,4 +269,58 @@ test("a genuinely waiting session still shows its reason", () => {
     // No sentence is no block, whatever the status says.
     assert.equal(visibleWaitReason({ sessionId: "s", waitReason: "  " }, "waiting"), null);
     assert.equal(visibleWaitReason({ sessionId: "s" }, "waiting"), null);
+});
+
+// ── the wait reason is one line, and a cron's is not a "reason" ───────
+
+// A real cron wake-up instruction: this is what `cron` asks the model for
+// ("What to do on each wake-up"), and it is replayed on every fire.
+const CRON_INSTRUCTION = `Poll the pg-flex repairer sub-agent
+(session-df588c0b-d8cc-4b9b-a23f-1b9923a1712a, final cycle 3 of 3) for run
+pgflex-20260829-040000 via check_agents. When it returns its
+pg-flex-output-repair-plan.v1 JSON: save it as artifact
+pgflex-repair-plan-cycle3.json, then apply it locally with
+apply-output-repair.mjs against the sealed concurrent sidecar.`;
+
+test("a wait reason is clipped to a glance, however long the stored text is", () => {
+    const shown = visibleWaitReason({ sessionId: "s", waitReason: CRON_INSTRUCTION }, "waiting");
+    assert.ok(shown.split(" ").length <= WAIT_REASON_MAX_WORDS, "within the word budget");
+    assert.ok(shown.endsWith("…"), "and says it was clipped");
+    assert.ok(!shown.includes("\n"), "newlines are flattened, not carried into the box");
+    // The word budget alone is not a length: these instructions carry session
+    // UUIDs, and ten words of those ran to 100 characters.
+    assert.ok(shown.length <= WAIT_REASON_MAX_CHARS + 1, `one line, got ${shown.length} chars`);
+    assert.equal(shown, "Poll the pg-flex repairer sub-agent…");
+});
+
+test("a sentence that already fits is left exactly as it is", () => {
+    // The common `wait` case. Clipping must not put an ellipsis on text that
+    // was never too long, or every ordinary wait looks truncated.
+    for (const text of ["Waiting for the 09:00 window", "Sleeping 30s before the next poll"]) {
+        assert.equal(clampWaitReason(text), text);
+    }
+    assert.equal(clampWaitReason(""), "");
+    assert.equal(clampWaitReason(null), "");
+});
+
+test("clipping does not leave a comma sitting before the ellipsis", () => {
+    const clipped = clampWaitReason("one two three four five six seven eight nine ten, eleven");
+    assert.equal(clipped, "one two three four five six seven eight nine ten…");
+});
+
+test("a cron session's text is labelled as an instruction, not as a reason", () => {
+    // It is not waiting BECAUSE of this text; it is waiting for the next tick,
+    // and this is what it will then do.
+    assert.equal(waitReasonLabel({ cronActive: true }), "On wake");
+    assert.equal(waitReasonLabel({ cronActive: false }), "Waiting");
+    assert.equal(waitReasonLabel({}), "Waiting");
+    assert.equal(waitReasonLabel(null), "Waiting");
+});
+
+test("a long single token is cut rather than allowed to wrap the box", () => {
+    // No space to fall back to, so the cut lands mid-token. A clipped UUID
+    // beats a box three lines tall.
+    const clipped = clampWaitReason(`session-${"d".repeat(120)}`);
+    assert.ok(clipped.length <= WAIT_REASON_MAX_CHARS + 1, `got ${clipped.length}`);
+    assert.ok(clipped.endsWith("…"));
 });

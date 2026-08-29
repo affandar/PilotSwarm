@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.49** — A provider type that stores no key: `anthropic-wif` reaches the Anthropic API with Workload Identity Federation. The worker authenticates as itself and mints a short-lived token for each request, so there is no credential in the database to rotate or leak. It appears in the Admin Console's Add provider list like any other type and asks for no key.
+> **Latest release: v0.5.50** — A session's WAITING line is one glance again. `cron` asks the model what to do on each wake-up and stores that instruction in the same field `wait` uses for a short reason, so a scheduled session printed its entire next-turn plan under a one-word label. The line is now clipped to ten words, and a cron's text is labelled **On wake** — what it is — with the full instruction on hover.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

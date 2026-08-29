@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.50 — 2026-08-29
+
+A scheduled session's detail box is readable again.
+
+### Fixed
+
+- **The WAITING line is one glance, not a document.** `waitReason` carries two
+  different kinds of text: `wait` asks the model "why you're waiting" and gets a
+  sentence, while `cron` asks "what to do on each wake-up" and gets an
+  INSTRUCTION — the real wake-up prompt, replayed on every fire and routinely
+  several paragraphs. Both land in the same column, and both were printed in
+  full, so a cron session's box was its entire next-turn plan under a one-word
+  label. The display is now clipped to ten words, or 72 characters if ten words
+  run longer than that — these instructions carry session UUIDs, and ten of
+  those words measured 100 characters. Newlines are flattened first, the cut
+  falls on a word boundary, and trailing punctuation is dropped so a line does
+  not end "plan,…". The stored value is untouched: for a cron it is
+  load-bearing state, not decoration, and the whole text is on hover.
+
+- **A cron's text is labelled for what it is.** The box reads **On wake**
+  rather than **Waiting** for a session with an armed schedule. It is not
+  waiting *because of* that text — it is waiting for the next tick, and the
+  text is what it will then do.
+
+
 ## 0.5.49 — 2026-08-28
 
 A provider type that stores no key. `anthropic-wif` reaches the Anthropic API

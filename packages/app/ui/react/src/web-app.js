@@ -3949,7 +3949,7 @@ const SESSION_DETAIL_NONE = "—";
  */
 export function visibleWaitReason(session, statusLabel) {
     const reason = typeof session?.waitReason === "string" && session.waitReason.trim()
-        ? session.waitReason.trim()
+        ? clampWaitReason(session.waitReason)
         : null;
     if (!reason) return null;
     const status = String(statusLabel || "");
@@ -3959,6 +3959,66 @@ export function visibleWaitReason(session, statusLabel) {
         || status.startsWith("waiting on")
         || status === "input_required";
     return waiting ? reason : null;
+}
+
+/** Words kept before the sentence is clipped. A glance, not a document. */
+export const WAIT_REASON_MAX_WORDS = 10;
+
+/**
+ * A ceiling on the clipped line, because a word count is not a length.
+ *
+ * These instructions carry session UUIDs and artifact filenames, and one of
+ * those is a single 40-character "word" — ten of them ran to 100 characters
+ * and wrapped the box anyway. Whichever limit is reached first wins.
+ */
+export const WAIT_REASON_MAX_CHARS = 72;
+
+/**
+ * One line's worth of a wait reason.
+ *
+ * `waitReason` is not one kind of text. `wait` asks the model for "why you're
+ * waiting" and gets a sentence. `cron` asks for "what to do on each wake-up"
+ * and gets an INSTRUCTION — the real wake-up prompt, which is replayed on
+ * every fire and is routinely several paragraphs. Both land in the same column
+ * and both used to be printed in full, so a cron session's detail box was its
+ * entire next-turn plan under a one-word label.
+ *
+ * The stored value is left alone — for a cron it is load-bearing state, not
+ * decoration. Only the display is cut, and newlines are flattened first so a
+ * multi-paragraph prompt cannot smuggle its shape through the word count.
+ */
+export function clampWaitReason(
+    text,
+    maxWords = WAIT_REASON_MAX_WORDS,
+    maxChars = WAIT_REASON_MAX_CHARS,
+) {
+    const flat = String(text ?? "").replace(/\s+/gu, " ").trim();
+    if (!flat) return "";
+    const words = flat.split(" ");
+    let kept = words.slice(0, maxWords).join(" ");
+    // Then the length ceiling, cutting back to a word boundary so the line
+    // does not end mid-UUID. A first word that is already over the limit is
+    // cut where it stands — better a clipped token than a wrapped box.
+    if (kept.length > maxChars) {
+        const cut = kept.slice(0, maxChars);
+        const boundary = cut.lastIndexOf(" ");
+        kept = boundary > 0 ? cut.slice(0, boundary) : cut;
+    }
+    if (kept === flat) return flat;
+    // Trailing punctuation on the last kept word reads as a full stop followed
+    // by an ellipsis ("plan,…"), so it goes.
+    return `${kept.replace(/[.,;:—-]+$/u, "")}…`;
+}
+
+/**
+ * What the detail box calls the sentence beside it.
+ *
+ * A cron session is not waiting *because of* this text — it is waiting for the
+ * next tick, and the text is what it will then do. Naming it "Waiting" made
+ * the wake-up instruction read as a stall reason.
+ */
+export function waitReasonLabel(session) {
+    return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null }) {
@@ -4041,8 +4101,17 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
     const pauseBlock = (!pause && !waitReason) ? null : React.createElement("div", {
         className: `ps-session-detail-pause${pause ? " is-paused" : ""}`,
     },
-    React.createElement("span", { className: "ps-session-detail-label" }, pause ? "Paused" : "Waiting"),
-    React.createElement("span", { className: "ps-session-detail-why" },
+    React.createElement("span", { className: "ps-session-detail-label" },
+        pause ? "Paused" : waitReasonLabel(session)),
+    React.createElement("span", {
+        className: "ps-session-detail-why",
+        // Clipped on screen, whole on hover: for a cron the full text is the
+        // wake-up instruction, and someone reading the box is often trying to
+        // find out exactly what the next tick will do.
+        ...(!pause && typeof session?.waitReason === "string" && session.waitReason.trim()
+            ? { title: session.waitReason.trim() }
+            : {}),
+    },
         // The sentence already says when it clears wherever it can; `clears`
         // only fills the gap where it cannot.
         pause ? pause.reason : waitReason,
