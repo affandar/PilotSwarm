@@ -536,7 +536,9 @@ if (gitCacheMirror) {
             await withEnlistmentLock(async () => {
                 const res = await hydrateGitWorkspace({
                     enlistmentDir, blobs: gitBlobs, state: gitStateIO,
-                    targetRef: resolveTargetRef(sessionGitRef), trace,
+                    targetRef: resolveTargetRef(sessionGitRef),
+                    detachedCheckout: true,
+                    trace,
                 });
                 store.keep(`wt/${worktreeName}`, res.baseSha);
                 const log = (m) => { console.log(m); if (trace) trace(m); };

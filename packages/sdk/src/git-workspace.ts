@@ -68,6 +68,8 @@ export interface HydrateOptions {
     state: GitStateIO;
     /** Base ref to pin on turn 0 (e.g. "origin/main"). Auto-resolved when omitted. */
     targetRef?: string;
+    /** Keep HEAD detached when the enlistment shares an object store with other worktrees. */
+    detachedCheckout?: boolean;
     trace?: (message: string) => void;
 }
 
@@ -184,9 +186,11 @@ function tmpFile(suffix: string): string {
     return path.join(os.tmpdir(), `pilotswarm-gitws-${process.pid}-${Date.now()}-${rand}${suffix}`);
 }
 
-/** Put the enlistment on `branch` at `sha` with a clean tree. */
-function checkoutBranchAt(cwd: string, branch: string, sha: string): void {
-    git(cwd, ["checkout", "-B", branch, sha]);
+/** Put the enlistment at `sha` with a clean tree. */
+function checkoutAt(cwd: string, branch: string, sha: string, detached: boolean): void {
+    git(cwd, detached
+        ? ["checkout", "--force", "--detach", sha]
+        : ["checkout", "-B", branch, sha]);
     git(cwd, ["reset", "--hard", sha]);
 }
 
@@ -197,7 +201,14 @@ function checkoutBranchAt(cwd: string, branch: string, sha: string): void {
  * epoch (torn writes — meta epoch ahead of the row — are ignored, never applied).
  */
 export async function hydrateGitWorkspace(opts: HydrateOptions): Promise<HydrateResult> {
-    const { enlistmentDir: dir, blobs, state, targetRef, trace } = opts;
+    const {
+        enlistmentDir: dir,
+        blobs,
+        state,
+        targetRef,
+        detachedCheckout = false,
+        trace,
+    } = opts;
     const log = (m: string) => trace?.(m);
 
     const row = await state.get();
@@ -212,7 +223,7 @@ export async function hydrateGitWorkspace(opts: HydrateOptions): Promise<Hydrate
         const ref = resolveTargetRef(dir, targetRef);
         const baseSha = git(dir, ["rev-parse", ref]);
         const branch = branchFromRef(ref);
-        checkoutBranchAt(dir, branch, baseSha);
+        checkoutAt(dir, branch, baseSha, detachedCheckout);
         const pinned: GitWorkspaceState = { baseSha, headSha: baseSha, branch, epoch: 0 };
         await state.set(pinned);
         log(`[git-workspace] pinned base ${baseSha.slice(0, 12)} on ${branch} (turn 0)`);
@@ -227,7 +238,7 @@ export async function hydrateGitWorkspace(opts: HydrateOptions): Promise<Hydrate
         /* base is expected to already be present locally */
     }
     const fallbackBranch = row.branch ?? branchFromRef(resolveTargetRef(dir, targetRef));
-    checkoutBranchAt(dir, fallbackBranch, baseSha);
+    checkoutAt(dir, fallbackBranch, baseSha, detachedCheckout);
 
     const metaBuf = await blobs.get("meta");
     if (!metaBuf) {
@@ -269,15 +280,15 @@ export async function hydrateGitWorkspace(opts: HydrateOptions): Promise<Hydrate
             }
         }
         if (objectExists(dir, meta.headSha)) {
-            checkoutBranchAt(dir, branch, meta.headSha);
+            checkoutAt(dir, branch, meta.headSha, detachedCheckout);
         } else {
             // Bundle missing/incomplete — fall back to base rather than crash.
             log(`[git-workspace] head ${meta.headSha.slice(0, 12)} not present after unbundle; base-only`);
-            checkoutBranchAt(dir, branch, baseSha);
+            checkoutAt(dir, branch, baseSha, detachedCheckout);
             return { mode: "base-only", baseSha, headSha: baseSha, epoch: row.epoch };
         }
     } else {
-        checkoutBranchAt(dir, branch, baseSha);
+        checkoutAt(dir, branch, baseSha, detachedCheckout);
     }
 
     // (2) Replay uncommitted work (tracked mods + untracked, captured as one

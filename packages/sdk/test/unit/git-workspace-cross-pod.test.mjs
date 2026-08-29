@@ -124,6 +124,53 @@ function clonePod(originDir, root, name) {
 
 const rmrf = (p) => fs.rmSync(p, { recursive: true, force: true });
 
+test("shared-store worktrees can hydrate the same branch in detached mode", async () => {
+    const { root, originDir } = makeWorld("shared-worktrees");
+    try {
+        const sharedStore = path.join(root, "shared-store");
+        execFileSync("git", ["clone", originDir, sharedStore], { stdio: "ignore" });
+        configRepo(sharedStore);
+
+        const podA = path.join(root, "podA");
+        const podB = path.join(root, "podB");
+        git(sharedStore, ["worktree", "add", "--detach", podA, "origin/main"]);
+        git(sharedStore, ["worktree", "add", "--detach", podB, "origin/main"]);
+
+        const durableA = makeDurable();
+        const durableB = makeDurable();
+        const first = await hydrateGitWorkspace({
+            enlistmentDir: podA,
+            blobs: durableA.blobs,
+            state: durableA.state,
+            targetRef: "origin/main",
+            detachedCheckout: true,
+        });
+        const second = await hydrateGitWorkspace({
+            enlistmentDir: podB,
+            blobs: durableB.blobs,
+            state: durableB.state,
+            targetRef: "origin/main",
+            detachedCheckout: true,
+        });
+
+        assert.equal(first.mode, "pinned-base");
+        assert.equal(second.mode, "pinned-base");
+        assert.equal(git(podA, ["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert.equal(git(podB, ["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+
+        await dehydrateGitWorkspace({
+            enlistmentDir: podA,
+            blobs: durableA.blobs,
+            state: durableA.state,
+        });
+
+        assert.equal(durableA._cell.row.branch, "main");
+        assert.equal(durableB._cell.row.branch, "main");
+    } finally {
+        rmrf(root);
+    }
+});
+
 // ---------------------------------------------------------------------------
 // Test 1 — THE core user scenario: purely uncommitted work (no commit at all).
 // User edits a tracked file and drops a new untracked file, never commits, and

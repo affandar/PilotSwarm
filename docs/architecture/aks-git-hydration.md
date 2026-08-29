@@ -449,6 +449,12 @@ Order matters: **blobs first, row last.** If the crash window hits between 4 and
    else: skip blobs (row is base-only; nothing uncommitted to replay)
 ```
 
+Shared-store worktrees use detached checkout for both checkout steps while
+retaining `git_branch` as logical durable metadata. Git permits a local branch
+to be attached to only one worktree, so attaching it during hydration would
+prevent concurrent sessions from targeting the same branch. Pod-private
+enlistments may continue restoring the named branch directly.
+
 Because the tree is reset to the **pinned** base before the patch is applied,
 `apply --3way` is applying the session's own edits onto the session's own base —
 a **no-op 3-way**, never a merge against moved upstream. That is what removes the
