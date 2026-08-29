@@ -5927,6 +5927,142 @@ function persistedJobStatus(job) {
     }
 }
 
+function persistedStateRunStatus(run) {
+    switch (run.status) {
+        case "input_required": return "HUMAN WAIT";
+        case "waiting": return "SYSTEM WAIT";
+        case "active": return "RUNNING";
+        case "completed": return "DONE";
+        case "failed": return "FAILED";
+        case "unacked": return "READY";
+        default: return "RESERVED";
+    }
+}
+
+function formatJobTimelineTimestamp(value) {
+    if (!value) return "";
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
+function formatJobTimelineDuration(durationMs) {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return "";
+    const seconds = Math.round(durationMs / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+}
+
+function jobTimelineEventDetail(event) {
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const preferred = [
+        data.question,
+        data.reason,
+        data.signalKey,
+        data.signal_key,
+        data.content,
+        data.summary,
+        data.error,
+    ].find((value) => typeof value === "string" && value.trim());
+    if (preferred) return preferred.trim().replace(/\s+/g, " ").slice(0, 360);
+    if (!event?.data || (typeof event.data === "object" && Object.keys(data).length === 0)) return "";
+    try {
+        return JSON.stringify(event.data).slice(0, 360);
+    } catch {
+        return String(event.data).slice(0, 360);
+    }
+}
+
+function jobTimelineEventLabel(eventType) {
+    return String(eventType || "session event")
+        .replaceAll(".", " ")
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (value) => value.toUpperCase());
+}
+
+function buildJobTransitionTimeline(transition, events) {
+    const entries = [];
+    const add = (at, label, detail = "", kind = "event") => {
+        if (!at) return;
+        const timestamp = new Date(at).getTime();
+        if (Number.isNaN(timestamp)) return;
+        entries.push({ at, timestamp, label, detail, kind });
+    };
+    add(transition.createdAt, "State run created", `${transition.stateName} · revision ${transition.revision}`, "state");
+    add(transition.reservedAt, "Execution session reserved", transition.sessionId || "", "session");
+    add(transition.attachedAt, "Session enqueued", "Waiting for an eligible worker.", "session");
+    add(
+        transition.startedAt,
+        "Worker acknowledged state",
+        transition.leaseOwner ? `Worker ${transition.leaseOwner}` : "",
+        "worker",
+    );
+    for (const event of events || []) {
+        add(
+            event.createdAt,
+            jobTimelineEventLabel(event.eventType),
+            jobTimelineEventDetail(event),
+            /wait|input_required/i.test(event.eventType) ? "wait" : "event",
+        );
+    }
+    if (transition.status === "waiting" || transition.status === "input_required") {
+        add(
+            transition.updatedAt,
+            transition.status === "input_required" ? "Human wait parked" : "System wait frozen",
+            transition.status === "input_required"
+                ? "No worker is runnable until a human answer arrives."
+                : "No worker is runnable until the matching system signal arrives.",
+            "wait",
+        );
+    }
+    add(transition.completedAt, "State run completed", transition.summary || "", "state");
+    add(
+        transition.transitionedAt,
+        transition.toState
+            ? `${transition.fromState} → ${transition.toState}`
+            : `${transition.stateName} completed`,
+        transition.summary || "",
+        "transition",
+    );
+    add(transition.endedAt, "Execution session ended", "", "session");
+    entries.sort((left, right) => left.timestamp - right.timestamp);
+
+    const withGaps = [];
+    for (const entry of entries) {
+        const previous = withGaps[withGaps.length - 1];
+        if (previous?.timestamp && entry.timestamp - previous.timestamp >= 30_000) {
+            withGaps.push({
+                at: entry.at,
+                timestamp: entry.timestamp,
+                label: `Durable idle gap · ${formatJobTimelineDuration(entry.timestamp - previous.timestamp)}`,
+                detail: "No persisted worker activity occurred during this interval.",
+                kind: "idle",
+            });
+        }
+        withGaps.push(entry);
+    }
+    if (
+        (transition.status === "waiting" || transition.status === "input_required")
+        && withGaps.length > 0
+    ) {
+        const last = withGaps[withGaps.length - 1];
+        const idleMs = Date.now() - last.timestamp;
+        if (idleMs >= 30_000) {
+            withGaps.push({
+                at: null,
+                timestamp: Date.now(),
+                label: `Durable wait active · ${formatJobTimelineDuration(idleMs)}`,
+                detail: "The state remains non-runnable; no polling activity is being persisted.",
+                kind: "idle",
+            });
+        }
+    }
+    return withGaps;
+}
+
 async function loadPersistedJobGenerators(transport) {
     const generatorRows = await transport.listJobGenerators();
     return Promise.all(generatorRows.map(async (generator) => {
@@ -5937,7 +6073,42 @@ async function loadPersistedJobGenerators(transport) {
             transport.listJobGeneratorJobs(generator.generatorId),
         ]);
         const jobs = await Promise.all(jobRows.map(async (job) => {
-            const sessions = await transport.listJobSessions(job.jobId);
+            const [sessions, stateRuns, journal] = await Promise.all([
+                transport.listJobSessions(job.jobId),
+                transport.listJobStateRuns(job.jobId),
+                transport.listJobJournal(job.jobId),
+            ]);
+            const transitions = stateRuns.map((run) => {
+                const entry = journal.find((candidate) => candidate.stateRunId === run.stateRunId) || null;
+                const session = sessions.find((candidate) => candidate.stateRunId === run.stateRunId)
+                    || sessions.find((candidate) => candidate.sessionId === run.sessionId)
+                    || null;
+                return {
+                    id: run.stateRunId,
+                    stateName: run.stateName,
+                    revision: run.stateRevision,
+                    status: run.status,
+                    statusLabel: persistedStateRunStatus(run),
+                    stateOwner: run.stateOwner,
+                    sourceId: run.sourceId,
+                    sourcePath: run.sourcePath,
+                    sourceCommit: run.sourceCommit,
+                    sessionId: run.sessionId || session?.sessionId || null,
+                    leaseOwner: run.leaseOwner,
+                    createdAt: run.createdAt,
+                    updatedAt: run.updatedAt,
+                    startedAt: run.startedAt,
+                    completedAt: run.completedAt,
+                    reservedAt: session?.reservedAt || null,
+                    attachedAt: session?.attachedAt || null,
+                    endedAt: session?.endedAt || null,
+                    fromState: entry?.fromState || run.stateName,
+                    toState: entry?.toState || null,
+                    outcome: entry?.outcome || null,
+                    summary: entry?.summary || "",
+                    transitionedAt: entry?.transitionedAt || null,
+                };
+            });
             return {
                 id: job.jobId,
                 label: `${generator.name}_${job.jobKey}`,
@@ -5950,6 +6121,7 @@ async function loadPersistedJobGenerators(transport) {
                     status: previewExecutionStatus(session),
                     current: session.isCurrent,
                 })),
+                transitions,
             };
         }));
         return {
@@ -6293,6 +6465,51 @@ function JobGeneratorCreateModal({ onCreate, onClose }) {
                 }, submitting ? "Registering..." : "Register Job Generator"))));
 }
 
+function JobTransitionTimeline({ transition, timeline }) {
+    if (!transition) return null;
+    const entries = buildJobTransitionTimeline(transition, timeline.events);
+    return React.createElement("div", { className: "ps-job-transition-timeline" },
+        React.createElement("div", { className: "ps-job-transition-timeline-header" },
+            React.createElement("strong", null,
+                transition.toState
+                    ? `${transition.fromState} → ${transition.toState}`
+                    : `${transition.stateName} · current state`),
+            React.createElement("span", null,
+                `Revision ${transition.revision} · ${transition.statusLabel}`
+                + (transition.stateOwner ? ` · ${transition.stateOwner}` : ""))),
+        transition.sourcePath
+            ? React.createElement("div", { className: "ps-job-transition-source" },
+                transition.sourcePath,
+                transition.sourceCommit ? ` @ ${transition.sourceCommit.slice(0, 12)}` : "")
+            : null,
+        timeline.loading
+            ? React.createElement("div", { className: "ps-job-transition-empty" }, "Loading durable timeline...")
+            : timeline.error
+                ? React.createElement("div", {
+                    className: "ps-job-transition-error",
+                    role: "alert",
+                }, timeline.error)
+                : entries.length === 0
+                    ? React.createElement("div", { className: "ps-job-transition-empty" },
+                        "No durable events have been recorded for this state run.")
+                    : React.createElement("div", { className: "ps-job-transition-events" },
+                        entries.map((entry, index) => React.createElement("div", {
+                            className: `ps-job-transition-event is-${entry.kind}`,
+                            key: `${entry.timestamp}:${entry.label}:${index}`,
+                        },
+                        React.createElement("time", {
+                            dateTime: entry.at ? new Date(entry.at).toISOString() : undefined,
+                        }, entry.at ? formatJobTimelineTimestamp(entry.at) : "now"),
+                        React.createElement("div", { className: "ps-job-transition-event-body" },
+                            React.createElement("strong", null, entry.label),
+                            entry.detail ? React.createElement("span", null, entry.detail) : null)))),
+        transition.summary
+            ? React.createElement("div", { className: "ps-job-transition-summary" },
+                React.createElement("strong", null, "Durable handoff"),
+                React.createElement("span", null, transition.summary))
+            : null);
+}
+
 function JobGeneratorPane({
     controller,
     title,
@@ -6310,6 +6527,13 @@ function JobGeneratorPane({
     const [expandedJobs, setExpandedJobs] = React.useState(() => new Set());
     const [selected, setSelected] = React.useState({ kind: "none", generatorId: null });
     const [createOpen, setCreateOpen] = React.useState(false);
+    const [timeline, setTimeline] = React.useState({
+        transitionId: null,
+        loading: false,
+        error: "",
+        events: [],
+    });
+    const timelineRequestRef = React.useRef(0);
 
     const toggle = (setter, id) => {
         setter((current) => {
@@ -6328,23 +6552,66 @@ function JobGeneratorPane({
         controller.setFocus("sessions");
     };
 
-    const selectSession = (generator, job, session) => {
+    const selectTransition = async (generator, job, transition) => {
         setSelected({
-            kind: "session",
+            kind: "transition",
             generatorId: generator.id,
             jobId: job.id,
-            sessionId: session.id,
+            transitionId: transition.id,
         });
-        if (session.id) controller.loadSession(session.id).catch(() => {});
         controller.setFocus("sessions");
+        const request = ++timelineRequestRef.current;
+        if (!transition.sessionId || typeof controller.transport?.getSessionEvents !== "function") {
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events: [],
+            });
+            return;
+        }
+        setTimeline({
+            transitionId: transition.id,
+            loading: true,
+            error: "",
+            events: [],
+        });
+        try {
+            const events = await controller.transport.getSessionEvents(
+                transition.sessionId,
+                undefined,
+                500,
+            );
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: "",
+                events,
+            });
+        } catch (error) {
+            if (request !== timelineRequestRef.current) return;
+            setTimeline({
+                transitionId: transition.id,
+                loading: false,
+                error: error instanceof Error ? error.message : String(error),
+                events: [],
+            });
+        }
     };
 
     const selectedGenerator = generators.find((generator) => generator.id === selected.generatorId) || null;
     const selectedJob = selectedGenerator?.jobs.find((job) => job.id === selected.jobId) || null;
-    const selectedSession = selectedJob?.sessions.find((session) => session.id === selected.sessionId) || null;
-    const selectionTitle = selectedSession?.title || selectedJob?.label || selectedGenerator?.name || "Nothing selected";
-    const selectionMeta = selectedSession
-        ? `${selectedSession.current ? "Current" : "Prior"} session · ${selectedSession.status}`
+    const selectedTransition = selectedJob?.transitions.find(
+        (transition) => transition.id === selected.transitionId,
+    ) || null;
+    const selectionTitle = selectedTransition
+        ? selectedTransition.toState
+            ? `${selectedTransition.fromState} → ${selectedTransition.toState}`
+            : selectedTransition.stateName
+        : selectedJob?.label || selectedGenerator?.name || "Nothing selected";
+    const selectionMeta = selectedTransition
+        ? `Revision ${selectedTransition.revision} · ${selectedTransition.statusLabel}`
         : selectedJob
             ? `${selectedJob.lifecycleState} · ${selectedJob.status} · ${selectedJob.sessions.length} session${selectedJob.sessions.length === 1 ? "" : "s"}`
             : selectedGenerator
@@ -6423,30 +6690,34 @@ function JobGeneratorPane({
                                         React.createElement("span", { className: "ps-job-tree-primary" }, job.label),
                                         React.createElement("span", { className: "ps-job-tree-state" }, job.status),
                                         React.createElement("span", { className: "ps-job-tree-meta" },
-                                            `${job.lifecycleState} · ${job.sessions.length} session${job.sessions.length === 1 ? "" : "s"}`))),
+                                            `${job.lifecycleState} · ${job.transitions.length} state run${job.transitions.length === 1 ? "" : "s"}`))),
                                     jobExpanded
-                                        ? job.sessions.map((session, index) => {
-                                            const sessionSelected = selected.kind === "session"
+                                        ? job.transitions.length === 0
+                                            ? React.createElement("div", { className: "ps-job-tree-empty" },
+                                                "No lifecycle state runs")
+                                            : job.transitions.map((transition) => {
+                                            const transitionSelected = selected.kind === "transition"
                                                 && selected.generatorId === generator.id
                                                 && selected.jobId === job.id
-                                                && selected.sessionId === session.id;
+                                                && selected.transitionId === transition.id;
                                             return React.createElement("button", {
                                                 type: "button",
-                                                key: session.id || `${job.id}:placeholder:${index}`,
-                                                className: `ps-job-session-row${sessionSelected ? " is-selected" : ""}`,
-                                                onClick: () => selectSession(generator, job, session),
-                                                disabled: !session.id,
-                                                title: session.id ? "Open this PilotSwarm session" : "Illustrative session",
+                                                key: transition.id,
+                                                className: `ps-job-transition-row${transitionSelected ? " is-selected" : ""}`,
+                                                onClick: () => selectTransition(generator, job, transition),
+                                                title: "Inspect this state run's durable timeline",
                                             },
                                             React.createElement("span", { className: "ps-job-session-branch" }, "└"),
-                                            React.createElement("span", { className: "ps-job-tree-primary" }, session.title),
-                                            session.current
-                                                ? React.createElement("span", { className: "ps-job-session-current" }, "CURRENT")
-                                                : null,
+                                            React.createElement("span", { className: "ps-job-tree-primary" },
+                                                transition.toState
+                                                    ? `${transition.fromState} → ${transition.toState}`
+                                                    : `${transition.stateName} · current`),
+                                            React.createElement("span", {
+                                                className: `ps-job-transition-status is-${transition.status}`,
+                                            }, transition.statusLabel),
                                             React.createElement("span", { className: "ps-job-tree-meta" },
-                                                session.id
-                                                    ? `${session.id.slice(0, 8)} · ${session.status}`
-                                                    : session.status));
+                                                `revision ${transition.revision}`
+                                                + (transition.sessionId ? ` · session ${transition.sessionId.slice(0, 8)}` : "")));
                                         })
                                         : null);
                             })
@@ -6456,8 +6727,16 @@ function JobGeneratorPane({
             ? React.createElement("div", { className: "ps-job-generator-detail" },
                 React.createElement("strong", null, selectionTitle),
                 React.createElement("span", null, selectionMeta),
-                selectedJob
-                    ? React.createElement("span", null, "Selecting a Job opens its current session; expand it to inspect prior sessions.")
+                selectedTransition
+                    ? React.createElement(JobTransitionTimeline, {
+                        transition: selectedTransition,
+                        timeline: timeline.transitionId === selectedTransition.id
+                            ? timeline
+                            : { transitionId: selectedTransition.id, loading: true, error: "", events: [] },
+                    })
+                    : selectedJob
+                    ? React.createElement("span", null,
+                        "Expand the Job and select a state run to inspect its durable transition timeline.")
                     : null)
             : null),
         createOpen

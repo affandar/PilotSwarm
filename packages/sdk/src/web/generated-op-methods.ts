@@ -110,7 +110,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listJobGeneratorDefinitions",
     "listJobGeneratorJobs",
     "listJobGenerators",
+    "listJobJournal",
     "listJobSessions",
+    "listJobStateRuns",
     "listKnownUsers",
     "listModels",
     "listPausedSessions",
@@ -1082,10 +1084,26 @@ export interface ManagementOps {
     listJobGenerators(params?: Record<string, never>): Promise<any>;
 
     /**
+     * List a Job's append-only state-transition journal.
+     * @remarks `GET /jobs/:jobId/journal` — access: `job-generator:read`
+     */
+    listJobJournal(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
      * List a Job's PilotSwarm session history in ordinal order.
      * @remarks `GET /jobs/:jobId/sessions` — access: `job-generator:read`
      */
     listJobSessions(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
+     * List a Job's durable lifecycle state runs in revision order.
+     * @remarks `GET /jobs/:jobId/state-runs` — access: `job-generator:read`
+     */
+    listJobStateRuns(params: {
         jobId: string;
     }): Promise<any>;
 
@@ -1805,7 +1823,9 @@ export function createManagementOps(
         listJobGeneratorDefinitions: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorDefinitions", params),
         listJobGeneratorJobs: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorJobs", params),
         listJobGenerators: (params: Record<string, unknown> = {}) => callOp("listJobGenerators", params),
+        listJobJournal: (params: Record<string, unknown> = {}) => callOp("listJobJournal", params),
         listJobSessions: (params: Record<string, unknown> = {}) => callOp("listJobSessions", params),
+        listJobStateRuns: (params: Record<string, unknown> = {}) => callOp("listJobStateRuns", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),

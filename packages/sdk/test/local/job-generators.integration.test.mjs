@@ -59,6 +59,11 @@ test("Postgres JobGenerator reconciliation is exactly-once and retains session h
             "session-other",
         );
         assert.equal(repeatedReservation.sessionId, reserved.sessionId);
+        const stateRuns = await catalog.listJobStateRuns(first[0].jobId);
+        assert.equal(stateRuns.length, 1);
+        assert.equal(stateRuns[0].stateName, "Initial");
+        assert.equal(stateRuns[0].stateRevision, 1);
+        assert.equal(stateRuns[0].sessionId, reserved.sessionId);
         await catalog.attachJobSession(first[0].jobId, reserved.sessionId, cycle.cycleId, "worker-1");
         assert.equal((await catalog.listJobSessions(first[0].jobId))[0].status, "unacked");
         await catalog.acknowledgeJobSession(reserved.sessionId);

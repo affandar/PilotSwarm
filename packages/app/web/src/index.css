@@ -2147,7 +2147,8 @@ body.is-resizing-pane-y iframe {
 
 .ps-job-tree-toggle,
 .ps-job-tree-content,
-.ps-job-session-row {
+.ps-job-session-row,
+.ps-job-transition-row {
   border: 0;
   background: transparent;
   color: inherit;
@@ -2180,12 +2181,14 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-job-tree-content:hover,
-.ps-job-session-row:hover:not(:disabled) {
+.ps-job-session-row:hover:not(:disabled),
+.ps-job-transition-row:hover {
   background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 7%, transparent);
 }
 
 .ps-job-tree-content.is-selected,
-.ps-job-session-row.is-selected {
+.ps-job-session-row.is-selected,
+.ps-job-transition-row.is-selected {
   background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 15%, transparent);
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 80%, transparent),
@@ -2246,6 +2249,39 @@ body.is-resizing-pane-y iframe {
   cursor: pointer;
 }
 
+.ps-job-transition-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: calc(100% - 44px);
+  min-width: 0;
+  margin-left: 44px;
+  padding: 4px 7px;
+  text-align: left;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.ps-job-transition-status {
+  color: var(--ps-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.ps-job-transition-status.is-input_required,
+.ps-job-transition-status.is-waiting {
+  color: var(--ps-warning, #d29922);
+}
+
+.ps-job-transition-status.is-completed {
+  color: var(--ps-success, #3fb950);
+}
+
+.ps-job-transition-status.is-failed {
+  color: var(--ps-danger);
+}
+
 .ps-job-session-row:disabled {
   opacity: 0.64;
   cursor: default;
@@ -2298,6 +2334,116 @@ body.is-resizing-pane-y iframe {
 .ps-job-generator-detail span {
   color: var(--ps-muted);
   font-size: 0.76rem;
+}
+
+.ps-job-transition-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: min(440px, 48vh);
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--ps-border);
+  overflow: auto;
+}
+
+.ps-job-generator-detail .ps-job-transition-timeline strong,
+.ps-job-generator-detail .ps-job-transition-timeline span {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.ps-job-transition-timeline-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ps-job-transition-source,
+.ps-job-transition-empty,
+.ps-job-transition-error {
+  color: var(--ps-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ps-job-transition-error {
+  color: var(--ps-danger);
+}
+
+.ps-job-transition-events {
+  display: flex;
+  flex-direction: column;
+}
+
+.ps-job-transition-event {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid color-mix(in srgb, var(--ps-border) 65%, transparent);
+}
+
+.ps-job-transition-event time {
+  color: var(--ps-muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-job-transition-event-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ps-job-transition-event-body strong {
+  font-size: 0.75rem;
+}
+
+.ps-job-transition-event-body span {
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ps-job-transition-event.is-wait {
+  border-left: 3px solid var(--ps-warning, #d29922);
+  padding-left: 8px;
+}
+
+.ps-job-transition-event.is-transition {
+  border-left: 3px solid var(--ps-success, #3fb950);
+  padding-left: 8px;
+}
+
+.ps-job-transition-event.is-idle {
+  border-left: 3px dashed var(--ps-muted);
+  padding-left: 8px;
+  background: color-mix(in srgb, var(--ps-muted) 6%, transparent);
+}
+
+.ps-job-transition-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid var(--ps-border);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 6%, transparent);
+}
+
+.ps-job-transition-summary span {
+  line-height: 1.45;
+}
+
+@media (max-width: 700px) {
+  .ps-job-transition-event {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
 }
 
 .ps-job-generator-modal {

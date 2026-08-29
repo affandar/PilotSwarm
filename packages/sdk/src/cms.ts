@@ -1334,6 +1334,7 @@ export interface SessionCatalog {
     prepareJobStateRun(input: PrepareJobStateRunInput): Promise<JobStateRunRow>;
     acknowledgeJobSession(sessionId: string, workerId?: string): Promise<void>;
     failJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string, error: string): Promise<void>;
+    listJobStateRuns(jobId: string): Promise<JobStateRunRow[]>;
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
     listJobJournal(jobId: string): Promise<JobJournalEntryRow[]>;
     completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow>;
@@ -2743,6 +2744,15 @@ export class PgSessionCatalog implements SessionCatalog {
             [jobId],
         );
         return rows.map(rowToJobSession);
+    }
+
+    async listJobStateRuns(jobId: string): Promise<JobStateRunRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_state_runs
+             WHERE job_id = $1 ORDER BY state_revision`,
+            [jobId],
+        );
+        return rows.map(rowToJobStateRun);
     }
 
     async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {

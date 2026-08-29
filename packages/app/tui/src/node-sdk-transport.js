@@ -1049,6 +1049,14 @@ export class NodeSdkTransport {
         return this.mgmt.listJobSessions(jobId);
     }
 
+    async listJobStateRuns(jobId) {
+        return this.mgmt.listJobStateRuns(jobId);
+    }
+
+    async listJobJournal(jobId) {
+        return this.mgmt.listJobJournal(jobId);
+    }
+
     async listSessionGroups() {
         return this.mgmt.listSessionGroups(this._placementViewer());
     }

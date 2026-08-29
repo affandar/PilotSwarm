@@ -197,6 +197,14 @@ export class HttpApiTransport {
         return this.api.call("listJobSessions", { jobId });
     }
 
+    async listJobStateRuns(jobId) {
+        return this.api.call("listJobStateRuns", { jobId });
+    }
+
+    async listJobJournal(jobId) {
+        return this.api.call("listJobJournal", { jobId });
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
     async listSessions() {

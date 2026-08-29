@@ -76,6 +76,8 @@ export const OPERATIONS = [
     { name: "listJobGeneratorCycles", access: "job-generator:read", method: "GET", path: "/job-generators/:generatorId/cycles", params: { generatorId: path("generatorId"), limit: query("number") }, summary: "List recent materialization cycles for a JobGenerator." },
     { name: "getJob", access: "job-generator:read", method: "GET", path: "/jobs/:jobId", params: { jobId: path("jobId") }, summary: "Get one durable Job." },
     { name: "listJobSessions", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/sessions", params: { jobId: path("jobId") }, summary: "List a Job's PilotSwarm session history in ordinal order." },
+    { name: "listJobStateRuns", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/state-runs", params: { jobId: path("jobId") }, summary: "List a Job's durable lifecycle state runs in revision order." },
+    { name: "listJobJournal", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/journal", params: { jobId: path("jobId") }, summary: "List a Job's append-only state-transition journal." },
 
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },

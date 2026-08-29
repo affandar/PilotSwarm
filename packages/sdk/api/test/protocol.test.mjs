@@ -97,6 +97,10 @@ test("JobGenerator operations use resource-shaped REST paths and bodies", () => 
 
     const sessions = buildOperationRequest("listJobSessions", { jobId: "job-1" });
     assert.equal(sessions.path, `${API_PREFIX}/jobs/job-1/sessions`);
+    const stateRuns = buildOperationRequest("listJobStateRuns", { jobId: "job-1" });
+    assert.equal(stateRuns.path, `${API_PREFIX}/jobs/job-1/state-runs`);
+    const journal = buildOperationRequest("listJobJournal", { jobId: "job-1" });
+    assert.equal(journal.path, `${API_PREFIX}/jobs/job-1/journal`);
 });
 
 test("json query params round-trip through encode + coerce", () => {

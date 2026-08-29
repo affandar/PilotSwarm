@@ -1024,6 +1024,10 @@ export class PortalRuntime {
             }
             case "listJobSessions":
                 return this.transport.listJobSessions(safeParams.jobId);
+            case "listJobStateRuns":
+                return this.transport.listJobStateRuns(safeParams.jobId);
+            case "listJobJournal":
+                return this.transport.listJobJournal(safeParams.jobId);
             case "listSessions":
                 return listViewer
                     ? this.transport.mgmt.listSessionsVisible(listViewer, placementPrincipal(authContext))

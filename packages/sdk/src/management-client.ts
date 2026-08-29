@@ -80,6 +80,8 @@ import type {
     JobGeneratorCycleRow,
     JobRow,
     JobSessionRow,
+    JobStateRunRow,
+    JobJournalEntryRow,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -975,6 +977,16 @@ export class PilotSwarmManagementClient {
     async listJobSessions(jobId: string): Promise<JobSessionRow[]> {
         this._ensureStarted();
         return this._catalog!.listJobSessions(jobId);
+    }
+
+    async listJobStateRuns(jobId: string): Promise<JobStateRunRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobStateRuns(jobId);
+    }
+
+    async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobJournal(jobId);
     }
 
     // ─── Session Listing ─────────────────────────────────────
