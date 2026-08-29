@@ -5,6 +5,8 @@ import React from "react";
 // shared module.
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
+import { describeJobTransitionBookkeepingEvent } from "./job-transition-bookkeeping.js";
+import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
     normalizeMoa,
     UI_COMMANDS,
@@ -5976,13 +5978,6 @@ function jobTimelineEventDetail(event) {
     }
 }
 
-function jobTimelineEventLabel(eventType) {
-    return String(eventType || "session event")
-        .replaceAll(".", " ")
-        .replaceAll("_", " ")
-        .replace(/\b\w/g, (value) => value.toUpperCase());
-}
-
 function buildJobTransitionTimeline(transition, events) {
     const entries = [];
     const add = (at, label, detail = "", kind = "event") => {
@@ -6001,11 +5996,13 @@ function buildJobTransitionTimeline(transition, events) {
         "worker",
     );
     for (const event of events || []) {
+        const bookkeeping = describeJobTransitionBookkeepingEvent(event.eventType);
+        if (!bookkeeping) continue;
         add(
             event.createdAt,
-            jobTimelineEventLabel(event.eventType),
+            bookkeeping.label,
             jobTimelineEventDetail(event),
-            /wait|input_required/i.test(event.eventType) ? "wait" : "event",
+            bookkeeping.kind,
         );
     }
     if (transition.status === "waiting" || transition.status === "input_required") {
@@ -6106,6 +6103,17 @@ async function loadPersistedJobGenerators(transport) {
                     toState: entry?.toState || null,
                     outcome: entry?.outcome || null,
                     summary: entry?.summary || "",
+                    journalEntryId: entry?.journalEntryId || null,
+                    journalSequence: Number.isFinite(Number(entry?.sequence))
+                        ? Number(entry.sequence)
+                        : null,
+                    fromRevision: Number.isFinite(Number(entry?.fromRevision))
+                        ? Number(entry.fromRevision)
+                        : run.stateRevision,
+                    toRevision: Number.isFinite(Number(entry?.toRevision))
+                        ? Number(entry.toRevision)
+                        : null,
+                    idempotencyKey: entry?.idempotencyKey || null,
                     transitionedAt: entry?.transitionedAt || null,
                 };
             });
@@ -6482,6 +6490,16 @@ function JobTransitionTimeline({ transition, timeline }) {
                 transition.sourcePath,
                 transition.sourceCommit ? ` @ ${transition.sourceCommit.slice(0, 12)}` : "")
             : null,
+        transition.journalEntryId
+            ? React.createElement("div", { className: "ps-job-transition-journal" },
+                React.createElement("strong", null, `Journal #${transition.journalSequence}`),
+                React.createElement("span", null,
+                    `Revision ${transition.fromRevision} → ${transition.toRevision}`
+                    + (transition.outcome ? ` · outcome ${transition.outcome}` : "")),
+                React.createElement("span", null,
+                    `Entry ${transition.journalEntryId}`
+                    + (transition.idempotencyKey ? ` · idempotency ${transition.idempotencyKey}` : "")))
+            : null,
         timeline.loading
             ? React.createElement("div", { className: "ps-job-transition-empty" }, "Loading durable timeline...")
             : timeline.error
@@ -6505,7 +6523,10 @@ function JobTransitionTimeline({ transition, timeline }) {
                             entry.detail ? React.createElement("span", null, entry.detail) : null)))),
         transition.summary
             ? React.createElement("div", { className: "ps-job-transition-summary" },
-                React.createElement("strong", null, "Durable handoff"),
+                React.createElement("strong", null,
+                    transition.toState
+                        ? `Handoff summary for ${transition.toState}`
+                        : "Final state summary"),
                 React.createElement("span", null, transition.summary))
             : null);
 }
@@ -6560,6 +6581,12 @@ function JobGeneratorPane({
             transitionId: transition.id,
         });
         controller.setFocus("sessions");
+        activateJobTransitionSession(controller, transition).catch((error) => {
+            controller.dispatch({
+                type: "ui/status",
+                text: `Failed to open transition session: ${error instanceof Error ? error.message : String(error)}`,
+            });
+        });
         const request = ++timelineRequestRef.current;
         if (!transition.sessionId || typeof controller.transport?.getSessionEvents !== "function") {
             setTimeline({

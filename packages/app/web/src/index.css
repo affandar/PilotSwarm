@@ -2425,6 +2425,12 @@ body.is-resizing-pane-y iframe {
   background: color-mix(in srgb, var(--ps-muted) 6%, transparent);
 }
 
+.ps-job-transition-event.is-error {
+  border-left: 3px solid var(--ps-danger);
+  padding-left: 8px;
+}
+
+.ps-job-transition-journal,
 .ps-job-transition-summary {
   display: flex;
   flex-direction: column;
@@ -2435,8 +2441,10 @@ body.is-resizing-pane-y iframe {
   background: color-mix(in srgb, var(--ps-panel-accent, var(--ps-border)) 6%, transparent);
 }
 
+.ps-job-transition-journal span,
 .ps-job-transition-summary span {
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {
