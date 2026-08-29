@@ -134,11 +134,15 @@ function renderLifecyclePrompt(input: {
     outcomes: readonly { outcome: string; toState: string }[];
 }): string {
     const completion = input.terminal
-        ? "When the state work is complete, call complete_state with a non-empty summary and omit outcome."
+        ? [
+            "When the state work is complete, call complete_state with a non-empty summary and omit outcome.",
+            "The summary must preserve the outcome, evidence, durable identifiers or references, and enough detail for later lifecycle work to continue from this Job.",
+        ].join("\n")
         : [
             "When the state work is complete, call complete_state exactly once with:",
             "- outcome: one of the possible next states declared in the Markdown below",
             "- summary: a non-empty durable handoff for the next state",
+            "The summary must preserve the outcome, evidence, durable identifiers or references, and enough detail for later lifecycle work to continue from this Job.",
             `Allowed outcomes: ${input.outcomes.map((entry) => entry.outcome).join(", ")}`,
         ].join("\n");
     return [
@@ -152,6 +156,16 @@ function renderLifecyclePrompt(input: {
         "",
         "## Durable Job journal",
         renderJournal(input.journal),
+        "",
+        "Treat the journal summaries as the durable handoff from prior states. "
+            + "When a summary is insufficient, follow its Session reference to inspect the prior execution context.",
+        "",
+        "## Durable execution rules",
+        "This state may resume in the same durable session after a wait or worker replacement. "
+            + "Before starting an external operation, inspect the current session and Job journal for an existing "
+            + "run, request, or resource identifier. Reuse the existing operation and do not create a duplicate after resume.",
+        "For a human decision, call ask_user. For a platform-owned external event, call system_wait with the durable "
+            + "correlation key expected from the completion callback. Neither kind of wait advances the lifecycle state.",
         "",
         "## Current state instructions",
         input.markdown,

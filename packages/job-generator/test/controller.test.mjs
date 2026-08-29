@@ -504,6 +504,11 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.deepEqual(prepared[0].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
     assert.equal(prepared[0].terminal, false);
     assert.match(sent[0].prompt, /Collected the failing query and logs/);
+    assert.match(sent[0].prompt, /follow its Session reference/);
+    assert.match(sent[0].prompt, /do not create a duplicate after resume/);
+    assert.match(sent[0].prompt, /For a human decision, call ask_user/);
+    assert.match(sent[0].prompt, /call system_wait with the durable correlation key/);
+    assert.match(sent[0].prompt, /preserve the outcome, evidence, durable identifiers or references/);
     assert.match(sent[0].prompt, /Use the repository evidence/);
     assert.match(sent[0].prompt, /Allowed outcomes: Fixed/);
     assert.deepEqual(sent[0].options.clientMessageIds, ["job-generator:job-1:state:2"]);
