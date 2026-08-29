@@ -266,3 +266,85 @@ test("native provider wizard updates a personal provider key without retaining t
     await saving;
     assert.equal(store.getState().admin.modelProviders.create.editing, false);
 });
+test("a workload-identity type is added with no key, and says so instead of asking", async () => {
+    // A provider type that authenticates as the worker has nothing to paste.
+    // The wizard still stops on the credential stage — that is where the
+    // person confirms what they are adding — but it must not demand a
+    // credential, or the type cannot be added from this screen at all.
+    let submitted = null;
+    const transport = {
+        listProviders: async () => ({ providers: [] }),
+        listModels: async () => [
+            { providerId: "github-copilot", modelName: "claude-sonnet-5", providerType: "github" },
+            { providerId: "anthropic-wif", modelName: "claude-opus-5", providerType: "anthropic-wif" },
+        ],
+        getModelDefaults: async () => ({
+            userSession: { configured: null, effective: null },
+            clusterSession: { configured: null, effective: null },
+            system: { configured: null, effective: null },
+            systemOverrides: [],
+        }),
+        createProvider: async (input) => { submitted = input; return { name: input.name }; },
+    };
+    const store = createStore(appReducer, loadedAdminState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "admin/visibility", visible: true });
+    await controller.refreshAdminModelProviders();
+
+    // The type is offered at all — it reaches the list from the model
+    // catalog like any other, and carries the flag the forms read.
+    const types = selectAdminConsole(store.getState()).modelProviders.providerTypes;
+    const wif = types.find((type) => type.id === "anthropic-wif");
+    assert.ok(wif, "the type must be offered in the add-provider list");
+    assert.equal(wif.usesWorkloadIdentity, true);
+    assert.equal(types.find((type) => type.id === "github-copilot").usesWorkloadIdentity, false);
+
+    controller.beginAdminCreateProvider({ shared: true });
+    store.dispatch({ type: "admin/modelProviders/createType", typeId: "anthropic-wif" });
+    controller.setAdminProviderCreateDraft("claude-wif");
+    controller.advanceAdminProviderCreate();
+
+    const modal = selectAdminProviderCreateModal(store.getState());
+    assert.equal(modal.label, "authentication", "there is no credential to label");
+    assert.equal(modal.placeholder, "Use the Workload Identity configured in the worker");
+    assert.ok(modal.helpLines.includes("No key needed"));
+    assert.ok(modal.detailsLines.some((line) => line.text === "Use the Workload Identity configured in the worker"));
+
+    // Saving with an empty draft succeeds, and stores a marker rather than a key.
+    await controller.saveAdminProviderCreate();
+    assert.deepEqual(submitted.credentials, { kind: "workloadIdentity" });
+    assert.equal(submitted.type, "anthropic-wif");
+    assert.equal(submitted.name, "claude-wif");
+    assert.equal(store.getState().admin.modelProviders.create.editing, false);
+});
+
+test("a key type still refuses an empty credential", async () => {
+    // The exemption is attached to the type. Widening it into "an empty
+    // credential is fine" would let a keyed provider be created with nothing.
+    const transport = {
+        listProviders: async () => ({ providers: [] }),
+        listModels: async () => [
+            { providerId: "anthropic", modelName: "claude-opus-5", providerType: "anthropic" },
+        ],
+        getModelDefaults: async () => ({
+            userSession: { configured: null, effective: null },
+            clusterSession: { configured: null, effective: null },
+            system: { configured: null, effective: null },
+            systemOverrides: [],
+        }),
+        createProvider: async () => { throw new Error("must not be called"); },
+    };
+    const store = createStore(appReducer, loadedAdminState());
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "admin/visibility", visible: true });
+    await controller.refreshAdminModelProviders();
+
+    controller.beginAdminCreateProvider({ shared: true });
+    store.dispatch({ type: "admin/modelProviders/createType", typeId: "anthropic" });
+    controller.setAdminProviderCreateDraft("keyed");
+    controller.advanceAdminProviderCreate();
+    await controller.saveAdminProviderCreate();
+
+    assert.equal(store.getState().admin.modelProviders.create.error, "Enter a provider credential.");
+    assert.equal(store.getState().admin.modelProviders.create.editing, true);
+});

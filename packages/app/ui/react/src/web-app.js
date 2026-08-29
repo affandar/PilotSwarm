@@ -10733,14 +10733,26 @@ function CreateProviderSheet({
     // Bounded and named here instead, where the rule can be said precisely.
     const badChars = trimmed !== "" && !/^[A-Za-z0-9._-]+$/.test(trimmed);
     const tooLong = trimmed.length > 64;
+    // A workload-identity type carries no key: the worker authenticates as
+    // itself. So the form asks for nothing to paste, and requiring a
+    // credential would make the type impossible to add from this screen.
+    const workloadIdentity = types.find((option) => option.id === type)?.usesWorkloadIdentity === true;
+    // It runs on the worker's identity, which is the organization's, so it can
+    // only be shared — a personal one would spend the cluster's account under
+    // a name no administrator can cap. The server refuses it too.
+    const sharedOnly = workloadIdentity;
+    const effectiveShared = sharedOnly ? true : shared;
     const valid = Boolean(trimmed) && !taken && !badChars && !tooLong
-        && Boolean(type) && Boolean(credential.trim());
+        && Boolean(type) && (workloadIdentity || Boolean(credential.trim()))
+        && (!sharedOnly || isAdmin);
     const isGithub = /github/i.test(type);
     const submit = () => {
         if (!valid) return;
         const input = {
-            name: trimmed, type, shared,
-            credentials: isGithub ? { githubToken: credential.trim() } : { apiKey: credential.trim() },
+            name: trimmed, type, shared: effectiveShared,
+            credentials: workloadIdentity
+                ? { kind: "workloadIdentity" }
+                : isGithub ? { githubToken: credential.trim() } : { apiKey: credential.trim() },
             baseUrl: baseUrl.trim() || null,
         };
         setCredential("");
@@ -10753,7 +10765,7 @@ function CreateProviderSheet({
 
     return React.createElement(BudgetSheet, {
         title: updating ? `Update key for ${trimmed}` : (isGithub ? "Add GitHub Copilot provider" : "Add model provider"),
-        subtitle: shared ? "Shared" : "Personal",
+        subtitle: effectiveShared ? "Shared" : "Personal",
         confirmLabel: updating ? "Update key" : "Add provider", busy, disabled: !valid, error, onCancel: cancel, onConfirm: submit,
         // The whole point of an update is what does NOT change. Saying so is
         // the difference between "replace the key" and "did I just make a
@@ -10789,33 +10801,45 @@ function CreateProviderSheet({
     }, types.length === 0
         ? React.createElement("option", { value: "" }, "No provider types are listed on this deployment")
         : types.map((option) => React.createElement("option", { key: option.id, value: option.id }, option.id)))),
-    React.createElement(SheetField, {
-        label: updating
-            ? (isGithub ? "New GitHub Copilot token" : "New API key")
-            : (isGithub ? "GitHub Copilot token" : "API key"),
-        hint: updating
-            ? "Replaces the current one. The existing key is never shown."
-            : "Paste the token value.",
-    },
-    React.createElement("input", {
-        className: "ps-budget-input", type: "password", autoComplete: "off",
-        "aria-label": updating
-            ? (isGithub ? "New GitHub Copilot token" : "New API key")
-            : (isGithub ? "GitHub Copilot token" : "API key"),
-        value: credential, placeholder: "Paste token",
-        onChange: (event) => { onDirty?.(); setCredential(event.target.value); },
-        // While updating this is the only editable field, and the Name input
-        // that carries the other Enter handler is disabled — so without this
-        // the sheet cannot be submitted from the keyboard at all.
-        onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
-    })),
+    workloadIdentity
+        ? React.createElement(SheetField, {
+            label: "Authentication",
+            hint: "Nothing is stored. The worker mints a short-lived token for each request.",
+        },
+        React.createElement("div", { className: "ps-budget-input is-static", role: "note" },
+            "Use the Workload Identity configured in the worker"))
+        : React.createElement(SheetField, {
+            label: updating
+                ? (isGithub ? "New GitHub Copilot token" : "New API key")
+                : (isGithub ? "GitHub Copilot token" : "API key"),
+            hint: updating
+                ? "Replaces the current one. The existing key is never shown."
+                : "Paste the token value.",
+        },
+        React.createElement("input", {
+            className: "ps-budget-input", type: "password", autoComplete: "off",
+            "aria-label": updating
+                ? (isGithub ? "New GitHub Copilot token" : "New API key")
+                : (isGithub ? "GitHub Copilot token" : "API key"),
+            value: credential, placeholder: "Paste token",
+            onChange: (event) => { onDirty?.(); setCredential(event.target.value); },
+            // While updating this is the only editable field, and the Name input
+            // that carries the other Enter handler is disabled — so without this
+            // the sheet cannot be submitted from the keyboard at all.
+            onKeyDown: (event) => { if (event.key === "Enter" && valid) submit(); },
+        })),
     !updating ? React.createElement(SheetField, { label: "Base URL", hint: "Optional." },
         React.createElement("input", {
             className: "ps-budget-input", value: baseUrl, placeholder: "https://…",
             "aria-label": "Base URL",
             onChange: (event) => setBaseUrl(event.target.value),
         })) : null,
-    isAdmin && !updating ? React.createElement(SheetField, { label: "Access" },
+    sharedOnly && !updating ? React.createElement(SheetField, {
+        label: "Access",
+        hint: "It runs on the worker's own identity, which belongs to the organization, so it cannot be personal.",
+    },
+    React.createElement("div", { className: "ps-budget-input is-static", role: "note" }, "Shared"))
+    : isAdmin && !updating ? React.createElement(SheetField, { label: "Access" },
         React.createElement(Segmented, {
             value: shared ? "shared" : "mine", onChange: (value) => setShared(value === "shared"),
             label: "Access",
@@ -13385,7 +13409,9 @@ function AdminProviderRows({ providers, isAdmin, personal, busy, onSystemUse, on
             // drops the cluster-default flag, the allowance, any hold, the
             // system-use routing and the usage history, i.e. everything this
             // feature exists to preserve.
-            (personal || isAdmin) ? React.createElement("button", {
+            // A workload-identity provider has no stored key: the worker
+            // authenticates as itself, and the server refuses the update.
+            (personal || isAdmin) && !provider.usesWorkloadIdentity ? React.createElement("button", {
                 type: "button",
                 className: "ps-mini-button",
                 // Several providers means several identical "Update Key"

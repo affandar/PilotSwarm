@@ -603,6 +603,78 @@ view models never return them. Browser and terminal password drafts are cleared
 on save and cancel; the native UI also removes its draft before awaiting the
 provider create or credential-update request.
 
+### Providers With No Key: Workload Identity Federation
+
+A provider type declared `anthropic-wif` stores no credential. The worker
+authenticates as itself using Workload Identity Federation, exchanging an
+identity token its own platform issues for a short-lived Anthropic access
+token. Nothing is stored in the database, so there is no key to rotate and
+none to leak.
+
+Declare the type in the model catalog with no `apiKey`:
+
+```json
+{
+  "id": "anthropic-wif",
+  "type": "anthropic-wif",
+  "baseUrl": "https://api.anthropic.com",
+  "models": [{ "name": "claude-opus-5" }]
+}
+```
+
+In **Admin Console → Model Providers** the type appears in the Add provider
+list like any other. It asks for no key: where the API key field would be, it
+says *Use the Workload Identity configured in the worker*. **Update Key** is
+not offered on such a provider, and the server refuses a key update on one —
+there is no stored key to replace, so what changes instead is the worker's own
+identity configuration.
+
+Such a provider is always **shared**, and a personal one is refused. A personal
+provider exists to run on its owner's own credentials; this type has none and
+runs on the worker's, which belongs to the organization. A personal one would
+spend the cluster's own account under a name no administrator can cap, hold or
+delete, because a personal provider answers only to its owner.
+
+The worker reads that configuration from its environment. These name the
+federation rule, the organization, and the service account the minted token
+acts as:
+
+| Variable | Meaning |
+|---|---|
+| `ANTHROPIC_FEDERATION_RULE_ID` | The federation rule to evaluate (`fdrl_…`) |
+| `ANTHROPIC_ORGANIZATION_ID` | The Anthropic organization (UUID) |
+| `ANTHROPIC_SERVICE_ACCOUNT_ID` | The service account the token acts as (`svac_…`) |
+| `ANTHROPIC_WORKSPACE_ID` | Required only when the rule spans several workspaces |
+
+The identity token itself comes from whichever of these the platform provides,
+in this order:
+
+1. `ANTHROPIC_IDENTITY_TOKEN` — the JWT itself.
+2. `ANTHROPIC_IDENTITY_TOKEN_FILE` — a file holding it, re-read on every
+   exchange so a token that rotates on disk is always current.
+3. `AZURE_FEDERATED_TOKEN_FILE` with `AZURE_TENANT_ID` — a Kubernetes-projected
+   token, which Microsoft Entra ID does not accept as an assertion for anyone
+   but itself. The worker redeems it at Entra first and presents the result.
+   The identity claimed defaults to the injected `AZURE_CLIENT_ID`, and the
+   audience to that identity's own id; override either with
+   `ANTHROPIC_WIF_AZURE_CLIENT_ID` or `ANTHROPIC_WIF_AZURE_SCOPE` when the rule
+   names a different identity or a separate audience registration.
+
+A token is cached until shortly before it expires and minted once per worker
+however many sessions are running, because the callback that supplies it is
+invoked before every outbound request. No token is trusted for more than an
+hour however long it claims to be valid: nothing tells a worker that a
+credential was revoked, and the only symptom would be requests failing until
+the token aged out on its own. A worker missing any required variable says
+which one at session creation, rather than failing the first turn with an
+authentication error.
+
+The exchange itself goes to `https://api.anthropic.com` unless
+`ANTHROPIC_WIF_TOKEN_URL` (or, failing that, `ANTHROPIC_BASE_URL`) says
+otherwise. The assertion posted there is a signed identity token, so a
+deployment that repoints `ANTHROPIC_BASE_URL` at a gateway for unrelated
+reasons should pin the exchange back with `ANTHROPIC_WIF_TOKEN_URL`.
+
 ### Legacy Per-User GitHub Copilot Key
 
 The profile-key management APIs remain during the migration window for rollback

@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.5.49 — 2026-08-28
+
+A provider type that stores no key. `anthropic-wif` reaches the Anthropic API
+with Workload Identity Federation: the worker authenticates as itself and mints
+a short-lived token for each request, so there is no credential in the database
+to rotate or leak.
+
+### Added
+
+- **`anthropic-wif` provider type** — Anthropic with no stored credential. The
+  worker exchanges an identity token its own platform issues for a short-lived
+  Anthropic access token, and hands `@github/copilot-sdk` a `bearerTokenProvider`
+  callback rather than a key. The callback matters because the token outlives
+  neither the session nor the worker: a session resumed days later on another
+  node would otherwise come back with a dead credential baked into its config.
+  Tokens are cached until shortly before expiry, minted once per worker however
+  many sessions are running, and concurrent callers share a single exchange. No
+  token is trusted for more than an hour however long it claims to be valid,
+  because nothing tells a worker that a credential was revoked. On the wire the
+  type is `anthropic`, the way `openai-proxy` is `openai`.
+
+  The identity token comes from whichever the platform provides:
+  `ANTHROPIC_IDENTITY_TOKEN`, or `ANTHROPIC_IDENTITY_TOKEN_FILE` (re-read on
+  every exchange, so a token that rotates on disk is always current), or a
+  Kubernetes-projected token at `AZURE_FEDERATED_TOKEN_FILE` which is redeemed
+  at Microsoft Entra ID first. `ANTHROPIC_FEDERATION_RULE_ID`,
+  `ANTHROPIC_ORGANIZATION_ID` and `ANTHROPIC_SERVICE_ACCOUNT_ID` name the rule,
+  the organization and the service account the minted token acts as; a worker
+  missing one of them says which at session creation rather than failing the
+  first turn. See `docs/developer/reference/configuration.md`.
+
+- **Adding one from the Admin Console** — the type appears in the Add provider
+  list like any other and asks for no key: where the API key field would be it
+  says *Use the Workload Identity configured in the worker*. **Update Key** is
+  not offered on such a provider, and the server refuses a key update on one —
+  there is no stored key to replace, and accepting the change would put a real
+  secret in a row nothing reads a secret from.
+
+### Changed
+
+- **A workload-identity provider can only be shared, never personal.** A
+  personal provider exists to run on its owner's own credentials; this type has
+  none and runs on the worker's, which is the organization's. A personal one
+  would spend the cluster's own Anthropic account under a name no administrator
+  can cap, hold or even delete — `cms_provider_assert_manage` does not consult
+  the admin flag on the personal branch — and anyone signed in may create one.
+  Refused at the management layer with an explanation, and dropped by the
+  runtime registry as well, so a row written by any other path still does not
+  run.
+
+- **A workload-identity provider is pinned to the endpoint its type declares**,
+  and a per-instance `baseUrl` on one is ignored. Everywhere else that override
+  is harmless, because the row carries its own key: aiming it elsewhere sends
+  that key and nobody else's. This credential is the worker's, and
+  `POST /me/providers` is open to any signed-in user and takes a `baseUrl`
+  straight from the request body — so only the deployment's own config file may
+  say where this credential is allowed to go.
+
+- Everything that asked "is there a key for this provider?" now asks whether
+  the type authenticates as the worker first. The registry keeps a keyless
+  entry of such a type, the deployment seed writes a provider for it, and
+  `credentialAvailable` reports true so the models are not greyed out or
+  refused as a default. The exemption is attached to the TYPE and nothing
+  else: a provider of a key type with no key is still dropped everywhere it
+  was before, which is what keeps a personal provider from silently spending
+  the cluster's key.
+
+
 ## 0.5.48 — 2026-08-27
 
 Token accounting stops charging cached prompts twice. A turn's total is

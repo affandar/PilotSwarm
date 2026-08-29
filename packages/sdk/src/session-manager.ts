@@ -3,11 +3,12 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
-import { applyReasoningEffortToProviderConfig } from "./model-providers.js";
+import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
+import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
@@ -776,7 +777,17 @@ export class SessionManager {
         if (!registry?.defaultModel) return undefined;
         const resolved = registry.resolve(registry.defaultModel);
         if (!resolved?.sdkProvider) return undefined;
-        return { modelName: resolved.modelName, sdkProvider: resolved.sdkProvider };
+        try {
+            // The same treatment a real session gets. A workload-identity
+            // provider carries no key, so without the callback this hands the
+            // SDK a provider with no credential at all and every request 401s.
+            return { modelName: resolved.modelName, sdkProvider: attachWorkloadIdentity(resolved) };
+        } catch {
+            // An unconfigured worker reports "no usable provider" here rather
+            // than throwing into an activity that only wanted to write a
+            // title; the session path still says exactly what is missing.
+            return undefined;
+        }
     }
 
     /**
@@ -795,7 +806,12 @@ export class SessionManager {
         try {
             const resolved = registry.resolve(target);
             if (!resolved) return null;
-            if (resolved.sdkProvider) return { model: resolved.modelName, provider: resolved.sdkProvider };
+            // attachWorkloadIdentity throws on an unconfigured worker; the
+            // catch below turns that into null, which is the "does not
+            // resolve" answer this returns for any other unusable model.
+            if (resolved.sdkProvider) {
+                return { model: resolved.modelName, provider: attachWorkloadIdentity(resolved) };
+            }
             if (resolved.githubToken) return { model: resolved.modelName, gitHubToken: resolved.githubToken };
             return null;
         } catch {
@@ -1604,6 +1620,14 @@ export class SessionManager {
                 // OWNER, and the database refuses the rest.
                 resolveViewer: () => this._resolveProviderViewer(
                     sessionId, effectiveSerializableConfig.agentIdentity),
+                // The runtime registry is keyed by PROVIDER name, which is
+                // exactly what these actions name, and each entry keeps the
+                // `type` its template declared.
+                providerUsesWorkloadIdentity: (providerName: string) => providerTypeUsesWorkloadIdentity(
+                    this.workerDefaults.modelProviders
+                        ?.getModelsByProvider()
+                        .find((group) => group.providerId === providerName)
+                        ?.type),
             })
             : [];
         // Service sessions (tree-scoped machinery, e.g. the regen distiller)
@@ -2303,7 +2327,7 @@ export class SessionManager {
                     return {};
                 }
                 if (resolved.sdkProvider) {
-                    return { provider: resolved.sdkProvider };
+                    return { provider: attachWorkloadIdentity(resolved) };
                 }
             }
             if (model && (model.includes(":") || registry.getDescriptor(model))) {

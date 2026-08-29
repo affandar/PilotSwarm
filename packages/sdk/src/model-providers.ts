@@ -97,10 +97,40 @@ export interface ModelVisionCapability {
  * A stripper that anchors its match to the front of the path handles only the
  * first. Match the segment wherever it appears.
  *
- * `github`, `openai`, `azure` and `anthropic` behave exactly as they always
- * have. Nothing is encoded for them.
+ * `github`, `openai`, `azure`, `anthropic` and `anthropic-wif` behave exactly
+ * as they always have. Nothing is encoded for them.
+ *
+ * `anthropic-wif` is Anthropic reached with Workload Identity Federation
+ * rather than a key. On the wire it is `anthropic`, for the same reason
+ * `openai-proxy` is `openai`: the Copilot SDK's union has no other value. The
+ * one difference is where the credential comes from — there is none to store,
+ * and the worker mints a short-lived token per request from the identity its
+ * own platform issues it. See `wif-credentials.ts`.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif";
+
+/**
+ * Types that authenticate as the worker itself, with nothing stored.
+ *
+ * Every place that asks "is there a key for this provider?" has to ask this
+ * first, or it concludes there is no credential and drops the provider.
+ * Having no key is the design, not a misconfiguration: the credential is a
+ * token minted at the moment of use.
+ */
+export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | undefined | null): boolean {
+    return type === "anthropic-wif";
+}
+
+/**
+ * The value the Copilot SDK understands. Its own union is `openai | azure |
+ * anthropic`; every PilotSwarm-only refinement is mapped down here, at the one
+ * place that knows about all of them, and never leaks past it.
+ */
+export function toSdkProviderType(type: ProviderType): "openai" | "azure" | "anthropic" {
+    if (type === "openai-proxy") return "openai";
+    if (type === "anthropic-wif") return "anthropic";
+    return type as "openai" | "azure" | "anthropic";
+}
 
 /** A single provider entry in model_providers.json. */
 export interface ModelProviderConfig {
@@ -174,12 +204,21 @@ export interface ResolvedProvider {
     /** Resolved GitHub token (type=github only). */
     githubToken?: string;
     /**
+     * True when this provider authenticates as the worker rather than with a
+     * key, so `sdkProvider` carries no `apiKey` and is incomplete on its own.
+     * Whoever hands it to the Copilot SDK attaches the token callback — see
+     * `SessionManager._resolveProviderConfig`. Nothing here holds a token:
+     * this object is built on the request path and must stay comparable and
+     * loggable.
+     */
+    usesWorkloadIdentity?: boolean;
+    /**
      * Copilot SDK ProviderConfig — passed to SessionConfig.provider.
      * Undefined for type=github (uses githubToken instead).
      *
      * The type here is the SDK's own union, which knows nothing about
-     * `openai-proxy`; that value is mapped to `openai` in `resolve()` and must
-     * never leak into this object.
+     * `openai-proxy` or `anthropic-wif`; those are mapped by
+     * `toSdkProviderType` in `resolve()` and must never leak into this object.
      */
     sdkProvider?: {
         type: "openai" | "azure" | "anthropic";
@@ -226,6 +265,12 @@ export class ModelProviderRegistry {
             ? config.providers.slice()
             : config.providers.filter(p => {
                 if (p.type === "github") {
+                    return true;
+                }
+                // A workload-identity type has no key to find, and looking
+                // for one drops the only kind of provider that is correctly
+                // configured with nothing in the file.
+                if (providerTypeUsesWorkloadIdentity(p.type)) {
                     return true;
                 }
                 return !!resolveEnvValue(p.apiKey);
@@ -348,20 +393,26 @@ export class ModelProviderRegistry {
             ? `${baseUrl.replace(/\/+$/, "")}/deployments/${desc.modelName}`
             : baseUrl;
 
-        // `openai-proxy` is a PilotSwarm-only distinction. The Copilot SDK's
-        // provider union is openai | azure | anthropic, so it is mapped back to
-        // `openai` right here and never reaches the SDK. The declared type
-        // survives on `type` above, which is what the effort encoding reads.
-        const sdkProviderType = provider.type === "openai-proxy" ? "openai" : provider.type;
+        // `openai-proxy` and `anthropic-wif` are PilotSwarm-only distinctions.
+        // The Copilot SDK's provider union is openai | azure | anthropic, so
+        // they are mapped back right here and never reach the SDK. The
+        // declared type survives on `type` above, which is what the effort
+        // encoding and the credential decision below read.
+        const sdkProviderType = toSdkProviderType(provider.type);
+        const usesWorkloadIdentity = providerTypeUsesWorkloadIdentity(provider.type);
 
         return {
             providerId: provider.id,
             type: provider.type,
             modelName: desc.modelName,
+            ...(usesWorkloadIdentity ? { usesWorkloadIdentity: true } : {}),
             sdkProvider: {
                 type: sdkProviderType,
                 baseUrl: resolvedUrl,
-                apiKey: resolveEnvValue(provider.apiKey),
+                // Omitted rather than undefined for a workload-identity
+                // provider: an `apiKey` key present with no value reads as a
+                // broken credential to everything downstream that tests it.
+                ...(usesWorkloadIdentity ? {} : { apiKey: resolveEnvValue(provider.apiKey) }),
                 ...(provider.type === "azure" && {
                     azure: { apiVersion: provider.apiVersion || "2024-10-21" },
                 }),

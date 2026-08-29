@@ -14,6 +14,22 @@ import type { BudgetPeriod, BudgetRuleState, TurnAdmission } from "./provider-bu
 import { toTurnAdmission } from "./provider-budgets.js";
 
 export type ProviderClass = "shared" | "personal";
+
+/**
+ * What a workload-identity provider stores instead of a key.
+ *
+ * It holds no secret. It exists so the row is distinguishable from one whose
+ * credential was never set: `has_credential` in SQL is `secret_ref <> '{}'`,
+ * and everything from the portal's greying-out of a provider to refusing it
+ * as a default reads that. Nothing ever reads a value out of it — the token
+ * is minted at the moment of use from the worker's own identity.
+ */
+export const WORKLOAD_IDENTITY_KIND = "workloadIdentity";
+
+/** Does this stored blob say "authenticate as the worker"? */
+export function isWorkloadIdentitySecret(secretRef: Record<string, unknown> | null | undefined): boolean {
+    return secretRef?.kind === WORKLOAD_IDENTITY_KIND;
+}
 export type ChargeClass = "user" | "system" | "unattributed";
 
 /** A refusal from the database, with the marker turned into a code. */
@@ -254,8 +270,29 @@ export interface ProviderCredential {
  */
 export function normalizeCallerSecret(
     input: Record<string, unknown> | string | null | undefined,
+    options: { workloadIdentity?: boolean } = {},
 ): Record<string, unknown> {
     const raw = typeof input === "string" ? { value: input } : (input ?? {});
+
+    // A workload-identity provider is credential-less by design. It stores a
+    // marker rather than nothing at all, so the row is distinguishable from
+    // one whose key was never set (`has_credential` is `secret_ref <> '{}'`).
+    // Whatever the caller sent is DISCARDED rather than merged: this type has
+    // no use for a key, and keeping one would leave a real secret sitting in
+    // a row nothing ever reads it from.
+    //
+    // Only the CALLER'S OPTION reaches this, never anything in the blob. A
+    // request that declares its own `kind` looked harmless — the provider
+    // still runs only if its TYPE is a workload-identity type, decided from
+    // the deployment's config file — but it is a way to write a
+    // credential-less row on ANY type: on a create, a provider the portal
+    // shows as credentialed (`has_credential` is `secret_ref <> '{}'`) that
+    // can never run a turn; on an update, a real key silently REPLACED by a
+    // marker, reported as a successful rotation. The type is known one layer
+    // up, and that is the only place allowed to decide this.
+    if (options.workloadIdentity) {
+        return { kind: WORKLOAD_IDENTITY_KIND };
+    }
 
     const isGithub = typeof raw.githubToken === "string" || raw.kind === "githubToken";
     const candidate = [raw.value, raw.apiKey, raw.githubToken, raw.token, raw.key]
@@ -697,11 +734,17 @@ export class ProviderStore {
     async createProvider(input: {
         name: string; typeId: string; class: ProviderClass;
         ownerUserId?: number | null; secretRef?: Record<string, unknown> | null; baseUrl?: string | null;
+        /**
+         * The type authenticates as the worker, so no credential is required
+         * and none is kept. Decided by the caller, which is the layer that
+         * holds the type catalog; the store only knows a type by its name.
+         */
+        workloadIdentity?: boolean;
     }, actor: number | null, isAdmin: boolean): Promise<{ name: string; typeId: string; class: ProviderClass }> {
         const rows = await this.call(
             `SELECT * FROM ${this.fn("cms_provider_create")}($1,$2,$3,$4,$5,$6,$7,$8)`,
             [input.name, input.typeId, input.class, input.ownerUserId ?? null,
-                JSON.stringify(normalizeCallerSecret(input.secretRef)),
+                JSON.stringify(normalizeCallerSecret(input.secretRef, { workloadIdentity: input.workloadIdentity })),
                 input.baseUrl ?? null, actor, isAdmin]);
         const r = rows[0] ?? {};
         return { name: r.name, typeId: r.type_id, class: r.class };

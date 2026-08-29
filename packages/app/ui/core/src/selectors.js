@@ -39,6 +39,22 @@ import { isRecoverableTransportErrorText } from "./session-errors.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
+
+/**
+ * Provider types that authenticate as the worker rather than with a key.
+ *
+ * The same rule as `providerTypeUsesWorkloadIdentity` in the SDK, restated
+ * because the UI packages do not import from it. Both sides read the `type`
+ * field of the deployment's model-providers file, so they agree on the value
+ * even though they cannot share the function.
+ */
+export function providerTypeUsesWorkloadIdentity(type) {
+    return type === "anthropic-wif";
+}
+
+/** What the add-provider form says where the key field would be. */
+export const WORKLOAD_IDENTITY_CREDENTIAL_NOTE =
+    "Use the Workload Identity configured in the worker";
 const USER_CHAT_COLOR = "userChat";
 const USER_CHAT_LABEL_COLOR = "userChatLabel";
 // Speaker label for a message from another person in a shared session.
@@ -3939,11 +3955,19 @@ export function selectAdminConsole(state) {
         providerTypeMap.set(model.providerId, {
             id: model.providerId,
             label: model.providerType || model.providerId,
+            // Carried on the type so that no screen has to know which type
+            // names mean "no key": the add-provider form asks for a
+            // credential unless this says the worker already holds one.
+            usesWorkloadIdentity: providerTypeUsesWorkloadIdentity(model.providerType),
         });
     }
     const providerSummary = (provider) => ({
         name: provider.name,
         typeId: provider.typeId || provider.type || null,
+        // There is no key on this one to rotate, so the screens that offer
+        // "Update key" leave it off rather than offering an action the server
+        // refuses.
+        usesWorkloadIdentity: providerTypeMap.get(provider.typeId || provider.type)?.usesWorkloadIdentity === true,
         class: provider.class === "shared" ? "shared" : "personal",
         hasCredential: Boolean(provider.hasCredential),
         usableByMe: provider.usableByMe !== false,
@@ -4680,6 +4704,12 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
         ? "Add GitHub Copilot provider"
         : `Add ${create.typeId || "model"} provider`;
     const value = String(create.draft || "");
+    // A workload-identity type has no key to ask for. The stage still exists
+    // — it is where the person confirms what they are adding — but it prompts
+    // instead of demanding, and nothing is typed into it.
+    const typeRow = (admin.modelProviders?.models || [])
+        .find((model) => model?.providerId === create.typeId);
+    const workloadIdentity = providerTypeUsesWorkloadIdentity(typeRow?.providerType);
     return {
         type: "adminProviderCreate",
         title: updating
@@ -4687,10 +4717,12 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
             : credentialStage
             ? (shared ? "Add shared model provider" : ownTitle)
             : (shared ? "Name the shared provider" : ownTitle),
-        label: credentialStage ? "credential" : "provider name",
-        displayValue: credentialStage && value ? "•".repeat(value.length) : value,
+        label: credentialStage ? (workloadIdentity ? "authentication" : "credential") : "provider name",
+        displayValue: credentialStage && value && !workloadIdentity ? "•".repeat(value.length) : value,
         cursorIndex: Math.max(0, Math.min(Number(create.cursorIndex) || 0, value.length)),
-        placeholder: credentialStage ? "Paste token" : "my-ghcp",
+        placeholder: credentialStage
+            ? (workloadIdentity ? WORKLOAD_IDENTITY_CREDENTIAL_NOTE : "Paste token")
+            : "my-ghcp",
         saving: Boolean(create.saving),
         error: create.error || null,
         idealWidth: Math.max(56, Math.min(maxWidth, 76)),
@@ -4698,6 +4730,9 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
             ? [
                 { text: `Provider  ${create.name}`, color: "white", bold: true },
                 { text: `Type      ${create.typeId}`, color: "cyan" },
+                ...(workloadIdentity
+                    ? [{ text: WORKLOAD_IDENTITY_CREDENTIAL_NOTE, color: "gray" }]
+                    : []),
                 { text: shared ? "Shared" : "Only you", color: "gray" },
             ]
             : [
@@ -4706,7 +4741,9 @@ export function selectAdminProviderCreateModal(state, maxWidth = 76) {
                 { text: "Letters, numbers, dot, dash, and underscore only.", color: "gray" },
             ],
         helpLines: credentialStage
-            ? ["Type/paste credential", `Enter  ${updating ? "update key" : "create provider"}`, "Esc  cancel and clear"]
+            ? workloadIdentity
+                ? ["No key needed", "Enter  create provider", "Esc  cancel"]
+                : ["Type/paste credential", `Enter  ${updating ? "update key" : "create provider"}`, "Esc  cancel and clear"]
             : ["Type provider name", "Tab  next provider type", "Enter  continue to credential", "Esc  cancel"],
     };
 }

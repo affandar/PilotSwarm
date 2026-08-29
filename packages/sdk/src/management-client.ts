@@ -90,7 +90,7 @@ import { resolveStorageConfig, type StorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
-import { loadModelProviders, loadModelProviderTypes, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
+import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
 import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
@@ -3333,6 +3333,38 @@ export class PilotSwarmManagementClient {
         );
     }
 
+    /**
+     * Does this type authenticate as the worker rather than with a key?
+     *
+     * The store knows a type only by its name, so the decision is made here,
+     * where the type catalog is. An unknown type answers false and is refused
+     * a moment later by `_assertKnownProviderType` — this is not the place
+     * that reports it.
+     */
+    private _typeUsesWorkloadIdentity(typeId: string): boolean {
+        const wanted = String(typeId ?? "").trim();
+        const group = this.getModelsByProvider().find((candidate) => candidate.providerId === wanted);
+        return providerTypeUsesWorkloadIdentity(group?.type);
+    }
+
+    /**
+     * Refuse a key update on a provider that has no key.
+     *
+     * Accepting it would store a real secret in a row nothing ever reads a
+     * secret from, and tell the person their rotation worked.
+     */
+    private async _assertCredentialIsUpdatable(store: ProviderStore, name: string, actor: number | null, isAdmin: boolean): Promise<void> {
+        const rows = await store.listProviders(actor, isAdmin);
+        const row = rows.find((candidate) => candidate.name === name);
+        if (row && this._typeUsesWorkloadIdentity(row.typeId)) {
+            throw new ProviderError(
+                "PROVIDER_INVALID",
+                `Provider "${name}" authenticates with the worker's workload identity and has no key to update. `
+                + "Change the worker's identity configuration instead.",
+            );
+        }
+    }
+
     async createProvider(
         viewer: ProviderViewer,
         input: ProviderCreateInput,
@@ -3345,6 +3377,7 @@ export class PilotSwarmManagementClient {
             class: "shared",
             secretRef: input.credentials ?? null,
             baseUrl: input.baseUrl ?? null,
+            workloadIdentity: this._typeUsesWorkloadIdentity(input.type),
         }, actor, isAdmin);
         await this._auditProviderMutation(viewer, "createProvider", created.name, { class: "shared", type: created.typeId });
         // A name that did not resolve a moment ago now does.
@@ -3362,6 +3395,18 @@ export class PilotSwarmManagementClient {
             throw new ProviderError("PROVIDER_FORBIDDEN", "Sign in to add a personal provider.");
         }
         this._assertKnownProviderType(input.type);
+        // A personal provider exists to run on ITS OWNER'S credentials. This
+        // type has none: it runs on the worker's, which is the organization's.
+        // A personal one would spend the cluster's own account under a name no
+        // administrator can cap, hold or delete, because a personal provider
+        // answers only to its owner — and anyone signed in may create one.
+        if (this._typeUsesWorkloadIdentity(input.type)) {
+            throw new ProviderError(
+                "PROVIDER_FORBIDDEN",
+                `Provider type "${input.type}" authenticates with the worker's own identity, `
+                + "so it cannot be a personal provider. An administrator can add it as a shared one.",
+            );
+        }
         const created = await store.createProvider({
             name: input.name,
             typeId: input.type,
@@ -3380,7 +3425,8 @@ export class PilotSwarmManagementClient {
         viewer: ProviderViewer,
         input: ProviderCredentialUpdateInput,
     ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
-        const { store, actor } = await this._providerActor(viewer);
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        await this._assertCredentialIsUpdatable(store, input.name, actor, isAdmin);
         const updated = await store.updatePersonalCredential(input.name, input.credentials, actor);
         await this._auditProviderMutation(viewer, "updateMyProviderCredential", updated.name, {
             class: "personal",
@@ -3402,6 +3448,7 @@ export class PilotSwarmManagementClient {
         input: ProviderCredentialUpdateInput,
     ): Promise<{ name: string; typeId: string; class: ProviderClass }> {
         const { store, actor, isAdmin } = await this._providerActor(viewer);
+        await this._assertCredentialIsUpdatable(store, input.name, actor, isAdmin);
         const updated = await store.updateSharedCredential(input.name, input.credentials, actor, isAdmin);
         await this._auditProviderMutation(viewer, "updateSharedProviderCredential", updated.name, {
             class: "shared",
@@ -4428,9 +4475,15 @@ export class PilotSwarmManagementClient {
             qualifiedName: descriptor.qualifiedName,
             providerId: descriptor.providerId,
             providerType: descriptor.providerType,
-            credentialAvailable: resolved.type === "github"
-                ? Boolean(resolved.githubToken)
-                : Boolean(resolved.sdkProvider?.apiKey),
+            // A workload-identity provider has a credential in every sense
+            // that matters here — the worker can authenticate — it just is
+            // not a stored one. Testing for a key would grey out the model in
+            // every picker and refuse it as a default.
+            credentialAvailable: resolved.usesWorkloadIdentity
+                ? true
+                : resolved.type === "github"
+                    ? Boolean(resolved.githubToken)
+                    : Boolean(resolved.sdkProvider?.apiKey),
         };
     }
 

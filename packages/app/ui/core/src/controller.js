@@ -3455,6 +3455,12 @@ export class PilotSwarmUiController {
         });
     }
 
+    /** Does the selected provider type authenticate as the worker itself? */
+    _adminProviderTypeUsesWorkloadIdentity(typeId) {
+        const types = selectAdminConsole(this.getState()).modelProviders?.providerTypes || [];
+        return types.find((type) => type.id === typeId)?.usesWorkloadIdentity === true;
+    }
+
     cycleAdminProviderCreateType() {
         const providers = selectAdminConsole(this.getState()).modelProviders;
         const create = this.getState().admin?.modelProviders?.create;
@@ -3512,16 +3518,26 @@ export class PilotSwarmUiController {
     async saveAdminProviderCreate() {
         const create = this.getState().admin?.modelProviders?.create;
         if (!create?.editing || create.saving || create.stage !== "credential") return;
+        // A workload-identity type has no key to type. The stage is still
+        // reached — it is where the person confirms — but the draft is empty
+        // by design, so demanding a credential would make the type
+        // unusable from this screen.
+        const workloadIdentity = this._adminProviderTypeUsesWorkloadIdentity(create.typeId);
         const credential = String(create.draft || "").trim();
-        if (!credential) {
+        if (!credential && !workloadIdentity) {
             this.dispatch({ type: "admin/modelProviders/createFailed", error: "Enter a provider credential." });
             return;
         }
         const input = {
             name: create.name,
             type: create.typeId,
-            credentials: /github/i.test(create.typeId) ? { githubToken: credential } : { apiKey: credential },
-            shared: create.shared === true,
+            credentials: workloadIdentity
+                ? { kind: "workloadIdentity" }
+                : /github/i.test(create.typeId) ? { githubToken: credential } : { apiKey: credential },
+            // It runs on the worker's identity, which belongs to the
+            // organization, so it can only be shared. The server refuses a
+            // personal one; asking for it here would only earn an error.
+            shared: workloadIdentity ? true : create.shared === true,
         };
         // Clear the credential from shared state before any network await.
         this.dispatch({ type: "admin/modelProviders/createSaving" });

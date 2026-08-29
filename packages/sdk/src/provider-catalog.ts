@@ -16,9 +16,12 @@
  * the file has never heard of — anything an administrator or a user created
  * at runtime.
  */
-import type { ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider } from "./model-providers.js";
-import { ModelProviderRegistry, resolveEnvValue } from "./model-providers.js";
+import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
+import {
+    ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
+} from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
+import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
 
 export type RuntimeModelResolutionSource =
     | "explicit"
@@ -114,6 +117,15 @@ function configSecretRef(p: ModelProviderConfig): Record<string, unknown> | null
             ? { kind: "githubToken", ref: p.githubToken, source: CONFIG_ORIGIN }
             : null;
     }
+    // A workload-identity type seeds a provider on the strength of the type
+    // alone: there is no key to find, and returning null here would leave the
+    // deployment with a type nobody can spend from until somebody creates an
+    // instance by hand. The marker is deliberately not empty — `has_credential`
+    // in SQL is `secret_ref <> '{}'`, and a provider that reads as
+    // credential-less is greyed out in the portal and refused as a default.
+    if (providerTypeUsesWorkloadIdentity(p.type)) {
+        return { kind: WORKLOAD_IDENTITY_KIND, source: CONFIG_ORIGIN };
+    }
     return p.apiKey && resolveEnvValue(p.apiKey)
         ? {
             kind: "apiKey", ref: p.apiKey, source: CONFIG_ORIGIN,
@@ -185,6 +197,7 @@ export function buildRuntimeRegistry(
     for (const inst of instances) {
         const type = byType.get(inst.typeId);
         if (!type) continue;      // a type the file no longer describes
+        const workloadIdentity = providerTypeUsesWorkloadIdentity(type.type);
         const secret = secretValue(inst.secretRef);
         // A provider whose own credential does not resolve is DROPPED, never
         // quietly run on the type's. Inheriting it meant a personal provider
@@ -192,7 +205,21 @@ export function buildRuntimeRegistry(
         // — under a name no administrator can put a limit on, because a
         // personal provider answers only to its owner. An uncappable budget
         // bypass, reached by getting a field name wrong.
-        if (!secret) continue;
+        //
+        // A workload-identity provider is exempt because it borrows nothing:
+        // its credential is the worker's own identity, which is the same one
+        // whatever row names it, so there is no other key to fall through to.
+        if (!secret && !workloadIdentity) continue;
+        // But it is a CLUSTER credential, so it may only be a shared provider.
+        // A personal one would spend the organization's own Anthropic account
+        // under a name no administrator can cap, hold or even delete —
+        // `cms_provider_assert_manage` does not consult the admin flag on the
+        // personal branch, and a budget rule must name one provider — which is
+        // the very bypass the paragraph above exists to prevent, arrived at
+        // from the other side. Anyone signed in may create a personal
+        // provider, so this is refused here as well as at the management
+        // layer: a row written by any other path still does not run.
+        if (workloadIdentity && inst.class === "personal") continue;
         const hasResolvableModel = type.models.some((entry) => {
             const modelName = typeof entry === "string" ? entry : entry.name;
             return Boolean(resolveProviderCredential(types, inst, modelName));
@@ -201,8 +228,22 @@ export function buildRuntimeRegistry(
         providers.push({
             ...type,
             id: inst.name,
-            ...(inst.baseUrl ? { baseUrl: inst.baseUrl } : {}),
-            ...(type.type === "github" ? { githubToken: secret } : { apiKey: secret }),
+            // A workload-identity provider is PINNED to the endpoint its type
+            // declares; a per-instance override is ignored.
+            //
+            // Everywhere else an override is harmless, because the row
+            // carries its own key: pointing it elsewhere sends that key and
+            // nobody else's. Here the credential is the WORKER'S, and
+            // `createMyProvider` is open to any signed-in user and takes a
+            // baseUrl straight from the request. Honouring it would let
+            // anyone with an account create a provider of this type aimed at
+            // a host they control and have the worker deliver a live
+            // Anthropic token to it. Only the deployment's own config file
+            // may say where this credential is allowed to go.
+            ...(inst.baseUrl && !workloadIdentity ? { baseUrl: inst.baseUrl } : {}),
+            ...(workloadIdentity
+                ? {}
+                : type.type === "github" ? { githubToken: secret } : { apiKey: secret }),
         });
     }
     // An invalid default would throw out of the constructor and take the
@@ -362,14 +403,20 @@ export function resolveProviderCredential(
         };
     }
 
+    const workloadIdentity = providerTypeUsesWorkloadIdentity(type.type);
     const apiKey = secretValue(credential.secretRef);
-    const baseUrl = credential.baseUrl ?? type.baseUrl;
-    if (!baseUrl || !apiKey) return null;
+    // The row may name its own endpoint — unless the credential is the
+    // worker's rather than the row's. See buildRuntimeRegistry: a per-instance
+    // baseUrl on a workload-identity provider would point a live token at a
+    // host the requester chose, and anyone with an account may create one.
+    const baseUrl = (workloadIdentity ? type.baseUrl : credential.baseUrl ?? type.baseUrl);
+    // A workload-identity provider needs an endpoint but never a key: the
+    // token is minted per request by whoever hands this to the Copilot SDK.
+    if (!baseUrl || (!apiKey && !workloadIdentity)) return null;
 
-    // `openai-proxy` is a PilotSwarm-only value the SDK does not know; it
-    // has always been mapped to `openai` at the point of use.
-    const sdkType: Exclude<ProviderType, "openai-proxy"> =
-        type.type === "openai-proxy" ? "openai" : type.type;
+    // `openai-proxy` and `anthropic-wif` are PilotSwarm-only values the SDK
+    // does not know; both are mapped down at the point of use.
+    const sdkType = toSdkProviderType(type.type);
     const apiVersion = typeof credential.secretRef?.apiVersion === "string"
         ? credential.secretRef.apiVersion
         : type.apiVersion;
@@ -378,10 +425,11 @@ export function resolveProviderCredential(
         providerId: credential.name,
         type: type.type,
         modelName,
+        ...(workloadIdentity ? { usesWorkloadIdentity: true } : {}),
         sdkProvider: {
             type: sdkType,
             baseUrl: sdkType === "azure" ? `${baseUrl.replace(/\/$/, "")}/deployments/${modelName}` : baseUrl,
-            apiKey,
+            ...(workloadIdentity ? {} : { apiKey }),
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
         },
     } as ResolvedProvider;

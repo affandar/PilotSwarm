@@ -198,6 +198,14 @@ export { bootstrapProviders, buildRuntimeRegistry, loadProviderTypes } from "./p
 export { createResourceManagerTools } from "./resourcemgr-tools.js";
 // Model providers
 export { loadModelProviders, loadModelProviderTypes, ModelProviderRegistry } from "./model-providers.js";
+export { providerTypeUsesWorkloadIdentity, toSdkProviderType } from "./model-providers.js";
+// Workload Identity Federation — a provider type that stores no key and mints
+// a short-lived token per request from the identity the worker already holds.
+export {
+    AnthropicWifCredentials, anthropicWifCredentials, attachWorkloadIdentity,
+    readAnthropicWifSettings, resetAnthropicWifCredentials, WifExchangeError,
+} from "./wif-credentials.js";
+export type { AnthropicWifSettings, WifIdentitySource, WifSettingsResult } from "./wif-credentials.js";
 export { resolveRuntimeModelSelection, firstRuntimeModel } from "./provider-catalog.js";
 export type { RuntimeModelSelection, RuntimeModelResolutionSource } from "./provider-catalog.js";
 // A BYOK reasoning effort rides on the provider baseUrl as a path prefix —

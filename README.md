@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.48** — Token budgets stop charging cached prompts twice: a turn's total is input + output, with the cache figures shown as what the input was made of. A Cluster summary tab on Providers & Budgets (totals per day/week/month, a 14/30/90-day chart, a per-model pivot), every period cell says what its figure is made of, a desktop toolbar split into workspace buttons and mode buttons, and fixes for the Sequence/Activity divider, the chat↔canvas seam, long markdown tables and Update Key on shared providers.
+> **Latest release: v0.5.49** — A provider type that stores no key: `anthropic-wif` reaches the Anthropic API with Workload Identity Federation. The worker authenticates as itself and mints a short-lived token for each request, so there is no credential in the database to rotate or leak. It appears in the Admin Console's Add provider list like any other type and asks for no key.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

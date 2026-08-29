@@ -77,6 +77,14 @@ export interface CreateProviderToolsOptions {
      * keep cluster reach for as long as their session stayed open.
      */
     resolveViewer: () => ProviderToolsViewer | Promise<ProviderToolsViewer>;
+    /**
+     * Does this PROVIDER authenticate with the worker's own identity rather
+     * than a stored key? These actions write to the store directly, so unlike
+     * the HTTP route they have no type catalog of their own to consult.
+     * Without it, a key rotated onto such a provider is accepted, stored and
+     * then ignored for ever — and reported as a successful rotation.
+     */
+    providerUsesWorkloadIdentity?: (providerName: string) => boolean;
 }
 
 interface ProviderToolSpec {
@@ -187,7 +195,9 @@ const PROVIDER_TOOL_SPECS: ProviderToolSpec[] = [
                 },
                 credentials: {
                     type: "object",
-                    description: "The credentials that type requires, e.g. {\"apiKey\": \"…\"} (create)",
+                    description: "The credentials that type requires, e.g. {\"apiKey\": \"…\"} (create). "
+                        + "A type that authenticates with the worker's own workload identity takes no key: "
+                        + "send {\"kind\": \"workloadIdentity\"}.",
                     additionalProperties: true,
                 },
                 base_url: { type: "string", description: "Endpoint to use instead of the type's own (create)" },
@@ -541,6 +551,15 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
                 return { name: args.name, ...(await store.clearRoutingDependencies(args.name, v.userId, v.isAdmin)) };
             }
             if (args.action === "update_credential") {
+                // Nothing to rotate on a provider that stores no key. Saying so
+                // beats writing a real secret into a row that never reads one
+                // and answering "done".
+                if (opts.providerUsesWorkloadIdentity?.(args.name)) {
+                    return {
+                        error: `manage_provider: "${args.name}" authenticates with the worker's workload `
+                            + "identity and has no key to update. Change the worker's identity configuration instead.",
+                    };
+                }
                 // mine:false is the SHARED provider, admin-only and enforced in
                 // SQL by the same manage gate the other shared mutations use —
                 // a non-admin gets PROVIDER_FORBIDDEN, and a personal name
