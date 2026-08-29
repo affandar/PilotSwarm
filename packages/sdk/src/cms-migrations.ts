@@ -415,6 +415,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_session_acknowledgement",
             sql: migration_0048_job_session_acknowledgement(schema),
         },
+        {
+            version: "0049",
+            name: "job_lifecycle_state_runs_and_journal",
+            sql: migration_0049_job_lifecycle_state_runs_and_journal(schema),
+        },
     ];
 }
 
@@ -15080,5 +15085,134 @@ ALTER TABLE ${s}.job_sessions
 ALTER TABLE ${s}.job_sessions
     ADD CONSTRAINT job_sessions_status_check
     CHECK (status IN ('reserved', 'unacked', 'active', 'failed', 'replaced'));
+`;
+}
+
+// ─── Migration 0049: durable Job lifecycle execution ───────────
+
+function migration_0049_job_lifecycle_state_runs_and_journal(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.jobs
+    ADD COLUMN IF NOT EXISTS current_state TEXT,
+    ADD COLUMN IF NOT EXISTS state_revision BIGINT NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS current_state_entered_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+UPDATE ${s}.jobs j
+SET current_state = COALESCE(
+    NULLIF(BTRIM(d.lifecycle_definition->'lifecycle'->>'initialState'), ''),
+    NULLIF(BTRIM(d.lifecycle_definition->>'initialState'), ''),
+    'Initial'
+)
+FROM ${s}.job_generator_definitions d
+WHERE d.definition_id = j.definition_id
+  AND j.current_state IS NULL;
+
+UPDATE ${s}.jobs SET current_state = 'Initial' WHERE current_state IS NULL;
+ALTER TABLE ${s}.jobs ALTER COLUMN current_state SET NOT NULL;
+ALTER TABLE ${s}.jobs ALTER COLUMN current_state SET DEFAULT 'Initial';
+
+CREATE TABLE IF NOT EXISTS ${s}.job_state_runs (
+    state_run_id                 TEXT PRIMARY KEY,
+    job_id                       TEXT NOT NULL REFERENCES ${s}.jobs(job_id) ON DELETE CASCADE,
+    definition_id                TEXT NOT NULL REFERENCES ${s}.job_generator_definitions(definition_id),
+    state_name                   TEXT NOT NULL CHECK (BTRIM(state_name) <> ''),
+    state_revision               BIGINT NOT NULL CHECK (state_revision > 0),
+    state_owner                  TEXT CHECK (state_owner IN ('user', 'platform')),
+    status                       TEXT NOT NULL DEFAULT 'reserved'
+                                 CHECK (status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required', 'completed', 'failed')),
+    session_id                   TEXT UNIQUE,
+    predecessor_journal_entry_id TEXT,
+    source_id                    TEXT,
+    source_path                  TEXT,
+    source_commit                TEXT,
+    markdown_sha256              TEXT,
+    allowed_outcomes             JSONB NOT NULL DEFAULT '[]'::jsonb
+                                 CHECK (jsonb_typeof(allowed_outcomes) = 'array'),
+    terminal                     BOOLEAN,
+    attempt                      INTEGER NOT NULL DEFAULT 1 CHECK (attempt > 0),
+    lease_owner                  TEXT,
+    lease_expires_at             TIMESTAMPTZ,
+    started_at                   TIMESTAMPTZ,
+    completed_at                 TIMESTAMPTZ,
+    error                        TEXT,
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (job_id, state_revision)
+);
+
+CREATE INDEX IF NOT EXISTS ix_job_state_runs_runnable
+    ON ${s}.job_state_runs(status, created_at)
+    WHERE status IN ('reserved', 'waiting');
+CREATE INDEX IF NOT EXISTS ix_job_state_runs_job
+    ON ${s}.job_state_runs(job_id, state_revision);
+
+CREATE TABLE IF NOT EXISTS ${s}.job_journal_entries (
+    journal_entry_id TEXT PRIMARY KEY,
+    job_id           TEXT NOT NULL REFERENCES ${s}.jobs(job_id) ON DELETE CASCADE,
+    sequence         BIGINT NOT NULL CHECK (sequence > 0),
+    entry_kind       TEXT NOT NULL DEFAULT 'state_transition'
+                     CHECK (entry_kind = 'state_transition'),
+    definition_id    TEXT NOT NULL REFERENCES ${s}.job_generator_definitions(definition_id),
+    from_state       TEXT NOT NULL CHECK (BTRIM(from_state) <> ''),
+    to_state         TEXT NOT NULL CHECK (BTRIM(to_state) <> ''),
+    from_revision    BIGINT NOT NULL CHECK (from_revision > 0),
+    to_revision      BIGINT NOT NULL CHECK (to_revision > 0),
+    state_run_id     TEXT NOT NULL UNIQUE REFERENCES ${s}.job_state_runs(state_run_id),
+    session_id       TEXT NOT NULL,
+    outcome          TEXT,
+    summary          TEXT NOT NULL CHECK (BTRIM(summary) <> ''),
+    idempotency_key  TEXT NOT NULL UNIQUE CHECK (BTRIM(idempotency_key) <> ''),
+    transitioned_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (job_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS ix_job_journal_entries_job
+    ON ${s}.job_journal_entries(job_id, sequence);
+
+ALTER TABLE ${s}.job_sessions
+    ADD COLUMN IF NOT EXISTS state_run_id TEXT REFERENCES ${s}.job_state_runs(state_run_id);
+ALTER TABLE ${s}.job_sessions
+    DROP CONSTRAINT IF EXISTS job_sessions_status_check;
+ALTER TABLE ${s}.job_sessions
+    ADD CONSTRAINT job_sessions_status_check
+    CHECK (status IN ('reserved', 'unacked', 'active', 'failed', 'replaced', 'completed'));
+CREATE INDEX IF NOT EXISTS ix_job_sessions_state_run
+    ON ${s}.job_sessions(state_run_id);
+
+INSERT INTO ${s}.job_state_runs (
+    state_run_id, job_id, definition_id, state_name, state_revision,
+    status, session_id, started_at, error
+)
+SELECT
+    'legacy-state-run:' || j.job_id || ':' || j.state_revision,
+    j.job_id,
+    j.definition_id,
+    j.current_state,
+    j.state_revision,
+    CASE
+        WHEN js.status = 'active' THEN 'active'
+        WHEN js.status = 'unacked' THEN 'unacked'
+        WHEN js.status = 'failed' THEN 'failed'
+        ELSE 'reserved'
+    END,
+    js.session_id,
+    js.attached_at,
+    js.error
+FROM ${s}.jobs j
+LEFT JOIN ${s}.job_sessions js
+  ON js.job_id = j.job_id
+ AND js.is_current
+ON CONFLICT (job_id, state_revision) DO NOTHING;
+
+UPDATE ${s}.job_sessions js
+SET state_run_id = sr.state_run_id
+FROM ${s}.job_state_runs sr
+WHERE js.job_id = sr.job_id
+  AND js.is_current
+  AND sr.state_revision = (
+      SELECT j.state_revision FROM ${s}.jobs j WHERE j.job_id = js.job_id
+  )
+  AND js.state_run_id IS NULL;
 `;
 }

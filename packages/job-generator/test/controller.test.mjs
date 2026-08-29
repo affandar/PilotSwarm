@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { JobGeneratorController } from "../dist/controller.js";
+import { JobGeneratorController, PilotSwarmInitialSessionFactory } from "../dist/controller.js";
 
 const now = new Date();
 
@@ -351,4 +351,160 @@ test("controller rejects invalid continuous-loop settings", () => {
         }),
         /pollIntervalMs must be a positive integer/,
     );
+});
+
+test("rediscovered terminal Jobs are not reserved again", async () => {
+    const store = new FakeStore();
+    store.reconcileJobGeneratorDiscoveries = async () => [{
+        ...{
+            jobId: "job-completed",
+            generatorId: "generator-1",
+            definitionId: "definition-1",
+            jobKey: "stable-1",
+            sourcePayload: { id: 1 },
+            lifecycleState: "completed",
+            currentState: "Done",
+            stateRevision: 2,
+            currentStateEnteredAt: now,
+            firstSeenCycleId: "cycle-1",
+            lastSeenCycleId: "cycle-1",
+            firstDiscoveredAt: now,
+            lastDiscoveredAt: now,
+            sessionAttempts: 1,
+            sessionError: null,
+            createdAt: now,
+            updatedAt: now,
+        },
+        created: false,
+        needsSession: false,
+    }];
+    store.listJobsNeedingSession = async () => [];
+    store.reserveJobSession = async () => {
+        throw new Error("terminal Job must not be reserved");
+    };
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", evaluator()]]),
+        sessionFactory: {
+            async createInitialSession() {
+                throw new Error("terminal Job must not create a session");
+            },
+        },
+        workerId: "worker",
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await controller.runOnce();
+    assert.equal(store.cycles[0].status, "succeeded");
+});
+
+test("lifecycle session loads exact state Markdown, journal, and completion tool", async () => {
+    const created = [];
+    const sent = [];
+    const prepared = [];
+    const client = {
+        async createSession(config) {
+            created.push(config);
+            return {
+                async send(prompt, options) {
+                    sent.push({ prompt, options });
+                },
+            };
+        },
+    };
+    const factory = new PilotSwarmInitialSessionFactory(client, {
+        reader: {
+            async readStateMarkdown(source, sourcePath) {
+                if (source.sourceId !== "user-lifecycle") return null;
+                assert.equal(sourcePath, "automation/Example.Diagnosed.md");
+                return [
+                    "# Diagnose",
+                    "",
+                    "Use the repository evidence.",
+                    "",
+                    "## Possible next states",
+                    "- [Fixed](./Example.Fixed.md)",
+                ].join("\n");
+            },
+        },
+        store: {
+            async listJobJournal(jobId) {
+                assert.equal(jobId, "job-1");
+                return [{
+                    sequence: 1,
+                    fromState: "Initial",
+                    toState: "Diagnosed",
+                    outcome: "Diagnosed",
+                    sessionId: "session-previous",
+                    summary: "Collected the failing query and logs.",
+                }];
+            },
+            async prepareJobStateRun(input) {
+                prepared.push(input);
+                return {};
+            },
+        },
+    });
+
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: {
+            ...definition(),
+            lifecycleDefinition: {
+                name: "Example",
+                initialState: "Initial",
+                sources: [{
+                    sourceId: "user-lifecycle",
+                    owner: "user",
+                    filePrefix: "Example",
+                    basePath: "automation",
+                    repositoryUrl: "https://github.com/example/repository",
+                    resolvedCommit: "abc123",
+                }],
+                session: { toolNames: ["read_file"] },
+            },
+        },
+        job: {
+            jobId: "job-1",
+            generatorId: "generator-1",
+            definitionId: "definition-1",
+            jobKey: "source-42",
+            sourcePayload: { id: 42 },
+            lifecycleState: "pending_session",
+            currentState: "Diagnosed",
+            stateRevision: 2,
+            currentStateEnteredAt: now,
+            firstSeenCycleId: "cycle-1",
+            lastSeenCycleId: "cycle-1",
+            firstDiscoveredAt: now,
+            lastDiscoveredAt: now,
+            sessionAttempts: 1,
+            sessionError: null,
+            createdAt: now,
+            updatedAt: now,
+        },
+        association: {
+            associationId: "association-1",
+            jobId: "job-1",
+            sessionId: "session-2",
+            stateRunId: "state-run-2",
+            ordinal: 2,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+    });
+
+    assert.deepEqual(created[0].toolNames, ["read_file", "complete_state"]);
+    assert.equal(prepared[0].sessionId, "session-2");
+    assert.equal(prepared[0].sourcePath, "automation/Example.Diagnosed.md");
+    assert.deepEqual(prepared[0].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
+    assert.equal(prepared[0].terminal, false);
+    assert.match(sent[0].prompt, /Collected the failing query and logs/);
+    assert.match(sent[0].prompt, /Use the repository evidence/);
+    assert.match(sent[0].prompt, /Allowed outcomes: Fixed/);
+    assert.deepEqual(sent[0].options.clientMessageIds, ["job-generator:job-1:state:2"]);
 });

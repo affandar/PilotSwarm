@@ -3558,6 +3558,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // in-flight turn index so stopSessionTurn() can address the
             // turn-scoped stop queue (stopTurn.<turnIndex>).
             if (catalog) {
+                await catalog.acknowledgeJobSession(input.sessionId, workerNodeId);
                 await cmsRetryBestEffort(
                     `runTurn.preTurn updateSession state=running session=${input.sessionId}`,
                     () => catalog!.updateSession(input.sessionId, {

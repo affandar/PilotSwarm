@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
+import {
+    loadLifecycleStateMarkdown,
+    parseLifecycleStateTransitions,
+} from "pilotswarm-sdk";
 import type {
     ContextTier,
     JobGeneratorDefinitionRow,
     JobGeneratorRow,
+    JobJournalEntryRow,
     JobRow,
     JobSessionRow,
+    LifecycleStateReader,
+    LifecycleStateSource,
     PilotSwarmClient,
     ReasoningEffort,
     SessionCatalog,
@@ -23,6 +30,8 @@ export type JobGeneratorStore = Pick<
     | "attachJobSession"
     | "failJobSession"
     | "listJobSessions"
+    | "listJobJournal"
+    | "prepareJobStateRun"
 >;
 
 export interface InitialSessionFactory {
@@ -94,8 +103,72 @@ function renderPrompt(template: string, job: JobRow): string {
         .replaceAll("{job.id}", job.jobId);
 }
 
+function lifecycleConfig(definition: JobGeneratorDefinitionRow): Record<string, unknown> {
+    const root = object(definition.lifecycleDefinition);
+    const nested = object(root.lifecycle);
+    return Object.keys(nested).length > 0 ? nested : root;
+}
+
+function lifecycleSources(value: unknown): LifecycleStateSource[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((source) => object(source) as unknown as LifecycleStateSource);
+}
+
+function renderJournal(entries: readonly JobJournalEntryRow[]): string {
+    if (entries.length === 0) return "No previous state transitions.";
+    return entries.map((entry) => {
+        const outcome = entry.outcome ? ` via ${entry.outcome}` : "";
+        return [
+            `${entry.sequence}. ${entry.fromState} -> ${entry.toState}${outcome}`,
+            `   Session: ${entry.sessionId}`,
+            `   Summary: ${entry.summary}`,
+        ].join("\n");
+    }).join("\n");
+}
+
+function renderLifecyclePrompt(input: {
+    job: JobRow;
+    markdown: string;
+    journal: readonly JobJournalEntryRow[];
+    terminal: boolean;
+    outcomes: readonly { outcome: string; toState: string }[];
+}): string {
+    const completion = input.terminal
+        ? "When the state work is complete, call complete_state with a non-empty summary and omit outcome."
+        : [
+            "When the state work is complete, call complete_state exactly once with:",
+            "- outcome: one of the possible next states declared in the Markdown below",
+            "- summary: a non-empty durable handoff for the next state",
+            `Allowed outcomes: ${input.outcomes.map((entry) => entry.outcome).join(", ")}`,
+        ].join("\n");
+    return [
+        `Execute Job ${input.job.jobId} in state ${input.job.currentState}.`,
+        "",
+        "## Job source record",
+        `Key: ${input.job.jobKey}`,
+        "```json",
+        JSON.stringify(input.job.sourcePayload, null, 2),
+        "```",
+        "",
+        "## Durable Job journal",
+        renderJournal(input.journal),
+        "",
+        "## Current state instructions",
+        input.markdown,
+        "",
+        "## Completion protocol",
+        completion,
+    ].join("\n");
+}
+
 export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
-    constructor(private readonly client: PilotSwarmClient) {}
+    constructor(
+        private readonly client: PilotSwarmClient,
+        private readonly lifecycle?: {
+            store: Pick<SessionCatalog, "listJobJournal" | "prepareJobStateRun">;
+            reader: LifecycleStateReader;
+        },
+    ) {}
 
     async createInitialSession(input: {
         generator: JobGeneratorRow;
@@ -103,11 +176,57 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
         job: JobRow;
         association: JobSessionRow;
     }): Promise<void> {
-        const lifecycle = object(input.definition.lifecycleDefinition);
+        const lifecycle = lifecycleConfig(input.definition);
         const sessionConfig = object(lifecycle.session);
         const affinities = object(input.definition.affinities);
         const initialPrompt = stringValue(lifecycle.initialPrompt)
             ?? "Process JobGenerator item {job.key}:\n{job.payload}";
+        const sources = lifecycleSources(lifecycle.sources);
+        let prompt = renderPrompt(initialPrompt, input.job);
+        let lifecycleToolRequired = false;
+        if (sources.length > 0) {
+            if (!this.lifecycle) {
+                throw new Error("Lifecycle state reader and catalog are required for lifecycle sources");
+            }
+            const loaded = await loadLifecycleStateMarkdown({
+                lifecycleName: stringValue(lifecycle.name) ?? input.generator.name,
+                state: input.job.currentState,
+                sources,
+                reader: this.lifecycle.reader,
+            });
+            const transitions = parseLifecycleStateTransitions(loaded.markdown);
+            const journal = await this.lifecycle.store.listJobJournal(input.job.jobId);
+            const sourceCommit = loaded.source.resolvedCommit;
+            if (!sourceCommit) {
+                throw new Error(`Lifecycle source ${loaded.source.sourceId} is not pinned to a commit`);
+            }
+            await this.lifecycle.store.prepareJobStateRun({
+                sessionId: input.association.sessionId,
+                expectedState: input.job.currentState,
+                expectedRevision: input.job.stateRevision,
+                stateOwner: loaded.owner,
+                sourceId: loaded.source.sourceId,
+                sourcePath: loaded.sourcePath,
+                sourceCommit,
+                markdownSha256: loaded.sha256,
+                allowedOutcomes: transitions.outcomes.map((entry) => ({ ...entry })),
+                terminal: transitions.terminal,
+            });
+            prompt = renderLifecyclePrompt({
+                job: input.job,
+                markdown: loaded.markdown,
+                journal,
+                terminal: transitions.terminal,
+                outcomes: transitions.outcomes,
+            });
+            lifecycleToolRequired = true;
+        }
+        const configuredToolNames = Array.isArray(sessionConfig.toolNames)
+            ? sessionConfig.toolNames.filter((value): value is string => typeof value === "string")
+            : [];
+        const toolNames = lifecycleToolRequired
+            ? [...new Set([...configuredToolNames, "complete_state"])]
+            : configuredToolNames;
         const session = await this.client.createSession({
             sessionId: input.association.sessionId,
             model: stringValue(sessionConfig.model),
@@ -119,14 +238,12 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             promptLayering: stringValue(sessionConfig.agentName) ? { kind: "app-agent" } : undefined,
             repo: stringValue(sessionConfig.repo) ?? stringValue(affinities.repo),
             gitRef: stringValue(sessionConfig.gitRef) ?? stringValue(affinities.gitRef),
-            toolNames: Array.isArray(sessionConfig.toolNames)
-                ? sessionConfig.toolNames.filter((value): value is string => typeof value === "string")
-                : undefined,
+            toolNames: toolNames.length > 0 ? toolNames : undefined,
             owner: input.generator.owner,
         });
-        await session.send(renderPrompt(initialPrompt, input.job), {
+        await session.send(prompt, {
             bootstrap: true,
-            clientMessageIds: [`job-generator:${input.job.jobId}:initial`],
+            clientMessageIds: [`job-generator:${input.job.jobId}:state:${input.job.stateRevision}`],
         });
     }
 }
@@ -235,18 +352,20 @@ export class JobGeneratorController {
                     jobs.set(job.jobId, job);
                 }
                 for (const job of jobs.values()) {
+                    if (job.lifecycleState === "completed" || job.lifecycleState === "cancelled") continue;
                     const history = await this.store.listJobSessions(job.jobId);
                     const current = history.find((entry) => entry.isCurrent);
                     if (current?.status === "unacked" || current?.status === "active") continue;
-                    const association = current ?? await this.store.reserveJobSession(
-                        job.jobId,
-                        cycle.cycleId,
-                        this.workerId,
-                    );
-                    const jobDefinition = job.definitionId === definition.definitionId
-                        ? definition
-                        : await this.store.getJobGeneratorDefinition(job.definitionId);
+                    let association: JobSessionRow | undefined;
                     try {
+                        association = current ?? await this.store.reserveJobSession(
+                            job.jobId,
+                            cycle.cycleId,
+                            this.workerId,
+                        );
+                        const jobDefinition = job.definitionId === definition.definitionId
+                            ? definition
+                            : await this.store.getJobGeneratorDefinition(job.definitionId);
                         await this.sessionFactory!.createInitialSession({
                             generator,
                             definition: jobDefinition,
@@ -261,13 +380,15 @@ export class JobGeneratorController {
                         );
                     } catch (error) {
                         const failure = error instanceof Error ? error : new Error(String(error));
-                        await this.store.failJobSession(
-                            job.jobId,
-                            association.sessionId,
-                            cycle.cycleId,
-                            this.workerId,
-                            failure.message,
-                        );
+                        if (association) {
+                            await this.store.failJobSession(
+                                job.jobId,
+                                association.sessionId,
+                                cycle.cycleId,
+                                this.workerId,
+                                failure.message,
+                            );
+                        }
                         sessionErrors.push(failure);
                     }
                 }

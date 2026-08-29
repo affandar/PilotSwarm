@@ -92,7 +92,8 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobStateRunStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobStateOutcome, JobStateRunRow, JobJournalEntryRow, PrepareJobStateRunInput, CompleteJobStateInput, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
+export { createJobLifecycleTools } from "./job-lifecycle-tools.js";
 export type {
     FactStore,
     FactRecord,
@@ -354,6 +355,33 @@ export type {
     AgentPackageValidation,
     PackedAgentPackage,
 } from "./agent-package-format.js";
+
+// ─── Job lifecycle state loading ────────────────────────────────
+export {
+    LifecycleStateLoadError,
+    RemoteLifecycleStateReader,
+    lifecycleStateMarkdownPath,
+    loadLifecycleStateMarkdown,
+} from "./lifecycle-state-loader.js";
+export type {
+    LifecycleStateOwner,
+    LifecycleStateSourceKind,
+    LifecycleStateSource,
+    LifecycleStateReader,
+    RemoteLifecycleStateReaderOptions,
+    LoadLifecycleStateInput,
+    LoadedLifecycleState,
+    LifecycleStateLoadErrorCode,
+} from "./lifecycle-state-loader.js";
+export {
+    LifecycleStateTransitionError,
+    parseLifecycleStateTransitions,
+} from "./lifecycle-state-transitions.js";
+export type {
+    LifecycleStateOutcome,
+    LifecycleStateTransitionContract,
+} from "./lifecycle-state-transitions.js";
+
 export {
     publishAgentPackageDir,
     publishPackedAgentPackage,

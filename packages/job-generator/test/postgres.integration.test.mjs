@@ -11,7 +11,7 @@ const useManagedIdentity = ["1", "true", "yes", "on"].includes(
 );
 const aadUser = process.env.PILOTSWARM_DB_AAD_USER || process.env.PILOTSWARM_AAD_DB_USER;
 
-test("one continuous controller materializes due generators across owners", {
+test("controller materialization and durable Job lifecycle transitions", {
     skip: !catalogUrl,
     timeout: 120_000,
 }, async () => {
@@ -74,6 +74,151 @@ test("one continuous controller materializes due generators across owners", {
             assert.equal(cycles.length, 1);
             assert.equal(cycles[0].status, "succeeded");
         }
+
+        const lifecycleRegistration = await catalog.createJobGenerator({
+            name: "lifecycle-generator",
+            owner: { provider: "test", subject: "lifecycle-owner" },
+            cadenceSeconds: 60,
+            definition: {
+                sourceType: "kusto",
+                sourceConfig: { query: "SourceRecords | take 1" },
+                lifecycleDefinition: {
+                    lifecycle: {
+                        name: "Example",
+                        initialState: "Diagnosed",
+                    },
+                },
+            },
+        });
+        const lifecycleWorker = "lifecycle-controller";
+        const [claimed] = await catalog.claimDueJobGenerators(lifecycleWorker, 1, 300);
+        assert.equal(claimed.generatorId, lifecycleRegistration.generator.generatorId);
+        const { cycle } = await catalog.beginJobGeneratorCycle(
+            lifecycleRegistration.generator.generatorId,
+            lifecycleWorker,
+        );
+        const [job] = await catalog.reconcileJobGeneratorDiscoveries(cycle.cycleId, [{
+            key: "record-42",
+            payload: { id: 42 },
+        }]);
+        assert.equal(job.currentState, "Diagnosed");
+        assert.equal(job.stateRevision, 1);
+
+        const firstSession = await catalog.reserveJobSession(
+            job.jobId,
+            cycle.cycleId,
+            lifecycleWorker,
+            "lifecycle-session-1",
+        );
+        await catalog.prepareJobStateRun({
+            sessionId: firstSession.sessionId,
+            expectedState: "Diagnosed",
+            expectedRevision: 1,
+            stateOwner: "user",
+            sourceId: "user-lifecycle",
+            sourcePath: "Example.Diagnosed.md",
+            sourceCommit: "abc123",
+            markdownSha256: "a".repeat(64),
+            allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
+            terminal: false,
+        });
+        // The git worker can start the durable turn before the controller's
+        // post-send attach returns; acknowledgement must be race-safe.
+        await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
+        await catalog.attachJobSession(
+            job.jobId,
+            firstSession.sessionId,
+            cycle.cycleId,
+            lifecycleWorker,
+        );
+        await assert.rejects(
+            catalog.completeJobState({
+                sessionId: firstSession.sessionId,
+                outcome: "Rejected",
+                summary: "This must not commit.",
+            }),
+            /not allowed/,
+        );
+        const firstEntry = await catalog.completeJobState({
+            sessionId: firstSession.sessionId,
+            outcome: "Fixed",
+            summary: "Diagnosed the issue and applied the fix.",
+        });
+        assert.equal(firstEntry.sequence, 1);
+        assert.equal(firstEntry.fromState, "Diagnosed");
+        assert.equal(firstEntry.toState, "Fixed");
+        assert.equal((await catalog.getJob(job.jobId)).currentState, "Fixed");
+
+        const secondSession = await catalog.reserveJobSession(
+            job.jobId,
+            cycle.cycleId,
+            lifecycleWorker,
+            "lifecycle-session-2",
+        );
+        await catalog.prepareJobStateRun({
+            sessionId: secondSession.sessionId,
+            expectedState: "Fixed",
+            expectedRevision: 2,
+            stateOwner: "platform",
+            sourceId: "platform-lifecycle",
+            sourcePath: "Standard.Fixed.md",
+            sourceCommit: "def456",
+            markdownSha256: "b".repeat(64),
+            allowedOutcomes: [],
+            terminal: true,
+        });
+        await catalog.attachJobSession(
+            job.jobId,
+            secondSession.sessionId,
+            cycle.cycleId,
+            lifecycleWorker,
+        );
+        await catalog.acknowledgeJobSession(secondSession.sessionId, "git-worker-2");
+        await assert.rejects(
+            catalog.completeJobState({
+                sessionId: secondSession.sessionId,
+                outcome: "Done",
+                summary: "This must not commit.",
+            }),
+            /must not specify an outcome/,
+        );
+        const terminalEntry = await catalog.completeJobState({
+            sessionId: secondSession.sessionId,
+            summary: "Verified the fix and completed delivery.",
+        });
+        assert.equal(terminalEntry.sequence, 2);
+        assert.equal(terminalEntry.fromState, "Fixed");
+        assert.equal(terminalEntry.toState, "Fixed");
+        const completedJob = await catalog.getJob(job.jobId);
+        assert.equal(completedJob.lifecycleState, "completed");
+        assert.equal(completedJob.currentState, "Fixed");
+        assert.equal(
+            (await catalog.listJobSessions(job.jobId)).find((entry) => entry.sessionId === secondSession.sessionId).status,
+            "completed",
+        );
+        assert.deepEqual(
+            (await catalog.listJobJournal(job.jobId)).map((entry) => entry.summary),
+            [
+                "Diagnosed the issue and applied the fix.",
+                "Verified the fix and completed delivery.",
+            ],
+        );
+
+        const replay = await catalog.completeJobState({
+            sessionId: firstSession.sessionId,
+            outcome: "Fixed",
+            summary: "A replay does not append another entry.",
+        });
+        assert.equal(replay.journalEntryId, firstEntry.journalEntryId);
+        assert.equal((await catalog.listJobJournal(job.jobId)).length, 2);
+
+        await catalog.completeJobGeneratorCycle({
+            cycleId: cycle.cycleId,
+            workerId: lifecycleWorker,
+            status: "succeeded",
+            discoveredCount: 1,
+            createdCount: 1,
+        });
     } finally {
         await catalog.pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
         await catalog.close();

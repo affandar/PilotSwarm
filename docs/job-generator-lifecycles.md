@@ -2,9 +2,9 @@
 
 ## Purpose and audience
 
-This document defines the architecture and behavioral contract for composing,
-publishing, executing, and observing durable Job state machines. It is intended
-for PilotSwarm architects and engineers implementing lifecycle compilation,
+This document defines the architecture and behavioral contract for publishing,
+resolving, executing, and observing durable Job state machines. It is intended
+for PilotSwarm architects and engineers implementing lifecycle source loading,
 policy, persistence, workers, transitions, waits, notifications, APIs, and
 portal experiences. It also provides profile owners and advanced lifecycle
 authors with the conceptual model and ownership boundaries their definitions
@@ -20,22 +20,30 @@ documented in [JobGenerator controller](./job-generators.md).
 This document describes the proposed lifecycle architecture for durable Jobs
 created by a JobGenerator. Job discovery, exactly-once materialization,
 definition pinning, JobSession history, and durable `ask_user` suspension
-already exist. Lifecycle compilation, Job state execution, and transition
-history remain to be implemented.
+already exist. The first lifecycle implementation slice resolves and loads the
+one user- or platform-owned state Markdown file needed when a worker activates.
+Lifecycle policy, semantic graph validation, Job state execution, and
+Job journal persistence remain to be implemented.
 
 ## Summary
 
 A JobGenerator discovers source records and materializes durable Jobs. Each Job
 then progresses through an immutable, versioned state machine. State
-instructions are authored as Markdown, compiled into a normalized graph, and
-snapshotted into the JobGeneratorDefinition that created the Job.
+instructions are authored as Markdown and remain in their separately versioned
+user and platform sources. When a worker activates, it loads only the file
+matching the Job's durable current state.
 
-The compiler is generic. It does not hardcode a particular state machine or
-repository. Lifecycle profiles and policies determine which states exist, who
-may author them, and where extension boundaries occur. One profile may allow a
-repository author to control a diagnostic phase before handing off to a
-platform-owned delivery phase. Another profile may allow a completely
-user-defined state machine.
+The state loader is generic. It does not hardcode a particular state machine or
+repository. Each pinned source provides a safe base path and filename prefix,
+so the current state resolves conventionally to
+`<basePath>/<filePrefix>.<state>.md`. Lifecycle profiles and policies will
+determine which states exist, who may author them, and where extension
+boundaries occur.
+
+The Markdown files are the source of truth. The platform does not copy user and
+platform files into a combined package or publish a compiled state-machine JSON
+artifact. A later validation layer may parse pinned Markdown into an in-memory
+or cached normalized graph.
 
 Workers execute state runs, but the catalog remains authoritative for leases,
 allowed transitions, state revisions, idempotency, and history. A worker may
@@ -49,9 +57,8 @@ resume the same durable state run.
 2. A user supplies the domain-specific behavior for the extension points they
    are allowed to control, such as how to diagnose and propose a fix for a
    particular class of bug.
-3. The platform compiles the user-authored fragment, applies policy, and
-   combines it with the selected profile to instantiate one immutable,
-   concrete state machine for that domain.
+3. The platform pins the user source and selected profile versions without
+   copying their Markdown into a combined artifact.
 4. Workers execute the concrete state machine autonomously. The catalog, not
    an individual worker, remains authoritative for state and transitions.
 5. Execution alternates between active work, such as LLM prompts and tools,
@@ -80,6 +87,8 @@ required step between every state.
 - Dehydrate workflows during external-system, timer, and human-input waits.
 - Reuse durable session suspension for human-input gates.
 - Enforce transitions atomically in the catalog.
+- Preserve a durable Job journal between state runs so knowledge learned in one
+  state is available to the next.
 - Expose current state, waits, ownership, and history in the portal.
 - Notify responsible humans when their input blocks an otherwise autonomous
   workflow.
@@ -107,10 +116,12 @@ required step between every state.
 | State machine fragment | States and transitions authored by one owner, such as a repository team |
 | Lifecycle profile | Versioned state machine or composable fragment provided by a platform or repository |
 | Lifecycle policy | Rules describing allowed profiles, state ownership, extension points, and overrides |
-| Effective lifecycle | Fully composed, validated, immutable graph used by a Job |
+| Lifecycle state source | Immutable user or platform source containing conventionally named state Markdown |
+| Effective lifecycle | Pinned state sources, policy, profile versions, and any validated runtime projection used by a Job |
 | State run | One durable attempt to execute one Job state at one state revision |
 | JobSession | PilotSwarm session associated with a Job and normally with one state run |
 | Transition | Atomic movement from one official state to another |
+| Job journal | Ordered, append-only history whose state-transition entries carry a concise `summary` and source-session reference |
 | External wait | Dehydrated execution waiting for a system process, event, or timer |
 | Human wait | Dehydrated execution waiting for a person while the Job remains in its current state |
 | Attention request | Durable indication that named humans or principals are blocking progress |
@@ -171,17 +182,17 @@ Lifecycle authors describe:
 
 - What the agent should accomplish in the state.
 - When human input is required.
-- What evidence should be preserved.
+- What should be captured in the transition summary.
 - Which outcomes are possible.
 
 Authors do not instruct portal users to perform transitions, and they do not
 need to mention the runtime transition tool. During execution, the runtime
 injects a `complete_state` tool whose allowed outcomes are derived from the
-compiled graph.
+validated transition contract when that later validation layer is implemented.
 
 ### Ownership and composition
 
-State ownership is policy, not compiler behavior. For example, one policy may
+State ownership is policy, not loader behavior. For example, one policy may
 define:
 
 ```text
@@ -199,59 +210,77 @@ Under that policy:
 - The platform owns instructions and transitions from `FixProposed` onward.
 - A user-authored `FixProposed.md` or `Integrated.md` is rejected.
 
-This is not a universal compiler restriction. Another policy can select a
+This is not a universal loader restriction. Another policy can select a
 different handoff, different owned states, or allow a fully user-defined
 machine.
 
-## Compilation and publication
+## State source resolution, validation, and publication
 
-Publication converts mutable repository content into an immutable effective
-lifecycle.
+Publication converts mutable repository and platform content into an immutable
+definition by resolving mutable refs to immutable source coordinates. It does
+not copy or assemble the state files:
 
 ```text
-Lifecycle source coordinates
-          |
-          v
-Resolve Git ref to commit
-          |
-          v
-Load root and linked Markdown files
-          |
-          v
-Parse states, instructions, and transitions
-          |
-          v
-Apply lifecycle policy and ownership rules
-          |
-          v
-Compose selected lifecycle profiles
-          |
-          v
-Validate the effective graph
-          |
-          v
-Snapshot content, normalized graph, and digest
-          |
-          v
-Publish immutable JobGeneratorDefinition
+Job current state + pinned user/platform sources
+                       |
+                       v
+Derive one <filePrefix>.<state>.md candidate per source
+                       |
+                       v
+Read the exact file from each immutable source
+                       |
+                       v
+Require exactly one match and execute that Markdown
 ```
 
-### Compiler responsibilities
+For example, a Job in `FixProposed` may probe
+`HelloWorld.FixProposed.md` in its pinned user source and
+`StandardFix.FixProposed.md` in its pinned platform profile. If only the
+platform file exists, that exact file is executed. A missing state or a state
+present in multiple sources is an explicit error.
 
-The generic compiler must:
+The source reader returns `null` only when the candidate file is absent. Access,
+network, authentication, and source-integrity failures propagate rather than
+being treated as absence. Loaded Markdown retains its original content and line
+endings and may be cached by immutable source identity, path, and content
+digest.
 
-- Resolve and normalize state identities.
-- Parse the initial-state link.
-- Parse local next-state links.
-- Parse a declared external handoff state.
+### State loader responsibilities
+
+The initial generic loader must:
+
+- Accept the durable current state and pinned user/platform source metadata.
+- Derive a conventional candidate path for only that state in each source.
 - Reject duplicate or ambiguous state definitions.
+- Reject unsafe source-relative paths and filename prefixes.
+- Preserve exact Markdown content and line endings.
+- Return the owner, immutable source coordinates, source path, and content
+  digest with the loaded Markdown.
+- Distinguish a missing file from a source-read failure.
+
+The loader deliberately does not:
+
+- List or load unrelated state files.
+- Copy user and platform files into a combined package.
+- Parse `## Possible next states`.
+- Validate transition targets, reachability, terminals, or handoffs.
+- Enforce lifecycle profile ownership policy.
+- Produce or persist a compiled graph JSON document.
+
+### Deferred semantic validation
+
+A later publication stage may:
+
+- Parse the initial-state link from the root lifecycle document.
+- Parse local next-state links and declared external handoffs.
 - Reject missing local link targets.
-- Prevent links from escaping the lifecycle source directory.
 - Detect unreachable states.
 - Detect nonterminal states with no outgoing transition.
-- Validate terminal-state rules.
+- Validate terminal-state and ownership rules.
 - Produce stable outcome keys for runtime tools.
-- Produce a deterministic normalized graph and digest.
+
+Any normalized graph produced for these operations is a derived projection of
+the pinned Markdown sources, not a second authoring or storage contract.
 
 ### Policy responsibilities
 
@@ -276,70 +305,80 @@ repository-specific-triage@2
 custom-only@1
 ```
 
-A profile contains normalized state definitions, instructions, transitions,
-ownership metadata, and a digest. Updating a profile creates a new version;
-it does not mutate definitions or Jobs pinned to an older profile.
+A profile contains immutable state Markdown, a filename prefix, ownership
+metadata, and a version or digest. Updating a profile creates a new version; it
+does not mutate definitions or Jobs pinned to an older profile.
 
-### Published lifecycle snapshot
+### Published lifecycle pins
 
 The immutable JobGeneratorDefinition should retain:
 
 ```json
 {
   "lifecycle": {
-    "source": {
-      "repository": "service-repo",
-      "requestedGitRef": "refs/heads/users/demo/lifecycle",
-      "resolvedCommit": "<commit>",
-      "rootPath": "automation/lifecycles/Example.job.md",
-      "digest": "<source-digest>"
-    },
+    "name": "Example",
+    "initialState": "WorkDetailsGathered",
     "policy": {
       "name": "diagnostic-extension",
       "version": 1
     },
-    "profiles": [
+    "sources": [
       {
-        "name": "standard-fix-delivery",
+        "sourceId": "example-user",
+        "owner": "user",
+        "filePrefix": "Example",
+        "basePath": "automation/lifecycles/example",
+        "kind": "github",
+        "repositoryUrl": "https://github.com/example/service-repo",
+        "requestedRef": "refs/heads/users/demo/lifecycle",
+        "resolvedCommit": "<commit>",
+        "digest": "<source-digest>"
+      },
+      {
+        "sourceId": "standard-fix-delivery@1",
+        "owner": "platform",
+        "filePrefix": "StandardFix",
+        "basePath": "profiles/standard-fix",
+        "kind": "ado",
+        "repositoryUrl": "https://dev.azure.com/example/platform/_git/lifecycle-profiles",
+        "resolvedCommit": "<commit>",
         "version": 1,
         "digest": "<profile-digest>"
       }
     ],
-    "effectiveGraph": {
-      "entryState": "WorkDetailsGathered",
-      "states": {}
-    },
     "digest": "<effective-lifecycle-digest>"
   }
 }
 ```
 
-Runtime execution reads the snapshot. It does not fetch or reparse the branch
-on every state run.
+Runtime execution reads files only from these immutable pins. It never reads
+the mutable branch represented by `requestedGitRef`; source clients may cache
+files by the resolved commit or profile version.
 
 ## Required components
 
 | Component | Responsibility |
 |---|---|
 | Lifecycle source client | Resolve Git refs and read lifecycle files using service authentication |
-| State-machine compiler | Parse Markdown and produce a deterministic normalized graph |
+| Lifecycle state loader | Resolve and read the one pinned `Prefix.State.md` needed by an activated worker |
+| Lifecycle semantic validator | Later parse and validate transitions as a derived runtime projection |
 | Lifecycle policy evaluator | Enforce state catalogs, ownership, profiles, and extension boundaries |
 | Lifecycle profile registry | Store versioned platform and repository state-machine fragments |
-| Lifecycle publisher | Compose and snapshot the effective lifecycle into a definition |
+| Lifecycle publisher | Resolve mutable refs and pin source, profile, policy, and entry-state metadata in a definition |
 | JobGenerator controller | Discover records, reconcile exactly-once Jobs, and initialize lifecycle execution |
 | Job catalog | Store current state, revisions, leases, runs, transitions, and session associations |
 | State-run worker | Execute one leased state run and create or resume its JobSession |
 | Session runtime | Run agent instructions and provide durable wait and `ask_user` suspension |
 | External-operation adapters | Start and observe builds, tests, deployments, and other asynchronous system work |
-| Transition tool | Request one compiler-approved state outcome |
+| Transition tool | Request one validator-approved state outcome |
 | Attention dispatcher | Persist, deduplicate, deliver, and resolve human-attention notifications |
 | Portal | Register lifecycle sources and display state, waits, ownership, attention, and history |
 
 These are logical responsibilities. They do not all require separate services.
-The compiler and publisher can live with the management API, and state-run
-leasing can use the existing PostgreSQL catalog. Attention delivery should use
-a durable outbox so a notification failure cannot roll back or duplicate a
-Job-state transaction.
+The loader, validator, and publisher can live with the management API or worker
+SDK, and state-run leasing can use the existing PostgreSQL catalog. Attention
+delivery should use a durable outbox so a notification failure cannot roll
+back or duplicate a Job-state transaction.
 
 ## End-to-end Job lifecycle
 
@@ -354,8 +393,9 @@ The author supplies:
 - A lifecycle policy or profile selection when it is not supplied by a
   platform default.
 
-The server resolves the lifecycle source, compiles and validates it, composes
-the selected profiles, and publishes an immutable JobGeneratorDefinition.
+The server resolves mutable lifecycle refs, pins the selected policy and
+profile versions, and publishes an immutable JobGeneratorDefinition. Semantic
+graph validation may be added as a later publication step.
 
 ### 2. Discover source records
 
@@ -381,8 +421,9 @@ lifecycle.
 
 Any eligible worker may lease the runnable state run. The worker:
 
-1. Loads the Job and its pinned effective lifecycle.
-2. Loads the current state's snapshotted instructions.
+1. Loads the Job and its pinned lifecycle sources.
+2. Derives the current state's candidate path in each source and loads the
+   exact Markdown from the one source that supplies it.
 3. Creates or resumes the JobSession associated with the state run.
 4. Injects the runtime state-completion protocol.
 5. Executes the session.
@@ -460,9 +501,8 @@ allowed outcomes:
 
 ```text
 complete_state(
-  outcome: one of the compiled outcome keys,
-  reason: string,
-  evidence?: object
+  outcome: one of the validated outcome keys,
+  summary: string
 )
 ```
 
@@ -474,6 +514,12 @@ then applies the transition with a state-revision compare-and-swap. If the
 state or revision changed, the request is stale and fails without modifying
 the Job.
 
+State completion also produces one required text `summary`. The catalog writes
+the summary as part of the same transaction that commits the transition. The
+transition retains the concise context needed by the next state, while its
+`session_id` links to the authoritative full execution record when additional
+detail is needed. Structured evidence and artifact references are deferred.
+
 If an agent returns prose without successfully invoking `complete_state`, the
 state remains incomplete. The platform does not infer a transition from text.
 
@@ -481,16 +527,24 @@ state remains incomplete. The platform does not infer a transition from text.
 
 A successful transition:
 
-- Appends a Job transition record.
+- Appends a state-transition entry to the Job journal.
 - Completes the source state run.
 - Updates the Job's current state and revision.
-- Reserves the next state run when the destination is nonterminal.
+- Reserves the next state run with a reference to the predecessor journal entry
+  when the destination is nonterminal.
 - Projects the new state into JobGenerator hierarchy reads.
 
 The next state normally receives a new JobSession. This keeps state execution
 history ordered and lets each session retain the exact instructions and tools
-used for that state revision. A human wait resumes the existing session for
-the same state run rather than creating a new one.
+used for that state revision. Before executing the next state's Markdown, the
+runtime injects the ordered Job journal, including each prior transition
+summary and originating session reference. Workers can retrieve additional
+detail from a durable source session when needed. A human wait resumes the
+existing session for the same state run rather than creating a new one.
+
+This handoff must not depend on an in-memory worker conversation. A different
+worker must be able to start the next state after a restart and receive the
+same persisted context.
 
 ### 9. Cross an ownership boundary
 
@@ -594,6 +648,7 @@ state_revision
 state_owner
 status
 session_id
+predecessor_journal_entry_id
 attempt
 wait_kind
 wait_reason
@@ -608,19 +663,25 @@ error
 
 There is at most one active state run for a Job state revision. A session ID is
 reserved before starting session execution so retries retain a durable
-association.
+association. Except for the initial state run,
+`predecessor_journal_entry_id` identifies the journal entry that caused this
+run to be created.
 
 `wait_kind` distinguishes external-system, timer, and human-input waits.
 System-specific correlation data belongs in `external_reference`; credentials
 and secrets do not.
 
-### Transitions
+### Job journal
 
-Add an append-only `job_transitions` table:
+Add an ordered, append-only `job_journal_entries` table. The MVP requires
+state-transition entries, while the journal can later support other durable Job
+events:
 
 ```text
-transition_id
+journal_entry_id
 job_id
+sequence
+entry_kind
 definition_id
 from_state
 to_state
@@ -629,14 +690,24 @@ to_revision
 state_run_id
 session_id
 outcome
-reason
-evidence
+summary
 idempotency_key
 transitioned_at
 ```
 
-The transition and Job update occur in one database transaction. A unique
+The journal append and Job update occur in one database transaction. A unique
 idempotency key prevents a replayed tool call from creating duplicate history.
+A state-transition journal entry is also the durable state-to-state handoff:
+
+- `outcome` records the transition outcome used to select the destination.
+- `summary` is the single free-form text field describing what the state
+  learned or produced for the next state.
+- `session_id` links to the full prompts, responses, tools, and pending or
+  answered questions from the completed state when more detail is needed.
+
+The next state runner loads the ordered Job journal before creating or resuming
+its session. This makes prior summaries available across worker changes,
+process restarts, and ownership handoffs.
 
 ### Atomic transition
 
@@ -696,10 +767,10 @@ The management API needs:
 |---|---|---|
 | `POST` | `/api/v1/job-generator-lifecycles/validate` | Resolve and preview a lifecycle without publishing |
 | `POST` | `/api/v1/job-generators` | Register a generator and publish definition version 1 |
-| `POST` | `/api/v1/job-generators/{id}/definitions` | Publish a new immutable definition and lifecycle snapshot |
+| `POST` | `/api/v1/job-generators/{id}/definitions` | Publish a new immutable definition with pinned lifecycle sources |
 | `GET` | `/api/v1/job-generator-definitions/{id}` | Read source coordinates, profiles, graph, and digest |
 | `GET` | `/api/v1/jobs/{id}` | Read current state, revision, status, and active state run |
-| `GET` | `/api/v1/jobs/{id}/transitions` | Read ordered transition history |
+| `GET` | `/api/v1/jobs/{id}/journal` | Read the ordered Job journal |
 | `GET` | `/api/v1/jobs/{id}/state-runs` | Read state execution and session history |
 | `GET` | `/api/v1/attention-requests` | List unresolved work blocking the current principal |
 
@@ -713,6 +784,7 @@ Internal catalog operations are also required for:
 - Acknowledging state-run execution.
 - Marking a state run as waiting or failed.
 - Completing a state with an allowed outcome.
+- Loading the Job journal and referenced source-session context for a state run.
 - Recovering expired state-run leases.
 - Creating and resolving attention requests.
 - Claiming and completing notification-outbox deliveries.
@@ -754,8 +826,9 @@ State owner
 Pending transition or outcome
 Pending human question
 Current state session
+Previous-state transition summary
 Pinned lifecycle digest
-Transition history
+Job journal
 ```
 
 An input-required Job could appear as:
@@ -803,6 +876,9 @@ Status: Active
 
 State-run leases expire. Another worker can reclaim the run and use its durable
 session association and stable message IDs to resume or safely retry.
+When a transition has already committed, the successor run reconstructs its
+input context from the Job journal and referenced source sessions rather than
+from the failed worker's memory.
 
 ### Human waits
 
@@ -850,12 +926,15 @@ explicit error rather than guessing a transition.
 - Runtime tools derive the Job identity from the session association, not tool
   arguments supplied by the agent.
 - Transition targets come from the pinned effective graph.
-- All state changes are audited in append-only transition history.
+- All state changes are audited in the append-only Job journal.
+- State-to-state context uses concise journal summaries and source-session
+  references; it does not copy secrets or entire session transcripts into
+  every journal entry.
 - Attention reads are scoped to the blocking principal or an administrator.
 - Notification destinations are stored as protected references rather than
   embedding webhook secrets in lifecycle definitions.
 - Point reads retain existing JobGenerator ownership and administrator checks.
-- Secrets and source credentials are not stored in lifecycle snapshots.
+- Secrets and source credentials are not stored in lifecycle source metadata.
 
 ## Example lifecycle
 
@@ -867,7 +946,8 @@ WorkDetailsGathered <-> Diagnosed -> FixProposed
 
 `WorkDetailsGathered` invokes durable `ask_user` before allowing the transition
 to `Diagnosed`. The Job stays in `WorkDetailsGathered` while blocked. After the
-answer, the session resumes, records evidence, and completes the state.
+answer, the session resumes, records a transition summary, and completes the
+state.
 
 `Diagnosed` produces the demonstration result and hands off to a
 platform-owned profile:
@@ -878,7 +958,7 @@ FixProposed -> Integrated
 
 The initial platform profile may use this minimal transition for plumbing
 validation. A later version can insert additional standard delivery states
-without changing the user fragment or the compiler.
+without changing the user fragment or state loader.
 
 The demonstration proves:
 
@@ -894,23 +974,27 @@ The demonstration proves:
 
 ## Implementation sequence
 
-1. Implement the compiler, lifecycle policy model, and profile registry.
-2. Extend definition publication to resolve, compose, and snapshot lifecycle
-   sources.
-3. Add Job current-state fields, state runs, transitions, and catalog
+1. Implement exact current-state Markdown loading from separate pinned user and
+   platform sources.
+2. Implement the lifecycle policy model and versioned profile registry.
+3. Extend definition publication to resolve and pin lifecycle source, profile,
+   policy, and entry-state metadata.
+4. Add Job current-state fields, state runs, transitions, and catalog
    operations.
-4. Extend workers to lease and execute state runs.
-5. Inject `complete_state` and connect it to atomic catalog transitions.
-6. Add durable external-wait projection and adapters for asynchronous system
+5. Extend workers to lease state runs and execute the exact Markdown matching
+   the Job's durable current state.
+6. Add semantic graph validation, inject `complete_state`, and connect it to
+   atomic catalog transitions.
+7. Add durable external-wait projection and adapters for asynchronous system
    work.
-7. Project existing `ask_user` suspension onto Job and state-run status.
-8. Add attention requests, notification outbox delivery, and a blocked-work
+8. Project existing `ask_user` suspension onto Job and state-run status.
+9. Add attention requests, notification outbox delivery, and a blocked-work
    dashboard.
-9. Add lifecycle registration, validation preview, and Job history to the
+10. Add lifecycle registration, validation preview, and Job history to the
    portal.
-10. Run the end-to-end demonstration and add integration coverage for restart,
+11. Run the end-to-end demonstration and add integration coverage for restart,
    replay, stale revision, and ownership-boundary behavior.
 
-These slices should remain independently deployable. The compiler and
-persistence can land before workers execute state machines, and worker support
-can land before the portal exposes the full lifecycle visualization.
+These slices should remain independently deployable. State loading can land
+before workers execute state machines, and worker support can land before the
+portal exposes the full lifecycle visualization.

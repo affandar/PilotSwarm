@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import {
     PgSessionCatalog,
     PilotSwarmClient,
+    RemoteLifecycleStateReader,
 } from "pilotswarm-sdk";
 import { JobGeneratorController, PilotSwarmInitialSessionFactory } from "./controller.js";
 import { createEvaluatorsFromEnv } from "./providers.js";
@@ -65,7 +66,16 @@ export async function runJobGenerator(): Promise<void> {
     const controller = new JobGeneratorController({
         store: catalog,
         evaluators,
-        sessionFactory: client ? new PilotSwarmInitialSessionFactory(client) : undefined,
+        sessionFactory: client
+            ? new PilotSwarmInitialSessionFactory(client, {
+                store: catalog,
+                reader: new RemoteLifecycleStateReader({
+                    githubToken: process.env.JOBGEN_GITHUB_TOKEN || process.env.GITHUB_TOKEN,
+                    adoToken: process.env.JOBGEN_ADO_TOKEN,
+                    adoPat: process.env.JOBGEN_ADO_PAT || process.env.AZURE_DEVOPS_EXT_PAT,
+                }),
+            })
+            : undefined,
         induceSessions,
         workerId,
         pollIntervalMs,

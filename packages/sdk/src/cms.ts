@@ -969,7 +969,15 @@ export interface FleetDirectiveRow {
 export type JobGeneratorSourceType = "ado_wiql" | "icm" | "kusto";
 export type JobGeneratorOperationalState = "enabled" | "paused" | "disabled";
 export type JobLifecycleState = "pending_session" | "active" | "blocked" | "completed" | "cancelled";
-export type JobSessionStatus = "reserved" | "unacked" | "active" | "failed" | "replaced";
+export type JobSessionStatus = "reserved" | "unacked" | "active" | "failed" | "replaced" | "completed";
+export type JobStateRunStatus =
+    | "reserved"
+    | "unacked"
+    | "active"
+    | "waiting"
+    | "input_required"
+    | "completed"
+    | "failed";
 
 export interface JobGeneratorRow {
     generatorId: string;
@@ -1028,6 +1036,9 @@ export interface JobRow {
     jobKey: string;
     sourcePayload: Record<string, unknown>;
     lifecycleState: JobLifecycleState;
+    currentState: string;
+    stateRevision: number;
+    currentStateEnteredAt: Date;
     firstSeenCycleId: string;
     lastSeenCycleId: string;
     firstDiscoveredAt: Date;
@@ -1042,6 +1053,7 @@ export interface JobSessionRow {
     associationId: string;
     jobId: string;
     sessionId: string;
+    stateRunId: string | null;
     ordinal: number;
     isCurrent: boolean;
     status: JobSessionStatus;
@@ -1049,6 +1061,95 @@ export interface JobSessionRow {
     reservedAt: Date;
     attachedAt: Date | null;
     endedAt: Date | null;
+}
+
+export interface JobStateOutcome {
+    outcome: string;
+    toState: string;
+}
+
+export interface JobStateRunRow {
+    stateRunId: string;
+    jobId: string;
+    definitionId: string;
+    stateName: string;
+    stateRevision: number;
+    stateOwner: "user" | "platform" | null;
+    status: JobStateRunStatus;
+    sessionId: string | null;
+    predecessorJournalEntryId: string | null;
+    sourceId: string | null;
+    sourcePath: string | null;
+    sourceCommit: string | null;
+    markdownSha256: string | null;
+    allowedOutcomes: JobStateOutcome[];
+    terminal: boolean | null;
+    attempt: number;
+    leaseOwner: string | null;
+    leaseExpiresAt: Date | null;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    error: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface JobJournalEntryRow {
+    journalEntryId: string;
+    jobId: string;
+    sequence: number;
+    entryKind: "state_transition";
+    definitionId: string;
+    fromState: string;
+    toState: string;
+    fromRevision: number;
+    toRevision: number;
+    stateRunId: string;
+    sessionId: string;
+    outcome: string | null;
+    summary: string;
+    idempotencyKey: string;
+    transitionedAt: Date;
+}
+
+export interface PrepareJobStateRunInput {
+    sessionId: string;
+    expectedState: string;
+    expectedRevision: number;
+    stateOwner: "user" | "platform";
+    sourceId: string;
+    sourcePath: string;
+    sourceCommit: string;
+    markdownSha256: string;
+    allowedOutcomes: JobStateOutcome[];
+    terminal: boolean;
+}
+
+const JOB_STATE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+function jobLifecycleConfig(definition: Record<string, unknown>): Record<string, unknown> {
+    const nested = definition.lifecycle;
+    return nested && typeof nested === "object" && !Array.isArray(nested)
+        && Object.keys(nested).length > 0
+        ? nested as Record<string, unknown>
+        : definition;
+}
+
+function validateJobLifecycleDefinition(definition: Record<string, unknown>): void {
+    const lifecycle = jobLifecycleConfig(definition);
+    if (lifecycle.initialState === undefined) return;
+    if (typeof lifecycle.initialState !== "string" || !JOB_STATE_NAME_RE.test(lifecycle.initialState)) {
+        throw new Error(
+            "JobGenerator lifecycle initialState must start with a letter and contain only letters, digits, hyphens, or underscores",
+        );
+    }
+}
+
+export interface CompleteJobStateInput {
+    sessionId: string;
+    outcome?: string | null;
+    summary: string;
+    idempotencyKey?: string;
 }
 
 export interface JobDiscovery {
@@ -1230,9 +1331,12 @@ export interface SessionCatalog {
     reserveJobSession(jobId: string, cycleId: string, workerId: string, sessionId?: string): Promise<JobSessionRow>;
     replaceJobSession(jobId: string, sessionId?: string): Promise<JobSessionRow>;
     attachJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string): Promise<void>;
-    acknowledgeJobSession(sessionId: string): Promise<void>;
+    prepareJobStateRun(input: PrepareJobStateRunInput): Promise<JobStateRunRow>;
+    acknowledgeJobSession(sessionId: string, workerId?: string): Promise<void>;
     failJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string, error: string): Promise<void>;
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
+    listJobJournal(jobId: string): Promise<JobJournalEntryRow[]>;
+    completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow>;
 
     // ── Agent packages (migration 0038) ──────────────────────
 
@@ -1886,6 +1990,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!Number.isInteger(input.cadenceSeconds) || input.cadenceSeconds <= 0) {
             throw new Error("JobGenerator cadenceSeconds must be a positive integer");
         }
+        validateJobLifecycleDefinition(input.definition.lifecycleDefinition ?? {});
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -1975,6 +2080,7 @@ export class PgSessionCatalog implements SessionCatalog {
         guardrails?: Record<string, unknown>;
         createdBy?: string | null;
     }): Promise<JobGeneratorDefinitionRow> {
+        validateJobLifecycleDefinition(input.lifecycleDefinition ?? {});
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -2254,14 +2360,26 @@ export class PgSessionCatalog implements SessionCatalog {
             );
             const cycle = cycleResult.rows[0];
             if (!cycle) throw new Error(`Running JobGenerator cycle not found: ${cycleId}`);
+            const definitionResult = await client.query(
+                `SELECT lifecycle_definition
+                 FROM "${this.sql.schema}".job_generator_definitions
+                 WHERE definition_id = $1`,
+                [cycle.definition_id],
+            );
+            const lifecycleDefinition = definitionResult.rows[0]?.lifecycle_definition ?? {};
+            const lifecycle = jobLifecycleConfig(lifecycleDefinition);
+            const configuredInitialState = typeof lifecycle.initialState === "string"
+                ? lifecycle.initialState.trim()
+                : "";
+            const initialState = configuredInitialState || "Initial";
             const reconciled: ReconciledJob[] = [];
             for (const [jobKey, payload] of unique) {
                 const { rows } = await client.query(
                     `WITH upserted AS (
                          INSERT INTO "${this.sql.schema}".jobs (
                              job_id, generator_id, definition_id, job_key, source_payload,
-                             first_seen_cycle_id, last_seen_cycle_id
-                         ) VALUES ($1,$2,$3,$4,$5,$6,$6)
+                             current_state, first_seen_cycle_id, last_seen_cycle_id
+                         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
                          ON CONFLICT (generator_id, job_key) DO UPDATE SET
                              source_payload = EXCLUDED.source_payload,
                              last_seen_cycle_id = EXCLUDED.last_seen_cycle_id,
@@ -2270,7 +2388,8 @@ export class PgSessionCatalog implements SessionCatalog {
                          RETURNING *, (xmax = 0) AS was_created
                      )
                      SELECT upserted.*,
-                            NOT EXISTS (
+                            upserted.lifecycle_state NOT IN ('completed', 'cancelled')
+                            AND NOT EXISTS (
                                 SELECT 1 FROM "${this.sql.schema}".job_sessions js
                                 WHERE js.job_id = upserted.job_id AND js.is_current
                             ) AS needs_session
@@ -2281,6 +2400,7 @@ export class PgSessionCatalog implements SessionCatalog {
                         cycle.definition_id,
                         jobKey,
                         JSON.stringify(payload),
+                        initialState,
                         cycleId,
                     ],
                 );
@@ -2345,7 +2465,7 @@ export class PgSessionCatalog implements SessionCatalog {
             await client.query("BEGIN");
             const job = fence
                 ? await client.query(
-                    `SELECT j.job_id
+                    `SELECT j.*
                      FROM "${this.sql.schema}".jobs j
                      JOIN "${this.sql.schema}".job_generator_cycles c
                        ON c.cycle_id = $2
@@ -2361,10 +2481,35 @@ export class PgSessionCatalog implements SessionCatalog {
                     [jobId, fence.cycleId, fence.workerId],
                 )
                 : await client.query(
-                    `SELECT job_id FROM "${this.sql.schema}".jobs WHERE job_id = $1 FOR UPDATE`,
+                    `SELECT * FROM "${this.sql.schema}".jobs WHERE job_id = $1 FOR UPDATE`,
                     [jobId],
                 );
             if (job.rowCount !== 1) throw new Error(`Job not found: ${jobId}`);
+            if (job.rows[0].lifecycle_state === "completed" || job.rows[0].lifecycle_state === "cancelled") {
+                throw new Error(`Job is terminal: ${jobId}`);
+            }
+            let stateRunResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_state_runs
+                 WHERE job_id = $1 AND state_revision = $2
+                 FOR UPDATE`,
+                [jobId, job.rows[0].state_revision],
+            );
+            if (!stateRunResult.rows[0]) {
+                stateRunResult = await client.query(
+                    `INSERT INTO "${this.sql.schema}".job_state_runs (
+                         state_run_id, job_id, definition_id, state_name, state_revision
+                     ) VALUES ($1,$2,$3,$4,$5)
+                     RETURNING *`,
+                    [
+                        randomUUID(),
+                        jobId,
+                        job.rows[0].definition_id,
+                        job.rows[0].current_state,
+                        job.rows[0].state_revision,
+                    ],
+                );
+            }
+            const stateRun = stateRunResult.rows[0];
             const current = await client.query(
                 `SELECT * FROM "${this.sql.schema}".job_sessions
                  WHERE job_id = $1 AND is_current FOR UPDATE`,
@@ -2389,9 +2534,17 @@ export class PgSessionCatalog implements SessionCatalog {
             );
             const { rows } = await client.query(
                 `INSERT INTO "${this.sql.schema}".job_sessions (
-                     association_id, job_id, session_id, ordinal, is_current, status
-                 ) VALUES ($1,$2,$3,$4,TRUE,'reserved') RETURNING *`,
-                [randomUUID(), jobId, sessionId, Number(ordinalResult.rows[0].ordinal)],
+                     association_id, job_id, session_id, state_run_id, ordinal, is_current, status
+                 ) VALUES ($1,$2,$3,$4,$5,TRUE,'reserved') RETURNING *`,
+                [randomUUID(), jobId, sessionId, stateRun.state_run_id, Number(ordinalResult.rows[0].ordinal)],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_state_runs
+                 SET attempt = CASE WHEN session_id IS NULL THEN attempt ELSE attempt + 1 END,
+                     session_id = $2, status = 'reserved', lease_owner = NULL,
+                     lease_expires_at = NULL, error = NULL, updated_at = now()
+                 WHERE state_run_id = $1`,
+                [stateRun.state_run_id, sessionId],
             );
             await client.query(
                 `UPDATE "${this.sql.schema}".jobs
@@ -2410,11 +2563,71 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
+    async prepareJobStateRun(input: PrepareJobStateRunInput): Promise<JobStateRunRow> {
+        const sourceId = input.sourceId.trim();
+        const sourcePath = input.sourcePath.trim();
+        const markdownSha256 = input.markdownSha256.trim();
+        const sourceCommit = input.sourceCommit?.trim();
+        if (!sourceId || !sourcePath || !sourceCommit || !/^[0-9a-f]{64}$/i.test(markdownSha256)) {
+            throw new Error("Prepared Job state requires sourceId, sourcePath, sourceCommit, and a SHA-256 digest");
+        }
+        if (!JOB_STATE_NAME_RE.test(input.expectedState)
+            || !Number.isInteger(input.expectedRevision)
+            || input.expectedRevision <= 0) {
+            throw new Error("Prepared Job state requires a valid expected state and revision");
+        }
+        if (!Array.isArray(input.allowedOutcomes)) {
+            throw new Error("Prepared Job state allowedOutcomes must be an array");
+        }
+        const seen = new Set<string>();
+        const allowedOutcomes = input.allowedOutcomes.map((entry) => {
+            const outcome = String(entry?.outcome ?? "").trim();
+            const toState = String(entry?.toState ?? "").trim();
+            if (!outcome || !toState) throw new Error("Each Job state outcome requires outcome and toState");
+            if (seen.has(outcome)) throw new Error(`Duplicate Job state outcome: ${outcome}`);
+            seen.add(outcome);
+            return { outcome, toState };
+        });
+        if (input.terminal !== (allowedOutcomes.length === 0)) {
+            throw new Error("Terminal Job states must have no allowed outcomes");
+        }
+        const { rows } = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_state_runs sr
+             SET state_owner = $2, source_id = $3, source_path = $4,
+                 source_commit = $5, markdown_sha256 = $6,
+                 allowed_outcomes = $7, terminal = $8, status = 'reserved',
+                 error = NULL, updated_at = now()
+             FROM "${this.sql.schema}".job_sessions js
+             WHERE js.session_id = $1
+               AND js.is_current
+               AND js.state_run_id = sr.state_run_id
+               AND sr.state_name = $9
+               AND sr.state_revision = $10
+               AND sr.status IN ('reserved', 'unacked', 'failed')
+             RETURNING sr.*`,
+            [
+                input.sessionId,
+                input.stateOwner,
+                sourceId,
+                sourcePath,
+                sourceCommit,
+                markdownSha256.toLowerCase(),
+                JSON.stringify(allowedOutcomes),
+                input.terminal,
+                input.expectedState,
+                input.expectedRevision,
+            ],
+        );
+        if (!rows[0]) throw new Error(`Current Job state run not found for session ${input.sessionId}`);
+        return rowToJobStateRun(rows[0]);
+    }
+
     async attachJobSession(jobId: string, sessionId: string, cycleId: string, workerId: string): Promise<void> {
         const result = await this.pool.query(
             `WITH attached AS (
                  UPDATE "${this.sql.schema}".job_sessions js
-                 SET status = 'unacked', error = NULL, attached_at = COALESCE(attached_at, now())
+                 SET status = CASE WHEN status = 'active' THEN 'active' ELSE 'unacked' END,
+                     error = NULL, attached_at = COALESCE(attached_at, now())
                  WHERE js.job_id = $1 AND js.session_id = $2 AND js.is_current
                    AND EXISTS (
                        SELECT 1
@@ -2430,29 +2643,52 @@ export class PgSessionCatalog implements SessionCatalog {
                         AND g.lease_expires_at > now()
                        WHERE j.job_id = js.job_id
                    )
-                 RETURNING js.job_id
+                 RETURNING js.job_id, js.state_run_id
+             ), attached_run AS (
+                 UPDATE "${this.sql.schema}".job_state_runs sr
+                 SET status = CASE WHEN status = 'active' THEN 'active' ELSE 'unacked' END,
+                     error = NULL, updated_at = now()
+                 FROM attached
+                 WHERE sr.state_run_id = attached.state_run_id
+                   AND sr.status IN ('reserved', 'unacked', 'active', 'failed')
+                 RETURNING sr.job_id, sr.status
              )
              UPDATE "${this.sql.schema}".jobs j
-             SET lifecycle_state = 'pending_session', session_error = NULL, updated_at = now()
-             FROM attached WHERE j.job_id = attached.job_id`,
+             SET lifecycle_state = CASE
+                     WHEN attached_run.status = 'active' THEN 'active'
+                     ELSE 'pending_session'
+                 END,
+                 session_error = NULL, updated_at = now()
+             FROM attached_run WHERE j.job_id = attached_run.job_id`,
             [jobId, sessionId, cycleId, workerId],
         );
         if ((result.rowCount ?? 0) !== 1) throw new Error("Current Job session association not found");
     }
 
-    async acknowledgeJobSession(sessionId: string): Promise<void> {
+    async acknowledgeJobSession(sessionId: string, workerId?: string): Promise<void> {
         await this.pool.query(
             `WITH acknowledged AS (
                  UPDATE "${this.sql.schema}".job_sessions
                  SET status = 'active'
-                 WHERE session_id = $1 AND is_current AND status = 'unacked'
-                 RETURNING job_id
+                 WHERE session_id = $1 AND is_current AND status IN ('reserved', 'unacked', 'active')
+                 RETURNING job_id, state_run_id
+             ), activated_run AS (
+                 UPDATE "${this.sql.schema}".job_state_runs sr
+                 SET status = 'active',
+                     lease_owner = COALESCE(NULLIF(BTRIM($2), ''), lease_owner),
+                     lease_expires_at = now() + interval '1 hour',
+                     started_at = COALESCE(started_at, now()),
+                     updated_at = now()
+                 FROM acknowledged
+                 WHERE sr.state_run_id = acknowledged.state_run_id
+                   AND sr.status IN ('reserved', 'unacked', 'active')
+                 RETURNING sr.job_id
              )
              UPDATE "${this.sql.schema}".jobs j
              SET lifecycle_state = 'active', session_error = NULL, updated_at = now()
-             FROM acknowledged
-             WHERE j.job_id = acknowledged.job_id`,
-            [sessionId],
+             FROM activated_run
+             WHERE j.job_id = activated_run.job_id`,
+            [sessionId, workerId ?? null],
         );
     }
 
@@ -2482,11 +2718,19 @@ export class PgSessionCatalog implements SessionCatalog {
                         AND g.lease_expires_at > now()
                        WHERE j.job_id = js.job_id
                    )
-                 RETURNING js.job_id
+                 RETURNING js.job_id, js.state_run_id
+             ), failed_run AS (
+                 UPDATE "${this.sql.schema}".job_state_runs sr
+                 SET status = 'failed', error = $5, lease_owner = NULL,
+                     lease_expires_at = NULL, updated_at = now()
+                 FROM failed
+                 WHERE sr.state_run_id = failed.state_run_id
+                   AND sr.status <> 'completed'
+                 RETURNING sr.job_id
              )
              UPDATE "${this.sql.schema}".jobs j
              SET lifecycle_state = 'blocked', session_error = $5, updated_at = now()
-             FROM failed WHERE j.job_id = failed.job_id`,
+             FROM failed_run WHERE j.job_id = failed_run.job_id`,
             [jobId, sessionId, cycleId, workerId, error],
         );
         if ((result.rowCount ?? 0) !== 1) throw new Error("Current Job session association not found");
@@ -2499,6 +2743,166 @@ export class PgSessionCatalog implements SessionCatalog {
             [jobId],
         );
         return rows.map(rowToJobSession);
+    }
+
+    async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_journal_entries
+             WHERE job_id = $1 ORDER BY sequence`,
+            [jobId],
+        );
+        return rows.map(rowToJobJournalEntry);
+    }
+
+    async completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow> {
+        const summary = input.summary.trim();
+        if (!summary) throw new Error("Job state transition summary is required");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT sr.*, js.association_id, js.is_current,
+                        j.current_state AS job_current_state,
+                        j.state_revision AS job_state_revision,
+                        j.lifecycle_state
+                 FROM "${this.sql.schema}".job_sessions js
+                 JOIN "${this.sql.schema}".job_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".jobs j
+                   ON j.job_id = sr.job_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [input.sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`Job state run not found for session ${input.sessionId}`);
+            const idempotencyKey = input.idempotencyKey?.trim() || `job-state-run:${context.state_run_id}`;
+            const existing = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_journal_entries
+                 WHERE idempotency_key = $1`,
+                [idempotencyKey],
+            );
+            if (existing.rows[0]) {
+                if (existing.rows[0].state_run_id !== context.state_run_id
+                    || existing.rows[0].session_id !== input.sessionId) {
+                    throw new Error("Job state idempotency key is already used by another transition");
+                }
+                await client.query("COMMIT");
+                return rowToJobJournalEntry(existing.rows[0]);
+            }
+            if (!context.is_current || context.status !== "active") {
+                throw new Error("Job state run is not the active current run");
+            }
+            if (context.job_current_state !== context.state_name
+                || Number(context.job_state_revision) !== Number(context.state_revision)) {
+                throw new Error("Job state run revision is stale");
+            }
+            if (typeof context.terminal !== "boolean") {
+                throw new Error("Job state run has not been prepared with lifecycle instructions");
+            }
+
+            const allowedOutcomes = Array.isArray(context.allowed_outcomes)
+                ? context.allowed_outcomes as JobStateOutcome[]
+                : [];
+            const requestedOutcome = input.outcome?.trim() || null;
+            let toState = context.state_name;
+            let toRevision = Number(context.state_revision);
+            if (context.terminal) {
+                if (requestedOutcome) throw new Error("Terminal Job state completion must not specify an outcome");
+            } else {
+                if (!requestedOutcome) throw new Error("Job state outcome is required");
+                const allowed = allowedOutcomes.find((entry) => entry.outcome === requestedOutcome);
+                if (!allowed) throw new Error(`Job state outcome is not allowed: ${requestedOutcome}`);
+                toState = allowed.toState;
+                toRevision += 1;
+            }
+
+            const jobUpdate = context.terminal
+                ? await client.query(
+                    `UPDATE "${this.sql.schema}".jobs
+                     SET lifecycle_state = 'completed', session_error = NULL, updated_at = now()
+                     WHERE job_id = $1 AND current_state = $2 AND state_revision = $3`,
+                    [context.job_id, context.state_name, context.state_revision],
+                )
+                : await client.query(
+                    `UPDATE "${this.sql.schema}".jobs
+                     SET current_state = $2, state_revision = $3,
+                         current_state_entered_at = now(), lifecycle_state = 'pending_session',
+                         session_error = NULL, updated_at = now()
+                     WHERE job_id = $1 AND current_state = $4 AND state_revision = $5`,
+                    [context.job_id, toState, toRevision, context.state_name, context.state_revision],
+                );
+            if ((jobUpdate.rowCount ?? 0) !== 1) throw new Error("Job state transition is stale");
+
+            const sequenceResult = await client.query(
+                `SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence
+                 FROM "${this.sql.schema}".job_journal_entries
+                 WHERE job_id = $1`,
+                [context.job_id],
+            );
+            const journalEntryId = randomUUID();
+            const journalResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_journal_entries (
+                     journal_entry_id, job_id, sequence, definition_id,
+                     from_state, to_state, from_revision, to_revision,
+                     state_run_id, session_id, outcome, summary, idempotency_key
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING *`,
+                [
+                    journalEntryId,
+                    context.job_id,
+                    Number(sequenceResult.rows[0].sequence),
+                    context.definition_id,
+                    context.state_name,
+                    toState,
+                    context.state_revision,
+                    toRevision,
+                    context.state_run_id,
+                    input.sessionId,
+                    requestedOutcome,
+                    summary,
+                    idempotencyKey,
+                ],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_state_runs
+                 SET status = 'completed', completed_at = now(), lease_owner = NULL,
+                     lease_expires_at = NULL, updated_at = now()
+                 WHERE state_run_id = $1`,
+                [context.state_run_id],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_sessions
+                 SET is_current = FALSE,
+                     status = CASE WHEN $2 THEN 'completed' ELSE 'replaced' END,
+                     ended_at = now()
+                 WHERE association_id = $1`,
+                [context.association_id, context.terminal],
+            );
+            if (!context.terminal) {
+                await client.query(
+                    `INSERT INTO "${this.sql.schema}".job_state_runs (
+                         state_run_id, job_id, definition_id, state_name,
+                         state_revision, status, predecessor_journal_entry_id
+                     ) VALUES ($1,$2,$3,$4,$5,'reserved',$6)`,
+                    [
+                        randomUUID(),
+                        context.job_id,
+                        context.definition_id,
+                        toState,
+                        toRevision,
+                        journalEntryId,
+                    ],
+                );
+            }
+            await client.query("COMMIT");
+            return rowToJobJournalEntry(journalResult.rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -4802,6 +5206,9 @@ function rowToJob(row: any): JobRow {
         jobKey: row.job_key,
         sourcePayload: row.source_payload ?? {},
         lifecycleState: row.lifecycle_state,
+        currentState: row.current_state,
+        stateRevision: Number(row.state_revision),
+        currentStateEnteredAt: row.current_state_entered_at,
         firstSeenCycleId: row.first_seen_cycle_id,
         lastSeenCycleId: row.last_seen_cycle_id,
         firstDiscoveredAt: row.first_discovered_at,
@@ -4818,6 +5225,7 @@ function rowToJobSession(row: any): JobSessionRow {
         associationId: row.association_id,
         jobId: row.job_id,
         sessionId: row.session_id,
+        stateRunId: row.state_run_id ?? null,
         ordinal: Number(row.ordinal),
         isCurrent: Boolean(row.is_current),
         status: row.status,
@@ -4825,6 +5233,54 @@ function rowToJobSession(row: any): JobSessionRow {
         reservedAt: row.reserved_at,
         attachedAt: row.attached_at ?? null,
         endedAt: row.ended_at ?? null,
+    };
+}
+
+function rowToJobStateRun(row: any): JobStateRunRow {
+    return {
+        stateRunId: row.state_run_id,
+        jobId: row.job_id,
+        definitionId: row.definition_id,
+        stateName: row.state_name,
+        stateRevision: Number(row.state_revision),
+        status: row.status,
+        sessionId: row.session_id ?? null,
+        stateOwner: row.state_owner ?? null,
+        sourceId: row.source_id ?? null,
+        sourcePath: row.source_path ?? null,
+        sourceCommit: row.source_commit ?? null,
+        markdownSha256: row.markdown_sha256 ?? null,
+        allowedOutcomes: Array.isArray(row.allowed_outcomes) ? row.allowed_outcomes : [],
+        terminal: typeof row.terminal === "boolean" ? row.terminal : null,
+        attempt: Number(row.attempt),
+        predecessorJournalEntryId: row.predecessor_journal_entry_id ?? null,
+        leaseOwner: row.lease_owner ?? null,
+        leaseExpiresAt: row.lease_expires_at ?? null,
+        error: row.error ?? null,
+        startedAt: row.started_at ?? null,
+        completedAt: row.completed_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+    };
+}
+
+function rowToJobJournalEntry(row: any): JobJournalEntryRow {
+    return {
+        journalEntryId: row.journal_entry_id,
+        jobId: row.job_id,
+        sequence: Number(row.sequence),
+        entryKind: row.entry_kind,
+        definitionId: row.definition_id,
+        fromState: row.from_state,
+        toState: row.to_state,
+        fromRevision: Number(row.from_revision),
+        toRevision: Number(row.to_revision),
+        stateRunId: row.state_run_id,
+        sessionId: row.session_id,
+        outcome: row.outcome ?? null,
+        summary: row.summary,
+        idempotencyKey: row.idempotency_key,
+        transitionedAt: row.transitioned_at,
     };
 }
 
