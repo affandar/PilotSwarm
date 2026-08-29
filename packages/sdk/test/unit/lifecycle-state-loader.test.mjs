@@ -14,7 +14,7 @@ const workDetailsMarkdown = [
 ].join("\r\n");
 const diagnosedMarkdown = "# Diagnosed\n\nProduce the greeting.\n";
 const fixProposedMarkdown = "# Fix proposed\n\nPrepare platform delivery.\n";
-const integratedMarkdown = "# Integrated\n\nTerminal platform state.\n";
+const prPublishedMarkdown = "# PR published\n\nTerminal platform state.\n";
 
 function sources() {
     return [
@@ -52,7 +52,7 @@ function stateFiles() {
         ["hello-world-user:lifecycles/hello-world/HelloWorld.WorkDetailsGathered.md", workDetailsMarkdown],
         ["hello-world-user:lifecycles/hello-world/HelloWorld.Diagnosed.md", diagnosedMarkdown],
         ["standard-fix-delivery@1:profiles/standard-fix/StandardFix.FixProposed.md", fixProposedMarkdown],
-        ["standard-fix-delivery@1:profiles/standard-fix/StandardFix.Integrated.md", integratedMarkdown],
+        ["standard-fix-delivery@1:profiles/standard-fix/StandardFix.PRPublished.md", prPublishedMarkdown],
     ]);
 }
 
@@ -103,14 +103,14 @@ test("worker activation probes only the requested state path in each source", as
     const reads = [];
     await loadLifecycleStateMarkdown({
         lifecycleName: "HelloWorld",
-        state: "Integrated",
+        state: "PRPublished",
         sources: sources(),
         reader: inMemoryReader(stateFiles(), reads),
     });
 
     assert.deepEqual(reads, [
-        ["hello-world-user", "lifecycles/hello-world/HelloWorld.Integrated.md"],
-        ["standard-fix-delivery@1", "profiles/standard-fix/StandardFix.Integrated.md"],
+        ["hello-world-user", "lifecycles/hello-world/HelloWorld.PRPublished.md"],
+        ["standard-fix-delivery@1", "profiles/standard-fix/StandardFix.PRPublished.md"],
     ]);
 });
 
@@ -127,8 +127,8 @@ test("constructs conventional state paths from each source prefix", () => {
         lifecycleStateMarkdownPath({
             sourceId: "platform",
             filePrefix: "StandardDelivery",
-        }, "Integrated"),
-        "StandardDelivery.Integrated.md",
+        }, "PRPublished"),
+        "StandardDelivery.PRPublished.md",
     );
 });
 

@@ -15,6 +15,8 @@ test("parses only outgoing links from Possible next states", () => {
         "",
         "- [Fixed](./Example.Fixed.md)",
         "2. [NeedsInfo](../states/Example.NeedsInfo.md?view=1)",
+        "- [Diagnosed](state:Diagnosed)",
+        "- `FixProposed` - cross-source handoff",
         "",
         "### Notes",
         "- [Ignored](./Example.Ignored.md)",
@@ -25,6 +27,8 @@ test("parses only outgoing links from Possible next states", () => {
         outcomes: [
             { outcome: "Fixed", toState: "Fixed" },
             { outcome: "NeedsInfo", toState: "NeedsInfo" },
+            { outcome: "Diagnosed", toState: "Diagnosed" },
+            { outcome: "FixProposed", toState: "FixProposed" },
         ],
     });
 });
