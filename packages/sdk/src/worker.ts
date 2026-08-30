@@ -347,6 +347,10 @@ export class PilotSwarmWorker {
         // works the same way as for env-driven callers (CLI transport).
         const blobStore = createSessionBlobStore(
             {
+                PILOTSWARM_BLOB_USE_MANAGED_IDENTITY:
+                    options.blobUseManagedIdentity === undefined
+                        ? undefined
+                        : options.blobUseManagedIdentity ? "1" : "0",
                 PILOTSWARM_USE_MANAGED_IDENTITY: options.useManagedIdentity ? "1" : undefined,
                 AZURE_STORAGE_ACCOUNT_URL: options.blobAccountUrl,
                 AZURE_STORAGE_CONNECTION_STRING: options.blobConnectionString,

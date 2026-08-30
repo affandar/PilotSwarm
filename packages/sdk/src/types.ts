@@ -944,25 +944,27 @@ export interface PilotSwarmWorkerOptions {
     /** Blob container name for the built-in blob-backed session store. */
     blobContainer?: string;
     /**
+     * Override managed-identity selection for Azure Blob Storage independently
+     * of database auth. When explicitly false, blob storage falls back to the
+     * connection string or filesystem even if `useManagedIdentity` is true.
+     */
+    blobUseManagedIdentity?: boolean;
+    /**
      * Account-level URL (`https://<account>.blob.core.windows.net`) used
-     * when running with `useManagedIdentity: true`. Ignored otherwise.
+     * when blob managed-identity auth is enabled. Ignored otherwise.
      */
     blobAccountUrl?: string;
     /**
-     * Opt into managed-identity auth for Azure Blob Storage. When `true`,
-     * `blobAccountUrl` is required and `blobConnectionString` is ignored;
-     * the worker uses `DefaultAzureCredential` (workload identity in AKS,
-     * `az login` / env-var creds locally). SAS URL generation will throw
-     * `NotSupportedInManagedIdentityMode` — callers must proxy artifact
-     * downloads through the worker.
-     *
-     * Also routes CMS + facts pools through the AAD pg-pool factory:
+     * Route CMS + facts pools through the AAD pg-pool factory:
      * tokens are minted via `DefaultAzureCredential` and pg invokes the
      * `password` callback on every new physical connection. The duroxide
      * orchestration store goes through duroxide-node's native Entra path
      * (`PostgresProvider.connectWithSchemaAndEntra`, available since
      * duroxide-node 0.1.25), which resolves credentials in Rust via its
      * own chain (WorkloadIdentity → ManagedIdentity → DeveloperTools).
+     *
+     * Blob storage uses this value only when `blobUseManagedIdentity` is
+     * omitted. Set that option explicitly when database and blob auth differ.
      */
     useManagedIdentity?: boolean;
     /**

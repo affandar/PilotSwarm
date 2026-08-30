@@ -97,6 +97,11 @@ const worker = new PilotSwarmWorker({
     traceWriter: (message) => console.log(message),
     blobConnectionString: process.env.AZURE_STORAGE_CONNECTION_STRING,
     blobContainer: process.env.AZURE_STORAGE_CONTAINER || "copilot-sessions",
+    blobUseManagedIdentity: process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?.trim()
+        ? ["1", "true", "yes", "on"].includes(
+            process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY.trim().toLowerCase(),
+        )
+        : undefined,
     sessionStateDir: process.env.SESSION_STATE_DIR || undefined,
     modelProvidersPath: process.env.PS_MODEL_PROVIDERS_PATH || process.env.MODEL_PROVIDERS_PATH || undefined,
     workerNodeId: podName,

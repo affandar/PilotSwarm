@@ -20,6 +20,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createSessionBlobStore, SessionBlobStore } from "../../dist/blob-store.js";
+import { PilotSwarmWorker } from "../../dist/worker.js";
 
 const ACCOUNT_URL = "https://unittest.blob.core.windows.net";
 // Shared-key parse only — never dialed.
@@ -78,4 +79,12 @@ test("connection-string mode is unchanged", () => {
 
 test("empty env still opts into filesystem storage via null", () => {
     assert.equal(createSessionBlobStore({}), null);
+});
+
+test("worker can use database managed identity with filesystem blob storage", () => {
+    assert.doesNotThrow(() => new PilotSwarmWorker({
+        store: "sqlite::memory:",
+        useManagedIdentity: true,
+        blobUseManagedIdentity: false,
+    }));
 });
