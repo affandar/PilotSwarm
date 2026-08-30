@@ -299,6 +299,7 @@ export class PilotSwarmWorker {
     private _agentPackagesRefreshMs = 20_000;
     private _agentPackagesEpoch = -1;
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
+    private _workerRegistryTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
@@ -838,6 +839,7 @@ export class PilotSwarmWorker {
         // Registered + converged (or intentionally package-less): the next
         // heartbeat advertises ready. Draining is set in gracefulShutdown.
         this._workerPhase = "ready";
+        await this._reportAgentWorkerState();
         if (this._catalog) {
             this.sessionManager.setSessionCatalog(this._catalog);
             this.sessionManager.setLineageSessionLookup(async (sessionId) => (
@@ -1069,6 +1071,8 @@ export class PilotSwarmWorker {
                 void this.refreshAgentPackages();
             }, this._agentPackagesRefreshMs);
             this._agentPackagesTimer.unref?.();
+        } else {
+            this._startWorkerRegistryHeartbeat();
         }
 
         await new Promise(r => setTimeout(r, 200));
@@ -1089,6 +1093,10 @@ export class PilotSwarmWorker {
         if (this._agentPackagesTimer) {
             clearInterval(this._agentPackagesTimer);
             this._agentPackagesTimer = null;
+        }
+        if (this._workerRegistryTimer) {
+            clearInterval(this._workerRegistryTimer);
+            this._workerRegistryTimer = null;
         }
         if (this._eventLoopHist) {
             this._eventLoopHist.disable();
@@ -1152,7 +1160,7 @@ export class PilotSwarmWorker {
         // bounded: a black-holed CMS socket must not eat the drain budget
         // (SIGKILL at grace-period expiry would crash in-flight turns).
         this._workerPhase = "draining";
-        if (this._agentPackagesCacheDir) {
+        if (this._catalog) {
             await Promise.race([
                 this._reportAgentWorkerState(),
                 new Promise<void>((resolve) => { setTimeout(resolve, 5_000).unref?.(); }),
@@ -1189,6 +1197,22 @@ export class PilotSwarmWorker {
     }
 
     // ─── Internal ────────────────────────────────────────────
+
+    private _startWorkerRegistryHeartbeat(): void {
+        if (this._workerRegistryTimer) return;
+        const rawHeartbeatMs = Number.parseInt(
+            process.env.PILOTSWARM_WORKER_HEARTBEAT_MS || "",
+            10,
+        );
+        const heartbeatMs = Number.isFinite(rawHeartbeatMs)
+            ? rawHeartbeatMs
+            : 20_000;
+        if (heartbeatMs <= 0) return;
+        this._workerRegistryTimer = setInterval(() => {
+            void this._reportAgentWorkerState();
+        }, heartbeatMs);
+        this._workerRegistryTimer.unref?.();
+    }
 
     /**
      * Load plugin contents from SDK bundled plugins + app plugin directories.
