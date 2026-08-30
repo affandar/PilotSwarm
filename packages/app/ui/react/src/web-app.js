@@ -12,6 +12,7 @@ import {
     jobGeneratorTreeSelectionKey,
     navigateJobGeneratorTree,
 } from "./job-generator-tree-navigation.js";
+import { persistedStateRunLabel } from "./job-generator-state-run-label.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
     normalizeMoa,
@@ -6024,9 +6025,7 @@ function buildJobTransitionTimeline(transition, events) {
     add(transition.completedAt, "State run completed", transition.summary || "", "state");
     add(
         transition.transitionedAt,
-        transition.toState
-            ? `${transition.fromState} → ${transition.toState}`
-            : `${transition.stateName} completed`,
+        persistedStateRunLabel(transition, " completed"),
         transition.summary || "",
         "transition",
     );
@@ -6107,6 +6106,7 @@ async function loadPersistedJobGenerators(transport) {
                     endedAt: session?.endedAt || null,
                     fromState: entry?.fromState || run.stateName,
                     toState: entry?.toState || null,
+                    terminal: run.terminal === true,
                     outcome: entry?.outcome || null,
                     summary: entry?.summary || "",
                     journalEntryId: entry?.journalEntryId || null,
@@ -6485,9 +6485,7 @@ function JobTransitionTimeline({ transition, timeline }) {
     return React.createElement("div", { className: "ps-job-transition-timeline" },
         React.createElement("div", { className: "ps-job-transition-timeline-header" },
             React.createElement("strong", null,
-                transition.toState
-                    ? `${transition.fromState} → ${transition.toState}`
-                    : `${transition.stateName} · current state`),
+                persistedStateRunLabel(transition, " · current state")),
             React.createElement("span", null,
                 `Revision ${transition.revision} · ${transition.statusLabel}`
                 + (transition.stateOwner ? ` · ${transition.stateOwner}` : ""))),
@@ -6530,7 +6528,7 @@ function JobTransitionTimeline({ transition, timeline }) {
         transition.summary
             ? React.createElement("div", { className: "ps-job-transition-summary" },
                 React.createElement("strong", null,
-                    transition.toState
+                    !transition.terminal && transition.toState
                         ? `Handoff summary for ${transition.toState}`
                         : "Final state summary"),
                 React.createElement("span", null, transition.summary))
@@ -6713,9 +6711,7 @@ function JobGeneratorPane({
         (transition) => transition.id === selected.transitionId,
     ) || null;
     const selectionTitle = selectedTransition
-        ? selectedTransition.toState
-            ? `${selectedTransition.fromState} → ${selectedTransition.toState}`
-            : selectedTransition.stateName
+        ? persistedStateRunLabel(selectedTransition)
         : selectedJob?.label || selectedGenerator?.name || "Nothing selected";
     const selectionMeta = selectedTransition
         ? `Revision ${selectedTransition.revision} · ${selectedTransition.statusLabel}`
@@ -6821,7 +6817,9 @@ function JobGeneratorPane({
                                             onClick: () => selectJob(generator, job),
                                         },
                                         React.createElement("span", { className: "ps-job-tree-primary" }, job.label),
-                                        React.createElement("span", { className: "ps-job-tree-state" }, job.status),
+                                        React.createElement("span", {
+                                            className: `ps-job-tree-state is-${job.lifecycleState}`,
+                                        }, job.status),
                                         React.createElement("span", { className: "ps-job-tree-meta" },
                                             `${job.lifecycleState} · ${job.transitions.length} state run${job.transitions.length === 1 ? "" : "s"}`))),
                                     jobExpanded
@@ -6853,9 +6851,7 @@ function JobGeneratorPane({
                                             },
                                             React.createElement("span", { className: "ps-job-session-branch" }, "└"),
                                             React.createElement("span", { className: "ps-job-tree-primary" },
-                                                transition.toState
-                                                    ? `${transition.fromState} → ${transition.toState}`
-                                                    : `${transition.stateName} · current`),
+                                                persistedStateRunLabel(transition, " · current")),
                                             React.createElement("span", {
                                                 className: `ps-job-transition-status is-${transition.status}`,
                                             }, transition.statusLabel),

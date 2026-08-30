@@ -2209,6 +2209,10 @@ body.is-resizing-pane-y iframe {
   font-weight: 700;
 }
 
+.ps-job-tree-state.is-completed {
+  color: var(--ps-success, #3fb950);
+}
+
 .ps-job-tree-meta {
   grid-column: 2 / -1;
   min-width: 0;
