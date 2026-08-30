@@ -11,6 +11,7 @@
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
+import { assertExternalOperationValidationGatesSatisfied } from "./job-validation-gates.js";
 import type { SessionOwnerInfo, SessionSummaryState, GitWorkspaceState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -978,6 +979,8 @@ export type JobStateRunStatus =
     | "input_required"
     | "completed"
     | "failed";
+export type JobExternalOperationStatus = "pending" | "succeeded" | "failed";
+export type JobExternalOperationSignalStatus = "blocked" | "pending" | "delivering" | "delivered";
 
 export interface JobGeneratorRow {
     generatorId: string;
@@ -1112,6 +1115,59 @@ export interface JobJournalEntryRow {
     transitionedAt: Date;
 }
 
+export interface JobExternalOperationRow {
+    operationId: string;
+    jobId: string;
+    stateRunId: string;
+    definitionId: string;
+    createdSessionId: string;
+    sessionId: string;
+    provider: string;
+    kind: string;
+    operationKey: string;
+    idempotencyKey: string;
+    correlationId: string;
+    signalKey: string;
+    request: Record<string, unknown>;
+    status: JobExternalOperationStatus;
+    result: unknown;
+    evidence: unknown;
+    error: string | null;
+    nextPollAt: Date;
+    pollLeaseOwner: string | null;
+    pollLeaseExpiresAt: Date | null;
+    completedAt: Date | null;
+    waitStartedAt: Date | null;
+    waitCompletedAt: Date | null;
+    signalStatus: JobExternalOperationSignalStatus;
+    signalAttempts: number;
+    nextSignalAt: Date | null;
+    signalLeaseOwner: string | null;
+    signalLeaseExpiresAt: Date | null;
+    signalDeliveredAt: Date | null;
+    lastSignalError: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+export interface StartJobExternalOperationInput {
+    sessionId: string;
+    provider: string;
+    kind: string;
+    operationKey?: string;
+    request?: Record<string, unknown>;
+    nextPollAt?: Date;
+}
+
+export interface CompleteJobExternalOperationInput {
+    operationId: string;
+    workerId: string;
+    status: Exclude<JobExternalOperationStatus, "pending">;
+    result?: unknown;
+    evidence?: unknown;
+    error?: string | null;
+}
+
 export interface PrepareJobStateRunInput {
     sessionId: string;
     expectedState: string;
@@ -1142,6 +1198,28 @@ function validateJobLifecycleDefinition(definition: Record<string, unknown>): vo
         throw new Error(
             "JobGenerator lifecycle initialState must start with a letter and contain only letters, digits, hyphens, or underscores",
         );
+    }
+}
+
+function validateJobValidationGates(gates: unknown[]): void {
+    for (const value of gates) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const gate = value as Record<string, unknown>;
+        if (gate.type !== "external_operation") continue;
+        if (typeof gate.beforeState !== "string" || !JOB_STATE_NAME_RE.test(gate.beforeState)) {
+            throw new Error("External operation validation gate beforeState is invalid");
+        }
+        if (typeof gate.kind !== "string" || !/^[a-z][a-z0-9_.-]*$/.test(gate.kind)) {
+            throw new Error("External operation validation gate kind must be a lowercase identifier");
+        }
+        if (gate.provider !== undefined
+            && (typeof gate.provider !== "string"
+                || !/^[a-z][a-z0-9_.-]*$/.test(gate.provider))) {
+            throw new Error("External operation validation gate provider must be a lowercase identifier");
+        }
+        if (gate.requireEvidence !== undefined && typeof gate.requireEvidence !== "boolean") {
+            throw new Error("External operation validation gate requireEvidence must be boolean");
+        }
     }
 }
 
@@ -1342,6 +1420,32 @@ export interface SessionCatalog {
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
     listJobJournal(jobId: string): Promise<JobJournalEntryRow[]>;
     completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow>;
+    startJobExternalOperation(input: StartJobExternalOperationInput): Promise<JobExternalOperationRow>;
+    getJobExternalOperation(sessionId: string, operationId: string): Promise<JobExternalOperationRow | null>;
+    recordJobExternalOperationWait(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean>;
+    claimDueJobExternalOperations(
+        provider: string,
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+    ): Promise<JobExternalOperationRow[]>;
+    completeJobExternalOperation(input: CompleteJobExternalOperationInput): Promise<JobExternalOperationRow>;
+    claimJobExternalOperationSignals(
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+    ): Promise<JobExternalOperationRow[]>;
+    markJobExternalOperationSignalDelivered(operationId: string, workerId: string): Promise<void>;
+    markJobExternalOperationSignalFailed(
+        operationId: string,
+        workerId: string,
+        error: string,
+        retryAt: Date,
+    ): Promise<void>;
 
     // ── Agent packages (migration 0038) ──────────────────────
 
@@ -1996,6 +2100,7 @@ export class PgSessionCatalog implements SessionCatalog {
             throw new Error("JobGenerator cadenceSeconds must be a positive integer");
         }
         validateJobLifecycleDefinition(input.definition.lifecycleDefinition ?? {});
+        validateJobValidationGates(input.definition.validationGates ?? []);
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -2086,6 +2191,7 @@ export class PgSessionCatalog implements SessionCatalog {
         createdBy?: string | null;
     }): Promise<JobGeneratorDefinitionRow> {
         validateJobLifecycleDefinition(input.lifecycleDefinition ?? {});
+        validateJobValidationGates(input.validationGates ?? []);
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -2810,6 +2916,313 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToJobJournalEntry);
     }
 
+    async startJobExternalOperation(
+        input: StartJobExternalOperationInput,
+    ): Promise<JobExternalOperationRow> {
+        const provider = input.provider.trim().toLowerCase();
+        const kind = input.kind.trim().toLowerCase();
+        const operationKey = input.operationKey?.trim() || "default";
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        if (!identifierPattern.test(provider)) {
+            throw new Error("External operation provider must be a lowercase identifier");
+        }
+        if (!identifierPattern.test(kind)) {
+            throw new Error("External operation kind must be a lowercase identifier");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(operationKey)) {
+            throw new Error("External operation key contains unsupported characters");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT sr.state_run_id, sr.job_id, sr.definition_id, sr.status,
+                        js.is_current
+                 FROM "${this.sql.schema}".job_sessions js
+                 JOIN "${this.sql.schema}".job_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr`,
+                [input.sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`Job state run not found for session ${input.sessionId}`);
+            if (!context.is_current || context.status !== "active") {
+                throw new Error("External operations require the active current Job state run");
+            }
+            const idempotencyKey = [
+                "job-state-run",
+                context.state_run_id,
+                "operation",
+                provider,
+                kind,
+                operationKey,
+            ].join(":");
+            const existing = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_external_operations
+                 WHERE idempotency_key = $1`,
+                [idempotencyKey],
+            );
+            if (existing.rows[0]) {
+                const existingOperation = existing.rows[0];
+                if (existingOperation.session_id !== input.sessionId
+                    && existingOperation.wait_completed_at === null) {
+                    const rebound = await client.query(
+                        `UPDATE "${this.sql.schema}".job_external_operations
+                         SET session_id = $2,
+                             wait_started_at = NULL,
+                             signal_status = CASE
+                                 WHEN status = 'pending' THEN 'blocked'
+                                 ELSE 'pending'
+                             END,
+                             signal_attempts = 0,
+                             next_signal_at = CASE
+                                 WHEN status = 'pending' THEN NULL
+                                 ELSE now()
+                             END,
+                             signal_lease_owner = NULL,
+                             signal_lease_expires_at = NULL,
+                             signal_delivered_at = NULL,
+                             last_signal_error = NULL,
+                             updated_at = now()
+                         WHERE operation_id = $1
+                         RETURNING *`,
+                        [existingOperation.operation_id, input.sessionId],
+                    );
+                    await client.query("COMMIT");
+                    return rowToJobExternalOperation(rebound.rows[0]);
+                }
+                await client.query("COMMIT");
+                return rowToJobExternalOperation(existingOperation);
+            }
+            const operationId = randomUUID();
+            const result = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_external_operations (
+                     operation_id, job_id, state_run_id, definition_id,
+                     created_session_id, session_id, provider, kind, operation_key,
+                     idempotency_key, correlation_id, signal_key, request, next_poll_at
+                 ) VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING *`,
+                [
+                    operationId,
+                    context.job_id,
+                    context.state_run_id,
+                    context.definition_id,
+                    input.sessionId,
+                    provider,
+                    kind,
+                    operationKey,
+                    idempotencyKey,
+                    `${provider}:${operationId}`,
+                    `job-operation:${operationId}`,
+                    JSON.stringify(input.request ?? {}),
+                    input.nextPollAt ?? new Date(),
+                ],
+            );
+            await client.query("COMMIT");
+            return rowToJobExternalOperation(result.rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async getJobExternalOperation(
+        sessionId: string,
+        operationId: string,
+    ): Promise<JobExternalOperationRow | null> {
+        const { rows } = await this.pool.query(
+            `SELECT operation.*
+             FROM "${this.sql.schema}".job_external_operations operation
+             JOIN "${this.sql.schema}".job_state_runs state_run
+               ON state_run.state_run_id = operation.state_run_id
+             WHERE operation.operation_id = $1
+               AND state_run.session_id = $2`,
+            [operationId, sessionId],
+        );
+        return rows[0] ? rowToJobExternalOperation(rows[0]) : null;
+    }
+
+    async recordJobExternalOperationWait(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        const normalizedSignalKey = signalKey.trim();
+        if (!normalizedSignalKey) throw new Error("signalKey is required");
+        const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
+        const prerequisite = phase === "completed" ? "AND operation.wait_started_at IS NOT NULL" : "";
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_external_operations operation
+             SET ${timestampColumn} = COALESCE(operation.${timestampColumn}, now()),
+                 session_id = $1,
+                 updated_at = now()
+             FROM "${this.sql.schema}".job_state_runs state_run
+             WHERE operation.state_run_id = state_run.state_run_id
+               AND state_run.session_id = $1
+               AND operation.signal_key = $2
+               ${prerequisite}`,
+            [sessionId, normalizedSignalKey],
+        );
+        return (result.rowCount ?? 0) === 1;
+    }
+
+    async claimDueJobExternalOperations(
+        provider: string,
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+    ): Promise<JobExternalOperationRow[]> {
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT operation_id
+                 FROM "${this.sql.schema}".job_external_operations
+                 WHERE provider = $1
+                   AND status = 'pending'
+                   AND next_poll_at <= now()
+                   AND (poll_lease_expires_at IS NULL OR poll_lease_expires_at <= now())
+                 ORDER BY next_poll_at, created_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $3
+             )
+             UPDATE "${this.sql.schema}".job_external_operations operation
+             SET poll_lease_owner = $2,
+                 poll_lease_expires_at = now() + make_interval(secs => $4),
+                 updated_at = now()
+             FROM due
+             WHERE operation.operation_id = due.operation_id
+             RETURNING operation.*`,
+            [provider.trim().toLowerCase(), workerId, limit, leaseSeconds],
+        );
+        return rows.map(rowToJobExternalOperation);
+    }
+
+    async completeJobExternalOperation(
+        input: CompleteJobExternalOperationInput,
+    ): Promise<JobExternalOperationRow> {
+        const { rows } = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_external_operations
+             SET status = $3,
+                 result = $4,
+                 evidence = $5,
+                 error = $6,
+                 completed_at = now(),
+                 poll_lease_owner = NULL,
+                 poll_lease_expires_at = NULL,
+                 signal_status = 'pending',
+                 next_signal_at = now(),
+                 updated_at = now()
+             WHERE operation_id = $1
+               AND poll_lease_owner = $2
+               AND poll_lease_expires_at > now()
+               AND status = 'pending'
+             RETURNING *`,
+            [
+                input.operationId,
+                input.workerId,
+                input.status,
+                input.result === undefined ? null : JSON.stringify(input.result),
+                input.evidence === undefined ? null : JSON.stringify(input.evidence),
+                input.error ?? null,
+            ],
+        );
+        if (!rows[0]) throw new Error("External operation completion lease is stale");
+        return rowToJobExternalOperation(rows[0]);
+    }
+
+    async claimJobExternalOperationSignals(
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+    ): Promise<JobExternalOperationRow[]> {
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT operation.operation_id
+                 FROM "${this.sql.schema}".job_external_operations operation
+                 WHERE operation.status IN ('succeeded', 'failed')
+                   AND operation.signal_status IN ('pending', 'delivering')
+                   AND operation.next_signal_at <= now()
+                   AND (
+                       (
+                           operation.signal_status = 'pending'
+                           AND (
+                               operation.signal_attempts > 0
+                               OR (
+                                   operation.wait_started_at IS NOT NULL
+                                   AND operation.wait_completed_at IS NULL
+                               )
+                           )
+                       )
+                       OR (
+                           operation.signal_status = 'delivering'
+                           AND (
+                               operation.signal_lease_expires_at IS NULL
+                               OR operation.signal_lease_expires_at <= now()
+                           )
+                       )
+                   )
+                 ORDER BY operation.next_signal_at, operation.completed_at
+                 FOR UPDATE OF operation SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".job_external_operations operation
+             SET signal_status = 'delivering',
+                 signal_attempts = signal_attempts + 1,
+                 signal_lease_owner = $1,
+                 signal_lease_expires_at = now() + make_interval(secs => $3),
+                 updated_at = now()
+             FROM due
+             WHERE operation.operation_id = due.operation_id
+             RETURNING operation.*`,
+            [workerId, limit, leaseSeconds],
+        );
+        return rows.map(rowToJobExternalOperation);
+    }
+
+    async markJobExternalOperationSignalDelivered(
+        operationId: string,
+        workerId: string,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_external_operations
+             SET signal_status = 'delivered',
+                 signal_delivered_at = now(),
+                 signal_lease_owner = NULL,
+                 signal_lease_expires_at = NULL,
+                 last_signal_error = NULL,
+                 updated_at = now()
+             WHERE operation_id = $1
+               AND signal_status = 'delivering'
+               AND signal_lease_owner = $2`,
+            [operationId, workerId],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("External operation signal lease is stale");
+    }
+
+    async markJobExternalOperationSignalFailed(
+        operationId: string,
+        workerId: string,
+        error: string,
+        retryAt: Date,
+    ): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_external_operations
+             SET signal_status = 'pending',
+                 next_signal_at = $3,
+                 signal_lease_owner = NULL,
+                 signal_lease_expires_at = NULL,
+                 last_signal_error = $4,
+                 updated_at = now()
+             WHERE operation_id = $1
+               AND signal_status = 'delivering'
+               AND signal_lease_owner = $2`,
+            [operationId, workerId, retryAt, error],
+        );
+        if ((result.rowCount ?? 0) !== 1) throw new Error("External operation signal lease is stale");
+    }
+
     async completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow> {
         const summary = input.summary.trim();
         if (!summary) throw new Error("Job state transition summary is required");
@@ -2871,6 +3284,36 @@ export class PgSessionCatalog implements SessionCatalog {
                 if (!allowed) throw new Error(`Job state outcome is not allowed: ${requestedOutcome}`);
                 toState = allowed.toState;
                 toRevision += 1;
+            }
+
+            if (!context.terminal) {
+                const definitionResult = await client.query(
+                    `SELECT validation_gates
+                     FROM "${this.sql.schema}".job_generator_definitions
+                     WHERE definition_id = $1`,
+                    [context.definition_id],
+                );
+                const validationGates = Array.isArray(definitionResult.rows[0]?.validation_gates)
+                    ? definitionResult.rows[0].validation_gates as unknown[]
+                    : [];
+                const operationResult = await client.query(
+                    `SELECT operation.*
+                     FROM "${this.sql.schema}".job_external_operations operation
+                     WHERE operation.state_run_id = $1
+                     ORDER BY operation.created_at DESC`,
+                    [context.state_run_id],
+                );
+                assertExternalOperationValidationGatesSatisfied(
+                    validationGates,
+                    toState,
+                    operationResult.rows.map((row: any) => ({
+                        status: row.status,
+                        waitCompleted: row.wait_completed_at !== null,
+                        provider: row.provider,
+                        kind: row.kind,
+                        evidence: row.evidence ?? null,
+                    })),
+                );
             }
 
             const jobUpdate = context.terminal
@@ -5337,6 +5780,43 @@ function rowToJobJournalEntry(row: any): JobJournalEntryRow {
         summary: row.summary,
         idempotencyKey: row.idempotency_key,
         transitionedAt: row.transitioned_at,
+    };
+}
+
+function rowToJobExternalOperation(row: any): JobExternalOperationRow {
+    return {
+        operationId: row.operation_id,
+        jobId: row.job_id,
+        stateRunId: row.state_run_id,
+        definitionId: row.definition_id,
+        createdSessionId: row.created_session_id,
+        sessionId: row.session_id,
+        provider: row.provider,
+        kind: row.kind,
+        operationKey: row.operation_key,
+        idempotencyKey: row.idempotency_key,
+        correlationId: row.correlation_id,
+        signalKey: row.signal_key,
+        request: row.request ?? {},
+        status: row.status,
+        result: row.result ?? null,
+        evidence: row.evidence ?? null,
+        error: row.error ?? null,
+        nextPollAt: row.next_poll_at,
+        pollLeaseOwner: row.poll_lease_owner ?? null,
+        pollLeaseExpiresAt: row.poll_lease_expires_at ?? null,
+        completedAt: row.completed_at ?? null,
+        waitStartedAt: row.wait_started_at ?? null,
+        waitCompletedAt: row.wait_completed_at ?? null,
+        signalStatus: row.signal_status,
+        signalAttempts: Number(row.signal_attempts),
+        nextSignalAt: row.next_signal_at ?? null,
+        signalLeaseOwner: row.signal_lease_owner ?? null,
+        signalLeaseExpiresAt: row.signal_lease_expires_at ?? null,
+        signalDeliveredAt: row.signal_delivered_at ?? null,
+        lastSignalError: row.last_signal_error ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
     };
 }
 

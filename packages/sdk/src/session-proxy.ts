@@ -5174,6 +5174,31 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<void> => {
         if (!catalog) return;
         const eventTypes = input.events.map((e) => e.eventType).join(",");
+        for (const event of input.events) {
+            const phase = event.eventType === "session.system_wait_started"
+                ? "started"
+                : event.eventType === "session.system_wait_completed"
+                    ? "completed"
+                    : null;
+            const signalKey = phase
+                && event.data
+                && typeof event.data === "object"
+                && !Array.isArray(event.data)
+                && typeof (event.data as Record<string, unknown>).signalKey === "string"
+                ? String((event.data as Record<string, unknown>).signalKey)
+                : null;
+            if (phase && signalKey) {
+                await cmsRetryCritical(
+                    `recordJobExternalOperationWait session=${input.sessionId} phase=${phase}`,
+                    () => catalog!.recordJobExternalOperationWait(
+                        input.sessionId,
+                        signalKey,
+                        phase,
+                    ),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+        }
         await cmsRetryBestEffort(
             `recordSessionEvent session=${input.sessionId} events=${eventTypes}`,
             () => catalog!.recordEvents(input.sessionId, input.events, workerNodeId),

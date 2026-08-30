@@ -13,7 +13,7 @@ const aadUser = process.env.PILOTSWARM_DB_AAD_USER || process.env.PILOTSWARM_AAD
 
 test("controller materialization and durable Job lifecycle transitions", {
     skip: !catalogUrl,
-    timeout: 120_000,
+    timeout: 180_000,
 }, async () => {
     const schema = `jobgen_controller_${randomUUID().replaceAll("-", "")}`;
     const catalog = await PgSessionCatalog.create(catalogUrl, schema, {
@@ -88,6 +88,13 @@ test("controller materialization and durable Job lifecycle transitions", {
                         initialState: "Diagnosed",
                     },
                 },
+                validationGates: [{
+                    type: "external_operation",
+                    name: "Integration validation",
+                    beforeState: "Fixed",
+                    provider: "mock",
+                    kind: "pvs",
+                }],
             },
         });
         const lifecycleWorker = "lifecycle-controller";
@@ -155,8 +162,123 @@ test("controller materialization and durable Job lifecycle transitions", {
             }),
             /not allowed/,
         );
-        const firstEntry = await catalog.completeJobState({
+        const operation = await catalog.startJobExternalOperation({
             sessionId: firstSession.sessionId,
+            provider: "mock",
+            kind: "pvs",
+            operationKey: "integration",
+            request: { result: { passed: true } },
+            nextPollAt: new Date(Date.now() - 1_000),
+        });
+        const replayedOperation = await catalog.startJobExternalOperation({
+            sessionId: firstSession.sessionId,
+            provider: "mock",
+            kind: "pvs",
+            operationKey: "integration",
+            request: { result: { passed: false }, delayMs: 30_000 },
+        });
+        assert.equal(replayedOperation.operationId, operation.operationId);
+        assert.equal(
+            (await catalog.getJobExternalOperation(firstSession.sessionId, operation.operationId)).signalKey,
+            operation.signalKey,
+        );
+        await assert.rejects(
+            catalog.completeJobState({
+                sessionId: firstSession.sessionId,
+                outcome: "Fixed",
+                summary: "The validation gate must reject pending work.",
+            }),
+            /requires completed external operation evidence/,
+        );
+        const [claimedOperation] = await catalog.claimDueJobExternalOperations(
+            "mock",
+            "mock-producer-1",
+        );
+        assert.equal(claimedOperation.operationId, operation.operationId);
+        await catalog.completeJobExternalOperation({
+            operationId: operation.operationId,
+            workerId: "mock-producer-1",
+            status: "succeeded",
+            result: { passed: true },
+            evidence: { runId: "pvs-integration-1" },
+        });
+        const replacementSession = await catalog.replaceJobSession(
+            job.jobId,
+            "lifecycle-session-1-replacement",
+        );
+        await catalog.prepareJobStateRun({
+            sessionId: replacementSession.sessionId,
+            expectedState: "Diagnosed",
+            expectedRevision: 1,
+            stateOwner: "user",
+            sourceId: "user-lifecycle",
+            sourcePath: "Example.Diagnosed.md",
+            sourceCommit: "abc123",
+            markdownSha256: "a".repeat(64),
+            allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
+            terminal: false,
+        });
+        await catalog.attachJobSession(
+            job.jobId,
+            replacementSession.sessionId,
+            cycle.cycleId,
+            lifecycleWorker,
+        );
+        await catalog.acknowledgeJobSession(replacementSession.sessionId, "git-worker-2");
+        const reboundOperation = await catalog.startJobExternalOperation({
+            sessionId: replacementSession.sessionId,
+            provider: "mock",
+            kind: "pvs",
+            operationKey: "integration",
+            request: {},
+        });
+        assert.equal(reboundOperation.operationId, operation.operationId);
+        assert.equal(reboundOperation.createdSessionId, firstSession.sessionId);
+        assert.equal(reboundOperation.sessionId, replacementSession.sessionId);
+        assert.equal(
+            await catalog.getJobExternalOperation(firstSession.sessionId, operation.operationId),
+            null,
+        );
+        assert.equal(
+            (await catalog.getJobExternalOperation(replacementSession.sessionId, operation.operationId)).operationId,
+            operation.operationId,
+        );
+
+        await catalog.setJobSessionExecutionStatus(replacementSession.sessionId, "waiting");
+        assert.equal(
+            await catalog.recordJobExternalOperationWait(
+                replacementSession.sessionId,
+                operation.signalKey,
+                "started",
+            ),
+            true,
+        );
+        await catalog.recordEvents(replacementSession.sessionId, [{
+            eventType: "session.system_wait_started",
+            data: { signalKey: operation.signalKey },
+        }], "git-worker-2");
+        const [claimedSignal] = await catalog.claimJobExternalOperationSignals("mock-producer-1");
+        assert.equal(claimedSignal.operationId, operation.operationId);
+        assert.equal(claimedSignal.sessionId, replacementSession.sessionId);
+        await catalog.markJobExternalOperationSignalDelivered(
+            operation.operationId,
+            "mock-producer-1",
+        );
+        assert.equal(
+            await catalog.recordJobExternalOperationWait(
+                replacementSession.sessionId,
+                operation.signalKey,
+                "completed",
+            ),
+            true,
+        );
+        await catalog.recordEvents(replacementSession.sessionId, [{
+            eventType: "session.system_wait_completed",
+            data: { signalKey: operation.signalKey },
+        }], "git-worker-2");
+        await catalog.acknowledgeJobSession(replacementSession.sessionId, "git-worker-2");
+        const firstEntry = await catalog.completeJobState({
+            sessionId: replacementSession.sessionId,
             outcome: "Fixed",
             summary: "Diagnosed the issue and applied the fix.",
         });
@@ -221,13 +343,12 @@ test("controller materialization and durable Job lifecycle transitions", {
         );
 
         const replay = await catalog.completeJobState({
-            sessionId: firstSession.sessionId,
+            sessionId: replacementSession.sessionId,
             outcome: "Fixed",
             summary: "A replay does not append another entry.",
         });
         assert.equal(replay.journalEntryId, firstEntry.journalEntryId);
         assert.equal((await catalog.listJobJournal(job.jobId)).length, 2);
-
         await catalog.completeJobGeneratorCycle({
             cycleId: cycle.cycleId,
             workerId: lifecycleWorker,

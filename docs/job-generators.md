@@ -107,6 +107,9 @@ an existence oracle across users.
 | `job_generator_cycles` | One claimed evaluation/reconciliation pass | At most one running cycle per generator |
 | `jobs` | Durable source-native work identity and lifecycle | Unique `(generator_id, job_key)`; pinned `definition_id` |
 | `job_sessions` | Job-to-PilotSwarm execution history | Many per Job; globally unique session ID; at most one current |
+| `job_state_runs` | One revision-fenced execution of a lifecycle state | Unique `(job_id, state_revision)`; one durable session association |
+| `job_external_operations` | Infrastructure-owned external work, authoritative wait state, and signal delivery | Idempotent per state run/provider/kind/key; generated correlation and signal keys; rebinds across session replacement |
+| `job_journal_entries` | Ordered state-transition handoffs | Unique state run and idempotency key; append-only sequence per Job |
 
 Registration is one database transaction: the generator references definition
 version 1 through a deferred same-generator foreign key, so either both rows
@@ -178,7 +181,12 @@ Optional loop settings are `JOBGEN_POLL_INTERVAL_MS` (15000),
 `JOBGEN_WORKER_ID`. Session induction is enabled by default. Set
 `JOBGEN_INDUCE_SESSIONS=false` when the controller should materialize Jobs
 without reserving or starting PilotSwarm sessions. `JOBGEN_RUN_ONCE=true`
-processes currently due generators once and exits. `JOBGEN_ADO_WIQL_ENDPOINT` remains an optional
+processes currently due generators once and exits.
+`JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` also
+starts the deterministic mock operation producer used by lifecycle demos; it
+is disabled by default and delivers completions through the normal durable
+`sendSystemSignal` path.
+`JOBGEN_ADO_WIQL_ENDPOINT` remains an optional
 compatibility override for a fixed endpoint or normalized adapter; set
 `JOBGEN_ADO_WIQL_DIRECT=true` when the override accepts the native REST shape.
 Without a static token, the native provider uses `DefaultAzureCredential`,

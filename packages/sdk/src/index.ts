@@ -92,8 +92,18 @@ export { migrateLegacyDuroxideSchema } from "./duroxide-schema-migration.js";
 export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } from "./duroxide-schema-migration.js";
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobStateRunStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobStateOutcome, JobStateRunRow, JobJournalEntryRow, PrepareJobStateRunInput, CompleteJobStateInput, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobStateRunStatus, JobExternalOperationStatus, JobExternalOperationSignalStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobStateOutcome, JobStateRunRow, JobJournalEntryRow, JobExternalOperationRow, StartJobExternalOperationInput, CompleteJobExternalOperationInput, PrepareJobStateRunInput, CompleteJobStateInput, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
 export { createJobLifecycleTools } from "./job-lifecycle-tools.js";
+export {
+    MockJobExternalOperationProducer,
+    type JobExternalOperationProducerStore,
+    type JobExternalOperationSignalSender,
+    type MockJobExternalOperationProducerOptions,
+} from "./job-external-operation-producer.js";
+export {
+    assertExternalOperationValidationGatesSatisfied,
+    type ExternalOperationGateRecord,
+} from "./job-validation-gates.js";
 export type {
     FactStore,
     FactRecord,

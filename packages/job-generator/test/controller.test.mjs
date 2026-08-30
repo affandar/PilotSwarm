@@ -541,16 +541,21 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
         },
     });
 
-    assert.deepEqual(created[0].toolNames, ["read_file", "complete_state"]);
+    assert.deepEqual(created[0].toolNames, [
+        "read_file",
+        "start_external_operation",
+        "get_external_operation",
+        "complete_state",
+    ]);
     assert.equal(prepared[0].sessionId, "session-2");
     assert.equal(prepared[0].sourcePath, "automation/Example.Diagnosed.md");
     assert.deepEqual(prepared[0].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
     assert.equal(prepared[0].terminal, false);
     assert.match(sent[0].prompt, /Collected the failing query and logs/);
     assert.match(sent[0].prompt, /follow its Session reference/);
-    assert.match(sent[0].prompt, /do not create a duplicate after resume/);
+    assert.match(sent[0].prompt, /instead of creating a duplicate/);
     assert.match(sent[0].prompt, /For a human decision, call ask_user/);
-    assert.match(sent[0].prompt, /call system_wait with the durable correlation key/);
+    assert.match(sent[0].prompt, /call system_wait with the exact signalKey/);
     assert.match(sent[0].prompt, /preserve the outcome, evidence, durable identifiers or references/);
     assert.match(sent[0].prompt, /Use the repository evidence/);
     assert.match(sent[0].prompt, /Allowed outcomes: Fixed/);

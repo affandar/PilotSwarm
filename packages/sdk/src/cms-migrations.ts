@@ -420,6 +420,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_lifecycle_state_runs_and_journal",
             sql: migration_0049_job_lifecycle_state_runs_and_journal(schema),
         },
+        {
+            version: "0050",
+            name: "job_external_operations",
+            sql: migration_0050_job_external_operations(schema),
+        },
     ];
 }
 
@@ -15214,5 +15219,70 @@ WHERE js.job_id = sr.job_id
       SELECT j.state_revision FROM ${s}.jobs j WHERE j.job_id = js.job_id
   )
   AND js.state_run_id IS NULL;
+`;
+}
+
+// ─── Migration 0050: durable external operations ────────────────
+
+function migration_0050_job_external_operations(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.job_external_operations (
+    operation_id           TEXT PRIMARY KEY,
+    job_id                 TEXT NOT NULL REFERENCES ${s}.jobs(job_id) ON DELETE CASCADE,
+    state_run_id           TEXT NOT NULL REFERENCES ${s}.job_state_runs(state_run_id) ON DELETE CASCADE,
+    definition_id          TEXT NOT NULL REFERENCES ${s}.job_generator_definitions(definition_id),
+    created_session_id     TEXT NOT NULL,
+    session_id             TEXT NOT NULL,
+    provider               TEXT NOT NULL CHECK (BTRIM(provider) <> ''),
+    kind                   TEXT NOT NULL CHECK (BTRIM(kind) <> ''),
+    operation_key          TEXT NOT NULL CHECK (BTRIM(operation_key) <> ''),
+    idempotency_key        TEXT NOT NULL UNIQUE CHECK (BTRIM(idempotency_key) <> ''),
+    correlation_id         TEXT NOT NULL UNIQUE CHECK (BTRIM(correlation_id) <> ''),
+    signal_key             TEXT NOT NULL UNIQUE CHECK (BTRIM(signal_key) <> ''),
+    request                JSONB NOT NULL DEFAULT '{}'::jsonb
+                           CHECK (jsonb_typeof(request) = 'object'),
+    status                 TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'succeeded', 'failed')),
+    result                 JSONB,
+    evidence               JSONB,
+    error                  TEXT,
+    next_poll_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    poll_lease_owner       TEXT,
+    poll_lease_expires_at  TIMESTAMPTZ,
+    completed_at           TIMESTAMPTZ,
+    wait_started_at        TIMESTAMPTZ,
+    wait_completed_at      TIMESTAMPTZ,
+    signal_status          TEXT NOT NULL DEFAULT 'blocked'
+                           CHECK (signal_status IN ('blocked', 'pending', 'delivering', 'delivered')),
+    signal_attempts        INTEGER NOT NULL DEFAULT 0 CHECK (signal_attempts >= 0),
+    next_signal_at         TIMESTAMPTZ,
+    signal_lease_owner     TEXT,
+    signal_lease_expires_at TIMESTAMPTZ,
+    signal_delivered_at    TIMESTAMPTZ,
+    last_signal_error      TEXT,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (state_run_id, provider, kind, operation_key)
+);
+
+ALTER TABLE ${s}.job_external_operations
+    ADD COLUMN IF NOT EXISTS created_session_id TEXT,
+    ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ;
+UPDATE ${s}.job_external_operations
+SET created_session_id = session_id
+WHERE created_session_id IS NULL;
+ALTER TABLE ${s}.job_external_operations
+    ALTER COLUMN created_session_id SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_job_external_operations_poll
+    ON ${s}.job_external_operations(provider, next_poll_at)
+    WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_job_external_operations_signal
+    ON ${s}.job_external_operations(next_signal_at)
+    WHERE signal_status IN ('pending', 'delivering');
+CREATE INDEX IF NOT EXISTS ix_job_external_operations_state_run
+    ON ${s}.job_external_operations(state_run_id, provider, kind);
 `;
 }

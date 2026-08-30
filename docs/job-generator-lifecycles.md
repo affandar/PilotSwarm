@@ -17,13 +17,13 @@ documented in [JobGenerator controller](./job-generators.md).
 
 ## Status
 
-This document describes the proposed lifecycle architecture for durable Jobs
-created by a JobGenerator. Job discovery, exactly-once materialization,
-definition pinning, JobSession history, and durable `ask_user` suspension
-already exist. The first lifecycle implementation slice resolves and loads the
-one user- or platform-owned state Markdown file needed when a worker activates.
-Lifecycle policy, semantic graph validation, Job state execution, and
-Job journal persistence remain to be implemented.
+This document describes the target lifecycle architecture for durable Jobs
+created by a JobGenerator. The current implementation includes Job discovery,
+exactly-once materialization, definition pinning, state runs, JobSession
+history, Markdown-backed state execution, the Job journal, constrained atomic
+transitions, durable human/system waits, and infrastructure-owned external
+operations. Lifecycle policy and semantic whole-graph validation remain future
+work.
 
 ## Summary
 
@@ -894,12 +894,46 @@ discoverable without making notification delivery part of session correctness.
 
 ### External-system waits
 
-The agent calls `system_wait(signal_key, reason)` after starting or locating the
-external operation. The durable state run records the operation correlation and
-wake condition. Only a platform signal carrying the matching key thaws the
-wait; unrelated messages and mismatched signals do not satisfy it. Callbacks,
-event consumers, or scheduled polling deliver that signal. No worker is pinned
-while waiting for the external system.
+The agent starts platform-owned work through `start_external_operation`. The
+catalog creates or returns the idempotent operation for the current state run
+and generates its operation ID, provider correlation ID, and exact signal key;
+the agent cannot supply or invent those identities. The agent then calls
+`system_wait` with that returned key.
+
+An external producer claims due operations, persists their result and evidence,
+and delivers the matching signal through `sendSystemSignal`. Signal delivery
+has its own durable lease, attempt count, retry time, and completion marker, so
+producer restarts provide at-least-once delivery without duplicating the
+external operation. Authoritative wait-started and wait-completed timestamps
+live on the operation row; session events remain observational. Delivery waits
+until the exact generated signal key is durably registered as parked.
+Only the exact key thaws the wait; unrelated messages and mismatched signals do
+not satisfy it. No worker is pinned while waiting for the external system.
+
+The operation belongs to the state run, not to one disposable JobSession. If a
+session is replaced before its wait completes, the same idempotent operation is
+rebound to the state run's current session, delivery is re-armed, and the
+immutable creating-session reference remains available for attribution.
+
+After resumption the agent reads the durable record through
+`get_external_operation`. An `external_operation` validation gate can prevent a
+transition until a matching operation has succeeded, its signal has been
+observed by the matching durable wait, and evidence has been persisted:
+
+```json
+{
+  "type": "external_operation",
+  "name": "PVS validation",
+  "beforeState": "Validated",
+  "provider": "mock",
+  "kind": "pvs",
+  "requireEvidence": true
+}
+```
+
+`beforeState` names the destination state being protected. The initial
+deterministic `mock` provider supports success and failure outcomes without
+pretending that a real external service was called.
 
 ### Duplicate tool calls
 
@@ -973,10 +1007,10 @@ Significant findings return the Job to user-owned `Diagnosed`; otherwise the
 state advances only when the latest review has no blocking findings.
 
 `AutomatedCodeReviewApproved` submits the reviewed commit to the Private
-Validation Service exactly once, records the validation-run identity in its
-durable session, and calls `system_wait` with the PVS run identity. Only the
-matching completion signal thaws that state run. A successful result advances
-to `Validated`.
+Validation Service exactly once through the external-operation interface. The
+catalog records the provider correlation and generated signal key. Only the
+matching completion signal thaws that state run, and the transition to
+`Validated` is rejected until successful validation evidence is durable.
 
 `PRPublished` is terminal for the initial platform profile. A later version
 can append policy, merge, deployment, or remediation states without changing
@@ -989,6 +1023,8 @@ The demonstration proves:
 - Exactly-once Job materialization.
 - Worker-executed state runs.
 - Durable external and human suspension with cross-worker resumption.
+- Infrastructure-generated external-operation identity and retryable signal delivery.
+- Evidence-gated transitions that reject prose-only validation.
 - Human-attention notification and dashboard discovery.
 - Atomic, constrained transitions.
 - User-to-platform lifecycle handoff.

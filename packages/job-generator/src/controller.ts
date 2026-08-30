@@ -131,6 +131,7 @@ function renderLifecyclePrompt(input: {
     job: JobRow;
     markdown: string;
     journal: readonly JobJournalEntryRow[];
+    validationGates: readonly unknown[];
     terminal: boolean;
     outcomes: readonly { outcome: string; toState: string }[];
 }): string {
@@ -146,6 +147,18 @@ function renderLifecyclePrompt(input: {
             "The summary must preserve the outcome, evidence, durable identifiers or references, and enough detail for later lifecycle work to continue from this Job.",
             `Allowed outcomes: ${input.outcomes.map((entry) => entry.outcome).join(", ")}`,
         ].join("\n");
+    const reachableStates = new Set(
+        input.terminal
+            ? []
+            : input.outcomes.map((entry) => entry.toState),
+    );
+    const validationGates = input.validationGates.filter((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+        const gate = value as Record<string, unknown>;
+        return gate.type === "external_operation"
+            && typeof gate.beforeState === "string"
+            && reachableStates.has(gate.beforeState);
+    });
     return [
         `Execute Job ${input.job.jobId} in state ${input.job.currentState}.`,
         "",
@@ -163,10 +176,17 @@ function renderLifecyclePrompt(input: {
         "",
         "## Durable execution rules",
         "This state may resume in the same durable session after a wait or worker replacement. "
-            + "Before starting an external operation, inspect the current session and Job journal for an existing "
-            + "run, request, or resource identifier. Reuse the existing operation and do not create a duplicate after resume.",
-        "For a human decision, call ask_user. For a platform-owned external event, call system_wait with the durable "
-            + "correlation key expected from the completion callback. Neither kind of wait advances the lifecycle state.",
+            + "Start platform-owned work only through start_external_operation. The infrastructure owns the operation ID, "
+            + "correlation ID, and signal key; never invent or simulate them. Repeating the same call after resume returns "
+            + "the existing operation instead of creating a duplicate.",
+        "For a human decision, call ask_user. For a platform-owned external event, call system_wait with the exact signalKey "
+            + "returned by start_external_operation. After resume, call get_external_operation and inspect its durable result "
+            + "and evidence. Neither kind of wait advances the lifecycle state.",
+        "",
+        "## Required external-operation gates",
+        validationGates.length > 0
+            ? JSON.stringify(validationGates, null, 2)
+            : "No external-operation gates apply to the reachable next states.",
         "",
         "## Current state instructions",
         input.markdown,
@@ -231,6 +251,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
                 job: input.job,
                 markdown: loaded.markdown,
                 journal,
+                validationGates: input.definition.validationGates,
                 terminal: transitions.terminal,
                 outcomes: transitions.outcomes,
             });
@@ -240,7 +261,12 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             ? sessionConfig.toolNames.filter((value): value is string => typeof value === "string")
             : [];
         const toolNames = lifecycleToolRequired
-            ? [...new Set([...configuredToolNames, "complete_state"])]
+            ? [...new Set([
+                ...configuredToolNames,
+                "start_external_operation",
+                "get_external_operation",
+                "complete_state",
+            ])]
             : configuredToolNames;
         const session = await this.client.createSession({
             sessionId: input.association.sessionId,

@@ -5,8 +5,10 @@ export * from "./controller.js";
 
 import { hostname } from "node:os";
 import {
+    MockJobExternalOperationProducer,
     PgSessionCatalog,
     PilotSwarmClient,
+    PilotSwarmManagementClient,
     RemoteLifecycleStateReader,
 } from "pilotswarm-sdk";
 import { JobGeneratorController, PilotSwarmInitialSessionFactory } from "./controller.js";
@@ -27,6 +29,9 @@ export async function runJobGenerator(): Promise<void> {
     );
     const runOnce = ["1", "true", "yes", "on"].includes(
         (process.env.JOBGEN_RUN_ONCE || "").trim().toLowerCase(),
+    );
+    const mockOperationsEnabled = ["1", "true", "yes", "on"].includes(
+        (process.env.JOBGEN_MOCK_EXTERNAL_OPERATIONS || "").trim().toLowerCase(),
     );
     const workerId = process.env.JOBGEN_WORKER_ID || `${hostname()}-${process.pid}`;
     const pollIntervalMs = Number(process.env.JOBGEN_POLL_INTERVAL_MS || 15_000);
@@ -51,6 +56,25 @@ export async function runJobGenerator(): Promise<void> {
         await client.start();
         console.info("[job-generator] session induction client ready");
     }
+    let managementClient: PilotSwarmManagementClient | undefined;
+    let mockOperationProducer: MockJobExternalOperationProducer | undefined;
+    if (mockOperationsEnabled) {
+        managementClient = new PilotSwarmManagementClient({
+            store: databaseUrl,
+            cmsSchema,
+            useManagedIdentity,
+            cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
+            aadDbUser,
+        });
+        await managementClient.start();
+        mockOperationProducer = new MockJobExternalOperationProducer({
+            store: catalog,
+            signalSender: managementClient,
+            workerId: `${workerId}-mock-operations`,
+            pollIntervalMs: Number(process.env.JOBGEN_MOCK_OPERATION_POLL_INTERVAL_MS || 500),
+        });
+        console.info("[job-generator] deterministic mock external-operation producer ready");
+    }
 
     const evaluators = createEvaluatorsFromEnv();
     const providerTypes = [...evaluators.keys()];
@@ -61,6 +85,7 @@ export async function runJobGenerator(): Promise<void> {
         `[job-generator] starting mode=${runOnce ? "once" : "continuous"}`
         + ` worker=${workerId} pollMs=${pollIntervalMs} claimLimit=${claimLimit}`
         + ` leaseSeconds=${leaseSeconds} induceSessions=${induceSessions}`
+        + ` mockExternalOperations=${mockOperationsEnabled}`
         + ` providers=${providerTypes.join(",") || "none"}`,
     );
     const controller = new JobGeneratorController({
@@ -85,14 +110,20 @@ export async function runJobGenerator(): Promise<void> {
     const abort = new AbortController();
     process.once("SIGTERM", () => abort.abort());
     process.once("SIGINT", () => abort.abort());
+    let producerRun: Promise<void> | undefined;
     try {
         if (runOnce) {
             await controller.runOnce();
+            await mockOperationProducer?.runOnce();
         } else {
+            producerRun = mockOperationProducer?.run(abort.signal);
             await controller.run(abort.signal);
         }
     } finally {
         console.info("[job-generator] stopping");
+        abort.abort();
+        await producerRun;
+        await managementClient?.stop();
         await client?.stop();
         await catalog.close();
         console.info("[job-generator] stopped");
