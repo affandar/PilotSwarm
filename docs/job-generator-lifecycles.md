@@ -1037,7 +1037,14 @@ running, the standalone runner acts only as a portal user:
 
 ```powershell
 python scripts\job-generator-lifecycle-demo.py `
-  --repository-path Q:\src\<lifecycle-repository> `
+  --repository-path C:\src\<lifecycle-repository> `
+  --user-branch <user-lifecycle-branch> `
+  --user-base-path <user-lifecycle-directory> `
+  --platform-branch <platform-lifecycle-branch> `
+  --platform-base-path <platform-lifecycle-directory> `
+  --full-run `
+  --human-wait-seconds 2 `
+  --system-wait-seconds 1 `
   <work-item-id-1> <work-item-id-2>
 ```
 
@@ -1048,6 +1055,17 @@ the portal API, and waits until both Jobs reach the durable
 components, launch services, control the browser, or stop backend processes.
 Use `--portal-url` or `PILOTSWARM_PORTAL_URL` when the portal is not available
 at `http://localhost:4311`.
+
+During `--full-run`, `--human-wait-seconds` controls how long each Job remains
+at its initial `ask_user` gate before the runner answers it. Jobs are timed and
+answered independently, so one Job does not remain parked merely because its
+sibling has not reached the gate. `--system-wait-seconds` controls the
+`delayMs` requested from each deterministic mock code-review, PVS, and
+pull-request operation. Its accepted range is 0 through 300 seconds.
+
+Set `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` on the already-running JobGenerator
+controller to enable the deterministic external-operation producer. Optional
+`JOBGEN_MOCK_OPERATION_POLL_INTERVAL_MS` controls its poll interval.
 
 ## Implementation sequence
 
