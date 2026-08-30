@@ -7,6 +7,8 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { splitSystemContextBlock } from "./prompt-system-context.js";
+import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo } from "./check-agents-report.js";
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
@@ -2313,25 +2315,39 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: message_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            checkAgents: async () => {
+            checkAgents: async (args?: { full?: boolean }) => {
+                // A DELTA report — see check-agents-report.ts for the why.
+                // The memo of what this parent last saw is a CMS event, so it
+                // survives a worker move and never touches orchestrator state.
+                // Any failure to read it falls back to the full report.
                 try {
                     const children = (await loadDirectChildSessions()).filter(child => !child.isSystem);
                     if (children.length === 0) {
                         return `[SYSTEM: No sub-agents have been spawned yet.]`;
                     }
-                    const statusLines = children.map((agent) =>
-                        `  - Agent ${agent.orchId}\n` +
-                        `    Title: ${agent.title ?? "(untitled)"}\n` +
-                        `    Status: ${agent.status}\n` +
-                        `    Contract: ${agent.contractStatus ?? "none"}\n` +
-                        `    Verdict: ${agent.verdict ?? "none"}\n` +
-                        `    Iterations: ${agent.iterations ?? 0}\n` +
-                        (Array.isArray(agent.contractViolations) && agent.contractViolations.length > 0
-                            ? `    Violations: ${agent.contractViolations.map((v: any) => v?.code || v?.message || "violation").join(", ")}\n`
-                            : "") +
-                        `    Output: ${agent.result ?? agent.error ?? "(no output yet)"}`
-                    );
-                    return `[SYSTEM: Sub-agent status report (${children.length} agents):\n${statusLines.join("\n")}]`;
+                    let memo: CheckAgentsMemo | null = null;
+                    if (!args?.full && catalog) {
+                        try {
+                            const recent = await catalog.getSessionEventsBefore(input.sessionId, Number.MAX_SAFE_INTEGER, 5, [CHECK_AGENTS_MEMO_EVENT]);
+                            const latest = recent.reduce<any>((best, e) => (!best || e.seq > best.seq ? e : best), null);
+                            memo = latest?.data && typeof latest.data === "object" ? latest.data as CheckAgentsMemo : null;
+                        } catch {
+                            memo = null;
+                        }
+                    }
+                    const report = buildCheckAgentsReport(children, memo, { full: args?.full === true });
+                    if (catalog) {
+                        // Fire-and-forget: a lost memo only costs one extra full report next time.
+                        void cmsRetryBestEffort(
+                            `runTurn.checkAgents memo session=${input.sessionId}`,
+                            () => catalog!.recordEvents(input.sessionId, [{
+                                eventType: CHECK_AGENTS_MEMO_EVENT,
+                                data: { at: new Date().toISOString(), perChild: report.perChild },
+                            }]),
+                            (msg) => activityCtx.traceInfo(msg),
+                        ).catch(() => {});
+                    }
+                    return report.text;
                 } catch (err: any) {
                     return `[SYSTEM: check_agents failed: ${err?.message || String(err)}]`;
                 }
@@ -3115,7 +3131,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             // Record the user prompt as a CMS event before running the turn.
             // Skip internal timer continuation prompts — they're system-generated, not user input.
-            const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(input.prompt);
+            // Orchestration ≥1.0.71 appends the turn's system note to the
+            // prompt as a trailing <system_context> block (it is sent to the
+            // model that way). The transcript keeps its old shape: the note
+            // is recorded from `turnSystemPrompt` as `system.message` below,
+            // and `user.message` is persisted WITHOUT the block. ≤1.0.70
+            // turns carry no flag and no block; the split is a no-op there.
+            const promptForRecord = input.config?.systemContextInPrompt
+                ? splitSystemContextBlock(input.prompt).prompt
+                : input.prompt;
+            const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(promptForRecord);
             const isRetryAttempt = (input.retryCount ?? 0) > 0;
             if (catalog && input.config.turnSystemPrompt && !isRetryAttempt) {
                 const persistedSystemPrompt = decorateRehydrationSystemPrompt(
@@ -3131,8 +3156,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 ));
             }
-            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt) {
-                const promptEventType = isInternalSystemPrompt(input.prompt) ? "system.message" : "user.message";
+            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && promptForRecord) {
+                const promptEventType = isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message";
                 // v1.0.47: when the orchestration tagged the turn with one or
                 // more clientMessageIds (the UI-generated identities of the
                 // contributing local outbox items), persist them on the
@@ -3141,7 +3166,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
                     ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
                     : [];
-                const eventData: Record<string, unknown> = { content: input.prompt };
+                const eventData: Record<string, unknown> = { content: promptForRecord };
                 if (incomingClientMessageIds.length > 0) {
                     eventData.clientMessageIds = incomingClientMessageIds;
                 }

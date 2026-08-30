@@ -19,7 +19,7 @@ export interface CycleReport {
 
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
-    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; content?: string; events?: CapturedEvent[] }
+    | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -57,7 +57,7 @@ type TurnResultVariant =
     // it, but a budget pause must not be — that turn already re-asked the
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
-    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -146,7 +146,7 @@ export interface TurnOptions {
         /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */
         regenerateAgent?(args: { agent_id: string; handoff?: string }): Promise<string>;
         messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
-        checkAgents(): Promise<string>;
+        checkAgents(args?: { full?: boolean }): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
         listSessions(args?: {
             include_system?: boolean;
@@ -182,6 +182,15 @@ export interface SerializableSessionConfig {
     systemMessage?: string | { mode: "append" | "replace"; content: string };
     /** Internal: orchestration-generated system guidance for the next turn only. */
     turnSystemPrompt?: string;
+    /**
+     * Internal: set by orchestration ≥1.0.71. The turn's `turnSystemPrompt`
+     * has ALREADY been appended to the prompt as a `<system_context>` block,
+     * so session-manager must NOT also render it into the system message
+     * (that is what broke the provider prefix cache on every wake-up), and
+     * session-proxy strips the block before persisting `user.message`.
+     * Absent on ≤1.0.70 turns, which keep the old system-message delivery.
+     */
+    systemContextInPrompt?: boolean;
     workingDirectory?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;

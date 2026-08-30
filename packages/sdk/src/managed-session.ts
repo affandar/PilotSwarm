@@ -686,6 +686,14 @@ export class ManagedSession {
                             "(for example a local process, file, or socket) and you want PilotSwarm to " +
                             "preserve the current worker affinity across a durable wait.",
                     },
+                    material: {
+                        type: "boolean",
+                        description:
+                            "Only when you have a PARENT session: set true if this wait carries a finding the parent " +
+                            "must see now (a blocker, an escalation, a result it is waiting on). A plain wait is a " +
+                            "heartbeat and does not wake the parent; it hears from you at your next completion or its " +
+                            "own next schedule.",
+                    },
                 },
                 required: ["seconds"],
             },
@@ -1033,12 +1041,17 @@ export class ManagedSession {
         const checkAgentsTool = defineTool("check_agents", {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
-                "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "Returns each sub-agent's ID, task, status (running/completed/failed), and result — in full for children that changed since your last call, one roster line for the rest (pass full=true for everything; Output is capped at 1,000 chars, use read_agent_events for a complete result). " +
                 "This is an on-demand snapshot, not a scheduling primitive; do not schedule wait or cron solely to call check_agents. " +
                 "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
-                properties: {},
+                properties: {
+                    full: {
+                        type: "boolean",
+                        description: "Return every child in full. Default (false): children unchanged since your last check_agents call are one roster line each.",
+                    },
+                },
             },
             handler: async () => "stub",
         });
@@ -1262,10 +1275,18 @@ export class ManagedSession {
                             "(for example a local process, file, or socket) and you want PilotSwarm to " +
                             "preserve the current worker affinity across a durable wait.",
                     },
+                    material: {
+                        type: "boolean",
+                        description:
+                            "Only when you have a PARENT session: set true if this wait carries a finding the parent " +
+                            "must see now (a blocker, an escalation, a result it is waiting on). A plain wait is a " +
+                            "heartbeat and does not wake the parent; it hears from you at your next completion or its " +
+                            "own next schedule.",
+                    },
                 },
                 required: ["seconds"],
             },
-            handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean }) => {
+            handler: async (args: { seconds: number; reason?: string; preserveWorkerAffinity?: boolean; material?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("wait");
                 const reason = args.reason ?? "unspecified";
                 if (args.seconds <= turnState.waitThreshold) {
@@ -1289,6 +1310,7 @@ export class ManagedSession {
                     seconds: args.seconds,
                     reason,
                     preserveWorkerAffinity: args.preserveWorkerAffinity ?? false,
+                    ...(args.material === true ? { material: true } : {}),
                 });
                 return acknowledgeTurnBoundary("wait");
             },
@@ -2146,17 +2168,22 @@ export class ManagedSession {
         const checkAgentsTool = defineTool("check_agents", {
             description:
                 "Check the current status and latest output of your RUNNING sub-agents (spawned with spawn_agent). " +
-                "Returns each sub-agent's ID, task, status (running/completed/failed), and result. " +
+                "Returns each sub-agent's ID, task, status (running/completed/failed), and result — in full for children that changed since your last call, one roster line for the rest (pass full=true for everything; Output is capped at 1,000 chars, use read_agent_events for a complete result). " +
                 "This is an on-demand snapshot, not a scheduling primitive; do not schedule wait or cron solely to call check_agents. " +
                 "This is NOT the same as ps_list_agents — ps_list_agents shows available agent blueprints, check_agents shows your live sub-agent instances.",
             parameters: {
                 type: "object",
-                properties: {},
+                properties: {
+                    full: {
+                        type: "boolean",
+                        description: "Return every child in full. Default (false): children unchanged since your last check_agents call are one roster line each.",
+                    },
+                },
             },
-            handler: async () => {
+            handler: async (args?: { full?: boolean }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("check_agents");
                 if (controlBridge) {
-                    return await controlBridge.checkAgents();
+                    return await controlBridge.checkAgents({ full: args?.full === true });
                 }
                 turnState.pendingActions.push({ type: "check_agents" });
                 return acknowledgeTurnBoundary("check_agents");

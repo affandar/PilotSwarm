@@ -5,7 +5,7 @@
  *
  * Two things must hold and are guarded here:
  *   1. VERSION CEREMONY — every version below the latest is frozen into its
- *      own directory and registered; latest is 1.0.70. Each bump updates this
+ *      own directory and registered; latest is 1.0.71. Each bump updates this
  *      block, which is the point: a freeze that forgets the ceremony is a
  *      freeze nobody checked.
  *   2. FREEZE BOUNDARY — the durable yield exists from 1.0.59 onward, never in
@@ -24,21 +24,21 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.70, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.70");
+    it("latest is 1.0.71, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.71");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_70");
-        expect(dispatcher.durableSessionOrchestration_1_0_70).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_71");
+        expect(dispatcher.durableSessionOrchestration_1_0_71).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.65 through 1.0.69 as distinct registered handlers", () => {
+    it("freezes 1.0.65 through 1.0.70 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
-        // 1.0.69 matters most here: it was the live directory until the 1.0.70
-        // bump, so the freeze had to repoint it at orchestration_1_0_69/.
+        // 1.0.70 matters most here: it was the live directory until the 1.0.71
+        // bump, so the freeze had to repoint it at orchestration_1_0_70/.
         // Leaving that import on ./orchestration/ would make "frozen" silently
         // track live development — this is the assertion that catches it.
-        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69"]) {
+        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69", "1.0.70"]) {
             const frozen = REGISTRY.find((e) => e.version === version);
             expect(frozen?.handler).toBeTypeOf("function");
             expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);

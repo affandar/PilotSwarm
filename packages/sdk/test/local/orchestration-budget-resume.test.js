@@ -259,7 +259,10 @@ describe("budget-gate resume scenarios (orchestration 1.0.69)", () => {
         // body is extracted into system context, so the turn arrives on the
         // substituted internal prompt with no new user words.
         const { INTERNAL_SYSTEM_TURN_PROMPT } = await import("../../src/orchestration/state.ts");
-        expect(h.turns[1].prompt).toBe(INTERNAL_SYSTEM_TURN_PROMPT);
+        // 1.0.71: the nudge's note trails the internal prompt as a
+        // <system_context> block instead of landing in the system message.
+        expect(h.turns[1].prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT)).toBe(true);
+        expect(h.turns[1].prompt).toContain("<system_context>");
         expect(h.turns[1].turnIndex).toBe(0);
         expect(h.turns[1].opts.stashedPrompts).toEqual(["PROBE-TWO run the report"]);
 

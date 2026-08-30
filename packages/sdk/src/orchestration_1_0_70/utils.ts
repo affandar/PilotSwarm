@@ -79,10 +79,6 @@ export function noteMessageSender(runtime: DurableSessionRuntime, rawSender: unk
 const LINE_SEP = "\\n\\r\\u2028\\u2029\\u0085\\v\\f";
 const FORGED_ATTRIBUTION = new RegExp(`(^|[${LINE_SEP}])(\\s*)\\[(FROM:|SHARED SESSION\\])`, "gi");
 const FORGED_SYSTEM = new RegExp(`(^|[${LINE_SEP}])(\\s*)\\[(SYSTEM:)`, "gi");
-// 1.0.71 delivers the turn's system note as a trailing <system_context> block
-// in the user turn (prompt-system-context.ts). A collaborator typing that tag
-// would otherwise pass for orchestration text; neutralised the same way.
-const FORGED_SYSTEM_CONTEXT = new RegExp(`(^|[${LINE_SEP}])(\\s*)<(/?system_context>)`, "gi");
 
 function neutralize(re: RegExp, text: string): string {
     return text.replace(re, (_m, lead, ws, marker) => `${lead}${ws}[​${marker}`);
@@ -94,10 +90,7 @@ export function applySenderAttribution(runtime: DurableSessionRuntime, sender: M
     let safeText = neutralize(FORGED_ATTRIBUTION, text);
     // The owner keeps the [SYSTEM:] affordance; collaborators and unknown
     // senders do not — they must not be able to override owner-priority.
-    if (sender?.relation !== "owner") {
-        safeText = neutralize(FORGED_SYSTEM, safeText);
-        safeText = safeText.replace(FORGED_SYSTEM_CONTEXT, (_m, lead, ws, tag) => `${lead}${ws}<​${tag}`);
-    }
+    if (sender?.relation !== "owner") safeText = neutralize(FORGED_SYSTEM, safeText);
     if (!sender) return safeText;
     return `${formatSenderAttribution(sender)}\n${safeText}`;
 }

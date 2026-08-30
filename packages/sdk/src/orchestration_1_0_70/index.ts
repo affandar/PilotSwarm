@@ -1,5 +1,16 @@
 /**
- * Durable session orchestration v1.0.71.
+ * Durable session orchestration v1.0.70 — FROZEN.
+ *
+ * Frozen at the v0.5.51 release state. 1.0.71 changes WHERE a turn's
+ * `[SYSTEM: …]` wake-up note is delivered: 1.0.70 parks it in
+ * `config.turnSystemPrompt`, which session-manager renders into the SYSTEM
+ * message, so every wake-up rewrote the first bytes of the request and
+ * threw away the provider's prefix cache (measured on chk: 12% cache hit on
+ * the first call after a wake-up vs 93–99% when the system message is
+ * stable). 1.0.71 keeps the note in the user turn instead. That changes the
+ * prompt string the orchestration yields to runTurn, and durable replay
+ * matches on the yield sequence — so 1.0.70 is frozen here. Replay-only
+ * maintenance from here; live development continues in ../orchestration/.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -23,7 +34,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_71(
+export function* durableSessionOrchestration_1_0_70(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

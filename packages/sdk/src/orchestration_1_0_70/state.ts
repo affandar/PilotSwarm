@@ -202,27 +202,6 @@ export const MAX_RETRIES = 3;
 export const MAX_SUB_AGENTS = 50;
 export const MAX_NESTING_LEVEL = 2;
 export const CHILD_UPDATE_BATCH_MS = 30_000;
-
-/**
- * How long a parent buffers child updates before it wakes for them, scaled
- * with fan-out. A parent with two children keeps the 30-second window; one
- * with twenty buffers for five minutes. Furiosa on chk (20+ children) woke
- * three times in two minutes on child updates and made no tool call each
- * time, ~687K input tokens per wake-up. Pure in its inputs, so replay is
- * deterministic: `subAgentCount` comes from replayed state.
- */
-export const CHILD_UPDATE_BATCH_MAX_MS = 300_000;
-export function childUpdateBatchMs(subAgentCount: number): number {
-    const n = Number.isFinite(subAgentCount) && subAgentCount > 0 ? Math.floor(subAgentCount) : 0;
-    return Math.min(CHILD_UPDATE_BATCH_MAX_MS, Math.max(CHILD_UPDATE_BATCH_MS, 15_000 * n));
-}
-
-/**
- * If the parent's own timer will fire within this window, a buffered child
- * digest waits for that wake-up instead of causing one of its own. The
- * digest rides into the timer turn's prompt (processTimer flushes it).
- */
-export const CHILD_DIGEST_COALESCE_MS = 60_000;
 export const SHUTDOWN_TIMEOUT_MS = 60_000;
 export const SHUTDOWN_POLL_INTERVAL_MS = 5_000;
 

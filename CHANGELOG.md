@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.5.52 — 2026-08-30
+
+Sessions stop paying for their own wake-ups. Orchestration 1.0.71.
+
+### Fixed
+
+- **A wake-up no longer throws away the provider's prompt cache.** Every
+  wake-up (timer end, cron fire, child update) hands the model a short
+  `[SYSTEM: …]` note saying why the session woke. That note was rendered
+  into the SYSTEM message — the first bytes of every request — so each
+  wake-up changed the prefix and the provider re-read the entire context
+  behind it. Measured on a busy fleet: 12–19% cache hit on the first call
+  after a wake-up, against 93–99% when the prefix is stable. The note now
+  rides at the tail of the USER turn as a `<system_context>` block
+  (`prompt-system-context.ts`); the system message stays byte-stable.
+  Live A/B on the same prompts: gpt-5.6-sol wake-ups went from 0% cached to
+  99%, Claude Sonnet from 62–65% to 99%. Transcripts keep their old shape —
+  the note is still recorded as `system.message`, and `user.message` is
+  persisted without the block. Orchestration ≤1.0.70 keeps the old delivery
+  through the hand-off window; 1.0.70 is frozen in its own directory.
+
+### Changed
+
+- **A parent wakes for its children less often.** Four related changes:
+  a child's bare `wait` ("I am sleeping, will check again") is now a
+  heartbeat and does not wake the parent — the new `wait(material=true)`
+  is the child's way to interrupt with something the parent must see, a
+  verdict hint still gets through, and the QUESTION-FOR-PARENT coercion is
+  untouched; a buffered child digest whose parent's own wait/cron fires
+  within 60 seconds waits for that turn and rides into its prompt instead
+  of causing a wake-up of its own (a failed or cancelled child still wakes
+  the parent at once); the digest buffer window scales with fan-out
+  (15s × children, 30s–5min); and a child's completion is never overwritten
+  by its later wait inside one buffer window. Live A/B (parent + three
+  waiting children + cron): 6 turns → 4, input tokens −29%, child-triggered
+  wake-ups 2 → 0, same final answer.
+
+- **`check_agents` reports what changed, not everything.** Children changed
+  since the parent's last call get the full block (Output capped at 1,000
+  chars, with `read_agent_events` for the rest); unchanged children are one
+  roster line each; `full=true` returns everything. On a busy fleet the old
+  full dump was 5–13K chars per call with 84% of lines identical to the
+  previous call — and every copy stays in the transcript. The
+  what-did-the-parent-last-see memo is a CMS event, so it survives worker
+  moves; if it cannot be read, the report falls back to full.
+
+- **Base agent 1.18.0** teaches both: a plain `wait` does not wake your
+  parent, and `check_agents` is a delta.
+
+### Observability
+
+- **`session.prompt_sections` events.** The composer fingerprints each
+  dynamic system-message section per turn and records an event when one
+  changes, with the size delta. This is how the remaining prefix movers get
+  found — it already named the next one: the RECURRING-TASK block appended
+  after a session's first turn, worth exactly one cache miss per session.
+
+### Tests
+
+- New: 4 tests driving the real 1.0.71 generator (wake note in the user
+  turn, retry-once, system-only retry), 9 child-wake tests (digest hold,
+  scaled window, rank-based replace, wait suppression, material, question),
+  6 classifier tests, 8 delta-report tests, 7 block round-trip tests, and
+  the 1.0.71 freeze pins. Every behavioural pin verified red with its fix
+  disabled.
+
+
 ## 0.5.51 — 2026-08-29
 
 Sol Fast joins the model list, and a collapsed session stops hiding its own

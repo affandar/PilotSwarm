@@ -925,6 +925,26 @@ async function testSessionManagerUsesCustomizeMode(env) {
 
     const updatedLastInstructions = await systemMessage.sections.last_instructions.action("SDK last instructions");
     assertIncludes(updatedLastInstructions, "Queued system follow-up", "dynamic last_instructions should pick up per-turn system overlays");
+
+    // Orchestration ≥1.0.71 delivers the note inside the user turn and flags
+    // the config. The system message must then stay byte-stable: rendering
+    // the note here too is what cost the provider prefix cache on every
+    // wake-up (chk: 12% first-call hit vs 93–99% when stable).
+    await manager.getOrCreate("customize-mode-session", {
+        boundAgentName: "coordinator",
+        promptLayering: { kind: "app-agent" },
+        systemMessage: "Runtime context prompt",
+        turnSystemPrompt: "Queued system follow-up",
+        systemContextInPrompt: true,
+        agentIdentity: "coordinator",
+        toolNames: [],
+    }, { turnIndex: 2 });
+    const flaggedLastInstructions = await systemMessage.sections.last_instructions.action("SDK last instructions");
+    assertIncludes(flaggedLastInstructions, "Coordinator agent prompt", "agent prompt still renders for a flagged turn");
+    assertIncludes(flaggedLastInstructions, "Runtime context prompt", "runtime context still renders for a flagged turn");
+    if (flaggedLastInstructions.includes("Queued system follow-up")) {
+        throw new Error("a flagged (≥1.0.71) turn must NOT render turnSystemPrompt into the system message");
+    }
 }
 
 // ─── Test: Replace Mode Still Layers Base Prompt ────────────────

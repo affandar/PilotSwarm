@@ -1,6 +1,5 @@
 import type { MessageSender } from "../message-sender.js";
 import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
-import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-system-context.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
@@ -22,7 +21,6 @@ import {
     continueInputWithPrompt,
     drainLeadingQueuedScheduleActions,
     ensureTaskContext,
-    flushPendingChildDigestIntoPrompt,
     maybeSummarize,
     publishStatus,
     releaseAffinity,
@@ -192,17 +190,10 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
             needsHydration: state.needsHydration,
         };
     }
-    // 1.0.71: `sourcePrompt` already carries the turn's note as a trailing
-    // <system_context> block, so the retried execution gets it from the
-    // prompt alone. Forwarding `turnSystemPrompt` as well would land it in
-    // `pendingSystemPrompt` and append it a SECOND time. A system-only turn
-    // forwards its prompt too (INTERNAL_SYSTEM_TURN_PROMPT + block) and keeps
-    // its bootstrap flag, which is what ≤1.0.70 re-derived from the bare
-    // systemPrompt.
     return {
-        prompt: rc.sourcePrompt,
-        ...(rc.systemOnlyTurn ? { bootstrapPrompt: true } : {}),
+        ...(rc.systemOnlyTurn ? {} : { prompt: rc.sourcePrompt }),
         ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
+        ...(rc.turnSystemPrompt ? { systemPrompt: rc.turnSystemPrompt } : {}),
         ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
         retryCount: state.retryCount,
         needsHydration: state.needsHydration,
@@ -318,16 +309,7 @@ export function* processPrompt(
         prompt = INTERNAL_SYSTEM_TURN_PROMPT;
         promptIsBootstrap = true;
     }
-    // 1.0.71: the note is delivered INSIDE the user turn, not the system
-    // message. `turnSystemPrompt` is still set — session-proxy records it as
-    // the `system.message` event, exactly as before — but the flag tells
-    // session-manager not to render it into `last_instructions`. A note that
-    // changes every wake-up in the system message rewrote the request prefix
-    // and cost the whole provider cache behind it (chk: 12% hit vs 93–99%).
-    // See prompt-system-context.ts.
     state.config.turnSystemPrompt = turnSystemPrompt;
-    state.config.systemContextInPrompt = true;
-    prompt = appendSystemContextBlock(prompt, turnSystemPrompt);
 
     ctx.traceInfo(`[turn ${state.iteration}] session=${runtime.input.sessionId} prompt="${prompt.slice(0, 80)}"`);
 
@@ -937,12 +919,7 @@ function* stashBudgetRefusedPrompt(
     isBootstrap?: boolean,
 ): Generator<any, void, any> {
     const { state } = runtime;
-    // 1.0.71: the turn's note rides in the prompt as a trailing block. It is
-    // turn-scoped machinery, not anybody's words — a stashed prompt replays on
-    // a LATER turn that carries its own note — so it is dropped here, and the
-    // guards below see the bare prompt exactly as ≤1.0.70 did.
-    const bare = splitSystemContextBlock(typeof sourcePrompt === "string" ? sourcePrompt : "").prompt;
-    const prompt = bare.trim();
+    const prompt = typeof sourcePrompt === "string" ? sourcePrompt.trim() : "";
     if (!prompt) return;
     if (/^\[SYSTEM:/i.test(prompt)) return;
     if (prompt === PROVIDER_BUDGET_WAKE_PROMPT) return;
@@ -1153,17 +1130,8 @@ export function* handleTurnResult(
                 const notifyContent = result.content
                     ? result.content.slice(0, 2000)
                     : `[wait: ${result.reason} (${result.seconds}s)]`;
-                // ≥1.0.71: a bare wait is a heartbeat (waitIsHeartbeat). The
-                // child interrupts its parent from a wait only with
-                // wait({material: true}); the QUESTION FOR PARENT coercion
-                // stays material inside the classifier.
                 const wakeDecision = shouldWakeParentForChildUpdate({
-                    update: {
-                        kind: "wait",
-                        summary: notifyContent,
-                        waitIsHeartbeat: true,
-                        ...((result as any).material === true ? { material: true } : {}),
-                    },
+                    update: { kind: "wait", summary: notifyContent },
                     contract: state.config.childContract,
                 });
                 if (wakeDecision.wake) {
@@ -1384,12 +1352,9 @@ export function* processTimer(
                 "Do not treat this as a new unrelated user request.",
                 "Do not call wait() again for the delay that already finished.",
             ].filter(Boolean).join(" ");
-            // ≥1.0.71: a child digest held for this wake-up (queue.ts
-            // nextTimerCandidate) rides into the prompt here, so holding it
-            // never loses it.
             yield* processPrompt(
                 runtime,
-                flushPendingChildDigestIntoPrompt(runtime, appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt) ?? timerPrompt,
+                appendSystemContext(timerPrompt, resumeSystemPrompt) ?? timerPrompt,
                 false,
             );
             return;
@@ -1411,15 +1376,15 @@ export function* processTimer(
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
-                    flushPendingChildDigestIntoPrompt(runtime, wrapWithResumeContext(runtime, "Resume your recurring task.",
-                        `Scheduled cron wake-up for: "${activeCron.reason}". ${cycleReportGuidance}`)) ?? cronPrompt,
+                    wrapWithResumeContext(runtime, "Resume your recurring task.",
+                        `Scheduled cron wake-up for: "${activeCron.reason}". ${cycleReportGuidance}`),
                     true,
                     undefined,
                     undefined,
                     "cron",
                 );
             } else {
-                yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, cronPrompt) ?? cronPrompt, true, undefined, undefined, "cron");
+                yield* processPrompt(runtime, cronPrompt, true, undefined, undefined, "cron");
             }
             return;
         }
@@ -1470,19 +1435,19 @@ export function* processTimer(
             if (timer.shouldRehydrate) {
                 yield* processPrompt(
                     runtime,
-                    flushPendingChildDigestIntoPrompt(runtime, wrapWithResumeContext(runtime, "Resume your recurring task.",
+                    wrapWithResumeContext(runtime, "Resume your recurring task.",
                         `Scheduled wall-clock cron wake-up for "${activeCronAt.reason}". ` +
                         `Schedule: ${description}. Scheduled fire: ${new Date(scheduledAtMs).toISOString()}. ` +
                         `If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. ` +
                         `If nothing material changed, do NOT call report_cycle at all — just end the turn silently. ` +
-                        `Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.`)) ?? cronAtPrompt,
+                        `Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.`),
                     true,
                     undefined,
                     undefined,
                     "cron_at",
                 );
             } else {
-                yield* processPrompt(runtime, flushPendingChildDigestIntoPrompt(runtime, cronAtPrompt) ?? cronAtPrompt, true, undefined, undefined, "cron_at");
+                yield* processPrompt(runtime, cronAtPrompt, true, undefined, undefined, "cron_at");
             }
             return;
         }

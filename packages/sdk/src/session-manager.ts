@@ -420,6 +420,19 @@ export class SessionManager {
     private graphStore: GraphStore | null = null;
     /** Shared CMS catalog used to build always-on inspect tools. */
     private sessionCatalog: SessionCatalog | null = null;
+    /**
+     * Last-seen fingerprint of each dynamic system-message section, per
+     * session. The provider caches the request prefix, so any byte that
+     * moves in the system message between two turns costs the whole cache
+     * behind it. Measured on waldemort chk (2026-08-30): the wake-up note
+     * (fixed by orchestration 1.0.71) was one mover, but user→user turns
+     * still changed the prompt size 29% of the time with no note present.
+     * This map is how we find the rest: a `session.prompt_sections` event is
+     * recorded whenever a section's hash changes, naming the section and
+     * the size delta. Read it next to the CLI's "(N chars)" echo — a size
+     * change with no section event means the mover is on the CLI side.
+     */
+    private promptSectionDigests = new Map<string, Record<string, { sha: string; chars: number }>>();
     /** Duroxide client used by tuner-only inspect tools. */
     private _duroxideClient: any = null;
     private _refreshModelProviders: (() => Promise<void>) | null = null;
@@ -2358,7 +2371,43 @@ export class SessionManager {
      * 3. bound agent prompt (for named/system sessions)
      * 4. caller/runtime context
      */
-    private _buildKnowledgeToolInstructionsSection(agentIdentity?: string): SectionOverride | undefined {
+    /**
+     * Fingerprint one dynamic section of the composed system message and
+     * record a `session.prompt_sections` event when it differs from the last
+     * compose for this session. Returns the content unchanged so it can wrap
+     * a section action's return. Best-effort: a CMS write failure is logged
+     * and never fails the compose.
+     */
+    private _notePromptSection(sessionId: string, section: string, content: string): string {
+        try {
+            const sha = createHash("sha1").update(content).digest("hex").slice(0, 12);
+            const chars = content.length;
+            const seen = this.promptSectionDigests.get(sessionId) ?? {};
+            const prev = seen[section];
+            if (!prev || prev.sha !== sha) {
+                seen[section] = { sha, chars };
+                this.promptSectionDigests.set(sessionId, seen);
+                if (this.sessionCatalog) {
+                    void this.sessionCatalog.recordEvents(sessionId, [{
+                        eventType: "session.prompt_sections",
+                        data: {
+                            section,
+                            sha,
+                            chars,
+                            ...(prev ? { previousSha: prev.sha, previousChars: prev.chars, delta: chars - prev.chars } : { first: true }),
+                        },
+                    }]).catch((err: any) => {
+                        console.error(`[session-manager] prompt_sections event failed session=${sessionId}: ${err?.message ?? err}`);
+                    });
+                }
+            }
+        } catch (err: any) {
+            console.error(`[session-manager] prompt_sections fingerprint failed session=${sessionId}: ${err?.message ?? err}`);
+        }
+        return content;
+    }
+
+    private _buildKnowledgeToolInstructionsSection(sessionId: string, agentIdentity?: string): SectionOverride | undefined {
         if (!this.factStore || agentIdentity === "facts-manager") return undefined;
 
         // Capability-aware knowledge block (enhancedfactstore 07 §1.5/§1.6). Three
@@ -2384,7 +2433,8 @@ export class SessionManager {
                     const { askBlock } = buildKnowledgePromptBlocks(knowledgeIndex, { includeNamespaceRules: false });
                     const enhancedBlock = buildEnhancedRetrievalPromptBlock({ semantic: hasEmbedder });
                     const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: hasEmbedder }) : undefined;
-                    return mergePromptSections([currentContent, askBlock, enhancedBlock, graphBlock]) ?? currentContent;
+                    return this._notePromptSection(sessionId, "tool_instructions",
+                        mergePromptSections([currentContent, askBlock, enhancedBlock, graphBlock]) ?? currentContent);
                 }
                 // Base store: today's block unchanged (skills + asks push). When a
                 // graph is configured on a base-facts deployment, add the graph
@@ -2392,7 +2442,8 @@ export class SessionManager {
                 const knowledgeIndex = await loadKnowledgeIndexFromFactStore(this.factStore!, 50);
                 const { askBlock, skillBlock } = buildKnowledgePromptBlocks(knowledgeIndex);
                 const graphBlock = hasGraph ? buildGraphReaderPromptBlock({ semanticSeed: false }) : undefined;
-                return mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent;
+                return this._notePromptSection(sessionId, "tool_instructions",
+                    mergePromptSections([currentContent, askBlock, skillBlock, graphBlock]) ?? currentContent);
             },
         };
     }
@@ -2415,12 +2466,19 @@ export class SessionManager {
                         await this._sessionAgentOwnerKey(sessionId),
                     )?.prompt
                     : undefined;
+                // Orchestration ≥1.0.71 delivers the per-turn note inside the
+                // user turn (see prompt-system-context.ts) and flags it. For
+                // those turns the note must NOT land here: this section is
+                // part of the system message, and a note that changes every
+                // wake-up rewrote the request prefix and lost the provider
+                // cache. ≤1.0.70 turns carry no flag and keep the old path.
                 const overlay = mergePromptSections([
                     activeAgentPrompt,
                     runtimeContext,
-                    latest.turnSystemPrompt,
+                    latest.systemContextInPrompt ? undefined : latest.turnSystemPrompt,
                 ]);
-                return mergePromptSections([currentContent, overlay]) ?? currentContent;
+                return this._notePromptSection(sessionId, "last_instructions",
+                    mergePromptSections([currentContent, overlay]) ?? currentContent);
             },
         };
     }
@@ -2575,7 +2633,7 @@ export class SessionManager {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
-        const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(config.agentIdentity);
+        const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);
         const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }

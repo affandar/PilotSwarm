@@ -189,6 +189,48 @@ describe("session-proxy CMS prompt classification", () => {
         expect(matching).toHaveLength(0);
     });
 
+    it("1.0.71: persists user.message WITHOUT the <system_context> block and still records the note", async () => {
+        const { runTurn, recordedEvents, session } = makeHarness();
+        const fullPrompt = "ship it\n\n<system_context>\nWait reason: \"poll the child\". Resume now.\n</system_context>";
+
+        await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            {
+                sessionId: "session-system-context",
+                prompt: fullPrompt,
+                config: {
+                    turnSystemPrompt: "Wait reason: \"poll the child\". Resume now.",
+                    systemContextInPrompt: true,
+                },
+                turnIndex: 0,
+            },
+        );
+
+        // The model still gets the whole thing — the block is how the note reaches it.
+        expect(session.runTurn).toHaveBeenCalledTimes(1);
+        expect(session.runTurn.mock.calls[0][0]).toBe(fullPrompt);
+
+        // The transcript keeps its old shape: user text alone, note as system.message.
+        const userEvents = recordedEvents.filter((event) => event.eventType === "user.message");
+        expect(userEvents).toHaveLength(1);
+        expect(userEvents[0].data.content).toBe("ship it");
+        const noteEvents = recordedEvents.filter((event) => event.data?.content === "Wait reason: \"poll the child\". Resume now.");
+        expect(noteEvents).toHaveLength(1);
+        expect(noteEvents[0].eventType).toBe("system.message");
+    });
+
+    it("≤1.0.70: an unflagged turn is persisted exactly as before, block or not", async () => {
+        const { runTurn, recordedEvents } = makeHarness();
+        const prompt = "ship it\n\n<system_context>\ntyped by hand\n</system_context>";
+        await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            { sessionId: "session-unflagged", prompt, config: {}, turnIndex: 0 },
+        );
+        const userEvents = recordedEvents.filter((event) => event.eventType === "user.message");
+        expect(userEvents).toHaveLength(1);
+        expect(userEvents[0].data.content).toBe(prompt);
+    });
+
     it("records child update prompts as system.message", async () => {
         const { runTurn, recordedEvents } = makeHarness();
 

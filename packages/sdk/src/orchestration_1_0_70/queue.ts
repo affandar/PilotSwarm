@@ -19,11 +19,8 @@ import {
     wrapWithResumeContext,
 } from "./lifecycle.js";
 import { shouldWakeParentForChildDigest } from "../child-notifications.js";
-import { pendingChildDigestHasError } from "./lifecycle.js";
 import {
     CHILD_UPDATE_BATCH_MS,
-    CHILD_DIGEST_COALESCE_MS,
-    childUpdateBatchMs,
     FIFO_BUCKET_COUNT,
     MAX_BUCKET_BYTES,
     MAX_DRAIN_PER_TURN,
@@ -199,14 +196,10 @@ function* recordDuplicatePrompt(
 
 // ─── Timer race candidate selection ─────────────────────────
 
-/** Timer types whose expiry runs a turn — the only ones a child digest can ride into. */
-const TURN_RUNNING_TIMER_TYPES: ReadonlySet<ActiveTimer["type"]> = new Set(["wait", "cron", "cron_at"]);
-
 function nextTimerCandidate(
     activeTimer: ActiveTimer | null,
     pendingChildDigest: PendingChildDigest | null,
     now: number,
-    opts: { batchMs?: number; digestHasError?: boolean } = {},
 ): { kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer } | null {
     const candidates: Array<{ kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer }> = [];
     if (activeTimer) {
@@ -217,25 +210,10 @@ function nextTimerCandidate(
         });
     }
     if (pendingChildDigest && !pendingChildDigest.ready && pendingChildDigest.updates.length > 0) {
-        // ≥1.0.71: if the parent's own wait/cron fires within the coalesce
-        // window anyway, the digest waits for that turn and rides into its
-        // prompt (processTimer flushes it) instead of waking the parent on
-        // its own. A child failure or cancellation still wakes at once.
-        // Idle / agent-poll / input-grace timers do not run a turn on expiry,
-        // so they never count as "will wake anyway".
-        const holdForTimer = Boolean(
-            activeTimer
-            && TURN_RUNNING_TIMER_TYPES.has(activeTimer.type)
-            && activeTimer.deadlineMs - now <= CHILD_DIGEST_COALESCE_MS
-            && !opts.digestHasError,
-        );
-        if (!holdForTimer) {
-            const batchMs = opts.batchMs ?? CHILD_UPDATE_BATCH_MS;
-            candidates.push({
-                kind: "child-digest",
-                remainingMs: Math.max(0, pendingChildDigest.startedAtMs + batchMs - now),
-            });
-        }
+        candidates.push({
+            kind: "child-digest",
+            remainingMs: Math.max(0, pendingChildDigest.startedAtMs + CHILD_UPDATE_BATCH_MS - now),
+        });
     }
     if (candidates.length === 0) return null;
     candidates.sort((left, right) => left.remainingMs - right.remainingMs);
@@ -290,10 +268,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
-            const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
-                batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
-                digestHasError: pendingChildDigestHasError(runtime),
-            });
+            const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now);
             if (!candidate) continue;
 
             if (candidate.remainingMs === 0) {

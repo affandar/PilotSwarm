@@ -517,9 +517,13 @@ describe("orchestration child update batching", () => {
 
         const result = await harness.runUntilRunTurn();
 
-        expect(result.runTurnCall.prompt).toBe(
+        // 1.0.71: the internal prompt is still the user text; the digest now
+        // trails it as a <system_context> block instead of moving to the
+        // system message (that is what cost the provider prefix cache).
+        expect(result.runTurnCall.prompt.startsWith(
             "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
-        );
+        )).toBe(true);
+        expect(result.runTurnCall.prompt).toContain("<system_context>");
         expect(result.runTurnCall.systemPrompt).toContain("Buffered child updates arrived during the last 30 seconds");
         expect(result.runTurnCall.systemPrompt).toContain("This is an internal orchestration wake-up caused by child session updates");
         expect(result.runTurnCall.systemPrompt).toContain("Agent agent-1");
@@ -646,9 +650,13 @@ describe("orchestration child update batching", () => {
             content: "Still monitoring.",
         });
 
-        expect(result.runTurnCall.prompt).toBe(
+        // 1.0.71: the internal prompt is still the user text; the digest now
+        // trails it as a <system_context> block instead of moving to the
+        // system message (that is what cost the provider prefix cache).
+        expect(result.runTurnCall.prompt.startsWith(
             "Internal orchestration wake-up. The user did not send a new message. Continue with the latest system instructions.",
-        );
+        )).toBe(true);
+        expect(result.runTurnCall.prompt).toContain("<system_context>");
         expect(result.state.nowMs).toBe(180_000);
         expect(mockSession.runTurn).toHaveBeenCalledTimes(2);
     });

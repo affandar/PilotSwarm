@@ -50,6 +50,17 @@ export interface ChildUpdateSnapshot {
      * cron-origin turns.
      */
     cyclic?: boolean;
+    /**
+     * Orchestration ≥1.0.71 sets this on a child's `wait` notification. A
+     * plain wait ("I am sleeping 60s, will check again") is then a heartbeat:
+     * it does not wake the parent unless the child said `material: true` on
+     * the wait tool, or the wait carries a verdict hint, or it is the
+     * QUESTION-FOR-PARENT coercion. Measured on waldemort chk (2026-08-30):
+     * 20 of the 41 updates that woke a 690K-token manager for nothing were
+     * bare waits. Absent on ≤1.0.70 executions, which keep the old rule so
+     * their replay is unchanged.
+     */
+    waitIsHeartbeat?: boolean;
 }
 
 /** Default policy when a contract is missing or unset. */
@@ -131,6 +142,20 @@ export function classifyChildUpdate(update: ChildUpdateSnapshot): ChildUpdateCla
 
     // Treat cancelled as completion for routing purposes (parent should know).
     if (update.kind === "cancelled") return "completion";
+
+    // ≥1.0.71: a bare wait is a heartbeat. The child keeps three ways to
+    // interrupt from a wait: `wait({material: true})`, a verdict hint on the
+    // result, or the QUESTION FOR PARENT coercion (a wait whose content IS
+    // the question — it must reach the parent or the child hangs forever).
+    if (update.kind === "wait" && update.waitIsHeartbeat === true) {
+        if (update.material === true) return "material";
+        if (/^\s*QUESTION FOR PARENT:/i.test(update.summary ?? "")) return "material";
+        const verdictHint = (update.result as Record<string, unknown> | undefined)?.verdict;
+        if (typeof verdictHint === "string" && verdictHint && !["heartbeat", "unchanged", "no_change"].includes(verdictHint.toLowerCase())) {
+            return "material";
+        }
+        return "heartbeat";
+    }
 
     // Completed turn with a recognized terminal verdict.
     if (update.kind === "completed") {

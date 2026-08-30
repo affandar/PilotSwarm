@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.51** — GPT-5.6 Sol Fast joins the GitHub Copilot model list, and the GPT-5.6 models now offer the full thinking range including `none` and `max`. A collapsed session also stops hiding its own child count: the `[+N]` badge used to be the first thing an ellipsized title cut, so a parent with four hidden sub-agents looked exactly like a leaf. It is now pinned beside the context column, where no width can clip it.
+> **Latest release: v0.5.52** — Sessions stop paying for their own wake-ups. The note that says why a session woke used to rewrite the first bytes of every request, so each wake-up threw away the provider's prompt cache; it now rides in the user turn and wake-up cache hits went from 0–65% to 99%. Parents also wake for their children less often — a child's plain `wait` is a heartbeat, updates ride the parent's own schedule when one is imminent — and `check_agents` reports only what changed.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

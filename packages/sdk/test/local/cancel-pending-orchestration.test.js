@@ -324,7 +324,8 @@ describe("cancelPendingMessage orchestration", () => {
         await harness.runUntilIdle();
 
         expect(harness.traces.some((line) => line.includes("user prompt interrupted wait timer"))).toBe(false);
-        expect(harness.runTurns.some((turn) => turn.prompt === "The 1 second wait is now complete. Continue with your task.")).toBe(true);
+        // 1.0.71: the wait-resume note trails the timer prompt as a <system_context> block.
+        expect(harness.runTurns.some((turn) => turn.prompt.startsWith("The 1 second wait is now complete. Continue with your task."))).toBe(true);
     });
 
     it("keeps prompts without client ids on the legacy path", async () => {

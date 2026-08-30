@@ -329,37 +329,10 @@ export function bufferChildUpdate(
     };
     const existingIndex = runtime.state.pendingChildDigest.updates.findIndex((entry) => entry.sessionId === update.sessionId);
     if (existingIndex >= 0) {
-        // One entry per child, latest wins — EXCEPT that a lifecycle update
-        // (completed / failed / cancelled) is never overwritten by a later
-        // wait or progress note. With the batch window scaled up to five
-        // minutes (childUpdateBatchMs) a child can finish and then start
-        // waiting inside one window; the parent must still see the finish.
-        const existing = runtime.state.pendingChildDigest.updates[existingIndex];
-        if (childUpdateRank(nextEntry.updateType) >= childUpdateRank(existing.updateType)) {
-            runtime.state.pendingChildDigest.updates[existingIndex] = nextEntry;
-        }
+        runtime.state.pendingChildDigest.updates[existingIndex] = nextEntry;
     } else {
         runtime.state.pendingChildDigest.updates.push(nextEntry);
     }
-}
-
-function childUpdateRank(updateType: string): number {
-    switch (updateType) {
-        case "failed":
-        case "cancelled":
-        case "deleted":
-        case "completed":
-            return 2;
-        default:
-            return 1;
-    }
-}
-
-/** True when the buffered digest carries a child failure or cancellation — the parent should hear those at once. */
-export function pendingChildDigestHasError(runtime: DurableSessionRuntime): boolean {
-    const digest = runtime.state.pendingChildDigest;
-    if (!digest) return false;
-    return digest.updates.some((entry) => entry.updateType === "failed" || entry.updateType === "cancelled" || entry.updateType === "deleted");
 }
 
 export function clearPendingChildDigest(runtime: DurableSessionRuntime): void {
