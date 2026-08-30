@@ -51,6 +51,7 @@ import {
     selectSessionRows,
     selectSelectedFileBrowserItem,
     selectVisibleSessionRows,
+    selectNodeMapView,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
 import { getTheme, listThemes } from "./themes/index.js";
@@ -1624,6 +1625,7 @@ export class PilotSwarmUiController {
         this.sessionHistoryLoads = new Map();
         this.sessionHistoryExpansionLoads = new Map();
         this.sessionOrchestrationStatsLoads = new Map();
+        this.workerTimelineRequestVersions = new Map();
         this.outboxFlushPromises = new Map();
         this.logUnsubscribe = null;
         this.promptReferenceSignature = null;
@@ -3728,8 +3730,9 @@ export class PilotSwarmUiController {
     }
 
     /** Node Map: select a node (toggles off when re-selected). Scopes Activity. */
-    selectNodeMapNode(label) {
+    selectNodeMapNode(label, workerNodeId = null) {
         this.dispatch({ type: "ui/nodeMapSelect", label: label ? String(label) : null });
+        if (workerNodeId) void this.refreshWorkerTimeline(String(workerNodeId));
     }
 
     /** Reload the worker registry (Admin → Workers). Admin-gated server-side. */
@@ -3752,11 +3755,66 @@ export class PilotSwarmUiController {
             ]);
             console.info(`[PilotSwarmUi] worker registry: ${Array.isArray(list) ? list.length : 0} row(s)`);
             this.dispatch({ type: "admin/workers/loaded", list });
+            const nodeMap = selectNodeMapView(this.getState());
+            const selectedWorker = nodeMap.nodes.find((node) => node.label === nodeMap.selected);
+            if (selectedWorker?.workerNodeId) {
+                void this.refreshWorkerTimeline(selectedWorker.workerNodeId);
+            }
         } catch (error) {
             // Loud on purpose: the Node Map silently degrading to
             // activity-derived nodes hid a real fetch failure in prod.
             console.warn(`[PilotSwarmUi] worker-registry fetch failed: ${error?.message || error}`);
             this.dispatch({ type: "admin/workers/loadFailed", error: error?.message || String(error) });
+        }
+    }
+
+    async refreshWorkerTimeline(workerNodeId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        if (!normalizedWorkerNodeId) return;
+        if (typeof this.transport.getWorkerTimeline !== "function") {
+            this.dispatch({
+                type: "admin/workers/timelineLoadFailed",
+                workerNodeId: normalizedWorkerNodeId,
+                error: "Worker timelines are not available on this deployment.",
+            });
+            return;
+        }
+        const requestVersion = (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) || 0) + 1;
+        this.workerTimelineRequestVersions.set(normalizedWorkerNodeId, requestVersion);
+        this.dispatch({
+            type: "admin/workers/timelineLoading",
+            workerNodeId: normalizedWorkerNodeId,
+            requestVersion,
+        });
+        try {
+            const entries = await Promise.race([
+                this.transport.getWorkerTimeline(normalizedWorkerNodeId, {
+                    since: new Date(Date.now() - (7 * 24 * 60 * 60 * 1_000)).toISOString(),
+                    limit: 1_000,
+                }),
+                new Promise((_, reject) => {
+                    const timer = setTimeout(
+                        () => reject(new Error("request timed out after 10s")),
+                        10_000,
+                    );
+                    if (typeof timer?.unref === "function") timer.unref();
+                }),
+            ]);
+            if (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) !== requestVersion) return;
+            this.dispatch({
+                type: "admin/workers/timelineLoaded",
+                workerNodeId: normalizedWorkerNodeId,
+                requestVersion,
+                entries,
+            });
+        } catch (error) {
+            if (this.workerTimelineRequestVersions.get(normalizedWorkerNodeId) !== requestVersion) return;
+            this.dispatch({
+                type: "admin/workers/timelineLoadFailed",
+                workerNodeId: normalizedWorkerNodeId,
+                requestVersion,
+                error: error?.message || String(error),
+            });
         }
     }
 

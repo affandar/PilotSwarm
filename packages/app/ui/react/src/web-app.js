@@ -15,6 +15,16 @@ import {
 import { persistedStateRunLabel } from "./job-generator-state-run-label.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
+    reconcileWorkerTimelineLaneOrder,
+    reorderWorkerTimelineLane,
+} from "./worker-timeline-lane-order.js";
+import {
+    DEFAULT_WORKER_TIMELINE_ZOOM,
+    WORKER_TIMELINE_ZOOM_LEVELS,
+    computeWorkerTimelineZoomLayout,
+    stepWorkerTimelineZoom,
+} from "./worker-timeline-zoom.js";
+import {
     normalizeMoa,
     UI_COMMANDS,
     INSPECTOR_TABS,
@@ -3913,6 +3923,7 @@ function PortalNodeMapLines({ lines, theme, controller }) {
             // raw array/object shapes for direct (test) rendering.
             const runs = Array.isArray(line?.runs) ? line.runs : Array.isArray(line) ? line : [line];
             const nodeSelect = runs.find((run) => run?.nodeSelect)?.nodeSelect || null;
+            const nodeWorkerId = runs.find((run) => run?.nodeWorkerId)?.nodeWorkerId || null;
             const nodeSelected = runs.some((run) => run?.nodeSelected);
             const content = React.createElement(Runs, { runs, theme });
             if (nodeSelect) {
@@ -3926,7 +3937,7 @@ function PortalNodeMapLines({ lines, theme, controller }) {
                     onPointerDown: (event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        controller.selectNodeMapNode(nodeSelect);
+                        controller.selectNodeMapNode(nodeSelect, nodeWorkerId);
                     },
                 }, content);
             }
@@ -9791,6 +9802,631 @@ function InspectorPane({ controller, mobile = false, panelClassName = "", extraA
     });
 }
 
+function compactTimelineId(value) {
+    const normalized = String(value || "");
+    if (!normalized) return "—";
+    return normalized.length > 12 ? normalized.slice(0, 8) : normalized;
+}
+
+function formatTimelineDuration(value) {
+    const totalSeconds = Math.max(0, Math.round((Number(value) || 0) / 1_000));
+    const hours = Math.floor(totalSeconds / 3_600);
+    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+}
+
+function timelineAxisTicks(startAt, endAt, height) {
+    const startMs = new Date(startAt).getTime();
+    const endMs = new Date(endAt).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
+    const tickCount = Math.max(4, Math.min(12, Math.round(height / 90)));
+    return Array.from({ length: tickCount + 1 }, (_, index) => {
+        const ratio = index / tickCount;
+        const atMs = startMs + ((endMs - startMs) * ratio);
+        const iso = new Date(atMs).toISOString();
+        return {
+            key: `${index}:${iso}`,
+            ratio,
+            date: iso.slice(5, 10),
+            time: `${iso.slice(11, 19)}Z`,
+        };
+    });
+}
+
+function workerTimelineLaneLabel(lane) {
+    if (lane?.kind === "overhead") return "Platform overhead";
+    if (lane?.kind === "idle") return "Idle / available";
+    if (lane?.jobKey) return `Job ${lane.jobKey}`;
+    return `Job ${compactTimelineId(lane?.jobId)}`;
+}
+
+function openWorkerTimelineSession(controller, sessionId) {
+    const normalizedSessionId = String(sessionId || "").trim();
+    if (!normalizedSessionId) return;
+    controller.setFocus("chat");
+    controller.loadSession(normalizedSessionId).catch((error) => {
+        controller.dispatch({
+            type: "ui/status",
+            text: `Failed to open worker timeline session: ${error instanceof Error ? error.message : String(error)}`,
+        });
+    });
+}
+
+export function WorkerTimelineSwimlane({
+    timeline,
+    theme,
+    controller,
+    fullscreen = false,
+    onToggleFullscreen = null,
+    laneOrder = [],
+    onReorderLane = null,
+    zoom = DEFAULT_WORKER_TIMELINE_ZOOM,
+    onZoomIn = null,
+    onZoomOut = null,
+}) {
+    const sourceLanes = Array.isArray(timeline?.lanes) ? timeline.lanes : [];
+    const reconciledLaneOrder = reconcileWorkerTimelineLaneOrder(sourceLanes, laneOrder);
+    const lanesByKey = new Map(sourceLanes.map((lane) => [lane.key, lane]));
+    const lanes = reconciledLaneOrder.map((key) => lanesByKey.get(key)).filter(Boolean);
+    const segments = Array.isArray(timeline?.segments) ? timeline.segments : [];
+    const markers = Array.isArray(timeline?.markers) ? timeline.markers : [];
+    const scrollRef = React.useRef(null);
+    const [fullscreenChartHeight, setFullscreenChartHeight] = React.useState(0);
+    const [draggedLaneKey, setDraggedLaneKey] = React.useState(null);
+    const [dropTarget, setDropTarget] = React.useState(null);
+    React.useEffect(() => {
+        if (!fullscreen) {
+            setFullscreenChartHeight(0);
+            return undefined;
+        }
+        const scrollNode = scrollRef.current;
+        if (!scrollNode) return undefined;
+        const updateHeight = () => {
+            setFullscreenChartHeight(Math.max(360, scrollNode.clientHeight - 53));
+        };
+        const frame = window.requestAnimationFrame(updateHeight);
+        const observer = typeof ResizeObserver === "function"
+            ? new ResizeObserver(updateHeight)
+            : null;
+        observer?.observe(scrollNode);
+        window.addEventListener("resize", updateHeight);
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer?.disconnect();
+            window.removeEventListener("resize", updateHeight);
+        };
+    }, [fullscreen, timeline?.durationMs]);
+    const startAt = timeline?.displayStartAt || timeline?.startAt;
+    const endAt = timeline?.displayEndAt || timeline?.endAt;
+    const startMs = new Date(startAt).getTime();
+    const endMs = new Date(endAt).getTime();
+    const durationMs = Number(timeline?.durationMs) || 0;
+    const displayDurationMs = Number(timeline?.displayDurationMs) || durationMs;
+    if (
+        lanes.length === 0
+        || !Number.isFinite(startMs)
+        || !Number.isFinite(endMs)
+        || durationMs <= 0
+        || displayDurationMs <= 0
+    ) {
+        return null;
+    }
+
+    const zoomLayout = computeWorkerTimelineZoomLayout({
+        durationMs: displayDurationMs,
+        laneCount: lanes.length,
+        zoom,
+        minimumChartHeight: fullscreen ? fullscreenChartHeight : 360,
+    });
+    const chartHeight = zoomLayout.chartHeight;
+    const ticks = timelineAxisTicks(startAt, endAt, chartHeight);
+    const laneIndex = new Map(lanes.map((lane, index) => [lane.key, index]));
+    const jobLaneCount = lanes.filter((lane) => lane.kind === "job").length;
+    const busyMs = Number(timeline.busyMs) || 0;
+    const overheadMs = Number(timeline.overheadMs) || 0;
+    const capacityWaitMs = Number(timeline.capacityWaitMs) || 0;
+    const idleMs = Number(timeline.idleMs) || 0;
+    const activeWorkerMs = busyMs + overheadMs;
+    const utilization = activeWorkerMs > 0
+        ? Math.round((busyMs / activeWorkerMs) * 100)
+        : 0;
+    const overheadPercent = activeWorkerMs > 0 ? 100 - utilization : 0;
+    const utilizationTooltip = [
+        "Worker utilization = active Job work / active worker time",
+        `${formatTimelineDuration(busyMs)} (${busyMs} ms) / ${formatTimelineDuration(activeWorkerMs)} (${activeWorkerMs} ms) × 100 = ${utilization}%`,
+        `Active worker time: ${formatTimelineDuration(busyMs)} Job work + ${formatTimelineDuration(overheadMs)} platform overhead`,
+        `Excluded: ${formatTimelineDuration(idleMs)} idle / available when no Job or platform work was active.`,
+        `Also excluded: ${formatTimelineDuration(capacityWaitMs)} per-Job queue time because queued Jobs can overlap the worker timeline and one another.`,
+    ].join("\n");
+    const overheadTooltip = [
+        "Platform overhead = platform overhead / active worker time",
+        `${formatTimelineDuration(overheadMs)} (${overheadMs} ms) / ${formatTimelineDuration(activeWorkerMs)} (${activeWorkerMs} ms) × 100 = ${overheadPercent}%`,
+        `Active worker time: ${formatTimelineDuration(busyMs)} Job work + ${formatTimelineDuration(overheadMs)} platform overhead`,
+        `Utilization ${utilization}% + overhead ${overheadPercent}% = ${activeWorkerMs > 0 ? "100%" : "0% (no active worker time)"}.`,
+        `Excluded: ${formatTimelineDuration(idleMs)} idle / available and ${formatTimelineDuration(capacityWaitMs)} overlapping per-Job queue time.`,
+    ].join("\n");
+    const gridColumns = `var(--ps-worker-timeline-axis-width) repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
+    const laneColumns = `repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
+    const chartWidth = `${zoomLayout.chartWidth}px`;
+    const zoomIndex = WORKER_TIMELINE_ZOOM_LEVELS.indexOf(zoomLayout.zoom);
+    const canZoomOut = zoomIndex > 0;
+    const canZoomIn = zoomIndex < WORKER_TIMELINE_ZOOM_LEVELS.length - 1;
+    const workerName = String(timeline?.workerName || timeline?.workerNodeId || "").trim();
+    const positionPercent = (atMs) => (
+        Math.max(0, Math.min(100, ((atMs - startMs) / displayDurationMs) * 100))
+    );
+
+    return React.createElement("section", { className: "ps-worker-swimlane" },
+        React.createElement("div", { className: "ps-worker-swimlane__heading" },
+            React.createElement("h3", null,
+                "Worker utilization",
+                workerName
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__worker-name",
+                        title: timeline?.workerNodeId || workerName,
+                    }, ` · ${workerName}`)
+                    : null),
+            React.createElement("div", { className: "ps-worker-swimlane__heading-controls" },
+                React.createElement("span", null,
+                    `${formatTimelineDuration(busyMs)} Job work · `
+                    + `${formatTimelineDuration(overheadMs)} platform overhead · `
+                    + `${formatTimelineDuration(capacityWaitMs)} runnable queued (no compute) · `
+                    + `${formatTimelineDuration(idleMs)} idle / available · `,
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__utilization",
+                        title: utilizationTooltip,
+                        tabIndex: 0,
+                        "aria-label": utilizationTooltip,
+                    }, `${utilization}% utilized`),
+                    " · ",
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__utilization",
+                        title: overheadTooltip,
+                        tabIndex: 0,
+                        "aria-label": overheadTooltip,
+                    }, `${overheadPercent}% overhead`)),
+                React.createElement("div", {
+                    className: "ps-worker-swimlane__zoom-controls",
+                    role: "group",
+                    "aria-label": "Worker timeline zoom",
+                },
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onZoomOut || undefined,
+                    disabled: !canZoomOut || !onZoomOut,
+                    "aria-label": "Zoom out worker timeline",
+                    title: "Zoom out timeline",
+                }, "Zoom out"),
+                React.createElement("output", {
+                    className: "ps-worker-swimlane__zoom-level",
+                    "aria-live": "polite",
+                }, `${Math.round(zoomLayout.zoom * 100)}%`),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    onClick: onZoomIn || undefined,
+                    disabled: !canZoomIn || !onZoomIn,
+                    "aria-label": "Zoom in worker timeline",
+                    title: "Zoom in timeline",
+                }, "Zoom in")),
+                onToggleFullscreen
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-worker-swimlane__fullscreen-button",
+                        onClick: onToggleFullscreen,
+                        "aria-label": fullscreen
+                            ? "Exit full-screen worker utilization"
+                            : "Open worker utilization full screen",
+                        title: fullscreen ? "Exit full screen" : "Full screen",
+                    }, fullscreen ? "Exit full screen" : "Full screen")
+                    : null)),
+        React.createElement("div", { className: "ps-worker-swimlane__scroll", ref: scrollRef },
+            React.createElement("div", {
+                className: "ps-worker-swimlane__chart",
+                style: {
+                    width: `max(100%, ${chartWidth})`,
+                    minWidth: chartWidth,
+                    "--ps-worker-timeline-height": `${chartHeight}px`,
+                },
+                role: "region",
+                "aria-label": `${workerName ? `Worker timeline for ${workerName}` : "Worker timeline"} across ${jobLaneCount} Jobs over ${formatTimelineDuration(durationMs)}`,
+            },
+            React.createElement("div", {
+                className: "ps-worker-swimlane__headers",
+                style: { gridTemplateColumns: gridColumns },
+            },
+            React.createElement("div", { className: "ps-worker-swimlane__axis-header" }, "UTC"),
+            lanes.map((lane) => React.createElement("div", {
+                key: lane.key,
+                className: [
+                    "ps-worker-swimlane__lane-header",
+                    `is-${lane.kind}`,
+                    draggedLaneKey === lane.key ? "is-dragging" : "",
+                    dropTarget?.key === lane.key ? `is-drop-${dropTarget.position}` : "",
+                ].filter(Boolean).join(" "),
+                style: { "--ps-worker-lane-color": resolveColor(theme, lane.color) },
+                title: `${lane.jobId ? `${lane.jobId} · ` : ""}Drag to reorder this lane`,
+                draggable: Boolean(onReorderLane),
+                tabIndex: onReorderLane ? 0 : undefined,
+                onDragStart: onReorderLane
+                    ? (event) => {
+                        setDraggedLaneKey(lane.key);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", lane.key);
+                    }
+                    : undefined,
+                onDragOver: onReorderLane
+                    ? (event) => {
+                        event.preventDefault();
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const position = event.clientX < bounds.left + (bounds.width / 2)
+                            ? "before"
+                            : "after";
+                        event.dataTransfer.dropEffect = "move";
+                        setDropTarget({ key: lane.key, position });
+                    }
+                    : undefined,
+                onDrop: onReorderLane
+                    ? (event) => {
+                        event.preventDefault();
+                        const sourceKey = draggedLaneKey || event.dataTransfer.getData("text/plain");
+                        const position = dropTarget?.key === lane.key ? dropTarget.position : "before";
+                        onReorderLane(sourceKey, lane.key, position);
+                        setDraggedLaneKey(null);
+                        setDropTarget(null);
+                    }
+                    : undefined,
+                onDragEnd: onReorderLane
+                    ? () => {
+                        setDraggedLaneKey(null);
+                        setDropTarget(null);
+                    }
+                    : undefined,
+                onKeyDown: onReorderLane
+                    ? (event) => {
+                        if (!event.altKey || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                        const index = lanes.findIndex((candidate) => candidate.key === lane.key);
+                        const targetIndex = event.key === "ArrowLeft" ? index - 1 : index + 1;
+                        const target = lanes[targetIndex];
+                        if (!target) return;
+                        event.preventDefault();
+                        onReorderLane(
+                            lane.key,
+                            target.key,
+                            event.key === "ArrowLeft" ? "before" : "after",
+                        );
+                    }
+                    : undefined,
+            },
+            onReorderLane
+                ? React.createElement("span", {
+                    className: "ps-worker-swimlane__lane-drag-handle",
+                    "aria-hidden": "true",
+                }, "::")
+                : null,
+            React.createElement("strong", null, workerTimelineLaneLabel(lane)),
+            lane.jobId
+                ? React.createElement(React.Fragment, null,
+                    React.createElement("span", {
+                        className: `ps-worker-swimlane__job-status is-${lane.status}`,
+                    }, lane.statusLabel),
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__job-id",
+                        title: lane.jobId,
+                    }, compactTimelineId(lane.jobId)),
+                    React.createElement("span", {
+                        className: "ps-worker-swimlane__job-metrics",
+                    },
+                    React.createElement("span", {
+                        title: `Total active Job time: ${formatTimelineDuration(lane.activeMs)}`,
+                    }, `Active ${formatTimelineDuration(lane.activeMs)}`),
+                    React.createElement("span", {
+                        title: `Total runnable queue time: ${formatTimelineDuration(lane.queuedMs)}`,
+                    }, `Queued ${formatTimelineDuration(lane.queuedMs)}`),
+                    React.createElement("span", {
+                        title: `Human wait ${formatTimelineDuration(lane.humanWaitMs)} + system wait ${formatTimelineDuration(lane.systemWaitMs)} = ${formatTimelineDuration(lane.waitMs)}; waits are excluded from efficiency.`,
+                    }, `Waits ${formatTimelineDuration(lane.waitMs)}`),
+                    React.createElement("span", {
+                        title: `Efficiency = active / (active + attributable platform overhead + queued): ${formatTimelineDuration(lane.activeMs)} / (${formatTimelineDuration(lane.activeMs)} + ${formatTimelineDuration(lane.overheadMs)} + ${formatTimelineDuration(lane.queuedMs)}) = ${lane.efficiencyPercent}%. Human and system waits are excluded.`,
+                    }, `Efficiency ${lane.efficiencyPercent}%`)))
+                : React.createElement("span", null,
+                    lane.kind === "overhead" ? "recorded bookkeeping" : "no active Job turn")))),
+            React.createElement("div", {
+                className: "ps-worker-swimlane__body",
+                style: { height: `${chartHeight}px` },
+            },
+            ticks.map((tick, index) => React.createElement("div", {
+                key: tick.key,
+                className: `ps-worker-swimlane__tick${index === 0 ? " is-first" : ""}${index === ticks.length - 1 ? " is-last" : ""}`,
+                style: { top: `${tick.ratio * 100}%` },
+            },
+            React.createElement("span", { className: "ps-worker-swimlane__tick-label" },
+                React.createElement("span", null, tick.date),
+                React.createElement("span", null, tick.time)),
+            React.createElement("span", { className: "ps-worker-swimlane__tick-line" }))),
+            React.createElement("div", {
+                className: "ps-worker-swimlane__lanes",
+                style: { gridTemplateColumns: laneColumns },
+            },
+            lanes.map((lane) => React.createElement("div", {
+                key: lane.key,
+                className: `ps-worker-swimlane__lane is-${lane.kind}`,
+                style: { "--ps-worker-lane-color": resolveColor(theme, lane.color) },
+            }))),
+            segments.map((segment) => {
+                const index = laneIndex.get(segment.laneKey);
+                if (index === undefined) return null;
+                const top = positionPercent(Number(segment.startMs));
+                const height = Math.max(0, (Number(segment.durationMs) / displayDurationMs) * 100);
+                const lane = lanes[index];
+                const heightPx = (height / 100) * chartHeight;
+                const segmentColor = resolveColor(theme, segment.color || lane.color);
+                const canOpenSession = segment.kind !== "idle" && Boolean(segment.sessionId);
+                const isJobExecution = segment.kind === "work" || segment.kind === "work_wrap_up";
+                const segmentSummary = isJobExecution
+                    ? `${segment.kind === "work_wrap_up" ? "Active Job turn wrap-up" : "Active Job turn"} · ${segment.label}`
+                    : segment.kind === "capacity_wait"
+                        ? `${segment.label} · ${segment.activity}`
+                        : segment.activity;
+                const title = `${workerTimelineLaneLabel(lane)} · ${segmentSummary} · ${formatTimelineDuration(segment.durationMs)}`
+                    + (isJobExecution && segment.activity ? ` · ${segment.activity}` : "")
+                    + (canOpenSession ? ` · Click to open session ${segment.sessionId}` : "");
+                return React.createElement(canOpenSession ? "button" : "div", {
+                    key: segment.key,
+                    type: canOpenSession ? "button" : undefined,
+                    className: `ps-worker-swimlane__segment is-${segment.kind}${isJobExecution && heightPx < 30 ? " is-compact" : ""}`,
+                    style: {
+                        "--ps-worker-lane-index": index,
+                        "--ps-worker-lane-count": lanes.length,
+                        "--ps-worker-lane-color": resolveColor(theme, lane.color),
+                        "--ps-worker-segment-color": segmentColor,
+                        "--ps-worker-segment-height": `${height}%`,
+                        top: `${top}%`,
+                    },
+                    title,
+                    "aria-label": title,
+                    onClick: canOpenSession
+                        ? () => openWorkerTimelineSession(controller, segment.sessionId)
+                        : undefined,
+                }, segment.kind === "overhead"
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__overhead-duration",
+                    }, formatTimelineDuration(segment.durationMs))
+                    : isJobExecution
+                        ? React.createElement(React.Fragment, null,
+                        React.createElement("strong", {
+                            className: "ps-worker-swimlane__work-label",
+                        }, segment.label),
+                        heightPx >= 30
+                            ? React.createElement("span", null, formatTimelineDuration(segment.durationMs))
+                            : null)
+                    : heightPx >= 30
+                        ? React.createElement(React.Fragment, null,
+                        React.createElement("strong", null, segment.label),
+                        React.createElement("span", null, segment.kind === "capacity_wait"
+                            ? `no compute allocated · ${formatTimelineDuration(segment.durationMs)}`
+                            : segment.compute === false
+                            ? `no active compute · ${formatTimelineDuration(segment.durationMs)}`
+                            : formatTimelineDuration(segment.durationMs)))
+                        : null);
+            }),
+            markers.map((marker) => {
+                const index = laneIndex.get(marker.laneKey);
+                if (index === undefined) return null;
+                const canOpenSession = Boolean(marker.sessionId);
+                const title = `${new Date(marker.at).toISOString().replace("T", " ").replace(".000Z", "Z")} · ${marker.activity}`
+                    + (canOpenSession ? ` · Click to open session ${marker.sessionId}` : "");
+                const isLabeledMilestone = marker.kind === "transition"
+                    || marker.kind === "completion"
+                    || marker.kind === "materialization";
+                return React.createElement(canOpenSession ? "button" : "span", {
+                    key: marker.key,
+                    type: canOpenSession ? "button" : undefined,
+                    className: `ps-worker-swimlane__marker is-${marker.kind}`,
+                    style: {
+                        "--ps-worker-lane-index": index,
+                        "--ps-worker-lane-count": lanes.length,
+                        "--ps-worker-marker-color": resolveColor(theme, marker.color),
+                        top: `${positionPercent(Number(marker.atMs))}%`,
+                    },
+                    title,
+                    "aria-label": title,
+                    onClick: canOpenSession
+                        ? () => openWorkerTimelineSession(controller, marker.sessionId)
+                        : undefined,
+                }, isLabeledMilestone
+                    ? React.createElement(React.Fragment, null,
+                        marker.kind === "materialization"
+                            ? React.createElement("span", {
+                                className: "ps-worker-swimlane__materialization-label",
+                            }, marker.label)
+                            : marker.kind === "completion"
+                            ? React.createElement("span", { className: "ps-worker-swimlane__completion-glyph" }, "✓")
+                            : React.createElement("span", { className: "ps-worker-swimlane__transition-glyph" }),
+                        marker.kind === "materialization"
+                            ? null
+                            : React.createElement("span", { className: "ps-worker-swimlane__transition-label" }, marker.label))
+                    : null);
+            })))),
+        React.createElement("div", { className: "ps-worker-swimlane__legend" },
+            React.createElement("span", { className: "is-work" }, "Solid = active Job turn"),
+            React.createElement("span", { className: "is-wrap-up" }, "Striped solid = active Job turn wrap-up"),
+            React.createElement("span", {
+                className: "is-human-wait",
+                style: { "--ps-wait-color": resolveColor(theme, "yellow") },
+            }, "Yellow dotted = human wait, no active compute"),
+            React.createElement("span", {
+                className: "is-system-wait",
+                style: { "--ps-wait-color": resolveColor(theme, "magenta") },
+            }, "Purple dotted = system wait, no active compute"),
+            React.createElement("span", {
+                className: "is-capacity-wait",
+                style: { "--ps-capacity-wait-color": resolveColor(theme, "red") },
+            }, "Red dashed = queued, waiting for worker; no compute allocated"),
+            React.createElement("span", { className: "is-overhead" }, "Yellow rectangles = platform overhead duration"),
+            React.createElement("span", { className: "is-idle" }, "Hatched = idle / available, no active Job turn"),
+            React.createElement("span", { className: "is-materialization" }, "Line = Job materialized"),
+            React.createElement("span", { className: "is-transition" }, "Labeled pill = point-in-time transition/completion"),
+            React.createElement("span", { className: "is-marker" }, "Dots = waits and operations")));
+}
+
+function WorkerTimelineTable({ timeline, theme }) {
+    const rows = Array.isArray(timeline?.rows) ? timeline.rows : [];
+    let body;
+    if (timeline?.loading && rows.length === 0) {
+        body = React.createElement("p", { className: "ps-worker-timeline__status" },
+            "Loading durable worker activity...");
+    } else if (timeline?.error) {
+        body = React.createElement("p", {
+            className: "ps-worker-timeline__status is-error",
+            role: "alert",
+        }, timeline.error);
+    } else if (rows.length === 0) {
+        body = React.createElement("p", { className: "ps-worker-timeline__status" },
+            "No durable Job activity recorded for this worker.");
+    } else {
+        body = React.createElement("div", { className: "ps-worker-timeline__scroll" },
+            React.createElement("table", { className: "ps-worker-timeline__table" },
+                React.createElement("colgroup", null,
+                    React.createElement("col", { className: "is-timestamp" }),
+                    React.createElement("col", { className: "is-id" }),
+                    React.createElement("col", { className: "is-id" }),
+                    React.createElement("col", { className: "is-activity" })),
+                React.createElement("thead", null,
+                    React.createElement("tr", null,
+                        React.createElement("th", { scope: "col" }, "Timestamp"),
+                        React.createElement("th", { scope: "col" }, "Job ID"),
+                        React.createElement("th", { scope: "col" }, "Session ID"),
+                        React.createElement("th", { scope: "col" }, "Activity"))),
+                React.createElement("tbody", null,
+                    rows.map((row) => {
+                        const [date, time = ""] = String(row.timestamp || "").split(" ");
+                        return React.createElement("tr", { key: row.key },
+                            React.createElement("td", null,
+                                React.createElement("time", {
+                                    className: "ps-worker-timeline__timestamp",
+                                    dateTime: String(row.timestamp || "").replace(" ", "T"),
+                                },
+                                React.createElement("span", null, date),
+                                React.createElement("span", null, time))),
+                            React.createElement("td", null,
+                                React.createElement("code", {
+                                    className: "ps-worker-timeline__id",
+                                    title: row.jobId || undefined,
+                                }, compactTimelineId(row.jobId))),
+                            React.createElement("td", null,
+                                React.createElement("code", {
+                                    className: "ps-worker-timeline__id",
+                                    title: row.sessionId || undefined,
+                                }, compactTimelineId(row.sessionId))),
+                            React.createElement("td", {
+                                className: "ps-worker-timeline__activity",
+                                style: {
+                                    color: resolveColor(theme, row.color),
+                                    fontWeight: row.bold ? 700 : 400,
+                                },
+                            }, row.activity));
+                    }))));
+    }
+    return React.createElement("section", { className: "ps-worker-timeline" },
+        React.createElement("h3", null, `Timeline (${rows.length})`),
+        body);
+}
+
+function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
+    const [utilizationFullscreen, setUtilizationFullscreen] = React.useState(false);
+    const [timelineZoom, setTimelineZoom] = React.useState(DEFAULT_WORKER_TIMELINE_ZOOM);
+    const [laneOrder, setLaneOrder] = React.useState(
+        () => reconcileWorkerTimelineLaneOrder(swimlane?.lanes),
+    );
+    React.useEffect(() => {
+        setLaneOrder((current) => reconcileWorkerTimelineLaneOrder(swimlane?.lanes, current));
+    }, [swimlane?.lanes]);
+    React.useEffect(() => {
+        setTimelineZoom(DEFAULT_WORKER_TIMELINE_ZOOM);
+    }, [swimlane?.workerNodeId]);
+    React.useEffect(() => {
+        if (!utilizationFullscreen) return undefined;
+        const closeOnEscape = (event) => {
+            if (event.key === "Escape") setUtilizationFullscreen(false);
+        };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [utilizationFullscreen]);
+
+    const toggleUtilizationFullscreen = () => {
+        setUtilizationFullscreen((current) => !current);
+    };
+    const zoomIn = () => {
+        setTimelineZoom((current) => stepWorkerTimelineZoom(current, "in"));
+    };
+    const zoomOut = () => {
+        setTimelineZoom((current) => stepWorkerTimelineZoom(current, "out"));
+    };
+    const reorderLane = (sourceKey, targetKey, position) => {
+        setLaneOrder((current) => reorderWorkerTimelineLane(
+            reconcileWorkerTimelineLaneOrder(swimlane?.lanes, current),
+            sourceKey,
+            targetKey,
+            position,
+        ));
+    };
+    const fullscreenOverlay = utilizationFullscreen && typeof document !== "undefined"
+        ? createPortal(
+            React.createElement("div", {
+                className: "ps-worker-swimlane-fullscreen",
+                role: "dialog",
+                "aria-modal": "true",
+                "aria-label": "Full-screen worker utilization",
+            },
+            React.createElement(WorkerTimelineSwimlane, {
+                timeline: swimlane,
+                theme,
+                controller,
+                fullscreen: true,
+                onToggleFullscreen: toggleUtilizationFullscreen,
+                laneOrder,
+                onReorderLane: reorderLane,
+                zoom: timelineZoom,
+                onZoomIn: zoomIn,
+                onZoomOut: zoomOut,
+            })),
+            document.body)
+        : null;
+
+    return React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "ps-worker-details" },
+            React.createElement("div", { className: "ps-worker-details__metadata" },
+                lines.map((line, index) => React.createElement(Line, {
+                    key: `worker-detail:${index}`,
+                    line,
+                    theme,
+                }))),
+            React.createElement("div", { className: "ps-worker-details__panes" },
+                utilizationFullscreen
+                    ? React.createElement("div", {
+                        className: "ps-worker-swimlane__fullscreen-placeholder",
+                        "aria-hidden": "true",
+                    })
+                    : React.createElement(WorkerTimelineSwimlane, {
+                        timeline: swimlane,
+                        theme,
+                        controller,
+                        onToggleFullscreen: toggleUtilizationFullscreen,
+                        laneOrder,
+                        onReorderLane: reorderLane,
+                        zoom: timelineZoom,
+                        onZoomIn: zoomIn,
+                        onZoomOut: zoomOut,
+                    }),
+                React.createElement(WorkerTimelineTable, { timeline, theme }))),
+        fullscreenOverlay);
+}
+
 function ActivityPane({ controller, panelClassName = "", extraActions = null }) {
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -9858,12 +10494,21 @@ function ActivityPane({ controller, panelClassName = "", extraActions = null }) 
         color: "gray",
         focused: viewState.focused,
         actions: extraActions,
-        lines: activity.lines,
+        lines: nodeMode && activity.detailsLines ? activity.detailsLines : activity.lines,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
         paneKey: "activity",
-        className: "is-wrapped",
+        className: nodeMode ? "is-worker-details" : "is-wrapped",
+        renderBody: nodeMode && activity.timelineTable
+            ? (lines, theme) => React.createElement(WorkerDetailsBody, {
+                lines,
+                timeline: activity.timelineTable,
+                swimlane: activity.timelineSwimlane,
+                theme,
+                controller,
+            })
+            : null,
         // Stable identity class so styling can target the activity surface
         // without depending on which slot rendered it.
         panelClassName: `ps-activity-pane${panelClassName ? ` ${panelClassName}` : ""}`,

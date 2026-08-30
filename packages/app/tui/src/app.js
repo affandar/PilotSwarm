@@ -745,7 +745,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
         // Node Map: digits pick a node by its listed ordinal (toggle to clear).
         if (focus === "inspector" && inspectorTab === "nodes" && plainShortcut && /^[1-9]$/.test(input || "")) {
             const node = selectNodeMapView(controller.getState()).nodes[Number(input) - 1];
-            if (node) controller.selectNodeMapNode(node.label);
+            if (node) controller.selectNodeMapNode(node.label, node.workerNodeId);
             return;
         }
         if (focus === "inspector" && inspectorTab === "files" && input === "f") {

@@ -824,6 +824,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 attempts: 0,
                 lastAttemptAt: 0,
                 lastSkip: null,
+                timelineByWorkerId: {},
             },
         },
     };

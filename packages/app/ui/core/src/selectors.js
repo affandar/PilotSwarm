@@ -3517,6 +3517,924 @@ export function selectActiveActivity(state) {
     return history?.activity || [];
 }
 
+const WORKER_TIMELINE_LABELS = Object.freeze({
+    "session.turn_started": "State execution started",
+    "session.turn_execution_completed": "Job turn execution finished",
+    "session.turn_completed": "Turn finalized",
+    "session.turn_stopped": "State execution stopped",
+    "session.worker_capacity_acquired": "Worker capacity acquired",
+    "session.hydrated": "Session restored",
+    "session.dehydrated": "Session dehydrated",
+    "session.affinity_released": "Worker affinity released",
+    "session.input_required_started": "Human input requested",
+    "session.wait_started": "Durable timer started",
+    "session.wait_completed": "Durable timer completed",
+    "session.system_wait_requested": "System wait requested",
+    "session.system_wait_started": "System wait parked",
+    "session.system_wait_completed": "System wait resumed",
+    "session.system_signal_ignored": "Unmatched system signal ignored",
+    "session.command_received": "Session command received",
+    "session.command_completed": "Session command completed",
+    "session.lossy_handoff": "Session handoff prepared",
+    "session.error": "Session error",
+    "job.external_operation_started": "External operation started",
+    "job.external_operation_completed": "External operation completed",
+    "job.external_operation_signal_delivered": "External operation signal delivered",
+    "job.materialized": "Job materialized",
+    "job.worker_capacity_wait": "Queued · waiting for worker",
+});
+
+const WORKER_TIMELINE_JOB_COLORS = Object.freeze([
+    "cyan",
+    "green",
+    "magenta",
+    "yellow",
+    "blue",
+]);
+
+const WORKER_TIMELINE_OPERATION_LABELS = Object.freeze({
+    code_review: "Automated Code Review",
+    pvs: "Private Validation Service",
+    pull_request: "Pull Request Publication",
+});
+
+const WORKER_TIMELINE_PROVIDER_LABELS = Object.freeze({
+    mock: "Mock",
+    azure_devops: "Azure DevOps",
+});
+
+const WORKER_TIMELINE_TURN_END_EVENTS = new Set([
+    "session.turn_completed",
+    "session.turn_stopped",
+    "session.error",
+]);
+
+const WORKER_TIMELINE_BOUNDARY_EVENTS = new Set([
+    "session.turn_started",
+    ...WORKER_TIMELINE_TURN_END_EVENTS,
+]);
+
+const WORKER_TIMELINE_WAIT_SPAN_EVENTS = new Set([
+    "session.input_required_started",
+    "session.system_wait_requested",
+    "session.system_wait_started",
+    "session.system_wait_completed",
+    "job.worker_capacity_wait",
+]);
+
+const WORKER_TIMELINE_OVERHEAD_EVENTS = new Set([
+    "session.turn_execution_completed",
+    "session.worker_capacity_acquired",
+    "session.hydrated",
+    "session.dehydrated",
+    "session.affinity_released",
+    "session.lossy_handoff",
+    "session.command_received",
+    "session.command_completed",
+]);
+
+const WORKER_TIMELINE_OVERHEAD_START_EVENTS = new Set([
+    "session.worker_capacity_acquired",
+    "session.hydrated",
+    "session.lossy_handoff",
+    "session.command_received",
+]);
+
+const WORKER_TIMELINE_RESUME_PREPARATION_EVENTS = new Set([
+    "session.worker_capacity_acquired",
+    "session.hydrated",
+    "session.lossy_handoff",
+]);
+
+const WORKER_TIMELINE_OVERHEAD_END_EVENTS = new Set([
+    "session.dehydrated",
+    "session.affinity_released",
+    "session.command_completed",
+]);
+
+function mergeWorkerTimelineWindows(windows) {
+    const merged = [];
+    for (const window of [...windows].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs)) {
+        if (window.endMs <= window.startMs) continue;
+        const previous = merged[merged.length - 1];
+        if (previous && window.startMs <= previous.endMs) {
+            previous.endMs = Math.max(previous.endMs, window.endMs);
+        } else {
+            merged.push({ startMs: window.startMs, endMs: window.endMs });
+        }
+    }
+    return merged;
+}
+
+function subtractWorkerTimelineWindows(window, exclusions) {
+    let remaining = [{ startMs: window.startMs, endMs: window.endMs }];
+    for (const exclusion of exclusions) {
+        const next = [];
+        for (const part of remaining) {
+            if (exclusion.endMs <= part.startMs || exclusion.startMs >= part.endMs) {
+                next.push(part);
+                continue;
+            }
+            if (exclusion.startMs > part.startMs) {
+                next.push({ startMs: part.startMs, endMs: exclusion.startMs });
+            }
+            if (exclusion.endMs < part.endMs) {
+                next.push({ startMs: exclusion.endMs, endMs: part.endMs });
+            }
+        }
+        remaining = next;
+        if (remaining.length === 0) break;
+    }
+    return remaining;
+}
+
+function workerTimelineTimestamp(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (!Number.isFinite(date.getTime())) return "????-??-?? ??:??:??Z";
+    return `${date.toISOString().slice(0, 10)} ${date.toISOString().slice(11, 19)}Z`;
+}
+
+function workerTimelineIdentifierLabel(value) {
+    return String(value || "")
+        .trim()
+        .split(/[_\-\s]+/)
+        .filter(Boolean)
+        .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+        .join(" ");
+}
+
+function workerTimelineSystemWaitSource(entry) {
+    const details = entry?.details || {};
+    const payload = details.payload || {};
+    const provider = details.provider || payload.provider;
+    const operationKind = details.operationKind || payload.kind;
+    if (!provider && !operationKind) return null;
+    const providerLabel = WORKER_TIMELINE_PROVIDER_LABELS[provider]
+        || workerTimelineIdentifierLabel(provider);
+    const operationLabel = WORKER_TIMELINE_OPERATION_LABELS[operationKind]
+        || workerTimelineIdentifierLabel(operationKind);
+    return [providerLabel, operationLabel].filter(Boolean).join(" ");
+}
+
+function workerTimelineLabel(entry) {
+    if (entry?.eventType === "job.state_completed") {
+        return `${entry?.details?.fromState || entry?.stateName || "Job"} completed`;
+    }
+    if (entry?.eventType === "job.state_transition") {
+        const fromState = entry?.details?.fromState || entry?.stateName || "?";
+        const toState = entry?.details?.toState || "?";
+        return `${fromState} -> ${toState}`;
+    }
+    const base = WORKER_TIMELINE_LABELS[entry?.eventType] || entry?.eventType || "Worker event";
+    const operationKind = entry?.details?.operationKind;
+    const status = entry?.details?.status;
+    return `${base}${operationKind ? ` · ${operationKind}` : ""}${status ? ` · ${status}` : ""}`;
+}
+
+function workerTimelineActivity(entry) {
+    const stateLabel = entry?.stateName
+        ? `${entry.stateName}${entry.stateRevision ? ` r${entry.stateRevision}` : ""}`
+        : null;
+    return [
+        workerTimelineLabel(entry),
+        stateLabel,
+        entry?.summary,
+    ].filter(Boolean).join(" · ");
+}
+
+function workerTimelineColor(entry) {
+    if (entry?.eventType === "session.error" || entry?.details?.status === "failed") return "red";
+    if (entry?.eventType === "job.worker_capacity_wait") return "red";
+    if (String(entry?.eventType || "").startsWith("session.system_wait")) return "magenta";
+    if (entry?.eventType === "session.input_required_started") return "yellow";
+    if (String(entry?.eventType || "").includes("wait")) return "blue";
+    if (entry?.kind === "state_transition") return "green";
+    if (entry?.kind === "external_operation") return "magenta";
+    return "cyan";
+}
+
+function workerTimelineSupportsJobLane(entry) {
+    return (
+        entry?.eventType === "job.materialized"
+        || entry?.eventType === "job.worker_capacity_wait"
+        || entry?.kind === "state_transition"
+        || entry?.kind === "external_operation"
+        || entry?.eventType === "session.turn_started"
+        || entry?.eventType === "session.turn_execution_completed"
+        || entry?.eventType === "session.turn_completed"
+        || entry?.eventType === "session.turn_stopped"
+        || entry?.eventType === "session.input_required_started"
+        || String(entry?.eventType || "").startsWith("session.system_wait")
+    );
+}
+
+function buildWorkerTimelineSwimlane(entries, options = {}) {
+    const allTimedEntries = entries
+        .map((entry) => ({ entry, atMs: new Date(entry?.at).getTime() }))
+        .filter(({ atMs }) => Number.isFinite(atMs))
+        .sort((a, b) => a.atMs - b.atMs);
+    if (allTimedEntries.length === 0) {
+        return {
+            startAt: null,
+            endAt: null,
+            durationMs: 0,
+            displayStartAt: null,
+            displayEndAt: null,
+            displayDurationMs: 0,
+            busyMs: 0,
+            overheadMs: 0,
+            capacityWaitMs: 0,
+            idleMs: 0,
+            workerName: options.workerName || options.workerNodeId || null,
+            workerNodeId: options.workerNodeId || null,
+            lanes: [],
+            segments: [],
+            markers: [],
+        };
+    }
+
+    const capacityWaitEntries = allTimedEntries
+        .filter(({ entry }) => entry?.eventType === "job.worker_capacity_wait")
+        .map(({ entry, atMs }) => ({
+            entry,
+            startMs: new Date(entry?.details?.runnableAt).getTime(),
+            endMs: new Date(entry?.details?.workerAcquiredAt || atMs).getTime(),
+        }))
+        .filter(({ entry, startMs, endMs }) => (
+            Boolean(entry?.jobId)
+            && Number.isFinite(startMs)
+            && Number.isFinite(endMs)
+            && endMs > startMs
+        ));
+    const rangeStartMs = Math.min(
+        allTimedEntries[0].atMs,
+        ...capacityWaitEntries.map((entry) => entry.startMs),
+    );
+    const timelineJobIds = new Set(
+        allTimedEntries
+            .filter(({ entry }) => entry?.jobId && workerTimelineSupportsJobLane(entry))
+            .map(({ entry }) => entry.jobId),
+    );
+    const completedJobIds = new Set(
+        allTimedEntries
+            .filter(({ entry }) => entry?.eventType === "job.state_completed" && entry?.jobId)
+            .map(({ entry }) => entry.jobId),
+    );
+    const allJobsCompleted = timelineJobIds.size > 0
+        && [...timelineJobIds].every((jobId) => completedJobIds.has(jobId));
+    const lastJobCompletionMs = allJobsCompleted
+        ? Math.max(
+            ...allTimedEntries
+                .filter(({ entry }) => entry?.eventType === "job.state_completed")
+                .map(({ atMs }) => atMs),
+        )
+        : null;
+    const rangeEndMs = Math.max(
+        lastJobCompletionMs ?? allTimedEntries[allTimedEntries.length - 1].atMs,
+        rangeStartMs + 1_000,
+    );
+    const timedEntries = allTimedEntries.filter(({ atMs }) => atMs <= rangeEndMs);
+    const systemWaitSources = new Map();
+    for (const { entry } of timedEntries) {
+        const source = workerTimelineSystemWaitSource(entry);
+        if (!source) continue;
+        const signalKey = entry?.details?.signalKey;
+        const operationId = entry?.details?.operationId || entry?.details?.payload?.operationId;
+        if (signalKey) systemWaitSources.set(signalKey, source);
+        if (operationId) systemWaitSources.set(`job-operation:${operationId}`, source);
+    }
+    const jobs = new Map();
+    for (const { entry, atMs } of timedEntries) {
+        if (!entry?.jobId || !workerTimelineSupportsJobLane(entry) || jobs.has(entry.jobId)) continue;
+        jobs.set(entry.jobId, {
+            key: `job:${entry.jobId}`,
+            kind: "job",
+            jobId: entry.jobId,
+            jobKey: entry.jobKey || null,
+            generatorName: entry.generatorName || null,
+            firstAtMs: atMs,
+        });
+    }
+
+    const workSegments = [];
+    const activeTurns = new Map();
+    const closeTurn = (active, endMs, endEntry = null) => {
+        if (!active?.entry?.jobId) return;
+        const boundedEndMs = Math.max(active.atMs, Math.min(endMs, rangeEndMs));
+        workSegments.push({
+            key: `work:${active.entry.timelineId}`,
+            laneKey: `job:${active.entry.jobId}`,
+            kind: "work",
+            sessionId: active.entry.sessionId || null,
+            startAt: new Date(active.atMs).toISOString(),
+            endAt: new Date(boundedEndMs).toISOString(),
+            startMs: active.atMs,
+            endMs: boundedEndMs,
+            durationMs: Math.max(0, boundedEndMs - active.atMs),
+            label: active.entry.stateName || "Job turn",
+            activity: [
+                workerTimelineActivity(active.entry),
+                endEntry ? workerTimelineLabel(endEntry) : "Still active at end of observed timeline",
+            ].filter(Boolean).join(" · "),
+        });
+    };
+
+    for (const timed of timedEntries) {
+        const { entry, atMs } = timed;
+        const sessionId = entry?.sessionId;
+        if (!sessionId) continue;
+        if (entry.eventType === "session.turn_started") {
+            const previous = activeTurns.get(sessionId);
+            if (previous) closeTurn(previous, atMs, entry);
+            activeTurns.set(sessionId, timed);
+        } else if (entry.eventType === "session.turn_execution_completed") {
+            const active = activeTurns.get(sessionId);
+            if (active && atMs >= active.atMs) {
+                active.executionCompletedAtMs = atMs;
+                active.executionCompletedEntry = entry;
+            }
+        } else if (WORKER_TIMELINE_TURN_END_EVENTS.has(entry.eventType)) {
+            const active = activeTurns.get(sessionId);
+            if (!active) continue;
+            closeTurn(
+                active,
+                active.executionCompletedAtMs ?? atMs,
+                active.executionCompletedEntry ?? entry,
+            );
+            activeTurns.delete(sessionId);
+        }
+    }
+    for (const active of activeTurns.values()) {
+        closeTurn(
+            active,
+            active.executionCompletedAtMs ?? rangeEndMs,
+            active.executionCompletedEntry ?? null,
+        );
+    }
+    workSegments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const transitionsBySession = new Map();
+    for (const timed of timedEntries) {
+        if (
+            !timed.entry?.sessionId
+            || (timed.entry.eventType !== "job.state_transition" && timed.entry.eventType !== "job.state_completed")
+        ) {
+            continue;
+        }
+        const transitions = transitionsBySession.get(timed.entry.sessionId) || [];
+        transitions.push(timed);
+        transitionsBySession.set(timed.entry.sessionId, transitions);
+    }
+    const jobExecutionSegments = [];
+    for (const segment of workSegments) {
+        const transition = (transitionsBySession.get(segment.sessionId) || [])
+            .find((candidate) => candidate.atMs > segment.startMs && candidate.atMs < segment.endMs);
+        if (!transition) {
+            jobExecutionSegments.push(segment);
+            continue;
+        }
+        jobExecutionSegments.push({
+            ...segment,
+            key: `${segment.key}:state-work`,
+            endAt: new Date(transition.atMs).toISOString(),
+            endMs: transition.atMs,
+            durationMs: transition.atMs - segment.startMs,
+        });
+        jobExecutionSegments.push({
+            ...segment,
+            key: `${segment.key}:wrap-up`,
+            kind: "work_wrap_up",
+            startAt: new Date(transition.atMs).toISOString(),
+            startMs: transition.atMs,
+            durationMs: segment.endMs - transition.atMs,
+            label: "Turn wrap-up",
+            activity: `Active Job processing after ${workerTimelineLabel(transition.entry)}`,
+        });
+    }
+
+    const waitSegments = [];
+    const activeHumanWaits = new Map();
+    const activeSystemWaits = new Map();
+    const appendWait = (active, endMs, kind) => {
+        if (!active?.entry?.jobId) return;
+        const startMs = Math.max(active.atMs, active.computeReleasedAtMs || active.atMs);
+        const isHuman = kind === "human_wait";
+        const answerAcceptedAtMs = isHuman
+            ? capacityWaitEntries
+                .filter((candidate) => (
+                    candidate.entry.sessionId === active.entry.sessionId
+                    && candidate.entry.details?.waitSource === "human_input"
+                    && candidate.startMs >= active.atMs
+                    && candidate.startMs <= endMs
+                ))
+                .sort((a, b) => a.startMs - b.startMs)[0]?.startMs
+            : null;
+        const boundedEndMs = Math.max(
+            startMs,
+            Math.min(answerAcceptedAtMs ?? endMs, rangeEndMs),
+        );
+        const source = isHuman
+            ? null
+            : systemWaitSources.get(active.entry.details?.signalKey) || null;
+        const detail = isHuman
+            ? active.entry.details?.question || active.entry.details?.reason
+            : active.entry.details?.reason;
+        waitSegments.push({
+            key: `${kind}:${active.entry.timelineId}`,
+            laneKey: `job:${active.entry.jobId}`,
+            kind,
+            sessionId: active.entry.sessionId || null,
+            compute: false,
+            color: isHuman ? "yellow" : "magenta",
+            startAt: new Date(startMs).toISOString(),
+            endAt: new Date(boundedEndMs).toISOString(),
+            startMs,
+            endMs: boundedEndMs,
+            durationMs: Math.max(0, boundedEndMs - startMs),
+            label: isHuman ? "Human wait" : `System wait${source ? ` · ${source}` : ""}`,
+            activity: [
+                isHuman
+                    ? "Waiting for human input"
+                    : source
+                        ? `Waiting for ${source}`
+                        : "Waiting for a system signal",
+                detail,
+                "No active Job compute",
+            ].filter(Boolean).join(" · "),
+        });
+    };
+    const systemWaitKey = (entry) => (
+        `${entry?.sessionId || ""}\u0000${entry?.details?.signalKey || ""}`
+    );
+    const closeSystemWaitsForSession = (sessionId, endMs) => {
+        for (const [key, active] of [...activeSystemWaits.entries()]) {
+            if (active.entry.sessionId !== sessionId) continue;
+            appendWait(active, endMs, "system_wait");
+            activeSystemWaits.delete(key);
+        }
+    };
+    for (const timed of timedEntries) {
+        const { entry, atMs } = timed;
+        const sessionId = entry?.sessionId;
+        if (!sessionId) continue;
+        if (WORKER_TIMELINE_RESUME_PREPARATION_EVENTS.has(entry.eventType)) {
+            const humanWait = activeHumanWaits.get(sessionId);
+            if (humanWait && atMs >= humanWait.atMs) {
+                appendWait(humanWait, atMs, "human_wait");
+                activeHumanWaits.delete(sessionId);
+            }
+            closeSystemWaitsForSession(sessionId, atMs);
+        }
+        if (entry.eventType === "session.input_required_started") {
+            const previous = activeHumanWaits.get(sessionId);
+            if (previous) appendWait(previous, atMs, "human_wait");
+            activeHumanWaits.set(sessionId, timed);
+            continue;
+        }
+        if (WORKER_TIMELINE_TURN_END_EVENTS.has(entry.eventType)) {
+            const humanWait = activeHumanWaits.get(sessionId);
+            if (humanWait && atMs >= humanWait.atMs && !humanWait.computeReleasedAtMs) {
+                humanWait.computeReleasedAtMs = atMs;
+            }
+            for (const active of activeSystemWaits.values()) {
+                if (
+                    active.entry.sessionId === sessionId
+                    && atMs >= active.atMs
+                    && !active.computeReleasedAtMs
+                ) {
+                    active.computeReleasedAtMs = atMs;
+                }
+            }
+        }
+        if (entry.eventType === "session.turn_started") {
+            const humanWait = activeHumanWaits.get(sessionId);
+            if (humanWait && atMs >= humanWait.atMs) {
+                appendWait(humanWait, atMs, "human_wait");
+                activeHumanWaits.delete(sessionId);
+            }
+            closeSystemWaitsForSession(sessionId, atMs);
+            continue;
+        }
+        if (entry.eventType === "job.state_transition" || entry.eventType === "job.state_completed") {
+            closeSystemWaitsForSession(sessionId, atMs);
+        }
+        if (entry.eventType === "session.system_wait_requested") {
+            const key = systemWaitKey(entry);
+            if (activeSystemWaits.has(key)) continue;
+            closeSystemWaitsForSession(sessionId, atMs);
+            activeSystemWaits.set(key, timed);
+            continue;
+        }
+        if (entry.eventType === "session.system_wait_started") {
+            const key = systemWaitKey(entry);
+            const active = activeSystemWaits.get(key);
+            if (active) {
+                active.computeReleasedAtMs ||= atMs;
+                continue;
+            }
+            closeSystemWaitsForSession(sessionId, atMs);
+            activeSystemWaits.set(key, { ...timed, computeReleasedAtMs: atMs });
+            continue;
+        }
+        if (entry.eventType === "session.system_wait_completed") {
+            const exactKey = systemWaitKey(entry);
+            let activeKey = activeSystemWaits.has(exactKey) ? exactKey : null;
+            if (!activeKey) {
+                activeKey = [...activeSystemWaits.entries()]
+                    .reverse()
+                    .find(([, active]) => active.entry.sessionId === sessionId)?.[0] || null;
+            }
+            if (activeKey) {
+                activeSystemWaits.get(activeKey).signalCompletedAtMs = atMs;
+            }
+        }
+    }
+    for (const active of activeHumanWaits.values()) {
+        appendWait(active, rangeEndMs, "human_wait");
+    }
+    for (const active of activeSystemWaits.values()) {
+        appendWait(active, rangeEndMs, "system_wait");
+    }
+    waitSegments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+
+    const busyWindows = mergeWorkerTimelineWindows(jobExecutionSegments);
+    const waitWindowsBySession = new Map();
+    for (const segment of waitSegments) {
+        if (!segment.sessionId) continue;
+        const windows = waitWindowsBySession.get(segment.sessionId) || [];
+        windows.push(segment);
+        waitWindowsBySession.set(segment.sessionId, windows);
+    }
+    const overheadCandidates = [];
+    const activeOverheadStarts = new Map();
+    const turnExecutionEnds = new Map();
+    const lastTurnEnds = new Map();
+    for (const timed of timedEntries) {
+        const { entry, atMs } = timed;
+        const sessionId = entry?.sessionId;
+        if (!sessionId) continue;
+        if (entry.eventType === "session.turn_execution_completed") {
+            turnExecutionEnds.set(sessionId, timed);
+            continue;
+        }
+        if (WORKER_TIMELINE_TURN_END_EVENTS.has(entry.eventType)) {
+            const executionEnd = turnExecutionEnds.get(sessionId);
+            if (executionEnd && atMs > executionEnd.atMs) {
+                overheadCandidates.push({
+                    key: `overhead:${executionEnd.entry.timelineId}:${entry.timelineId}`,
+                    sessionId,
+                    startMs: executionEnd.atMs,
+                    endMs: atMs,
+                    label: "Turn finalization",
+                    activity: `${workerTimelineLabel(executionEnd.entry)} to ${workerTimelineLabel(entry)}`,
+                });
+            }
+            turnExecutionEnds.delete(sessionId);
+            lastTurnEnds.set(sessionId, timed);
+            continue;
+        }
+        if (WORKER_TIMELINE_OVERHEAD_START_EVENTS.has(entry.eventType)) {
+            if (!activeOverheadStarts.has(sessionId)) {
+                activeOverheadStarts.set(sessionId, timed);
+            }
+            continue;
+        }
+        if (entry.eventType === "session.turn_started") {
+            const start = activeOverheadStarts.get(sessionId);
+            if (start && atMs > start.atMs) {
+                overheadCandidates.push({
+                    key: `overhead:${start.entry.timelineId}:${entry.timelineId}`,
+                    sessionId,
+                    startMs: start.atMs,
+                    endMs: atMs,
+                    label: "Session preparation",
+                    activity: `${workerTimelineLabel(start.entry)} to state execution start`,
+                });
+            }
+            activeOverheadStarts.delete(sessionId);
+            lastTurnEnds.delete(sessionId);
+            continue;
+        }
+        if (WORKER_TIMELINE_OVERHEAD_END_EVENTS.has(entry.eventType)) {
+            const start = activeOverheadStarts.get(sessionId) || lastTurnEnds.get(sessionId);
+            if (start && atMs > start.atMs) {
+                const command = start.entry.eventType === "session.command_received";
+                overheadCandidates.push({
+                    key: `overhead:${start.entry.timelineId}:${entry.timelineId}`,
+                    sessionId,
+                    startMs: start.atMs,
+                    endMs: atMs,
+                    label: command ? "Platform command" : "Post-turn bookkeeping",
+                    activity: `${workerTimelineLabel(start.entry)} to ${workerTimelineLabel(entry)}`,
+                });
+            }
+            activeOverheadStarts.delete(sessionId);
+            lastTurnEnds.delete(sessionId);
+        }
+    }
+    for (const [sessionId, executionEnd] of turnExecutionEnds) {
+        if (rangeEndMs <= executionEnd.atMs) continue;
+        overheadCandidates.push({
+            key: `overhead:${executionEnd.entry.timelineId}:open`,
+            sessionId,
+            startMs: executionEnd.atMs,
+            endMs: rangeEndMs,
+            label: "Turn finalization",
+            activity: `${workerTimelineLabel(executionEnd.entry)}; final writeback not yet observed`,
+        });
+    }
+
+    const overheadSegments = [];
+    for (const candidate of overheadCandidates) {
+        const sessionWaitWindows = mergeWorkerTimelineWindows(
+            waitWindowsBySession.get(candidate.sessionId) || [],
+        );
+        const exclusions = mergeWorkerTimelineWindows([...busyWindows, ...sessionWaitWindows]);
+        for (const part of subtractWorkerTimelineWindows(candidate, exclusions)) {
+            overheadSegments.push({
+                key: `${candidate.key}:${part.startMs}:${part.endMs}`,
+                laneKey: "overhead",
+                kind: "overhead",
+                sessionId: candidate.sessionId,
+                color: "yellow",
+                startAt: new Date(part.startMs).toISOString(),
+                endAt: new Date(part.endMs).toISOString(),
+                startMs: part.startMs,
+                endMs: part.endMs,
+                durationMs: part.endMs - part.startMs,
+                label: candidate.label,
+                activity: candidate.activity,
+            });
+        }
+    }
+    overheadSegments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const overheadWindows = mergeWorkerTimelineWindows(overheadSegments);
+    const workerConcurrency = Number.isFinite(options.workerConcurrency)
+        && options.workerConcurrency > 0
+        ? Math.trunc(options.workerConcurrency)
+        : null;
+    const jobBySession = new Map();
+    for (const { entry } of timedEntries) {
+        if (entry?.sessionId && entry?.jobId && !jobBySession.has(entry.sessionId)) {
+            jobBySession.set(entry.sessionId, jobs.get(entry.jobId));
+        }
+    }
+    const capacityWaitSegments = [];
+    for (const candidate of capacityWaitEntries) {
+        const bounded = {
+            startMs: Math.max(rangeStartMs, candidate.startMs),
+            endMs: Math.min(rangeEndMs, candidate.endMs),
+        };
+        const sameSessionNonCapacityWindows = mergeWorkerTimelineWindows([
+            ...waitSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+            ...overheadSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+            ...jobExecutionSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+        ]);
+        for (const part of subtractWorkerTimelineWindows(bounded, sameSessionNonCapacityWindows)) {
+            const blockingJobs = new Map();
+            for (const segment of jobExecutionSegments) {
+                if (
+                    segment.laneKey === `job:${candidate.entry.jobId}`
+                    || segment.endMs <= part.startMs
+                    || segment.startMs >= part.endMs
+                ) {
+                    continue;
+                }
+                const blocker = jobs.get(segment.laneKey.slice(4));
+                const label = blocker?.jobKey || blocker?.jobId || segment.laneKey.slice(4);
+                blockingJobs.set(label, label);
+            }
+            for (const segment of overheadSegments) {
+                if (
+                    segment.sessionId === candidate.entry.sessionId
+                    || segment.endMs <= part.startMs
+                    || segment.startMs >= part.endMs
+                ) {
+                    continue;
+                }
+                const blocker = jobBySession.get(segment.sessionId);
+                const label = blocker?.jobKey || blocker?.jobId;
+                if (label) blockingJobs.set(label, label);
+            }
+            const blockingJobLabels = [...blockingJobs.values()];
+            const blockingSummary = workerConcurrency === 1 && blockingJobLabels.length > 0
+                ? `Another Job/turn occupied worker capacity during this wait: ${blockingJobLabels.length === 1 ? `Job ${blockingJobLabels[0]}` : `Jobs ${blockingJobLabels.join(", ")}`}`
+                : null;
+            capacityWaitSegments.push({
+                key: `capacity-wait:${candidate.entry.timelineId}:${part.startMs}:${part.endMs}`,
+                laneKey: `job:${candidate.entry.jobId}`,
+                kind: "capacity_wait",
+                sessionId: candidate.entry.sessionId || null,
+                compute: false,
+                color: "red",
+                startAt: new Date(part.startMs).toISOString(),
+                endAt: new Date(part.endMs).toISOString(),
+                startMs: part.startMs,
+                endMs: part.endMs,
+                durationMs: part.endMs - part.startMs,
+                label: "Queued · waiting for worker",
+                activity: [
+                    blockingSummary || "Runnable Job is queued and awaiting worker capacity",
+                    "No compute is allocated to this Job",
+                ].join(" · "),
+                blockingJobs: blockingJobLabels,
+                workerConcurrency,
+            });
+        }
+    }
+    capacityWaitSegments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const occupiedWindows = mergeWorkerTimelineWindows([...busyWindows, ...overheadWindows]);
+
+    const idleSegments = [];
+    const appendIdle = (startMs, endMs) => {
+        if (endMs <= startMs) return;
+        idleSegments.push({
+            key: `idle:${startMs}:${endMs}`,
+            laneKey: "idle",
+            kind: "idle",
+            startAt: new Date(startMs).toISOString(),
+            endAt: new Date(endMs).toISOString(),
+            startMs,
+            endMs,
+            durationMs: endMs - startMs,
+            label: "Idle / available",
+            activity: "No active Job turn.",
+        });
+    };
+    let cursorMs = rangeStartMs;
+    for (const window of occupiedWindows) {
+        appendIdle(cursorMs, window.startMs);
+        cursorMs = Math.max(cursorMs, window.endMs);
+    }
+    appendIdle(cursorMs, rangeEndMs);
+
+    const lanes = [
+        {
+            key: "overhead",
+            kind: "overhead",
+            jobId: null,
+            jobKey: null,
+            generatorName: null,
+            color: "yellow",
+        },
+        {
+            key: "idle",
+            kind: "idle",
+            jobId: null,
+            jobKey: null,
+            generatorName: null,
+            color: "gray",
+        },
+        ...[...jobs.values()]
+            .sort((a, b) => a.firstAtMs - b.firstAtMs || a.jobId.localeCompare(b.jobId))
+            .map((job, index) => ({
+                ...job,
+                color: WORKER_TIMELINE_JOB_COLORS[index % WORKER_TIMELINE_JOB_COLORS.length],
+            })),
+    ];
+    const laneKeys = new Set(lanes.map((lane) => lane.key));
+    const jobLaneById = new Map(
+        lanes.filter((lane) => lane.kind === "job").map((lane) => [lane.jobId, lane]),
+    );
+    const markers = timedEntries
+        .filter(({ entry }) => (
+            !WORKER_TIMELINE_BOUNDARY_EVENTS.has(entry?.eventType)
+            && !WORKER_TIMELINE_WAIT_SPAN_EVENTS.has(entry?.eventType)
+            && !WORKER_TIMELINE_OVERHEAD_EVENTS.has(entry?.eventType)
+        ))
+        .map(({ entry, atMs }) => {
+            const kind = entry.eventType === "job.state_completed"
+                ? "completion"
+                : entry.eventType === "job.materialized"
+                    ? "materialization"
+                : entry.kind === "state_transition"
+                    ? "transition"
+                : entry.kind === "external_operation"
+                    ? "external"
+                    : String(entry.eventType || "").includes("wait")
+                        ? "wait"
+                        : entry.eventType === "session.error"
+                            ? "error"
+                            : "event";
+            return {
+                key: entry.timelineId,
+                laneKey: entry.jobId && laneKeys.has(`job:${entry.jobId}`)
+                    ? `job:${entry.jobId}`
+                    : "overhead",
+                at: new Date(atMs).toISOString(),
+                atMs,
+                sessionId: entry.sessionId || null,
+                label: kind === "transition" || kind === "completion" || kind === "materialization"
+                    ? workerTimelineLabel(entry)
+                    : null,
+                activity: workerTimelineActivity(entry),
+                color: kind === "materialization"
+                    ? jobLaneById.get(entry.jobId)?.color || workerTimelineColor(entry)
+                    : workerTimelineColor(entry),
+                kind,
+            };
+        });
+    const jobMetrics = new Map(
+        lanes
+            .filter((lane) => lane.kind === "job")
+            .map((lane) => [lane.jobId, {
+                activeMs: 0,
+                queuedMs: 0,
+                overheadMs: 0,
+                humanWaitMs: 0,
+                systemWaitMs: 0,
+                completed: false,
+            }]),
+    );
+    for (const segment of jobExecutionSegments) {
+        const metrics = jobMetrics.get(segment.laneKey.slice(4));
+        if (metrics) metrics.activeMs += Math.max(0, segment.durationMs);
+    }
+    for (const segment of capacityWaitSegments) {
+        const metrics = jobMetrics.get(segment.laneKey.slice(4));
+        if (metrics) metrics.queuedMs += Math.max(0, segment.durationMs);
+    }
+    for (const segment of waitSegments) {
+        const metrics = jobMetrics.get(segment.laneKey.slice(4));
+        if (!metrics) continue;
+        if (segment.kind === "human_wait") {
+            metrics.humanWaitMs += Math.max(0, segment.durationMs);
+        } else if (segment.kind === "system_wait") {
+            metrics.systemWaitMs += Math.max(0, segment.durationMs);
+        }
+    }
+    for (const segment of overheadSegments) {
+        const job = jobBySession.get(segment.sessionId);
+        const metrics = jobMetrics.get(job?.jobId);
+        if (metrics) metrics.overheadMs += Math.max(0, segment.durationMs);
+    }
+    for (const { entry } of timedEntries) {
+        if (entry?.eventType !== "job.state_completed") continue;
+        const metrics = jobMetrics.get(entry.jobId);
+        if (metrics) metrics.completed = true;
+    }
+    const lanesWithMetrics = lanes.map((lane) => {
+        const metrics = jobMetrics.get(lane.jobId);
+        if (!metrics) return lane;
+        const efficiencyDenominatorMs = metrics.activeMs + metrics.overheadMs + metrics.queuedMs;
+        return {
+            ...lane,
+            status: metrics.completed ? "done" : "in_progress",
+            statusLabel: metrics.completed ? "DONE" : "IN PROGRESS",
+            activeMs: metrics.activeMs,
+            queuedMs: metrics.queuedMs,
+            overheadMs: metrics.overheadMs,
+            humanWaitMs: metrics.humanWaitMs,
+            systemWaitMs: metrics.systemWaitMs,
+            waitMs: metrics.humanWaitMs + metrics.systemWaitMs,
+            efficiencyDenominatorMs,
+            efficiencyPercent: efficiencyDenominatorMs > 0
+                ? Math.round((metrics.activeMs / efficiencyDenominatorMs) * 100)
+                : 0,
+        };
+    });
+    const busyMs = busyWindows.reduce((sum, window) => sum + Math.max(0, window.endMs - window.startMs), 0);
+    const overheadMs = overheadWindows.reduce((sum, window) => sum + Math.max(0, window.endMs - window.startMs), 0);
+    const capacityWaitMs = capacityWaitSegments.reduce(
+        (sum, segment) => sum + Math.max(0, segment.durationMs),
+        0,
+    );
+    const durationMs = rangeEndMs - rangeStartMs;
+    const displayLeadInMs = Math.min(
+        60_000,
+        Math.max(5_000, Math.round(durationMs * 0.01)),
+    );
+    const displayLeadOutMs = allJobsCompleted
+        ? Math.min(60_000, Math.max(5_000, Math.round(durationMs * 0.01)))
+        : 0;
+    const displayStartMs = rangeStartMs - displayLeadInMs;
+    const displayEndMs = rangeEndMs + displayLeadOutMs;
+    const displayDurationMs = displayEndMs - displayStartMs;
+
+    return {
+        startAt: new Date(rangeStartMs).toISOString(),
+        endAt: new Date(rangeEndMs).toISOString(),
+        durationMs,
+        displayStartAt: new Date(displayStartMs).toISOString(),
+        displayEndAt: new Date(displayEndMs).toISOString(),
+        displayDurationMs,
+        busyMs,
+        overheadMs,
+        capacityWaitMs,
+        idleMs: Math.max(0, durationMs - busyMs - overheadMs),
+        workerName: options.workerName || options.workerNodeId || null,
+        workerNodeId: options.workerNodeId || null,
+        lanes: lanesWithMetrics,
+        segments: [
+            ...idleSegments,
+            ...overheadSegments,
+            ...waitSegments,
+            ...capacityWaitSegments,
+            ...jobExecutionSegments,
+        ],
+        markers,
+    };
+}
+
 /**
  * Worker details — the pane that REPLACES Activity while the Node Map is up.
  * Registry specs for the selected node, then the sessions executing on it.
@@ -3583,7 +4501,65 @@ export function selectWorkerDetailsPane(state) {
     if (node.executing.length === 0) {
         lines.push({ text: `Nothing executing in the ${view.windowLabel} window.`, color: "gray" });
     }
-    return { title, lines };
+    const timeline = node.workerNodeId
+        ? state.admin?.workers?.timelineByWorkerId?.[node.workerNodeId]
+        : null;
+    const entries = Array.isArray(timeline?.entries)
+        ? [...timeline.entries].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+        : [];
+    const timelineRows = entries.map((entry) => ({
+        key: entry.timelineId,
+        timestamp: workerTimelineTimestamp(entry.at),
+        jobId: entry.jobId || null,
+        sessionId: entry.sessionId || null,
+        activity: workerTimelineActivity(entry),
+        color: workerTimelineColor(entry),
+        bold: entry.kind === "state_transition",
+    }));
+    const detailsLines = [...lines];
+    lines.push({ text: "", color: "gray" });
+    lines.push([{ text: `TIMELINE (${entries.length})`, color: "cyan", bold: true }]);
+    if (timeline?.loading && entries.length === 0) {
+        lines.push({ text: "Loading durable worker activity...", color: "gray" });
+    } else if (timeline?.error) {
+        lines.push({ text: timeline.error, color: "red" });
+    } else if (entries.length === 0) {
+        lines.push({ text: "No durable Job activity recorded for this worker.", color: "gray" });
+    } else {
+        lines.push([
+            { text: "TIMESTAMP".padEnd(21), color: "gray", bold: true },
+            { text: "JOB ID".padEnd(37), color: "gray", bold: true },
+            { text: "SESSION ID".padEnd(37), color: "gray", bold: true },
+            { text: "ACTIVITY", color: "gray", bold: true },
+        ]);
+        for (const row of timelineRows) {
+            lines.push([
+                { text: row.timestamp.padEnd(21), color: "gray" },
+                { text: String(row.jobId || "—").padEnd(37), color: "gray" },
+                { text: String(row.sessionId || "—").padEnd(37), color: "gray" },
+                {
+                    text: row.activity,
+                    color: row.color,
+                    bold: row.bold,
+                },
+            ]);
+        }
+    }
+    return {
+        title,
+        lines,
+        detailsLines,
+        timelineSwimlane: buildWorkerTimelineSwimlane(entries, {
+            workerConcurrency: node.workerConcurrency,
+            workerName: node.workerName,
+            workerNodeId: node.workerNodeId,
+        }),
+        timelineTable: {
+            loading: Boolean(timeline?.loading),
+            error: timeline?.error || null,
+            rows: timelineRows,
+        },
+    };
 }
 
 export function selectActivityPane(state, maxLines = 12) {
@@ -6702,6 +7678,15 @@ export function selectNodeMapView(state) {
         byLabel.set(label, {
             label,
             workerNodeId: String(worker?.workerNodeId ?? ""),
+            workerName: [
+                worker?.displayName,
+                worker?.name,
+                worker?.info?.displayName,
+                worker?.info?.name,
+                worker?.info?.runtime?.displayName,
+                worker?.info?.runtime?.name,
+                worker?.workerNodeId,
+            ].map((value) => String(value || "").trim()).find(Boolean) || null,
             registered: true,
             live: Number.isFinite(ageMs) && ageMs <= NODE_LIVE_MS,
             phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
@@ -6712,6 +7697,9 @@ export function selectNodeMapView(state) {
             heapText: Number.isFinite(health.heapUsedBytes) ? adminPkgSize(health.heapUsedBytes) : null,
             eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
             sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+            workerConcurrency: Number.isFinite(health?.workerSlots?.total)
+                ? Math.max(1, Math.trunc(health.workerSlots.total))
+                : null,
             sdkVersion: typeof worker?.info?.sdkVersion === "string" ? worker.info.sdkVersion : null,
             substrate: typeof worker?.info?.runtime?.substrate === "string" ? worker.info.runtime.substrate : null,
             capabilities: worker?.info?.capabilities && typeof worker.info.capabilities === "object"
@@ -6736,8 +7724,10 @@ export function selectNodeMapView(state) {
         if (byLabel.has(label)) continue;
         byLabel.set(label, {
             label, workerNodeId: null, registered: false, live: true,
+            workerName: null,
             phase: null, pool: null, agoText: null, uptimeText: null,
             rssText: null, heapText: null, eventLoopText: null, sessions: null,
+            workerConcurrency: null,
             sdkVersion: null, substrate: null, capabilities: [], consumes: [],
             owner: null, pkgEpoch: null, pkgInstalled: [], pkgLastError: null,
             executing: [],
@@ -6841,22 +7831,22 @@ function buildNodeMapLines(state, maxWidth, options = {}) {
         const dot = node.live ? "●" : "○";
         const dotColor = !node.live ? "gray" : node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green";
         const runs = [
-            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label, nodeSelected: isSelected },
-            { text: node.ordinal <= 9 ? `${node.ordinal} ` : "  ", color: "gray", nodeSelect: node.label },
-            { text: `${dot} `, color: dotColor, nodeSelect: node.label },
-            { text: node.label.padEnd(7), color: isSelected ? "white" : node.live ? "white" : "gray", bold: isSelected, nodeSelect: node.label },
+            { text: isSelected ? "› " : "  ", color: "green", bold: isSelected, nodeSelect: node.label, nodeWorkerId: node.workerNodeId, nodeSelected: isSelected },
+            { text: node.ordinal <= 9 ? `${node.ordinal} ` : "  ", color: "gray", nodeSelect: node.label, nodeWorkerId: node.workerNodeId },
+            { text: `${dot} `, color: dotColor, nodeSelect: node.label, nodeWorkerId: node.workerNodeId },
+            { text: node.label.padEnd(7), color: isSelected ? "white" : node.live ? "white" : "gray", bold: isSelected, nodeSelect: node.label, nodeWorkerId: node.workerNodeId },
         ];
         if (node.registered) {
-            runs.push({ text: ` ${(node.phase || "").padEnd(8)}`, color: dotColor, nodeSelect: node.label });
-            runs.push({ text: ` ${node.pool}`, color: "gray", nodeSelect: node.label });
+            runs.push({ text: ` ${(node.phase || "").padEnd(8)}`, color: dotColor, nodeSelect: node.label, nodeWorkerId: node.workerNodeId });
+            runs.push({ text: ` ${node.pool}`, color: "gray", nodeSelect: node.label, nodeWorkerId: node.workerNodeId });
             const specs = [
                 node.executing.length ? `${node.executing.length} sess` : null,
                 node.rssText, node.uptimeText ? `up ${node.uptimeText}` : null, node.agoText,
             ].filter(Boolean).join(" · ");
-            if (specs) runs.push({ text: `  ${specs}`, color: "gray", nodeSelect: node.label });
+            if (specs) runs.push({ text: `  ${specs}`, color: "gray", nodeSelect: node.label, nodeWorkerId: node.workerNodeId });
         } else {
-            runs.push({ text: "  activity only", color: "gray", nodeSelect: node.label });
-            if (node.executing.length) runs.push({ text: ` · ${node.executing.length} sess`, color: "gray", nodeSelect: node.label });
+            runs.push({ text: "  activity only", color: "gray", nodeSelect: node.label, nodeWorkerId: node.workerNodeId });
+            if (node.executing.length) runs.push({ text: ` · ${node.executing.length} sess`, color: "gray", nodeSelect: node.label, nodeWorkerId: node.workerNodeId });
         }
         lines.push(trimTrailingRunPad(runs));
     }
