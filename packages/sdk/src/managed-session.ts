@@ -513,7 +513,7 @@ function acknowledgeTurnBoundary(action: string): string {
         `Finish any remaining tool results for the current step, then stop.]`;
 }
 
-const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
+const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set(["completed", "wait", "system_wait", "input_required", "wait_for_agents", "list_sessions", "check_agents"]);
 
 function hasTerminalTurnBoundary(turnState: TurnState): boolean {
     return turnState.pendingActions.some((action) => TERMINAL_TURN_BOUNDARY_ACTIONS.has(action.type));
@@ -2494,7 +2494,18 @@ export class ManagedSession {
                         ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
                     };
                     try {
-                        return await (t as any).handler(args, augmented);
+                        const result = await (t as any).handler(args, augmented);
+                        if ((t as any).pilotswarmTerminalTurnBoundary === true) {
+                            const content = typeof result === "string"
+                                ? result
+                                : JSON.stringify(result);
+                            turnState.pendingActions.push({
+                                type: "completed",
+                                content: content ?? "Tool completed.",
+                            });
+                            return `${content ?? "Tool completed."}\n${acknowledgeTurnBoundary((t as any).name ?? "tool")}`;
+                        }
+                        return result;
                     } catch (error) {
                         return failureToolResult(error);
                     }

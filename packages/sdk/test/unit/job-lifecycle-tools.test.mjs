@@ -16,6 +16,7 @@ test("complete_state binds completion to the durable session", async () => {
             };
         },
     });
+    assert.equal(tool.pilotswarmTerminalTurnBoundary, true);
     const result = JSON.parse(await tool.handler(
         { outcome: "Fixed", summary: "Applied and verified the fix." },
         { durableSessionId: "session-1" },

@@ -12,6 +12,10 @@ const proxySource = readFileSync(
     fileURLToPath(new URL("../../src/session-proxy.ts", import.meta.url)),
     "utf8",
 );
+const managedSessionSource = readFileSync(
+    fileURLToPath(new URL("../../src/managed-session.ts", import.meta.url)),
+    "utf8",
+);
 
 test("system_wait is declared as a keyed platform wait", () => {
     const tool = ManagedSession.systemToolDefs().find((candidate) => candidate.name === "system_wait");
@@ -26,4 +30,10 @@ test("system_wait only resumes from a matching signal and projects waiting statu
     assert.match(queueSource, /session\.system_signal_ignored/);
     assert.match(queueSource, /session\.system_wait_completed/);
     assert.match(proxySource, /result\.type === "system_wait"/);
+});
+
+test("system_wait is a terminal turn boundary", () => {
+    const terminalActions = /const TERMINAL_TURN_BOUNDARY_ACTIONS = new Set\(\[([^\]]+)\]\)/.exec(managedSessionSource);
+    assert.ok(terminalActions, "terminal turn boundary action set is missing");
+    assert.match(terminalActions[1], /"system_wait"/);
 });

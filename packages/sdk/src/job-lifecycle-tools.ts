@@ -5,7 +5,7 @@ export function createJobLifecycleTools(
     catalog: Pick<SessionCatalog, "completeJobState">,
 ): Tool<any>[] {
     return [
-        defineTool("complete_state", {
+        Object.assign(defineTool("complete_state", {
             description:
                 "Complete the current Job lifecycle state and durably record its handoff summary. "
                 + "For nonterminal states, outcome must be one of the possible next states in the current instructions. "
@@ -45,6 +45,8 @@ export function createJobLifecycleTools(
                     journalSequence: entry.sequence,
                 });
             },
+        }), {
+            pilotswarmTerminalTurnBoundary: true,
         }),
     ];
 }
