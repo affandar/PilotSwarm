@@ -85,6 +85,9 @@ class FakeStore {
                     jobKey: key,
                     sourcePayload: payload,
                     lifecycleState: "pending_session",
+                    currentState: "Initial",
+                    stateRevision: 1,
+                    currentStateEnteredAt: now,
                     firstSeenCycleId: cycleId,
                     lastSeenCycleId: cycleId,
                     firstDiscoveredAt: now,
@@ -126,6 +129,9 @@ class FakeStore {
             const current = this.sessions.get(job.jobId)?.find((entry) => entry.isCurrent);
             return current?.status !== "unacked" && current?.status !== "active";
         });
+    }
+    async getJob(jobId) {
+        return [...this.jobs.values()].find((job) => job.jobId === jobId) ?? null;
     }
     async getJobGeneratorDefinition(definitionId) {
         return { ...definition(), definitionId };
@@ -300,6 +306,43 @@ test("session retry uses the Job's pinned definition after a new version is acti
     await controller.runOnce();
     assert.deepEqual(attemptedDefinitions, ["definition-1", "definition-1"]);
     assert.equal(store.jobs.get("stable-1").definitionId, "definition-1");
+});
+
+test("session induction refreshes a Job that advances after the cycle snapshot", async () => {
+    const store = new FakeStore();
+    const createdSessions = [];
+    const originalReserve = store.reserveJobSession.bind(store);
+    store.reserveJobSession = async (...args) => {
+        const association = await originalReserve(...args);
+        const current = store.jobs.get("stable-1");
+        Object.assign(current, {
+            currentState: "Diagnosed",
+            stateRevision: 2,
+            lifecycleState: "pending_session",
+        });
+        return association;
+    };
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", evaluator()]]),
+        sessionFactory: {
+            async createInitialSession({ job }) {
+                createdSessions.push({
+                    currentState: job.currentState,
+                    stateRevision: job.stateRevision,
+                });
+            },
+        },
+        workerId: "worker",
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await controller.runOnce();
+
+    assert.deepEqual(createdSessions, [{
+        currentState: "Diagnosed",
+        stateRevision: 2,
+    }]);
 });
 
 test("Job identity survives replacement while prior sessions remain history", async () => {

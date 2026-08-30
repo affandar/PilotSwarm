@@ -22,6 +22,7 @@ export type JobGeneratorStore = Pick<
     SessionCatalog,
     | "claimDueJobGenerators"
     | "beginJobGeneratorCycle"
+    | "getJob"
     | "getJobGeneratorDefinition"
     | "completeJobGeneratorCycle"
     | "reconcileJobGeneratorDiscoveries"
@@ -377,13 +378,15 @@ export class JobGeneratorController {
                             cycle.cycleId,
                             this.workerId,
                         );
-                        const jobDefinition = job.definitionId === definition.definitionId
+                        const currentJob = await this.store.getJob(job.jobId);
+                        if (!currentJob) throw new Error(`Job not found after session reservation: ${job.jobId}`);
+                        const jobDefinition = currentJob.definitionId === definition.definitionId
                             ? definition
-                            : await this.store.getJobGeneratorDefinition(job.definitionId);
+                            : await this.store.getJobGeneratorDefinition(currentJob.definitionId);
                         await this.sessionFactory!.createInitialSession({
                             generator,
                             definition: jobDefinition,
-                            job,
+                            job: currentJob,
                             association,
                         });
                         await this.store.attachJobSession(
