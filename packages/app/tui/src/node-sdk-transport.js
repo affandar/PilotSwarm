@@ -23,6 +23,7 @@ import {
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
+import { deriveLegacyHumanInputCapacityWaits } from "./worker-timeline-legacy-fallback.js";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -559,6 +560,7 @@ export class NodeSdkTransport {
         this.logSubscribers = new Set();
         this.logEntryCounter = 0;
         this.kubectlAvailable = null;
+        this.workerTimelineHistoryCache = new Map();
         // The native TUI runs as the local user. Portal deployments override
         // this per-RPC from the auth context inside PortalRuntime.call().
         this.currentUser = currentUser ? normalizeUserPrincipal(currentUser) : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
@@ -615,6 +617,9 @@ export class NodeSdkTransport {
             this.mgmt.stop(),
             stopEmbeddedWorkers(this.workers),
         ]);
+        this._agentPkgCatalog = null;
+        this._agentPkgCatalogPromise = null;
+        this.workerTimelineHistoryCache.clear();
         this.client = null;
     }
 
@@ -790,6 +795,84 @@ export class NodeSdkTransport {
 
     async listWorkers() {
         return this.mgmt.listWorkers();
+    }
+
+    async getWorkerTimeline(workerNodeId, options = {}) {
+        const ctx = await this._agentPackagesContext();
+        if (!ctx) return [];
+        const since = options.since ? new Date(options.since) : undefined;
+        if (since && !Number.isFinite(since.getTime())) {
+            throw new Error("Worker timeline since must be a valid date");
+        }
+        const parsedLimit = Number(options.limit);
+        const requestedLimit = Math.min(
+            1_000,
+            Math.max(1, Number.isFinite(parsedLimit) ? Math.trunc(parsedLimit) : 200),
+        );
+        const timeline = await ctx.catalog.getWorkerTimeline(workerNodeId, {
+            since,
+            limit: Math.min(1_000, Math.max(requestedLimit, requestedLimit * 3)),
+        });
+        const sessionsWithHumanCapacityWait = new Set(timeline
+            .filter((entry) => (
+                entry?.eventType === "job.worker_capacity_wait"
+                && entry?.details?.waitSource === "human_input"
+                && entry?.sessionId
+            ))
+            .map((entry) => entry.sessionId));
+        const candidateSessionIds = [...new Set(timeline
+            .filter((entry) => (
+                entry?.eventType === "session.input_required_started"
+                && entry?.sessionId
+                && !sessionsWithHumanCapacityWait.has(entry.sessionId)
+            ))
+            .map((entry) => entry.sessionId))]
+            .slice(0, 50);
+
+        const historiesBySessionId = new Map();
+        const historyCacheTtlMs = 30_000;
+        const now = Date.now();
+        for (let offset = 0; offset < candidateSessionIds.length; offset += 8) {
+            const batch = candidateSessionIds.slice(offset, offset + 8);
+            const histories = await Promise.all(batch.map(async (sessionId) => {
+                const cached = this.workerTimelineHistoryCache.get(sessionId);
+                if (cached && now - cached.cachedAt < historyCacheTtlMs) {
+                    return cached.history;
+                }
+                const history = await this.mgmt._getAllExecutionHistory(sessionId);
+                this.workerTimelineHistoryCache.set(sessionId, {
+                    cachedAt: now,
+                    history,
+                });
+                return history;
+            }));
+            batch.forEach((sessionId, index) => {
+                if (Array.isArray(histories[index])) {
+                    historiesBySessionId.set(sessionId, histories[index]);
+                }
+            });
+        }
+        while (this.workerTimelineHistoryCache.size > 200) {
+            const oldestSessionId = this.workerTimelineHistoryCache.keys().next().value;
+            if (!oldestSessionId) break;
+            this.workerTimelineHistoryCache.delete(oldestSessionId);
+        }
+        const fallbackEntries = deriveLegacyHumanInputCapacityWaits({
+            timeline,
+            historiesBySessionId,
+            workerNodeId,
+        });
+        const ordered = [...timeline, ...fallbackEntries]
+            .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+        const recent = ordered.slice(-requestedLimit);
+        const recentJobIds = new Set(recent.map((entry) => entry?.jobId).filter(Boolean));
+        const materializationLines = ordered.filter((entry) => (
+            entry?.eventType === "job.materialized"
+            && recentJobIds.has(entry.jobId)
+            && !recent.some((candidate) => candidate.timelineId === entry.timelineId)
+        ));
+        return [...materializationLines, ...recent]
+            .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
     }
 
     async setAgentPackageScope(name, scope, owner, isAdmin, selector = null) {

@@ -425,6 +425,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_external_operations",
             sql: migration_0050_job_external_operations(schema),
         },
+        {
+            version: "0051",
+            name: "worker_timeline_index",
+            sql: migration_0051_worker_timeline_index(schema),
+        },
     ];
 }
 
@@ -15284,5 +15289,16 @@ CREATE INDEX IF NOT EXISTS ix_job_external_operations_signal
     WHERE signal_status IN ('pending', 'delivering');
 CREATE INDEX IF NOT EXISTS ix_job_external_operations_state_run
     ON ${s}.job_external_operations(state_run_id, provider, kind);
+`;
+}
+
+// ─── Migration 0051: worker timeline query index ─────────────────
+
+function migration_0051_worker_timeline_index(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
+    ON ${s}.session_events(worker_node_id, created_at DESC)
+    WHERE worker_node_id IS NOT NULL;
 `;
 }

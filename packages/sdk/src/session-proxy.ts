@@ -1178,6 +1178,20 @@ export function registerActivities(
         const wasResident = sessionManager.isSessionResident(input.sessionId);
         const acquireMode = wasResident ? "warm" : "cold";
         activityCtx.traceInfo(`[runTurn] turn dispatched session=${input.sessionId} turn=${input.turnIndex ?? 0} epoch=${input.transcriptEpoch ?? 0} mode=${acquireMode} worker=${workerNodeId ?? "(unset)"}`);
+        if (catalog && workerNodeId) {
+            void cmsRetryBestEffort(
+                `runTurn.recordEvent worker-capacity-acquired session=${input.sessionId}`,
+                () => catalog.recordEvents(input.sessionId, [{
+                    eventType: "session.worker_capacity_acquired",
+                    data: {
+                        acquiredAt: new Date(acquiredAtMs).toISOString(),
+                        turnIndex: input.turnIndex ?? 0,
+                        acquireMode,
+                    },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+        }
 
         // ── Shared durable git-IO (git-hydration §8.5) ───────────────────
         // Build ONE durable IO object per turn, reused by BOTH the pre-turn
@@ -3820,6 +3834,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
             const workMs = workBeginMs ? Date.now() - workBeginMs : 0;
             const totalMs = Date.now() - acquiredAtMs;
+            const turnExecutionCompletedAt = new Date();
             activityCtx.traceInfo(`[runTurn] ManagedSession.runTurn completed for ${input.sessionId} type=${result.type} mode=${acquireMode} work=${workMs}ms total(dispatch->done)=${totalMs}ms`);
 
             // Drain event writes before the atomic post-turn writeback records
@@ -3859,6 +3874,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             if (cancelled) return { type: "cancelled" };
+
+            if (catalog) {
+                await cmsRetryBestEffort(
+                    `runTurn.postTurn record execution-completed session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.turn_execution_completed",
+                        data: {
+                            turnIndex: input.turnIndex ?? 0,
+                            resultType: result.type,
+                            executionCompletedAt: turnExecutionCompletedAt.toISOString(),
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
 
             // ── Activity-level writeback: sync turn result → CMS ──
             // This lets listSessions() read entirely from CMS without

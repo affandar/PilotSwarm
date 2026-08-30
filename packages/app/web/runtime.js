@@ -1301,6 +1301,11 @@ export class PortalRuntime {
                 const rows = await this.transport.listWorkers();
                 return resourceAdmin ? rows : rows.map(projectWorker);
             }
+            case "getWorkerTimeline":
+                return this.transport.getWorkerTimeline(safeParams.workerNodeId, {
+                    since: safeParams.since,
+                    limit: safeParams.limit,
+                });
             case "setAgentPackageScope":
                 // `scope` here is the TARGET; the copy selector carries only
                 // the optional admin owner override (source scope is derived

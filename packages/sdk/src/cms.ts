@@ -937,6 +937,31 @@ export interface WorkerRow {
     state: Record<string, unknown>;
 }
 
+export type WorkerTimelineEntryKind =
+    | "session_event"
+    | "state_transition"
+    | "job_materialization"
+    | "worker_capacity_wait"
+    | "external_operation";
+
+export interface WorkerTimelineEntry {
+    timelineId: string;
+    at: Date;
+    kind: WorkerTimelineEntryKind;
+    eventType: string;
+    workerNodeId: string;
+    generatorId: string | null;
+    generatorName: string | null;
+    jobId: string | null;
+    jobKey: string | null;
+    stateRunId: string | null;
+    stateName: string | null;
+    stateRevision: number | null;
+    sessionId: string;
+    summary: string | null;
+    details: Record<string, unknown>;
+}
+
 export interface WorkerHeartbeatInput {
     workerNodeId: string;
     pool?: string | null;
@@ -1344,6 +1369,10 @@ export interface SessionCatalog {
      */
     workerHeartbeat(input: WorkerHeartbeatInput): Promise<EffectiveDirective[]>;
     listWorkers(): Promise<WorkerRow[]>;
+    getWorkerTimeline(
+        workerNodeId: string,
+        options?: { since?: Date; limit?: number },
+    ): Promise<WorkerTimelineEntry[]>;
     /**
      * Upsert-and-bump a directive row. pool/workerNodeId default '*';
      * worker-scoped rows must use pool '*' (canonical form); desired null
@@ -5274,6 +5303,460 @@ export class PgSessionCatalog implements SessionCatalog {
             info: row.info ?? {},
             health: row.health ?? {},
             state: row.state ?? {},
+        }));
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        const normalizedWorkerNodeId = workerNodeId.trim();
+        if (!normalizedWorkerNodeId) throw new Error("workerNodeId is required");
+        if (options.since && !Number.isFinite(options.since.getTime())) {
+            throw new Error("Worker timeline since must be a valid date");
+        }
+        const limit = Math.min(1_000, Math.max(1, Math.trunc(options.limit ?? 200)));
+        const eventTypes = [
+            "session.turn_started",
+            "session.turn_execution_completed",
+            "session.turn_completed",
+            "session.turn_stopped",
+            "session.worker_capacity_acquired",
+            "session.hydrated",
+            "session.dehydrated",
+            "session.affinity_released",
+            "session.input_required_started",
+            "session.wait_started",
+            "session.wait_completed",
+            "session.system_wait_requested",
+            "session.system_wait_started",
+            "session.system_wait_completed",
+            "session.system_signal_ignored",
+            "session.command_received",
+            "session.command_completed",
+            "session.error",
+            "session.lossy_handoff",
+            "session.snapshot_regressed",
+            "session.snapshot_store_empty",
+            "session.snapshot_unpublished",
+        ];
+        const { rows } = await this.pool.query(
+            `WITH timeline AS (
+                 SELECT
+                     'event:' || event.seq::text AS timeline_id,
+                     CASE
+                         WHEN event.event_type = 'session.turn_execution_completed'
+                              AND NULLIF(event.data->>'executionCompletedAt', '') IS NOT NULL
+                             THEN (event.data->>'executionCompletedAt')::timestamptz
+                         WHEN event.event_type = 'session.worker_capacity_acquired'
+                              AND NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                             THEN (event.data->>'acquiredAt')::timestamptz
+                         ELSE event.created_at
+                     END AS at,
+                     'session_event'::text AS kind,
+                     event.event_type,
+                     event.session_id,
+                     event.worker_node_id,
+                     job.generator_id,
+                     generator.name AS generator_name,
+                     job.job_id,
+                     job.job_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text AS summary,
+                     COALESCE(event.data, '{}'::jsonb) AS details
+                 FROM "${this.sql.schema}".session_events event
+                 LEFT JOIN "${this.sql.schema}".job_sessions job_session
+                   ON job_session.session_id = event.session_id
+                 LEFT JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = job_session.state_run_id
+                 LEFT JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = job_session.job_id
+                 LEFT JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE event.worker_node_id = $1
+                   AND ($2::timestamptz IS NULL OR event.created_at >= $2)
+                   AND event.event_type = ANY($3::text[])
+
+                 UNION ALL
+
+                 SELECT
+                     'transition:' || journal.journal_entry_id,
+                     journal.transitioned_at,
+                     'state_transition'::text,
+                     CASE
+                         WHEN state_run.terminal IS TRUE THEN 'job.state_completed'::text
+                         ELSE 'job.state_transition'::text
+                     END,
+                     journal.session_id,
+                     attribution.worker_node_id,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     journal.state_run_id,
+                     journal.from_state,
+                     journal.from_revision,
+                     journal.summary,
+                     jsonb_build_object(
+                         'fromState', journal.from_state,
+                         'toState', journal.to_state,
+                         'fromRevision', journal.from_revision,
+                         'toRevision', journal.to_revision,
+                         'outcome', journal.outcome,
+                         'terminal', COALESCE(state_run.terminal, FALSE)
+                     )
+                 FROM "${this.sql.schema}".job_journal_entries journal
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = journal.session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= journal.transitioned_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = journal.job_id
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = journal.state_run_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE $2::timestamptz IS NULL OR journal.transitioned_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'materialized:' || job.job_id,
+                     job.created_at,
+                     'job_materialization'::text,
+                     'job.materialized'::text,
+                     attribution.session_id,
+                     $1::text,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     NULL::text,
+                     NULL::text,
+                     NULL::bigint,
+                     NULL::text,
+                     jsonb_build_object(
+                         'materializedAt', job.created_at,
+                         'firstDiscoveredAt', job.first_discovered_at
+                     )
+                 FROM "${this.sql.schema}".jobs job
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 JOIN LATERAL (
+                     SELECT job_session.session_id
+                     FROM "${this.sql.schema}".job_sessions job_session
+                     JOIN "${this.sql.schema}".session_events event
+                       ON event.session_id = job_session.session_id
+                      AND event.worker_node_id = $1
+                      AND event.event_type IN (
+                          'session.worker_capacity_acquired',
+                          'session.turn_started',
+                          'session.turn_execution_completed',
+                          'session.turn_completed'
+                      )
+                     WHERE job_session.job_id = job.job_id
+                     ORDER BY job_session.ordinal ASC, event.created_at ASC, event.seq ASC
+                     LIMIT 1
+                 ) attribution ON TRUE
+                 WHERE $2::timestamptz IS NULL OR job.created_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'capacity-wait:' || job_session.association_id,
+                     COALESCE(acquisition.acquired_at, state_run.started_at),
+                     'worker_capacity_wait'::text,
+                     'job.worker_capacity_wait'::text,
+                     job_session.session_id,
+                     COALESCE(acquisition.worker_node_id, attribution.worker_node_id),
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', job_session.attached_at,
+                         'workerAcquiredAt', COALESCE(acquisition.acquired_at, state_run.started_at),
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (
+                                 COALESCE(acquisition.acquired_at, state_run.started_at)
+                                 - job_session.attached_at
+                             )) * 1000),
+                         'waitSource', 'initial_dispatch'
+                     )
+                 FROM "${this.sql.schema}".job_sessions job_session
+                 LEFT JOIN LATERAL (
+                     SELECT
+                         event.worker_node_id,
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END AS acquired_at
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = job_session.session_id
+                       AND event.worker_node_id IS NOT NULL
+                       AND event.event_type = 'session.worker_capacity_acquired'
+                     ORDER BY
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END ASC,
+                         event.seq ASC
+                     LIMIT 1
+                 ) acquisition ON TRUE
+                 JOIN LATERAL (
+                     SELECT event.worker_node_id
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = job_session.session_id
+                       AND event.worker_node_id IS NOT NULL
+                     ORDER BY event.created_at ASC, event.seq ASC
+                     LIMIT 1
+                 ) attribution ON TRUE
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = job_session.state_run_id
+                  AND state_run.session_id = job_session.session_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = job_session.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE job_session.attached_at IS NOT NULL
+                   AND COALESCE(acquisition.worker_node_id, attribution.worker_node_id) = $1
+                   AND COALESCE(acquisition.acquired_at, state_run.started_at) > job_session.attached_at
+                   AND (
+                       $2::timestamptz IS NULL
+                       OR COALESCE(acquisition.acquired_at, state_run.started_at) >= $2
+                   )
+
+                 UNION ALL
+
+                 SELECT
+                     'capacity-wait:input:' || input_event.seq::text,
+                     acquisition.acquired_at,
+                     'worker_capacity_wait'::text,
+                     'job.worker_capacity_wait'::text,
+                     input_event.session_id,
+                     acquisition.worker_node_id,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', input_event.created_at,
+                         'workerAcquiredAt', acquisition.acquired_at,
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (
+                                 acquisition.acquired_at - input_event.created_at
+                             )) * 1000),
+                         'waitSource', 'human_input'
+                     )
+                 FROM "${this.sql.schema}".session_events input_event
+                 JOIN LATERAL (
+                     SELECT
+                         event.worker_node_id,
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END AS acquired_at
+                     FROM "${this.sql.schema}".session_events event
+                     WHERE event.session_id = input_event.session_id
+                       AND event.event_type = 'session.worker_capacity_acquired'
+                       AND event.worker_node_id IS NOT NULL
+                       AND CASE
+                               WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                   THEN (event.data->>'acquiredAt')::timestamptz
+                               ELSE event.created_at
+                           END > input_event.created_at
+                     ORDER BY
+                         CASE
+                             WHEN NULLIF(event.data->>'acquiredAt', '') IS NOT NULL
+                                 THEN (event.data->>'acquiredAt')::timestamptz
+                             ELSE event.created_at
+                         END ASC,
+                         event.seq ASC
+                     LIMIT 1
+                 ) acquisition ON acquisition.worker_node_id = $1
+                 JOIN "${this.sql.schema}".job_sessions job_session
+                   ON job_session.session_id = input_event.session_id
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = job_session.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = job_session.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE input_event.event_type = 'session.input_received'
+                   AND acquisition.acquired_at > input_event.created_at
+                   AND ($2::timestamptz IS NULL OR acquisition.acquired_at >= $2)
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':started',
+                     operation.created_at,
+                     'external_operation'::text,
+                     'job.external_operation_started'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id
+                     )
+                 FROM "${this.sql.schema}".job_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = operation.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE $2::timestamptz IS NULL OR operation.created_at >= $2
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':completed',
+                     operation.completed_at,
+                     'external_operation'::text,
+                     'job.external_operation_completed'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     operation.error,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id,
+                         'status', operation.status,
+                         'result', operation.result,
+                         'evidence', operation.evidence
+                     )
+                 FROM "${this.sql.schema}".job_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = operation.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE operation.completed_at IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR operation.completed_at >= $2)
+
+                 UNION ALL
+
+                 SELECT
+                     'operation:' || operation.operation_id || ':signaled',
+                     operation.signal_delivered_at,
+                     'external_operation'::text,
+                     'job.external_operation_signal_delivered'::text,
+                     operation.created_session_id,
+                     attribution.worker_node_id,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     operation.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'operationId', operation.operation_id,
+                         'provider', operation.provider,
+                         'operationKind', operation.kind,
+                         'correlationId', operation.correlation_id,
+                         'signalAttempts', operation.signal_attempts
+                     )
+                 FROM "${this.sql.schema}".job_external_operations operation
+                     JOIN LATERAL (
+                         SELECT event.worker_node_id
+                         FROM "${this.sql.schema}".session_events event
+                         WHERE event.session_id = operation.created_session_id
+                           AND event.worker_node_id IS NOT NULL
+                           AND event.created_at <= operation.created_at
+                         ORDER BY event.created_at DESC, event.seq DESC
+                         LIMIT 1
+                     ) attribution ON attribution.worker_node_id = $1
+                     JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = operation.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE operation.signal_delivered_at IS NOT NULL
+                   AND ($2::timestamptz IS NULL OR operation.signal_delivered_at >= $2)
+             )
+             SELECT *
+             FROM timeline
+             ORDER BY at DESC, timeline_id DESC
+             LIMIT $4`,
+            [normalizedWorkerNodeId, options.since ?? null, eventTypes, limit],
+        );
+        return rows.reverse().map((row: any) => ({
+            timelineId: row.timeline_id,
+            at: new Date(row.at),
+            kind: row.kind,
+            eventType: row.event_type,
+            workerNodeId: row.worker_node_id,
+            generatorId: row.generator_id ?? null,
+            generatorName: row.generator_name ?? null,
+            jobId: row.job_id ?? null,
+            jobKey: row.job_key ?? null,
+            stateRunId: row.state_run_id ?? null,
+            stateName: row.state_name ?? null,
+            stateRevision: row.state_revision === null || row.state_revision === undefined
+                ? null
+                : Number(row.state_revision),
+            sessionId: row.session_id,
+            summary: row.summary ?? null,
+            details: row.details ?? {},
         }));
     }
 

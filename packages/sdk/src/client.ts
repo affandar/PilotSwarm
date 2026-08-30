@@ -706,6 +706,22 @@ export class PilotSwarmClient {
 
     // ─── Internal ────────────────────────────────────────────
 
+    private async _recordInputReceived(
+        sessionId: string,
+        data: Record<string, unknown> = {},
+    ): Promise<void> {
+        await this._catalog?.recordEvents(sessionId, [{
+            eventType: "session.input_received",
+            data,
+        }]).catch((error) => {
+            const message =
+                `[client] failed to record session.input_received for ${sessionId}: ` +
+                (error instanceof Error ? error.message : String(error));
+            if (this.config.traceWriter) this.config.traceWriter(message);
+            else console.warn(message);
+        });
+    }
+
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
     private async _ensureOrchestrationAndSend(
         sessionId: string,
@@ -772,6 +788,7 @@ export class PilotSwarmClient {
             // A pre-0072 row with no map entry still starts minimal; the
             // worker-side bound-agent backfill remains the safety net there.
         }
+        const wasInputRequired = cmsRow?.state === "input_required";
         // The CMS row's is_system flag is authoritative and durable; the
         // in-memory systemSessions set is not — a worker restart empties it,
         // and a resumed managed system agent (a deterministic system child,
@@ -868,6 +885,14 @@ export class PilotSwarmClient {
                 })(),
             }),
         );
+        if (wasInputRequired) {
+            await this._recordInputReceived(sessionId, {
+                source: "prompt",
+                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                    ? { clientMessageIds: opts.clientMessageIds }
+                    : {}),
+            });
+        }
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
         trace("[client] ensureOrchestrationAndSend complete");
 
@@ -1232,6 +1257,7 @@ export class PilotSwarmClient {
                                 "messages",
                                 JSON.stringify(response),
                             );
+                            await this._recordInputReceived(sessionId, { source: "answer" });
                             continue;
                         }
                     }
@@ -1277,6 +1303,7 @@ export class PilotSwarmClient {
                                 "messages",
                                 JSON.stringify(responseInput),
                             );
+                            await this._recordInputReceived(sessionId, { source: "answer" });
                             continue;
                         }
                     }

@@ -595,6 +595,7 @@ export interface SessionOrchestrationStats {
 
 /** A single duroxide execution history event. */
 export interface ExecutionHistoryEvent {
+    executionId?: number;
     eventId: number;
     kind: string;
     sourceEventId?: number;
@@ -2333,6 +2334,7 @@ export class PilotSwarmManagementClient {
                 if (!Array.isArray(executions) || executions.length === 0) return null;
                 execId = executions[executions.length - 1];
             }
+
             const events = await this._duroxideClient.readExecutionHistory(orchId, execId);
             if (!Array.isArray(events)) return null;
             return events.map((e: any) => ({
@@ -2344,6 +2346,52 @@ export class PilotSwarmManagementClient {
             }));
         } catch {
             return null;
+        }
+    }
+
+    /**
+     * Read and merge every durable execution history for a session.
+     */
+    private async _getAllExecutionHistory(sessionId: string): Promise<ExecutionHistoryEvent[] | null> {
+        this._ensureStarted();
+        const orchId = `session-${sessionId}`;
+        const executionIds: number[] = await this._duroxideClient.listExecutions(orchId);
+        if (!Array.isArray(executionIds) || executionIds.length === 0) return null;
+        const histories = await Promise.all(executionIds.map(async (executionId) => {
+            const events = await this._duroxideClient.readExecutionHistory(orchId, executionId);
+            return Array.isArray(events)
+                ? events.map((event: any) => ({
+                    executionId,
+                    eventId: Number(event.eventId) || 0,
+                    kind: String(event.kind || ""),
+                    ...(event.sourceEventId != null ? { sourceEventId: Number(event.sourceEventId) } : {}),
+                    timestampMs: Number(event.timestampMs) || 0,
+                    ...(event.data != null ? { data: String(event.data) } : {}),
+                }))
+                : [];
+        }));
+        return histories.flat().sort((a, b) => (
+            a.timestampMs - b.timestampMs
+            || (a.executionId ?? 0) - (b.executionId ?? 0)
+            || a.eventId - b.eventId
+        ));
+    }
+
+    private async _recordInputReceived(
+        sessionId: string,
+        data: Record<string, unknown>,
+    ): Promise<void> {
+        try {
+            await this._catalog!.recordEvents(sessionId, [{
+                eventType: "session.input_received",
+                data,
+            }]);
+        } catch (error) {
+            const message =
+                `[mgmt] failed to record session.input_received for ${sessionId}: ` +
+                (error instanceof Error ? error.message : String(error));
+            if (this.config.traceWriter) this.config.traceWriter(message);
+            else console.warn(message);
         }
     }
 
@@ -3051,6 +3099,14 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify(payload),
         );
+        if (session.status === "input_required") {
+            await this._recordInputReceived(sessionId, {
+                source: "prompt",
+                ...(options?.clientMessageIds && options.clientMessageIds.length > 0
+                    ? { clientMessageIds: options.clientMessageIds }
+                    : {}),
+            });
+        }
     }
 
     /**
@@ -3111,6 +3167,7 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify(payload),
         );
+        await this._recordInputReceived(sessionId, { source: "answer" });
     }
 
     /**

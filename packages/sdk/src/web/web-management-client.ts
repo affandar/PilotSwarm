@@ -14,6 +14,7 @@ import type {
     JobSessionRow,
     JobStateRunRow,
     JobJournalEntryRow,
+    WorkerTimelineEntry,
 } from "../cms.js";
 
 const WAIT_SLICE_MS = 25_000;
@@ -151,6 +152,17 @@ export class WebPilotSwarmManagementClient {
 
     async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {
         return this._api.call("listJobJournal", { jobId });
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        return this._api.call("getWorkerTimeline", {
+            workerNodeId,
+            since: options.since?.toISOString(),
+            limit: options.limit,
+        });
     }
 
     // ── Session listing ─────────────────────────────────────────────────

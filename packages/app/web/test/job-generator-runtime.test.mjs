@@ -22,6 +22,16 @@ const bob = {
     authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] },
 };
 
+const admin = {
+    principal: {
+        provider: "dev",
+        subject: "admin",
+        email: "admin@example.test",
+        displayName: "Admin",
+    },
+    authorization: { allowed: true, role: "admin", reason: "test", matchedGroups: [] },
+};
+
 function createRuntime() {
     const calls = [];
     const generators = new Map([
@@ -86,6 +96,10 @@ function createRuntime() {
         async listJobSessions() { return []; },
         async listJobStateRuns() { return []; },
         async listJobJournal() { return []; },
+        async getWorkerTimeline(workerNodeId, options) {
+            calls.push({ method: "getWorkerTimeline", workerNodeId, options });
+            return [{ timelineId: "event:1", workerNodeId }];
+        },
         async recordAuthzAudit(entry) { calls.push({ method: "audit", entry }); },
     };
     return { runtime, calls };
@@ -153,6 +167,25 @@ test("Job state runs and journal are exposed for an owned Job", async () => {
         await runtime.call("listJobJournal", { jobId: "j-alice" }, alice),
         [],
     );
+});
+
+test("worker timeline forwards bounded filters for administrators", async () => {
+    const { runtime, calls } = createRuntime();
+    const result = await runtime.call("getWorkerTimeline", {
+        workerNodeId: "pod-a",
+        since: "2026-08-29T00:00:00.000Z",
+        limit: 50,
+    }, admin);
+
+    assert.deepEqual(result, [{ timelineId: "event:1", workerNodeId: "pod-a" }]);
+    assert.deepEqual(calls.find((call) => call.method === "getWorkerTimeline"), {
+        method: "getWorkerTimeline",
+        workerNodeId: "pod-a",
+        options: {
+            since: "2026-08-29T00:00:00.000Z",
+            limit: 50,
+        },
+    });
 });
 
 test("publishing a definition is owner-gated and stamps the authenticated principal", async () => {

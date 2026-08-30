@@ -53,7 +53,8 @@ Recorded inline in activities that already exist. **No new yields, no version bu
 | Event type | Where recorded | Data |
 |---|---|---|
 | `session.turn_started` | `session-proxy.ts` → `runTurn`, before `managedSession.runTurn()` | `{ iteration }` |
-| `session.turn_completed` | `session-proxy.ts` → `runTurn`, after `managedSession.runTurn()` | `{ iteration }` |
+| `session.turn_execution_completed` | `session-proxy.ts` → `runTurn`, immediately after `managedSession.runTurn()` returns and before platform finalization | `{ turnIndex, resultType, executionCompletedAt }` |
+| `session.turn_completed` | `session-proxy.ts` → `runTurn`, after event flushing and atomic turn writeback | Turn metrics and final session state |
 | `session.dehydrated` | `session-proxy.ts` → `dehydrateSession` activity | `{ reason }` |
 | `session.hydrated` | `session-proxy.ts` → `hydrateSession` activity | `{}` |
 

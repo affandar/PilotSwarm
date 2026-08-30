@@ -135,6 +135,9 @@ export class HttpApiTransport {
     uploadAgentPackage(files, scope) { return this.api.call("uploadAgentPackage", { files, scope }); }
     listAgentWorkerState() { return this.api.call("listAgentWorkerState"); }
     listWorkers() { return this.api.call("listWorkers"); }
+    getWorkerTimeline(workerNodeId, options = {}) {
+        return this.api.call("getWorkerTimeline", { workerNodeId, ...options });
+    }
     setAgentPackageScope(name, scope, selector) { return this.api.call("setAgentPackageScope", { name, scope, ...selectorParams(selector, { scopeless: true }) }); }
     setAgentPackageEnabled(name, enabled, selector) { return this.api.call("setAgentPackageEnabled", { name, enabled, ...selectorParams(selector) }); }
     pinAgentPackageVersion(name, semver, selector) { return this.api.call("pinAgentPackageVersion", { name, semver, ...selectorParams(selector) }); }

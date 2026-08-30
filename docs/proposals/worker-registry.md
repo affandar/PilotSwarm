@@ -113,6 +113,13 @@ The one genuine prerequisite this surfaces early: capability-restricted pools on
 
 No user-visible change: same ~20s convergence, same liveness display, same prune for the (ephemeral) AKS fleet. Immediate free wins: `get_system_status` reports real worker counts with phase/health (fixes the "0 workers on AKS" wart); model-catalog drift becomes visible (worker-reported hash vs portal's); the admin console gains a Workers surface grouped by pool with per-domain drift flags (actual epoch ≠ desired epoch for > N beats ⇒ stuck, with the domain's own error from `state`).
 
+The Node Map worker details pane also has a worker-scoped durable timeline. A
+single `getWorkerTimeline(workerNodeId)` read correlates selected session
+events, Job state transitions, and external-operation milestones by
+`worker_node_id`, JobSession, and state run. This avoids a session-by-session
+portal fan-out and makes worker execution, wait parking/resumption, and state
+advancement visible in chronological order.
+
 ## Substrate profiles at a glance
 
 | | AKS pod | VM | Laptop |

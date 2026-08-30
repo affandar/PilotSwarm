@@ -154,6 +154,21 @@ test("controller materialization and durable Job lifecycle transitions", {
         assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "blocked");
         await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
         assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "active");
+        const executionCompletedAt = new Date(Date.now() - 5_000).toISOString();
+        await catalog.recordEvents(firstSession.sessionId, [
+            {
+                eventType: "session.turn_started",
+                data: { turnIndex: 1 },
+            },
+            {
+                eventType: "session.turn_execution_completed",
+                data: {
+                    turnIndex: 1,
+                    resultType: "completed",
+                    executionCompletedAt,
+                },
+            },
+        ], "git-worker-1");
         await assert.rejects(
             catalog.completeJobState({
                 sessionId: firstSession.sessionId,
@@ -312,6 +327,10 @@ test("controller materialization and durable Job lifecycle transitions", {
             lifecycleWorker,
         );
         await catalog.acknowledgeJobSession(secondSession.sessionId, "git-worker-2");
+        await catalog.recordEvents(secondSession.sessionId, [{
+            eventType: "session.turn_started",
+            data: { iteration: 1 },
+        }], "git-worker-2");
         await assert.rejects(
             catalog.completeJobState({
                 sessionId: secondSession.sessionId,
@@ -349,6 +368,45 @@ test("controller materialization and durable Job lifecycle transitions", {
         });
         assert.equal(replay.journalEntryId, firstEntry.journalEntryId);
         assert.equal((await catalog.listJobJournal(job.jobId)).length, 2);
+        const workerTimeline = await catalog.getWorkerTimeline("git-worker-1");
+        assert.ok(workerTimeline.some((entry) => entry.eventType === "session.turn_started"));
+        assert.equal(
+            workerTimeline.find((entry) => entry.eventType === "session.turn_execution_completed")?.at.toISOString(),
+            executionCompletedAt,
+        );
+        assert.ok(workerTimeline.some((entry) => entry.eventType === "job.external_operation_started"));
+        assert.ok(workerTimeline.some((entry) => entry.eventType === "job.external_operation_completed"));
+        assert.ok(workerTimeline.some((entry) => entry.eventType === "job.external_operation_signal_delivered"));
+        assert.equal(workerTimeline.some((entry) => (
+            entry.eventType === "job.state_transition"
+            && entry.details.toState === "Fixed"
+        )), false);
+        const resumedWorkerTimeline = await catalog.getWorkerTimeline("git-worker-2");
+        const capacityWait = resumedWorkerTimeline.find((entry) => (
+            entry.eventType === "job.worker_capacity_wait"
+            && entry.sessionId === secondSession.sessionId
+        ));
+        assert.ok(capacityWait);
+        assert.equal(capacityWait.kind, "worker_capacity_wait");
+        assert.equal(
+            new Date(capacityWait.details.workerAcquiredAt).getTime(),
+            capacityWait.at.getTime(),
+        );
+        assert.ok(new Date(capacityWait.details.runnableAt).getTime() < capacityWait.at.getTime());
+        assert.ok(resumedWorkerTimeline.some((entry) => (
+            entry.eventType === "job.state_transition"
+            && entry.details.toState === "Fixed"
+        )));
+        assert.ok(resumedWorkerTimeline.some((entry) => (
+            entry.eventType === "job.state_completed"
+            && entry.details.fromState === "Fixed"
+            && entry.details.terminal === true
+        )));
+        assert.deepEqual(
+            workerTimeline.map((entry) => entry.at.getTime()),
+            [...workerTimeline].map((entry) => entry.at.getTime()).sort((a, b) => a - b),
+        );
+
         await catalog.completeJobGeneratorCycle({
             cycleId: cycle.cycleId,
             workerId: lifecycleWorker,

@@ -94,6 +94,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getTopEventEmitters",
     "getUserStats",
     "getWorkerCount",
+    "getWorkerTimeline",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -955,6 +956,16 @@ export interface ManagementOps {
     getWorkerCount(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Chronological durable Job, session, wait, external-operation, and state-transition activity for one worker. [admin]
+     * @remarks `GET /workers/:workerNodeId/timeline` — access: `fleet:admin` (admin)
+     */
+    getWorkerTimeline(params: {
+        workerNodeId: string;
+        since?: string;
+        limit?: number;
+    }): Promise<any>;
+
+    /**
      * Grant a user write access to a SHARED package ({ user: { provider, subject } }): publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked when the package is demoted to user scope.
      * @remarks `POST /agent-packages/:name/editors` — access: `authed`
      */
@@ -1807,6 +1818,7 @@ export function createManagementOps(
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
+        getWorkerTimeline: (params: Record<string, unknown> = {}) => callOp("getWorkerTimeline", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
