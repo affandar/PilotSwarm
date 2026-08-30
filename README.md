@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.50** — A session's WAITING line is one glance again. `cron` asks the model what to do on each wake-up and stores that instruction in the same field `wait` uses for a short reason, so a scheduled session printed its entire next-turn plan under a one-word label. The line is now clipped to ten words, and a cron's text is labelled **On wake** — what it is — with the full instruction on hover.
+> **Latest release: v0.5.51** — GPT-5.6 Sol Fast joins the GitHub Copilot model list, and the GPT-5.6 models now offer the full thinking range including `none` and `max`. A collapsed session also stops hiding its own child count: the `[+N]` badge used to be the first thing an ellipsized title cut, so a parent with four hidden sub-agents looked exactly like a leaf. It is now pinned beside the context column, where no width can clip it.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

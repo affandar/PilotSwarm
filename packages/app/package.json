@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm",
-    "version": "0.5.50",
+    "version": "0.5.51",
     "description": "PilotSwarm application package: terminal UI, browser portal + Web API server, and MCP server — one install, three bins.",
     "type": "module",
     "license": "MIT",
@@ -81,7 +81,7 @@
         "ink": "^6.8.0",
         "jose": "^6.2.2",
         "mermaid": "^11.16.0",
-        "pilotswarm-sdk": "0.5.50",
+        "pilotswarm-sdk": "0.5.51",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
         "ws": "^8.18.2"

@@ -1053,7 +1053,18 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
 
     const collapseBadge = getCollapseBadge(session?.sessionId, entry, totalDescendantCounts, visibleDescendantCounts);
     if (collapseBadge) {
-        titleRuns.push({ text: ` ${collapseBadge.text}`, color: collapseBadge.color, bold: collapseBadge.bold });
+        // Tagged `role: "collapseBadge"` so renderers that clip the title can
+        // lift the badge out and pin it instead of losing it. The count of
+        // hidden children exists ONLY here — when the title is ellipsized the
+        // badge is the first thing cut, and a parent with four hidden
+        // sub-agents then reads exactly like a leaf. Renderers that do not
+        // clip (the TUI's flat runs) keep it inline, in place, as before.
+        titleRuns.push({
+            text: ` ${collapseBadge.text}`,
+            color: collapseBadge.color,
+            bold: collapseBadge.bold,
+            role: "collapseBadge",
+        });
     }
     // A budget pause rides on the TITLE line, not only in the selected-row
     // detail: a session that will not move again until someone raises a limit

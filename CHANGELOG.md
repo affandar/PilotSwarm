@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.5.51 — 2026-08-29
+
+Sol Fast joins the model list, and a collapsed session stops hiding its own
+child count.
+
+### Added
+
+- **`gpt-5.6-sol-fast` on the `github-copilot` provider.** GitHub Copilot
+  offers it as "GPT-5.6 Sol Fast (Internal only)": the same capability tier and
+  the same ~921K-token window as Sol, tuned for lower latency, at roughly twice
+  Sol's per-token cost. It is declared exactly like Sol — both context tiers,
+  and deliberately **no** `contextWindowSizes`. For a first-party Copilot model
+  the service supplies the real window; `modelCapabilities` is sent only for
+  BYOK providers (see the guard at the `sessionConfig` call site in
+  `session-manager.ts`), so declaring our own numbers here would replace
+  Copilot's with a guess.
+
+- **`none` and `max` thinking levels on the GPT-5.6 models.** Sol, Sol Fast,
+  Luna and Terra all accept `none, low, medium, high, xhigh, max` upstream, but
+  the catalog listed only the middle four, so both ends were missing from the
+  picker for no reason. Set per model against the live Copilot record rather
+  than across the provider: the Claude models offer no `none`, and Grok and
+  MAI-Flash offer neither.
+
+### Fixed
+
+- **The `[+N]` badge survives a narrow session pane.** A collapsed parent shows
+  the number of hidden sub-agents as `[+4]` after its title. The portal clamps
+  the title with `text-overflow: ellipsis` and the badge trailed it, so on a
+  narrow pane the badge was the first thing cut — and that count appears
+  nowhere else on the row, so a parent with four hidden children rendered
+  exactly like a childless leaf. The badge run is now tagged
+  `role: "collapseBadge"`, and the portal lifts it out of the clamped span and
+  pins it beside the context column, which never shrinks. It stays inline in
+  `titleRuns`, so the TUI — which does not clip — renders it exactly where it
+  did before.
+
+### Tests
+
+- `collapse-badge-clipping.test.mjs` locks the split contract: the badge is
+  tagged, splitting on the tag leaves the title intact, the badge stays
+  directly after the title for non-clipping renderers, and an expanded parent
+  carries no badge.
+- `starter-model-config.test.js` now pins `none…max` and the `medium` default
+  on all four GPT-5.6 models, so dropping either end of the range fails.
+
+### Maintainer workflow
+
+- `package-lock.json` tracks the release version again. 0.5.50 bumped the three
+  published `package.json` files but not the lock, which had been left at
+  0.5.43.
+
+
 ## 0.5.50 — 2026-08-29
 
 A scheduled session's detail box is readable again.

@@ -1964,6 +1964,15 @@ body.is-resizing-pane-y iframe {
   text-overflow: ellipsis;
 }
 
+/* Hidden-descendant [+N] badge — pinned beside the ctx column so a clipped
+   title cannot swallow it. Never shrinks, for the same reason ctx does not:
+   the count has no other home on the row. */
+.ps-session-row-badge {
+  flex: 0 0 auto;
+  padding-inline-start: 4px;
+  white-space: nowrap;
+}
+
 /* Right-hand context % — never shrinks, tabular so it forms a column. */
 .ps-session-row-ctx {
   flex: 0 0 auto;
@@ -2314,6 +2323,7 @@ body.is-resizing-pane-y iframe {
    wherever the glyphs already render as text. */
 .ps-session-row-title,
 .ps-session-row-title__text,
+.ps-session-row-badge,
 .ps-session-row-ctx,
 .ps-session-row-detail {
   font-variant-emoji: text;

@@ -86,10 +86,31 @@
                     "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-sol-fast",
+                    "description": "GPT-5.6 Sol Fast (internal only) via GitHub Copilot. Same capability tier and ~921K-token window as Sol, tuned for lower latency; costs about twice Sol per token.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
                     ],
                     "defaultReasoningEffort": "medium",
                     "supportedContextTiers": [
@@ -103,10 +124,12 @@
                     "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
                     "defaultReasoningEffort": "medium",
                     "supportedContextTiers": [
@@ -120,10 +143,12 @@
                     "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
                     "defaultReasoningEffort": "medium",
                     "supportedContextTiers": [

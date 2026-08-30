@@ -4425,7 +4425,15 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
     // is pinned to the right. id · time · model · ctx now live in the panel's
     // detail box rather than unfolding under the row, so selecting a session
     // no longer reflows the list.
-    const title = portalRowRuns(withoutOwnerChip(row.titleRuns), theme);
+    // The [+N] hidden-descendant badge is lifted OUT of the title before it is
+    // clamped. `.ps-session-row-title__text` ellipsizes on overflow, and the
+    // badge trails the title, so on a narrow pane it was always the first
+    // thing dropped — the one place the hidden-child count is shown. Pinned
+    // beside the ctx column it survives any width, like the ctx % already does.
+    const titleRunsAll = withoutOwnerChip(row.titleRuns);
+    const title = portalRowRuns(titleRunsAll.filter((run) => run?.role !== "collapseBadge"), theme);
+    const badgeRuns = titleRunsAll.filter((run) => run?.role === "collapseBadge");
+    const hasBadge = badgeRuns.length > 0;
     const ctxRuns = Array.isArray(row.ctxRuns) ? row.ctxRuns : [];
     const hasCtx = ctxRuns.length > 0;
     // Mobile keeps the inline unfold under the selected row (no detail box).
@@ -4447,6 +4455,10 @@ function SessionRowContent({ row, theme, structured = false, showInlineDetail = 
                 // the title (measured: 225.8px → 210.8px).
                 React.createElement("span", { className: "ps-session-row-title__text" },
                     React.createElement(Runs, { runs: title.rest, theme }))),
+            hasBadge
+                ? React.createElement("div", { className: "ps-session-row-badge" },
+                    React.createElement(Runs, { runs: badgeRuns, theme }))
+                : null,
             hasCtx
                 ? React.createElement("div", { className: "ps-session-row-ctx" },
                     React.createElement(Runs, { runs: ctxRuns, theme }))

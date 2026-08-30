@@ -31,6 +31,7 @@ describe("starter docker model config", () => {
             "claude-opus-5",
             "claude-opus-4.8",
             "gpt-5.6-sol",
+            "gpt-5.6-sol-fast",
             "gpt-5.6-luna",
             "gpt-5.6-terra",
         ]);
@@ -45,10 +46,21 @@ describe("starter docker model config", () => {
 
         // Context-window tiers are declared on the models that support them,
         // and always default to the smaller ("default") window.
-        for (const name of ["claude-opus-4.8", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+        for (const name of ["claude-opus-4.8", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-luna", "gpt-5.6-terra"]) {
             const model = provider.models.find((m) => (typeof m === "string" ? m : m.name) === name);
             expect(model.supportedContextTiers).toEqual(["default", "long_context"]);
             expect(model.defaultContextTier).toBe("default");
+        }
+
+        // The 5.6 family takes the FULL effort range GitHub Copilot offers for
+        // it — `none` and `max` included. Read from the live Copilot record on
+        // 2026-08-29: all four list none/low/medium/high/xhigh/max, default
+        // medium. Dropping either end silently removes a choice from the
+        // picker, which is how they went missing in the first place.
+        for (const name of ["gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-luna", "gpt-5.6-terra"]) {
+            const model = provider.models.find((m) => m.name === name);
+            expect(model.supportedReasoningEfforts).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+            expect(model.defaultReasoningEffort).toBe("medium");
         }
 
         const opus = provider.models.find((model) => model.name === "claude-opus-4.8");
