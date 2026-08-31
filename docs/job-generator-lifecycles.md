@@ -25,16 +25,39 @@ transitions, durable Job waits, and infrastructure-owned external
 operations. Lifecycle policy and semantic whole-graph validation remain future
 work.
 
+### Current MVP live-source mode
+
+The MVP intentionally resolves a lifecycle source's mutable `requestedRef`
+when each new state run begins so authors can iterate on Markdown without
+publishing a complete immutable lifecycle version. The resolved commit, source
+path, and Markdown digest are stored on that state run. Retries, waits, and
+replacement workers reuse that durable snapshot even if the branch moves;
+only a subsequently entered state resolves the ref again.
+
+This is a temporary scope choice, not a relaxation of Job durability. Job
+state, revision, state-run/session association, journal context, and required
+work-product references remain durable and worker-independent. Full
+Job-lifetime lifecycle, profile, and policy version pinning remains the target
+publication model described below.
+
+Successor sessions receive ordered journal summaries and can call
+`read_job_source_session` with a journal entry's source Session ID to page
+through that prior session's durable execution events. The catalog authorizes
+the read from the current JobSession association and exposes only sessions
+already referenced by the same Job's journal.
+
 ## Summary
 
 A JobGenerator discovers source records and materializes durable Jobs. Each Job
-then progresses through an immutable, versioned state machine. State
-instructions are authored as Markdown and remain in their separately versioned
-user and platform sources. When a worker activates, it loads only the file
-matching the Job's durable current state.
+then progresses through a durable state machine. State instructions are
+authored as Markdown and remain in their separate user and platform sources.
+In the current MVP mode, each new state run resolves the latest requested ref
+and records the exact commit and digest it executes. When a worker activates
+or resumes that run, it loads only the recorded file matching the Job's durable
+current state.
 
 The state loader is generic. It does not hardcode a particular state machine or
-repository. Each pinned source provides a safe base path and filename prefix,
+repository. Each resolved source provides a safe base path and filename prefix,
 so the current state resolves conventionally to
 `<basePath>/<filePrefix>.<state>.md`. Lifecycle profiles and policies will
 determine which states exist, who may author them, and where extension

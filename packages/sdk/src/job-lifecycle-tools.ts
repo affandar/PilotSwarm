@@ -1,13 +1,166 @@
 import { defineTool, type Tool } from "@github/copilot-sdk";
-import type { SessionCatalog } from "./cms.js";
+import type { SessionCatalog, SessionEvent } from "./cms.js";
+
+const MAX_EVENT_DATA_BYTES = 4 * 1024;
+const MAX_CONTEXT_BYTES = 64 * 1024;
+const MAX_JOURNAL_SUMMARY_BYTES = 8 * 1024;
+
+function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+    if (Buffer.byteLength(value, "utf8") <= maxBytes) return { value, truncated: false };
+    let bytes = 0;
+    let result = "";
+    for (const character of value) {
+        const characterBytes = Buffer.byteLength(character, "utf8");
+        if (bytes + characterBytes > maxBytes - 3) break;
+        result += character;
+        bytes += characterBytes;
+    }
+    return { value: `${result}...`, truncated: true };
+}
+
+function serializeSourceSessionEvents(
+    events: readonly SessionEvent[],
+    responseBase: Record<string, unknown>,
+): {
+    events: Array<{
+        seq: number;
+        eventType: string;
+        createdAt: string;
+        workerNodeId?: string;
+        data?: unknown;
+        dataTruncated?: boolean;
+    }>;
+    truncated: boolean;
+} {
+    const serialized = [];
+    let truncated = false;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        let data = event.data;
+        let dataTruncated = false;
+        if (data !== undefined) {
+            try {
+                const text = JSON.stringify(data);
+                if (typeof text !== "string") {
+                    data = String(data);
+                    dataTruncated = true;
+                } else {
+                    const truncatedData = truncateUtf8(text, MAX_EVENT_DATA_BYTES);
+                    if (truncatedData.truncated) {
+                        data = truncatedData.value;
+                        dataTruncated = true;
+                    }
+                }
+            } catch {
+                data = "[unserializable]";
+                dataTruncated = true;
+            }
+        }
+        const item = {
+            seq: event.seq,
+            eventType: event.eventType,
+            createdAt: event.createdAt instanceof Date
+                ? event.createdAt.toISOString()
+                : String(event.createdAt),
+            ...(event.workerNodeId ? { workerNodeId: event.workerNodeId } : {}),
+            ...(data !== undefined ? { data } : {}),
+            ...(dataTruncated ? { dataTruncated: true } : {}),
+        };
+        const candidate = [item, ...serialized];
+        const candidateResponse = {
+            ...responseBase,
+            events: candidate,
+            previousCursor: candidate[0]?.seq ?? null,
+            hasMore: false,
+        };
+        if (Buffer.byteLength(JSON.stringify(candidateResponse), "utf8") > MAX_CONTEXT_BYTES) {
+            truncated = true;
+            break;
+        }
+        serialized.unshift(item);
+    }
+    return { events: serialized, truncated };
+}
 
 export function createJobLifecycleTools(
     catalog: Pick<
         SessionCatalog,
-        "completeJobState" | "startJobExternalOperation" | "getJobExternalOperation"
+        | "completeJobState"
+        | "startJobExternalOperation"
+        | "getJobExternalOperation"
+        | "readJobSourceSession"
     >,
 ): Tool<any>[] {
     return [
+        defineTool("read_job_source_session", {
+            description:
+                "Read durable execution events from a prior JobSession referenced by the current Job journal. "
+                + "Use the Session ID shown in the durable Job journal when its summary does not contain enough context. "
+                + "The server permits only source sessions belonging to the same Job.",
+            parameters: {
+                type: "object" as const,
+                properties: {
+                    sessionId: {
+                        type: "string",
+                        description: "Prior source JobSession ID shown in the Job journal.",
+                    },
+                    beforeSeq: {
+                        type: "number",
+                        description: "Optional cursor returned by a previous page to read older events.",
+                    },
+                    limit: {
+                        type: "number",
+                        description: "Maximum events to return, from 1 through 50. Default 20.",
+                    },
+                },
+                required: ["sessionId"],
+            },
+            handler: async (
+                params: { sessionId: string; beforeSeq?: number; limit?: number },
+                invocation: any,
+            ) => {
+                const currentSessionId = invocation?.durableSessionId;
+                if (!currentSessionId) {
+                    throw new Error("read_job_source_session requires a durable session context");
+                }
+                const sourceSessionId = params.sessionId?.trim();
+                if (!sourceSessionId) throw new Error("read_job_source_session requires sessionId");
+                const context = await catalog.readJobSourceSession(
+                    currentSessionId,
+                    sourceSessionId,
+                    params.beforeSeq,
+                    params.limit,
+                );
+                if (!context) {
+                    throw new Error(
+                        `Source session ${sourceSessionId} is not referenced by the current Job journal`,
+                    );
+                }
+                const summary = truncateUtf8(
+                    context.journalEntry.summary,
+                    MAX_JOURNAL_SUMMARY_BYTES,
+                );
+                const responseBase = {
+                    sourceSessionId,
+                    journal: {
+                        sequence: context.journalEntry.sequence,
+                        fromState: context.journalEntry.fromState,
+                        toState: context.journalEntry.toState,
+                        outcome: context.journalEntry.outcome,
+                        summary: summary.value,
+                        ...(summary.truncated ? { summaryTruncated: true } : {}),
+                        transitionedAt: context.journalEntry.transitionedAt.toISOString(),
+                    },
+                };
+                const page = serializeSourceSessionEvents(context.events, responseBase);
+                return JSON.stringify({
+                    ...responseBase,
+                    events: page.events,
+                    previousCursor: page.events[0]?.seq ?? null,
+                    hasMore: context.hasMore || page.truncated,
+                });
+            },
+        }),
         defineTool("start_external_operation", {
             description:
                 "Start or recover a platform-owned external operation for the current Job state. "

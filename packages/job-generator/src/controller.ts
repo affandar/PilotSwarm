@@ -10,6 +10,7 @@ import type {
     JobJournalEntryRow,
     JobRow,
     JobSessionRow,
+    JobStateRunRow,
     LifecycleStateReader,
     LifecycleStateSource,
     PilotSwarmClient,
@@ -31,6 +32,7 @@ export type JobGeneratorStore = Pick<
     | "attachJobSession"
     | "failJobSession"
     | "listJobSessions"
+    | "listJobStateRuns"
     | "listJobJournal"
     | "prepareJobStateRun"
 >;
@@ -126,6 +128,23 @@ function lifecycleSources(value: unknown): LifecycleStateSource[] {
     return value.map((source) => object(source) as unknown as LifecycleStateSource);
 }
 
+function preparedStateRun(run: JobStateRunRow | undefined): JobStateRunRow | null {
+    if (!run) return null;
+    const snapshot = [
+        run.stateOwner,
+        run.sourceId,
+        run.sourcePath,
+        run.sourceCommit,
+        run.markdownSha256,
+        run.terminal,
+    ];
+    if (snapshot.every((value) => value === null)) return null;
+    if (snapshot.some((value) => value === null)) {
+        throw new Error(`Job state run ${run.stateRunId} has an incomplete durable Markdown snapshot`);
+    }
+    return run;
+}
+
 function renderJournal(entries: readonly JobJournalEntryRow[]): string {
     if (entries.length === 0) return "No previous state transitions.";
     return entries.map((entry) => {
@@ -183,7 +202,8 @@ function renderLifecyclePrompt(input: {
         renderJournal(input.journal),
         "",
         "Treat the journal summaries as the durable handoff from prior states. "
-            + "When a summary is insufficient, follow its Session reference to inspect the prior execution context.",
+            + "When a summary is insufficient, call read_job_source_session with its Session ID "
+            + "to inspect the prior execution context.",
         "",
         "## Durable execution rules",
         "This state may resume in the same durable session after a wait or worker replacement. "
@@ -211,7 +231,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
     constructor(
         private readonly client: PilotSwarmClient,
         private readonly lifecycle?: {
-            store: Pick<SessionCatalog, "listJobJournal" | "prepareJobStateRun">;
+            store: Pick<SessionCatalog, "listJobJournal" | "listJobStateRuns" | "prepareJobStateRun">;
             reader: LifecycleStateReader;
         },
     ) {}
@@ -235,17 +255,68 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             if (!this.lifecycle) {
                 throw new Error("Lifecycle state reader and catalog are required for lifecycle sources");
             }
+            const stateRuns = input.association.stateRunId
+                ? await this.lifecycle.store.listJobStateRuns(input.job.jobId)
+                : [];
+            const associatedRun = input.association.stateRunId
+                ? stateRuns.find((run) => run.stateRunId === input.association.stateRunId)
+                : undefined;
+            if (input.association.stateRunId && !associatedRun) {
+                throw new Error(
+                    `Job state run ${input.association.stateRunId} was not found for Job ${input.job.jobId}`,
+                );
+            }
+            if (associatedRun
+                && (associatedRun.jobId !== input.job.jobId
+                    || associatedRun.definitionId !== input.job.definitionId
+                    || associatedRun.stateName !== input.job.currentState
+                    || associatedRun.stateRevision !== input.job.stateRevision)) {
+                throw new Error(
+                    `Job state run ${associatedRun.stateRunId} does not match Job ${input.job.jobId} revision ${input.job.stateRevision}`,
+                );
+            }
+            const preparedRun = preparedStateRun(associatedRun);
+            const sourcesForRead = preparedRun
+                ? (() => {
+                    const source = sources.find((candidate) => candidate.sourceId === preparedRun.sourceId);
+                    if (!source) {
+                        throw new Error(
+                            `Prepared lifecycle source ${preparedRun.sourceId} is not present in definition ${input.definition.definitionId}`,
+                        );
+                    }
+                    return [{
+                        ...source,
+                        requestedRef: undefined,
+                        resolvedCommit: preparedRun.sourceCommit!,
+                    }];
+                })()
+                : sources;
             const loaded = await loadLifecycleStateMarkdown({
                 lifecycleName: stringValue(lifecycle.name) ?? input.generator.name,
                 state: input.job.currentState,
-                sources,
+                sources: sourcesForRead,
                 reader: this.lifecycle.reader,
+                resolveRequestedRefs: !preparedRun,
             });
-            const transitions = parseLifecycleStateTransitions(loaded.markdown);
+            if (preparedRun) {
+                if (loaded.owner !== preparedRun.stateOwner
+                    || loaded.sourcePath !== preparedRun.sourcePath
+                    || loaded.sha256 !== preparedRun.markdownSha256) {
+                    throw new Error(
+                        `Lifecycle Markdown no longer matches durable snapshot for state run ${preparedRun.stateRunId}`,
+                    );
+                }
+            }
+            const transitions = preparedRun
+                ? {
+                    outcomes: preparedRun.allowedOutcomes,
+                    terminal: preparedRun.terminal!,
+                }
+                : parseLifecycleStateTransitions(loaded.markdown);
             const journal = await this.lifecycle.store.listJobJournal(input.job.jobId);
             const sourceCommit = loaded.source.resolvedCommit;
             if (!sourceCommit) {
-                throw new Error(`Lifecycle source ${loaded.source.sourceId} is not pinned to a commit`);
+                throw new Error(`Lifecycle source ${loaded.source.sourceId} did not resolve to a commit`);
             }
             await this.lifecycle.store.prepareJobStateRun({
                 sessionId: input.association.sessionId,
@@ -275,6 +346,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
         const toolNames = lifecycleToolRequired
             ? [...new Set([
                 ...configuredToolNames,
+                "read_job_source_session",
                 "start_external_operation",
                 "get_external_operation",
                 "complete_state",
@@ -458,7 +530,29 @@ export class JobGeneratorController {
                     } catch (error) {
                         const failure = error instanceof Error ? error : new Error(String(error));
                         const cleanupFailures: Error[] = [];
-                        if (association && sessionCreationAttempted) {
+                        let failureRecorded = false;
+                        if (association) {
+                            try {
+                                await this.store.failJobSession(
+                                    job.jobId,
+                                    association.sessionId,
+                                    cycle.cycleId,
+                                    this.workerId,
+                                    failure.message,
+                                );
+                                failureRecorded = true;
+                            } catch (storeError) {
+                                cleanupFailures.push(
+                                    storeError instanceof Error
+                                        ? storeError
+                                        : new Error(String(storeError)),
+                                );
+                            }
+                        }
+                        // Deleting before this fence would let a stale
+                        // controller tear down a session now owned by the
+                        // worker that won the replacement lease.
+                        if (association && sessionCreationAttempted && failureRecorded) {
                             try {
                                 await this.sessionFactory!.deleteInitialSession(
                                     association.sessionId,
@@ -469,23 +563,6 @@ export class JobGeneratorController {
                                     cleanupError instanceof Error
                                         ? cleanupError
                                         : new Error(String(cleanupError)),
-                                );
-                            }
-                        }
-                        if (association) {
-                            try {
-                                await this.store.failJobSession(
-                                    job.jobId,
-                                    association.sessionId,
-                                    cycle.cycleId,
-                                    this.workerId,
-                                    failure.message,
-                                );
-                            } catch (storeError) {
-                                cleanupFailures.push(
-                                    storeError instanceof Error
-                                        ? storeError
-                                        : new Error(String(storeError)),
                                 );
                             }
                         }

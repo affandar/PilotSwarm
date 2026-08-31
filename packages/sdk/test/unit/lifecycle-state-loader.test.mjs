@@ -84,6 +84,37 @@ test("loads the exact user-owned Markdown for the current state", async () => {
     ]);
 });
 
+test("resolves a mutable ref before loading the current state", async () => {
+    const resolutions = [];
+    const reads = [];
+    const loaded = await loadLifecycleStateMarkdown({
+        lifecycleName: "HelloWorld",
+        state: "Diagnosed",
+        sources: [{
+            sourceId: "hello-world-user",
+            owner: "user",
+            filePrefix: "HelloWorld",
+            requestedRef: "main",
+            resolvedCommit: "stale-definition-commit",
+        }],
+        resolveRequestedRefs: true,
+        reader: {
+            async resolveSourceCommit(source) {
+                resolutions.push([source.sourceId, source.requestedRef]);
+                return "commit-at-state-entry";
+            },
+            async readStateMarkdown(source, sourcePath) {
+                reads.push([source.resolvedCommit, sourcePath]);
+                return diagnosedMarkdown;
+            },
+        },
+    });
+
+    assert.equal(loaded.source.resolvedCommit, "commit-at-state-entry");
+    assert.deepEqual(resolutions, [["hello-world-user", "main"]]);
+    assert.deepEqual(reads, [["commit-at-state-entry", "HelloWorld.Diagnosed.md"]]);
+});
+
 test("loads platform Markdown without assembling or renaming it", async () => {
     const loaded = await loadLifecycleStateMarkdown({
         lifecycleName: "HelloWorld",
@@ -283,6 +314,83 @@ test("remote reader loads GitHub content from the pinned commit", async () => {
     assert.match(requests[0].init.headers.authorization, /^Bearer /);
 });
 
+test("remote reader resolves the latest GitHub branch commit", async () => {
+    const requests = [];
+    const reader = new RemoteLifecycleStateReader({
+        githubToken: "test-token",
+        fetch: async (url, init) => {
+            requests.push({ url: String(url), init });
+            return new Response(JSON.stringify({
+                object: { type: "commit", sha: "github-head-commit" },
+            }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        },
+    });
+    const commit = await reader.resolveSourceCommit({
+        sourceId: "github-source",
+        owner: "user",
+        filePrefix: "Example",
+        repositoryUrl: "https://github.com/example/service-repo",
+        requestedRef: "refs/heads/main",
+    });
+
+    assert.equal(commit, "github-head-commit");
+    assert.equal(
+        requests[0].url,
+        "https://api.github.com/repos/example/service-repo/git/ref/heads/main",
+    );
+    assert.equal(requests[0].init.headers.authorization.split(" ")[1], "test-token");
+});
+
+test("remote reader preserves colliding GitHub branch and annotated-tag namespaces", async () => {
+    const requests = [];
+    const reader = new RemoteLifecycleStateReader({
+        githubToken: "test-token",
+        fetch: async (url) => {
+            const request = String(url);
+            requests.push(request);
+            if (request.endsWith("/git/ref/heads/release")) {
+                return new Response(JSON.stringify({
+                    object: { type: "commit", sha: "branch-commit" },
+                }), { status: 200 });
+            }
+            if (request.endsWith("/git/ref/tags/release")) {
+                return new Response(JSON.stringify({
+                    object: { type: "tag", sha: "annotated-tag-object" },
+                }), { status: 200 });
+            }
+            if (request.endsWith("/git/tags/annotated-tag-object")) {
+                return new Response(JSON.stringify({
+                    object: { type: "commit", sha: "tag-commit" },
+                }), { status: 200 });
+            }
+            return new Response("", { status: 404 });
+        },
+    });
+    const source = {
+        sourceId: "github-source",
+        owner: "user",
+        filePrefix: "Example",
+        repositoryUrl: "https://github.com/example/service-repo",
+    };
+
+    assert.equal(await reader.resolveSourceCommit({
+        ...source,
+        requestedRef: "refs/heads/release",
+    }), "branch-commit");
+    assert.equal(await reader.resolveSourceCommit({
+        ...source,
+        requestedRef: "refs/tags/release",
+    }), "tag-commit");
+    assert.deepEqual(requests, [
+        "https://api.github.com/repos/example/service-repo/git/ref/heads/release",
+        "https://api.github.com/repos/example/service-repo/git/ref/tags/release",
+        "https://api.github.com/repos/example/service-repo/git/tags/annotated-tag-object",
+    ]);
+});
+
 test("remote reader loads Azure DevOps content and treats only 404 as missing", async () => {
     const requests = [];
     const reader = new RemoteLifecycleStateReader({
@@ -323,7 +431,92 @@ test("remote reader loads Azure DevOps content and treats only 404 as missing", 
     }, "missing.md"), null);
 });
 
-test("remote reader rejects mutable or failed reads", async () => {
+test("remote reader resolves the latest Azure DevOps branch commit", async () => {
+    const requests = [];
+    const reader = new RemoteLifecycleStateReader({
+        adoPat: "test-pat",
+        fetch: async (url, init) => {
+            requests.push({ url: new URL(String(url)), init });
+            return new Response(JSON.stringify({
+                value: [{
+                    name: "refs/heads/users/demo/lifecycle",
+                    objectId: "ado-head-commit",
+                }],
+            }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        },
+    });
+    const commit = await reader.resolveSourceCommit({
+        sourceId: "ado-source",
+        owner: "user",
+        filePrefix: "Example",
+        repositoryUrl: "https://dev.azure.com/example/project/_git/repository",
+        requestedRef: "refs/heads/users/demo/lifecycle",
+    });
+
+    assert.equal(commit, "ado-head-commit");
+    assert.equal(requests[0].url.searchParams.get("filter"), "heads/users/demo/lifecycle");
+    assert.equal(requests[0].url.searchParams.get("api-version"), "7.1");
+    assert.match(requests[0].init.headers.authorization, /^Basic /);
+});
+
+test("remote reader peels annotated Azure DevOps tags and supports lightweight tags", async () => {
+    const responses = [
+        {
+            value: [{
+                name: "refs/tags/lifecycle-v1",
+                objectId: "annotated-tag-object",
+                peeledObjectId: "annotated-tag-commit",
+            }],
+        },
+        {
+            value: [{
+                name: "refs/tags/lifecycle-v2",
+                objectId: "lightweight-tag-commit",
+            }],
+        },
+    ];
+    const requests = [];
+    const reader = new RemoteLifecycleStateReader({
+        adoPat: "test-pat",
+        fetch: async (url) => {
+            requests.push(new URL(String(url)));
+            return new Response(JSON.stringify(responses.shift()), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        },
+    });
+    const source = {
+        sourceId: "ado-source",
+        owner: "platform",
+        filePrefix: "Standard",
+        repositoryUrl: "https://dev.azure.com/example/project/_git/repository",
+    };
+
+    assert.equal(await reader.resolveSourceCommit({
+        ...source,
+        requestedRef: "refs/tags/lifecycle-v1",
+    }), "annotated-tag-commit");
+    assert.equal(await reader.resolveSourceCommit({
+        ...source,
+        requestedRef: "refs/tags/lifecycle-v2",
+    }), "lightweight-tag-commit");
+    assert.deepEqual(
+        requests.map((request) => [
+            request.searchParams.get("filter"),
+            request.searchParams.get("peelTags"),
+        ]),
+        [
+            ["tags/lifecycle-v1", "true"],
+            ["tags/lifecycle-v2", "true"],
+        ],
+    );
+});
+
+test("remote reader rejects unpinned or failed reads", async () => {
     const reader = new RemoteLifecycleStateReader({
         githubToken: "test-token",
         fetch: async () => new Response("rate limited", { status: 429 }),
@@ -341,6 +534,21 @@ test("remote reader rejects mutable or failed reads", async () => {
         filePrefix: "Example",
         repositoryUrl: "https://github.com/example/service-repo",
     }, "Example.Initial.md"), /must pin resolvedCommit/);
+    await expectCode(loadLifecycleStateMarkdown({
+        lifecycleName: "Example",
+        state: "Initial",
+        sources: [{
+            sourceId: "github-source",
+            owner: "user",
+            filePrefix: "Example",
+            requestedRef: "main",
+        }],
+        reader: {
+            async readStateMarkdown() {
+                return "# Initial\n";
+            },
+        },
+    }), "source_not_resolved");
 
     const githubDirectory = new RemoteLifecycleStateReader({
         githubToken: "test-token",

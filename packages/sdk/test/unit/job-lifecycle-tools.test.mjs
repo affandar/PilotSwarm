@@ -2,6 +2,140 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createJobLifecycleTools } from "../../dist/job-lifecycle-tools.js";
 
+test("read_job_source_session is scoped by the durable current JobSession", async () => {
+    const calls = [];
+    const transitionedAt = new Date("2026-08-28T12:00:00.000Z");
+    const tools = createJobLifecycleTools({
+        async readJobSourceSession(currentSessionId, sourceSessionId, beforeSeq, limit) {
+            calls.push({ currentSessionId, sourceSessionId, beforeSeq, limit });
+            return {
+                journalEntry: {
+                    sequence: 1,
+                    fromState: "Diagnosed",
+                    toState: "Fixed",
+                    outcome: "Fixed",
+                    summary: "Applied the fix and retained the validation evidence.",
+                    transitionedAt,
+                },
+                events: [{
+                    seq: 42,
+                    sessionId: sourceSessionId,
+                    eventType: "session.turn_execution_completed",
+                    data: { resultType: "completed" },
+                    workerNodeId: "worker-a",
+                    createdAt: transitionedAt,
+                }],
+                hasMore: false,
+            };
+        },
+        async startJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "read_job_source_session");
+    const result = JSON.parse(await tool.handler(
+        { sessionId: "session-prior", beforeSeq: 100, limit: 10 },
+        { durableSessionId: "session-current" },
+    ));
+
+    assert.deepEqual(calls, [{
+        currentSessionId: "session-current",
+        sourceSessionId: "session-prior",
+        beforeSeq: 100,
+        limit: 10,
+    }]);
+    assert.equal(result.journal.summary, "Applied the fix and retained the validation evidence.");
+    assert.equal(result.events[0].eventType, "session.turn_execution_completed");
+    assert.equal(result.previousCursor, 42);
+    assert.equal(result.hasMore, false);
+});
+
+test("read_job_source_session refuses sessions outside the current Job journal", async () => {
+    const tools = createJobLifecycleTools({
+        async readJobSourceSession() {
+            return null;
+        },
+        async startJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "read_job_source_session");
+
+    await assert.rejects(
+        tool.handler(
+            { sessionId: "session-unrelated" },
+            { durableSessionId: "session-current" },
+        ),
+        /not referenced by the current Job journal/,
+    );
+    await assert.rejects(
+        tool.handler({ sessionId: "session-prior" }, {}),
+        /durable session context/,
+    );
+});
+
+test("read_job_source_session enforces its UTF-8 response budget without losing the cursor", async () => {
+    const transitionedAt = new Date("2026-08-28T12:00:00.000Z");
+    const tools = createJobLifecycleTools({
+        async readJobSourceSession() {
+            return {
+                journalEntry: {
+                    sequence: 1,
+                    fromState: "Diagnosed",
+                    toState: "Fixed",
+                    outcome: "Fixed",
+                    summary: "Durable summary.",
+                    transitionedAt,
+                },
+                events: Array.from({ length: 50 }, (_, index) => ({
+                    seq: index + 1,
+                    sessionId: "session-prior",
+                    eventType: "session.message",
+                    data: { text: "😀".repeat(3_000) },
+                    workerNodeId: "worker-a",
+                    createdAt: transitionedAt,
+                })),
+                hasMore: false,
+            };
+        },
+        async startJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "read_job_source_session");
+    const raw = await tool.handler(
+        { sessionId: "session-prior", limit: 50 },
+        { durableSessionId: "session-current" },
+    );
+    const result = JSON.parse(raw);
+
+    assert.ok(Buffer.byteLength(raw, "utf8") <= 64 * 1024);
+    assert.ok(result.events.length < 50);
+    assert.ok(result.events[0].seq > 1);
+    assert.equal(result.events.at(-1).seq, 50);
+    assert.equal(result.previousCursor, result.events[0].seq);
+    assert.equal(result.hasMore, true);
+    assert.equal(result.events[0].dataTruncated, true);
+});
+
 test("complete_state binds completion to the durable session", async () => {
     const calls = [];
     const tools = createJobLifecycleTools({

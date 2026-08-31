@@ -43,6 +43,35 @@ function definition() {
     };
 }
 
+function lifecycleStateRun(overrides = {}) {
+    return {
+        stateRunId: "state-run-1",
+        jobId: "job-1",
+        definitionId: "definition-1",
+        stateName: "Diagnosed",
+        stateRevision: 1,
+        stateOwner: null,
+        status: "reserved",
+        sessionId: "session-1",
+        predecessorJournalEntryId: null,
+        sourceId: null,
+        sourcePath: null,
+        sourceCommit: null,
+        markdownSha256: null,
+        allowedOutcomes: [],
+        terminal: null,
+        attempt: 1,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        startedAt: null,
+        completedAt: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+    };
+}
+
 class FakeStore {
     jobs = new Map();
     sessions = new Map();
@@ -235,6 +264,40 @@ test("a bootstrapped session is deleted when the post-send attachment fence fail
         sessionId: "session-1",
         reason: "Initial session fence failed: JobGenerator cycle is no longer active",
     }]);
+});
+
+test("a stale controller does not delete a session after losing the durable failure fence", async () => {
+    const store = new FakeStore();
+    const attachJobSession = store.attachJobSession.bind(store);
+    let attachCalls = 0;
+    store.attachJobSession = async (...args) => {
+        attachCalls += 1;
+        if (attachCalls === 2) throw new Error("JobGenerator cycle is no longer active");
+        return attachJobSession(...args);
+    };
+    store.failJobSession = async () => {
+        throw new Error("JobGenerator lease is stale");
+    };
+    const deletedSessions = [];
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", evaluator()]]),
+        sessionFactory: {
+            async createInitialSession({ onSessionCreated }) {
+                await onSessionCreated();
+            },
+            async deleteInitialSession(sessionId) {
+                deletedSessions.push(sessionId);
+            },
+        },
+        workerId: "stale-worker",
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await controller.runOnce();
+
+    assert.equal(attachCalls, 2);
+    assert.deepEqual(deletedSessions, []);
 });
 
 test("induced sessions require the authenticated JobGenerator owner affinity", async () => {
@@ -597,6 +660,14 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
                     summary: "Collected the failing query and logs.",
                 }];
             },
+            async listJobStateRuns(jobId) {
+                assert.equal(jobId, "job-1");
+                return [lifecycleStateRun({
+                    stateRunId: "state-run-2",
+                    stateRevision: 2,
+                    sessionId: "session-2",
+                })];
+            },
             async prepareJobStateRun(input) {
                 prepared.push(input);
                 return {};
@@ -658,6 +729,7 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
 
     assert.deepEqual(created[0].toolNames, [
         "read_file",
+        "read_job_source_session",
         "start_external_operation",
         "get_external_operation",
         "complete_state",
@@ -667,7 +739,7 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.deepEqual(prepared[0].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
     assert.equal(prepared[0].terminal, false);
     assert.match(sent[0].prompt, /Collected the failing query and logs/);
-    assert.match(sent[0].prompt, /follow its Session reference/);
+    assert.match(sent[0].prompt, /call read_job_source_session with its Session ID/);
     assert.match(sent[0].prompt, /instead of creating a duplicate/);
     assert.match(sent[0].prompt, /For a human decision, call ask_user/);
     assert.match(sent[0].prompt, /call system_wait with the exact signalKey/);
@@ -675,4 +747,176 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.match(sent[0].prompt, /Use the repository evidence/);
     assert.match(sent[0].prompt, /Allowed outcomes: Fixed/);
     assert.deepEqual(sent[0].options.clientMessageIds, ["job-generator:job-1:state:2"]);
+});
+
+test("new state runs resolve the latest Markdown while retries reuse the durable snapshot", async () => {
+    const prepared = [];
+    const resolvedCommits = [];
+    const readCommits = [];
+    let latestCommit = "commit-one";
+    const runs = [
+        lifecycleStateRun(),
+        lifecycleStateRun({
+            stateRunId: "state-run-2",
+            stateName: "Fixed",
+            stateRevision: 2,
+            sessionId: "session-2",
+        }),
+    ];
+    const factory = new PilotSwarmInitialSessionFactory({
+        async createSession() {
+            return {
+                async send() {},
+            };
+        },
+    }, {
+        reader: {
+            async resolveSourceCommit(source) {
+                resolvedCommits.push(source.requestedRef);
+                return latestCommit;
+            },
+            async readStateMarkdown(source, sourcePath) {
+                readCommits.push([source.resolvedCommit, sourcePath]);
+                return sourcePath.endsWith(".Diagnosed.md")
+                    ? [
+                        "# Diagnose",
+                        "",
+                        "## Possible next states",
+                        "- [Fixed](./Example.Fixed.md)",
+                    ].join("\n")
+                    : "# Fixed\n\nDelivery is complete.\n";
+            },
+        },
+        store: {
+            async listJobJournal() {
+                return [];
+            },
+            async listJobStateRuns() {
+                return runs;
+            },
+            async prepareJobStateRun(input) {
+                prepared.push(input);
+                const run = runs.find((candidate) => candidate.stateRevision === input.expectedRevision);
+                Object.assign(run, {
+                    stateOwner: input.stateOwner,
+                    sourceId: input.sourceId,
+                    sourcePath: input.sourcePath,
+                    sourceCommit: input.sourceCommit,
+                    markdownSha256: input.markdownSha256,
+                    allowedOutcomes: input.allowedOutcomes,
+                    terminal: input.terminal,
+                });
+                return run;
+            },
+        },
+    });
+    const lifecycleDefinition = {
+        name: "Example",
+        initialState: "Diagnosed",
+        sources: [{
+            sourceId: "user-lifecycle",
+            owner: "user",
+            filePrefix: "Example",
+            repositoryUrl: "https://github.com/example/repository",
+            requestedRef: "main",
+            resolvedCommit: "stale-definition-commit",
+        }],
+    };
+    const baseJob = {
+        jobId: "job-1",
+        generatorId: "generator-1",
+        definitionId: "definition-1",
+        jobKey: "source-42",
+        sourcePayload: { id: 42 },
+        lifecycleState: "pending_session",
+        currentState: "Diagnosed",
+        stateRevision: 1,
+        currentStateEnteredAt: now,
+        firstSeenCycleId: "cycle-1",
+        lastSeenCycleId: "cycle-1",
+        firstDiscoveredAt: now,
+        lastDiscoveredAt: now,
+        sessionAttempts: 1,
+        sessionError: null,
+        createdAt: now,
+        updatedAt: now,
+    };
+    const definitionWithLifecycle = {
+        ...definition(),
+        lifecycleDefinition,
+    };
+
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: definitionWithLifecycle,
+        job: baseJob,
+        association: {
+            associationId: "association-1",
+            jobId: "job-1",
+            sessionId: "session-1",
+            stateRunId: "state-run-1",
+            ordinal: 1,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+    });
+
+    latestCommit = "commit-two";
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: definitionWithLifecycle,
+        job: baseJob,
+        association: {
+            associationId: "association-1-replacement",
+            jobId: "job-1",
+            sessionId: "session-1-replacement",
+            stateRunId: "state-run-1",
+            ordinal: 2,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+    });
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: definitionWithLifecycle,
+        job: {
+            ...baseJob,
+            currentState: "Fixed",
+            stateRevision: 2,
+        },
+        association: {
+            associationId: "association-2",
+            jobId: "job-1",
+            sessionId: "session-2",
+            stateRunId: "state-run-2",
+            ordinal: 3,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+    });
+
+    assert.deepEqual(resolvedCommits, ["main", "main"]);
+    assert.deepEqual(readCommits, [
+        ["commit-one", "Example.Diagnosed.md"],
+        ["commit-one", "Example.Diagnosed.md"],
+        ["commit-two", "Example.Fixed.md"],
+    ]);
+    assert.deepEqual(
+        prepared.map((entry) => entry.sourceCommit),
+        ["commit-one", "commit-one", "commit-two"],
+    );
+    assert.deepEqual(prepared[1].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
+    assert.equal(prepared[2].terminal, true);
 });

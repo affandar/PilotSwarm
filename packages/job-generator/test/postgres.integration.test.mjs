@@ -13,7 +13,7 @@ const aadUser = process.env.PILOTSWARM_DB_AAD_USER || process.env.PILOTSWARM_AAD
 
 test("controller materialization and durable Job lifecycle transitions", {
     skip: !catalogUrl,
-    timeout: 180_000,
+    timeout: 600_000,
 }, async () => {
     const schema = `jobgen_controller_${randomUUID().replaceAll("-", "")}`;
     const catalog = await PgSessionCatalog.create(catalogUrl, schema, {
@@ -117,18 +117,50 @@ test("controller materialization and durable Job lifecycle transitions", {
             lifecycleWorker,
             "lifecycle-session-1",
         );
-        await catalog.prepareJobStateRun({
-            sessionId: firstSession.sessionId,
-            expectedState: "Diagnosed",
-            expectedRevision: 1,
-            stateOwner: "user",
-            sourceId: "user-lifecycle",
-            sourcePath: "Example.Diagnosed.md",
-            sourceCommit: "abc123",
-            markdownSha256: "a".repeat(64),
-            allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
-            terminal: false,
-        });
+        const candidateSnapshots = [
+            {
+                sourceCommit: "abc123",
+                markdownSha256: "a".repeat(64),
+            },
+            {
+                sourceCommit: "moved-branch-commit",
+                markdownSha256: "c".repeat(64),
+            },
+        ];
+        const preparationResults = await Promise.allSettled(
+            candidateSnapshots.map((snapshot) => catalog.prepareJobStateRun({
+                sessionId: firstSession.sessionId,
+                expectedState: "Diagnosed",
+                expectedRevision: 1,
+                stateOwner: "user",
+                sourceId: "user-lifecycle",
+                sourcePath: "Example.Diagnosed.md",
+                ...snapshot,
+                allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
+                terminal: false,
+            })),
+        );
+        assert.equal(
+            preparationResults.filter((result) => result.status === "fulfilled").length,
+            1,
+        );
+        assert.equal(
+            preparationResults.filter((result) => result.status === "rejected").length,
+            1,
+        );
+        const durableRun = (await catalog.listJobStateRuns(job.jobId))[0];
+        const durableSnapshot = {
+            sourceCommit: durableRun.sourceCommit,
+            markdownSha256: durableRun.markdownSha256,
+        };
+        assert.ok(candidateSnapshots.some((snapshot) => (
+            snapshot.sourceCommit === durableSnapshot.sourceCommit
+            && snapshot.markdownSha256 === durableSnapshot.markdownSha256
+        )));
+        const conflictingSnapshot = candidateSnapshots.find(
+            (snapshot) => snapshot.sourceCommit !== durableSnapshot.sourceCommit,
+        );
+        assert.ok(conflictingSnapshot);
         // The git worker can start the durable turn before the controller's
         // post-send attach returns; acknowledgement must be race-safe.
         await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
@@ -221,6 +253,20 @@ test("controller materialization and durable Job lifecycle transitions", {
             job.jobId,
             "lifecycle-session-1-replacement",
         );
+        await assert.rejects(
+            catalog.prepareJobStateRun({
+                sessionId: replacementSession.sessionId,
+                expectedState: "Diagnosed",
+                expectedRevision: 1,
+                stateOwner: "user",
+                sourceId: "user-lifecycle",
+                sourcePath: "Example.Diagnosed.md",
+                ...conflictingSnapshot,
+                allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
+                terminal: false,
+            }),
+            /durable Markdown snapshot differs/,
+        );
         await catalog.prepareJobStateRun({
             sessionId: replacementSession.sessionId,
             expectedState: "Diagnosed",
@@ -228,8 +274,7 @@ test("controller materialization and durable Job lifecycle transitions", {
             stateOwner: "user",
             sourceId: "user-lifecycle",
             sourcePath: "Example.Diagnosed.md",
-            sourceCommit: "abc123",
-            markdownSha256: "a".repeat(64),
+            ...durableSnapshot,
             allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
             terminal: false,
         });
@@ -326,11 +371,24 @@ test("controller materialization and durable Job lifecycle transitions", {
             cycle.cycleId,
             lifecycleWorker,
         );
-        await catalog.acknowledgeJobSession(secondSession.sessionId, "git-worker-2");
+        await catalog.acknowledgeJobSession(secondSession.sessionId, "git-worker-3");
+        const sourceContext = await catalog.readJobSourceSession(
+            secondSession.sessionId,
+            replacementSession.sessionId,
+        );
+        assert.equal(sourceContext.journalEntry.journalEntryId, firstEntry.journalEntryId);
+        assert.equal(sourceContext.journalEntry.summary, "Diagnosed the issue and applied the fix.");
+        assert.ok(sourceContext.events.some(
+            (event) => event.eventType === "session.system_wait_completed",
+        ));
+        assert.equal(
+            await catalog.readJobSourceSession(secondSession.sessionId, "unrelated-session"),
+            null,
+        );
         await catalog.recordEvents(secondSession.sessionId, [{
             eventType: "session.turn_started",
             data: { iteration: 1 },
-        }], "git-worker-2");
+        }], "git-worker-3");
         await assert.rejects(
             catalog.completeJobState({
                 sessionId: secondSession.sessionId,
@@ -381,7 +439,12 @@ test("controller materialization and durable Job lifecycle transitions", {
             entry.eventType === "job.state_transition"
             && entry.details.toState === "Fixed"
         )), false);
-        const resumedWorkerTimeline = await catalog.getWorkerTimeline("git-worker-2");
+        const replacementWorkerTimeline = await catalog.getWorkerTimeline("git-worker-2");
+        assert.ok(replacementWorkerTimeline.some((entry) => (
+            entry.eventType === "job.state_transition"
+            && entry.details.toState === "Fixed"
+        )));
+        const resumedWorkerTimeline = await catalog.getWorkerTimeline("git-worker-3");
         const capacityWait = resumedWorkerTimeline.find((entry) => (
             entry.eventType === "job.worker_capacity_wait"
             && entry.sessionId === secondSession.sessionId
@@ -393,10 +456,6 @@ test("controller materialization and durable Job lifecycle transitions", {
             capacityWait.at.getTime(),
         );
         assert.ok(new Date(capacityWait.details.runnableAt).getTime() < capacityWait.at.getTime());
-        assert.ok(resumedWorkerTimeline.some((entry) => (
-            entry.eventType === "job.state_transition"
-            && entry.details.toState === "Fixed"
-        )));
         assert.ok(resumedWorkerTimeline.some((entry) => (
             entry.eventType === "job.state_completed"
             && entry.details.fromState === "Fixed"

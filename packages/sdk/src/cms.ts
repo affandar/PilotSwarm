@@ -1140,6 +1140,12 @@ export interface JobJournalEntryRow {
     transitionedAt: Date;
 }
 
+export interface JobSourceSessionContext {
+    journalEntry: JobJournalEntryRow;
+    events: SessionEvent[];
+    hasMore: boolean;
+}
+
 export interface JobExternalOperationRow {
     operationId: string;
     jobId: string;
@@ -1448,6 +1454,12 @@ export interface SessionCatalog {
     listJobStateRuns(jobId: string): Promise<JobStateRunRow[]>;
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
     listJobJournal(jobId: string): Promise<JobJournalEntryRow[]>;
+    readJobSourceSession(
+        currentSessionId: string,
+        sourceSessionId: string,
+        beforeSeq?: number,
+        limit?: number,
+    ): Promise<JobSourceSessionContext | null>;
     completeJobState(input: CompleteJobStateInput): Promise<JobJournalEntryRow>;
     startJobExternalOperation(input: StartJobExternalOperationInput): Promise<JobExternalOperationRow>;
     getJobExternalOperation(sessionId: string, operationId: string): Promise<JobExternalOperationRow | null>;
@@ -2744,6 +2756,25 @@ export class PgSessionCatalog implements SessionCatalog {
                AND sr.state_name = $9
                AND sr.state_revision = $10
                AND sr.status IN ('reserved', 'unacked', 'failed')
+               AND (
+                    (
+                        sr.state_owner IS NULL
+                        AND sr.source_id IS NULL
+                        AND sr.source_path IS NULL
+                        AND sr.source_commit IS NULL
+                        AND sr.markdown_sha256 IS NULL
+                        AND sr.terminal IS NULL
+                    )
+                    OR (
+                        sr.state_owner = $2
+                        AND sr.source_id = $3
+                        AND sr.source_path = $4
+                        AND sr.source_commit = $5
+                        AND sr.markdown_sha256 = $6
+                        AND sr.allowed_outcomes = $7::jsonb
+                        AND sr.terminal = $8
+                    )
+               )
              RETURNING sr.*`,
             [
                 input.sessionId,
@@ -2758,7 +2789,11 @@ export class PgSessionCatalog implements SessionCatalog {
                 input.expectedRevision,
             ],
         );
-        if (!rows[0]) throw new Error(`Current Job state run not found for session ${input.sessionId}`);
+        if (!rows[0]) {
+            throw new Error(
+                `Current Job state run not found or durable Markdown snapshot differs for session ${input.sessionId}`,
+            );
+        }
         return rowToJobStateRun(rows[0]);
     }
 
@@ -2943,6 +2978,44 @@ export class PgSessionCatalog implements SessionCatalog {
             [jobId],
         );
         return rows.map(rowToJobJournalEntry);
+    }
+
+    async readJobSourceSession(
+        currentSessionId: string,
+        sourceSessionId: string,
+        beforeSeq?: number,
+        limit = 20,
+    ): Promise<JobSourceSessionContext | null> {
+        const current = currentSessionId.trim();
+        const source = sourceSessionId.trim();
+        if (!current || !source) throw new Error("Current and source Job session IDs are required");
+        if (beforeSeq !== undefined && (!Number.isInteger(beforeSeq) || beforeSeq <= 0)) {
+            throw new Error("Job source session beforeSeq must be a positive integer");
+        }
+        const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 50));
+        const { rows } = await this.pool.query(
+            `SELECT journal.*
+             FROM "${this.sql.schema}".job_sessions current_session
+             JOIN "${this.sql.schema}".job_journal_entries journal
+               ON journal.job_id = current_session.job_id
+              AND journal.session_id = $2
+             WHERE current_session.session_id = $1
+               AND current_session.is_current
+             ORDER BY journal.sequence DESC
+             LIMIT 1`,
+            [current, source],
+        );
+        if (!rows[0]) return null;
+
+        const page = beforeSeq === undefined
+            ? await this.getSessionEvents(source, undefined, boundedLimit + 1)
+            : await this.getSessionEventsBefore(source, beforeSeq, boundedLimit + 1);
+        const hasMore = page.length > boundedLimit;
+        return {
+            journalEntry: rowToJobJournalEntry(rows[0]),
+            events: hasMore ? page.slice(1) : page,
+            hasMore,
+        };
     }
 
     async startJobExternalOperation(
