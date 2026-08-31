@@ -510,6 +510,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     interruptKind: "user",
                     budget: state.activeTimer.budget === true,
                 };
+                yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                    eventType: "session.wait_cancelled",
+                    data: {
+                        reason: "interrupted_by_user",
+                        remainingSeconds: remainingSec,
+                    },
+                }]);
 
                 if (state.activeTimer.shouldRehydrate && userPrompt) {
                     userPrompt = wrapWithResumeContext(

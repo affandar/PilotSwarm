@@ -5218,17 +5218,51 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         if (!catalog) return;
         const eventTypes = input.events.map((e) => e.eventType).join(",");
         for (const event of input.events) {
+            const data = event.data
+                && typeof event.data === "object"
+                && !Array.isArray(event.data)
+                ? event.data as Record<string, unknown>
+                : null;
+            if (event.eventType === "session.wait_started" && data) {
+                const waitKey = typeof data.waitKey === "string" ? data.waitKey : "";
+                const reason = typeof data.reason === "string" ? data.reason : "Durable timer";
+                const deadlineAt = typeof data.deadlineAt === "string"
+                    ? new Date(data.deadlineAt)
+                    : null;
+                if (waitKey && deadlineAt && Number.isFinite(deadlineAt.getTime())) {
+                    await cmsRetryBestEffort(
+                        `startJobTimerWait session=${input.sessionId}`,
+                        () => catalog!.startJobTimerWait({
+                            sessionId: input.sessionId,
+                            waitKey,
+                            reason,
+                            dueAt: deadlineAt,
+                        }),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+            } else if (event.eventType === "session.wait_completed") {
+                await cmsRetryBestEffort(
+                    `completeJobTimerWait session=${input.sessionId}`,
+                    () => catalog!.completeJobTimerWait(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            } else if (event.eventType === "session.wait_cancelled") {
+                await cmsRetryBestEffort(
+                    `cancelJobTimerWait session=${input.sessionId}`,
+                    () => catalog!.cancelJobTimerWait(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
             const phase = event.eventType === "session.system_wait_started"
                 ? "started"
                 : event.eventType === "session.system_wait_completed"
                     ? "completed"
                     : null;
             const signalKey = phase
-                && event.data
-                && typeof event.data === "object"
-                && !Array.isArray(event.data)
-                && typeof (event.data as Record<string, unknown>).signalKey === "string"
-                ? String((event.data as Record<string, unknown>).signalKey)
+                && data
+                && typeof data.signalKey === "string"
+                ? String(data.signalKey)
                 : null;
             if (phase && signalKey) {
                 await cmsRetryCritical(

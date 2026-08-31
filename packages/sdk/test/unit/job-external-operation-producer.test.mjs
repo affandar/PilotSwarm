@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MockJobExternalOperationProducer } from "../../dist/job-external-operation-producer.js";
+import {
+    JobWaitScheduler,
+    MockJobWaitObserver,
+} from "../../dist/job-external-operation-producer.js";
+
+function wait(overrides = {}) {
+    return {
+        waitId: "wait-1",
+        sessionId: "session-1",
+        externalOperationId: "operation-1",
+        providerCursor: null,
+        latestObservation: null,
+        deadlineAt: null,
+        checkAttempts: 1,
+        consecutiveCheckFailures: 0,
+        ...overrides,
+    };
+}
 
 function operation(overrides = {}) {
     return {
@@ -9,7 +26,7 @@ function operation(overrides = {}) {
         signalKey: "job-operation:operation-1",
         correlationId: "mock:operation-1",
         provider: "mock",
-        kind: "pvs",
+        kind: "validation",
         request: {},
         status: "pending",
         result: null,
@@ -19,30 +36,60 @@ function operation(overrides = {}) {
     };
 }
 
-test("mock producer completes an operation and delivers its matching signal", async () => {
-    const completed = [];
+function store(overrides = {}) {
+    return {
+        async claimDueJobWaits() {
+            return [];
+        },
+        async completeJobWaitCheck() {
+            throw new Error("must not be called");
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async claimJobExternalOperationSignals() {
+            return [];
+        },
+        async markJobExternalOperationSignalDelivered() {
+            throw new Error("must not be called");
+        },
+        async markJobExternalOperationSignalFailed() {
+            throw new Error("must not be called");
+        },
+        ...overrides,
+    };
+}
+
+const quietLogger = { info() {}, warn() {}, error() {} };
+
+test("scheduler satisfies an observed condition and delivers its matching signal", async () => {
+    const completions = [];
     const delivered = [];
     const signals = [];
-    const pending = operation({
+    const pendingWait = wait();
+    const pendingOperation = operation({
         request: {
             result: { passed: true },
-            evidence: { runId: "pvs-1" },
+            evidence: { runId: "validation-1" },
         },
     });
     const readySignal = operation({
         status: "succeeded",
         result: { passed: true },
-        evidence: { runId: "pvs-1" },
+        evidence: { runId: "validation-1" },
     });
-    const producer = new MockJobExternalOperationProducer({
-        workerId: "producer-1",
-        store: {
-            async claimDueJobExternalOperations() {
-                return [pending];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        observers: [new MockJobWaitObserver()],
+        store: store({
+            async claimDueJobWaits() {
+                return [pendingWait];
             },
-            async completeJobExternalOperation(input) {
-                completed.push(input);
-                return readySignal;
+            async getJobExternalOperation() {
+                return pendingOperation;
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
             },
             async claimJobExternalOperationSignals() {
                 return [readySignal];
@@ -50,190 +97,257 @@ test("mock producer completes an operation and delivers its matching signal", as
             async markJobExternalOperationSignalDelivered(operationId, workerId) {
                 delivered.push({ operationId, workerId });
             },
-            async markJobExternalOperationSignalFailed() {
-                throw new Error("must not be called");
-            },
-        },
+        }),
         signalSender: {
             async sendSystemSignal(sessionId, signalKey, payload) {
                 signals.push({ sessionId, signalKey, payload });
             },
         },
-        logger: { info() {}, warn() {}, error() {} },
+        logger: quietLogger,
     });
 
-    const result = await producer.runOnce();
+    const result = await scheduler.runOnce();
 
-    assert.deepEqual(result, { completed: 1, delivered: 1, deliveryFailed: 0 });
-    assert.deepEqual(completed, [{
-        operationId: "operation-1",
-        workerId: "producer-1",
-        status: "succeeded",
+    assert.deepEqual(result, {
+        checked: 1,
+        pending: 0,
+        satisfied: 1,
+        failed: 0,
+        timedOut: 0,
+        checkFailed: 0,
+        delivered: 1,
+        deliveryFailed: 0,
+    });
+    assert.deepEqual(completions, [{
+        waitId: "wait-1",
+        workerId: "scheduler-1",
+        disposition: "satisfied",
+        observation: { passed: true },
+        providerCursor: undefined,
+        evidence: { runId: "validation-1" },
         result: { passed: true },
-        evidence: { runId: "pvs-1" },
         error: null,
+        nextCheckAt: undefined,
     }]);
     assert.equal(signals[0].sessionId, "session-1");
     assert.equal(signals[0].signalKey, "job-operation:operation-1");
     assert.equal(signals[0].payload.operationId, "operation-1");
-    assert.deepEqual(delivered, [{ operationId: "operation-1", workerId: "producer-1" }]);
+    assert.deepEqual(delivered, [{ operationId: "operation-1", workerId: "scheduler-1" }]);
 });
 
-test("mock producer persists signal delivery failures for retry", async () => {
-    const failures = [];
-    const readySignal = operation({ status: "succeeded" });
-    const producer = new MockJobExternalOperationProducer({
-        workerId: "producer-1",
-        retryDelayMs: 50,
-        store: {
-            async claimDueJobExternalOperations() {
-                return [];
+test("scheduler persists pending observations and schedules the next check", async () => {
+    const completions = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        defaultCheckIntervalMs: 250,
+        observers: [{
+            provider: "example",
+            async observe() {
+                return {
+                    disposition: "pending",
+                    observation: { state: "running" },
+                    cursor: "cursor-2",
+                };
             },
-            async completeJobExternalOperation() {
-                throw new Error("must not be called");
+        }],
+        store: store({
+            async claimDueJobWaits() {
+                return [wait()];
+            },
+            async getJobExternalOperation() {
+                return operation({ provider: "example" });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
+            },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
+    });
+
+    const before = Date.now();
+    const result = await scheduler.runOnce();
+
+    assert.equal(result.pending, 1);
+    assert.equal(completions[0].disposition, "pending");
+    assert.deepEqual(completions[0].observation, { state: "running" });
+    assert.equal(completions[0].providerCursor, "cursor-2");
+    assert.ok(completions[0].nextCheckAt.getTime() >= before + 250);
+});
+
+test("scheduler records observer failures with bounded retry backoff", async () => {
+    const completions = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        retryDelayMs: 100,
+        maxRetryDelayMs: 250,
+        observers: [{
+            provider: "example",
+            async observe() {
+                throw new Error("provider unavailable");
+            },
+        }],
+        store: store({
+            async claimDueJobWaits() {
+                return [wait({
+                    checkAttempts: 4,
+                    consecutiveCheckFailures: 3,
+                    latestObservation: { state: "running" },
+                    providerCursor: "cursor-1",
+                })];
+            },
+            async getJobExternalOperation() {
+                return operation({ provider: "example" });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
+            },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
+    });
+
+    const before = Date.now();
+    const result = await scheduler.runOnce();
+
+    assert.equal(result.checkFailed, 1);
+    assert.equal(completions[0].disposition, "pending");
+    assert.equal(completions[0].error, "provider unavailable");
+    assert.deepEqual(completions[0].observation, { state: "running" });
+    assert.equal(completions[0].providerCursor, "cursor-1");
+    assert.ok(completions[0].nextCheckAt.getTime() >= before + 250);
+});
+
+test("scheduler lets the catalog apply deadline fencing to a pending observation", async () => {
+    const completions = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        observers: [{
+            provider: "example",
+            async observe() {
+                return { disposition: "pending", observation: { state: "running" } };
+            },
+        }],
+        store: store({
+            async claimDueJobWaits() {
+                return [wait({ deadlineAt: new Date(Date.now() - 1_000) })];
+            },
+            async getJobExternalOperation() {
+                return operation({ provider: "example" });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
+                return wait({ status: "timed_out" });
+            },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
+    });
+
+    const result = await scheduler.runOnce();
+
+    assert.equal(result.timedOut, 1);
+    assert.equal(completions[0].disposition, "pending");
+    assert.deepEqual(completions[0].observation, { state: "running" });
+});
+
+test("scheduler retries waits whose provider has no registered observer", async () => {
+    const completions = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        retryDelayMs: 50,
+        store: store({
+            async claimDueJobWaits() {
+                return [wait()];
+            },
+            async getJobExternalOperation() {
+                return operation({ provider: "unregistered" });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
+            },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
+    });
+
+    const result = await scheduler.runOnce();
+
+    assert.equal(result.checkFailed, 1);
+    assert.match(completions[0].error, /No JobWait observer registered/);
+});
+
+test("scheduler continues after a check failure and a signal delivery failure", async () => {
+    const completions = [];
+    const failures = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        observers: [{
+            provider: "example",
+            async observe({ wait: claimed }) {
+                if (claimed.waitId === "wait-1") throw new Error("first check failed");
+                return { disposition: "satisfied", result: { passed: true } };
+            },
+        }],
+        store: store({
+            async claimDueJobWaits() {
+                return [
+                    wait(),
+                    wait({ waitId: "wait-2", externalOperationId: "operation-2" }),
+                ];
+            },
+            async getJobExternalOperation(_sessionId, operationId) {
+                return operation({ operationId, provider: "example" });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
             },
             async claimJobExternalOperationSignals() {
-                return [readySignal];
-            },
-            async markJobExternalOperationSignalDelivered() {
-                throw new Error("must not be called");
+                return [operation({ status: "succeeded" })];
             },
             async markJobExternalOperationSignalFailed(operationId, workerId, error, retryAt) {
                 failures.push({ operationId, workerId, error, retryAt });
             },
-        },
+        }),
         signalSender: {
             async sendSystemSignal() {
                 throw new Error("orchestration unavailable");
             },
         },
-        logger: { info() {}, warn() {}, error() {} },
+        logger: quietLogger,
     });
 
-    const before = Date.now();
-    const result = await producer.runOnce();
+    const result = await scheduler.runOnce();
 
-    assert.deepEqual(result, { completed: 0, delivered: 0, deliveryFailed: 1 });
-    assert.equal(failures[0].operationId, "operation-1");
-    assert.equal(failures[0].workerId, "producer-1");
+    assert.equal(result.checkFailed, 1);
+    assert.equal(result.satisfied, 1);
+    assert.equal(result.deliveryFailed, 1);
+    assert.equal(completions.length, 2);
     assert.equal(failures[0].error, "orchestration unavailable");
-    assert.ok(failures[0].retryAt.getTime() >= before + 50);
 });
 
-test("mock producer continues after completion and delivery bookkeeping failures", async () => {
-    const completed = [];
-    const sent = [];
-    const marked = [];
-    const first = operation({ operationId: "operation-1" });
-    const second = operation({
-        operationId: "operation-2",
-        signalKey: "job-operation:operation-2",
-        correlationId: "mock:operation-2",
-    });
-    const producer = new MockJobExternalOperationProducer({
-        workerId: "producer-1",
-        store: {
-            async claimDueJobExternalOperations() {
-                return [first, second];
-            },
-            async completeJobExternalOperation(input) {
-                if (input.operationId === "operation-1") throw new Error("lost completion lease");
-                completed.push(input.operationId);
-                return second;
-            },
-            async claimJobExternalOperationSignals() {
-                return [
-                    { ...first, status: "succeeded" },
-                    { ...second, status: "succeeded" },
-                ];
-            },
-            async markJobExternalOperationSignalDelivered(operationId) {
-                if (operationId === "operation-1") throw new Error("database unavailable");
-                marked.push(operationId);
-            },
-            async markJobExternalOperationSignalFailed() {
-                throw new Error("must not reset a signal that was already sent");
-            },
-        },
-        signalSender: {
-            async sendSystemSignal(sessionId, signalKey) {
-                sent.push({ sessionId, signalKey });
-            },
-        },
-        logger: { info() {}, warn() {}, error() {} },
-    });
-
-    const result = await producer.runOnce();
-
-    assert.deepEqual(result, { completed: 1, delivered: 1, deliveryFailed: 0 });
-    assert.deepEqual(completed, ["operation-2"]);
-    assert.equal(sent.length, 2);
-    assert.deepEqual(marked, ["operation-2"]);
-});
-
-test("mock producer does not abort when retry bookkeeping loses its lease", async () => {
-    const producer = new MockJobExternalOperationProducer({
-        workerId: "producer-1",
-        store: {
-            async claimDueJobExternalOperations() {
-                return [];
-            },
-            async completeJobExternalOperation() {
-                throw new Error("must not be called");
-            },
-            async claimJobExternalOperationSignals() {
-                return [{ ...operation(), status: "succeeded" }];
-            },
-            async markJobExternalOperationSignalDelivered() {
-                throw new Error("must not be called");
-            },
-            async markJobExternalOperationSignalFailed() {
-                throw new Error("lost retry lease");
-            },
-        },
-        signalSender: {
-            async sendSystemSignal() {
-                throw new Error("orchestration unavailable");
-            },
-        },
-        logger: { info() {}, warn() {}, error() {} },
-    });
-
-    await assert.doesNotReject(() => producer.runOnce());
-});
-
-test("mock producer fails malformed outcomes instead of treating them as success", async () => {
+test("mock observer fails malformed outcomes instead of treating them as success", async () => {
     const completions = [];
-    const producer = new MockJobExternalOperationProducer({
-        workerId: "producer-1",
-        store: {
-            async claimDueJobExternalOperations() {
-                return [operation({ request: { outcome: "failure" } })];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        observers: [new MockJobWaitObserver()],
+        store: store({
+            async claimDueJobWaits() {
+                return [wait()];
             },
-            async completeJobExternalOperation(input) {
+            async getJobExternalOperation() {
+                return operation({ request: { outcome: "failure" } });
+            },
+            async completeJobWaitCheck(input) {
                 completions.push(input);
-                return operation({ status: input.status, error: input.error });
             },
-            async claimJobExternalOperationSignals() {
-                return [];
-            },
-            async markJobExternalOperationSignalDelivered() {
-                throw new Error("must not be called");
-            },
-            async markJobExternalOperationSignalFailed() {
-                throw new Error("must not be called");
-            },
-        },
-        signalSender: {
-            async sendSystemSignal() {
-                throw new Error("must not be called");
-            },
-        },
-        logger: { info() {}, warn() {}, error() {} },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
     });
 
-    await producer.runOnce();
+    await scheduler.runOnce();
 
-    assert.equal(completions[0].status, "failed");
+    assert.equal(completions[0].disposition, "failed");
     assert.match(completions[0].error, /outcome must be succeeded or failed/);
 });

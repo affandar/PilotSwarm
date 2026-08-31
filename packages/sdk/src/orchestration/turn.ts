@@ -783,6 +783,16 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
             waitReason: saved.reason,
             waitStartedAt: resumeNow,
         });
+        yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+            eventType: "session.wait_started",
+            data: {
+                seconds: saved.remainingSec,
+                reason: saved.reason,
+                preserveAffinity: !resumeWaitPlan.shouldRelease,
+                waitKey: `timer:${runtime.input.sessionId}:resume:${state.iteration}:${resumeNow}`,
+                deadlineAt: new Date(resumeNow + saved.remainingSec * 1000).toISOString(),
+            },
+        }]);
 
         state.activeTimer = {
             deadlineMs: resumeNow + saved.remainingSec * 1000,
@@ -1317,7 +1327,13 @@ export function* handleTurnResult(
 
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
                 eventType: "session.wait_started",
-                data: { seconds: result.seconds, reason: result.reason, preserveAffinity: !waitPlan.shouldRelease },
+                data: {
+                    seconds: result.seconds,
+                    reason: result.reason,
+                    preserveAffinity: !waitPlan.shouldRelease,
+                    waitKey: `timer:${runtime.input.sessionId}:${state.iteration}:${waitStartedAt}`,
+                    deadlineAt: new Date(waitStartedAt + result.seconds * 1000).toISOString(),
+                },
             }]);
 
             state.activeTimer = {

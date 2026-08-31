@@ -841,6 +841,13 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
                 shouldRehydrate: timer.shouldRehydrate ?? false,
                 ...(timer.waitPlan ? { waitPlan: timer.waitPlan } : {}),
             };
+            yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+                eventType: "session.wait_cancelled",
+                data: {
+                    reason: "interrupted_by_model_switch",
+                    remainingSeconds: runtime.state.interruptedWaitTimer.remainingSec,
+                },
+            }]);
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; will auto-resume interrupted wait (${runtime.state.interruptedWaitTimer.remainingSec}s remain)`);
             runtime.state.activeTimer = null;
             return;

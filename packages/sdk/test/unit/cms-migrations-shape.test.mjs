@@ -125,3 +125,21 @@ test("0055: Job waits use one durable taxonomy with response fencing", () => {
     assert.match(migration.sql, /WHERE kind = 'response' AND status = 'pending'/i);
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_waits_due/i);
 });
+
+test("0056: observed-condition waits persist scheduling leases and delivery boundaries", () => {
+    const migration = migrations.find((m) => m.version === "0056");
+    assert.ok(migration, "migration 0056 must be registered");
+    assert.equal(migration.name, "job_wait_scheduling");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS signal_key TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS consecutive_check_failures INTEGER NOT NULL DEFAULT 0/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_owner TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_lease_expires_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS last_check_error TEXT/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /FROM "shape_check"\.job_external_operations operation/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_job_waits_signal_key/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_waits_check_lease/i);
+});

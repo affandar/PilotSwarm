@@ -664,6 +664,173 @@ test("controller materialization and durable Job lifecycle transitions", {
             lifecycleWorker,
         );
         await catalog.acknowledgeJobSession(failingSession.sessionId, "git-worker-failure");
+        const scheduledOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "mock",
+            kind: "scheduler-validation",
+            operationKey: "pending-then-satisfied",
+            detectionMode: "hybrid",
+            request: {},
+            nextPollAt: new Date(Date.now() - 1_000),
+        });
+        const concurrentClaims = await Promise.all([
+            catalog.claimDueJobWaits("wait-scheduler-a", 1, 30),
+            catalog.claimDueJobWaits("wait-scheduler-b", 1, 30),
+        ]);
+        const [firstClaim] = concurrentClaims.flat();
+        assert.ok(firstClaim);
+        assert.equal(concurrentClaims.flat().length, 1);
+        assert.equal(firstClaim.externalOperationId, scheduledOperation.operationId);
+        const acceleratedAt = new Date(Date.now() - 1_000);
+        assert.equal(
+            await catalog.accelerateJobWaitCheck(
+                firstClaim.waitId,
+                firstClaim.expectedStateRevision,
+                acceleratedAt,
+            ),
+            true,
+        );
+        const nextCheckAt = new Date(Date.now() + 60_000);
+        const pendingCheck = await catalog.completeJobWaitCheck({
+            waitId: firstClaim.waitId,
+            workerId: firstClaim.checkLeaseOwner,
+            disposition: "pending",
+            observation: { state: "running" },
+            providerCursor: { sequence: 1 },
+            nextCheckAt,
+        });
+        assert.equal(pendingCheck.status, "pending");
+        assert.equal(pendingCheck.checkAttempts, 1);
+        assert.deepEqual(pendingCheck.latestObservation, { state: "running" });
+        assert.deepEqual(pendingCheck.providerCursor, { sequence: 1 });
+        assert.equal(pendingCheck.nextCheckAt.getTime(), acceleratedAt.getTime());
+        const [acceleratedClaim] = await catalog.claimDueJobWaits("wait-scheduler-c", 1, 30);
+        assert.equal(acceleratedClaim.waitId, firstClaim.waitId);
+        const satisfiedCheck = await catalog.completeJobWaitCheck({
+            waitId: acceleratedClaim.waitId,
+            workerId: "wait-scheduler-c",
+            disposition: "satisfied",
+            observation: { state: "completed" },
+            result: { passed: true },
+            evidence: "scheduler-validation-1",
+        });
+        assert.equal(satisfiedCheck.status, "satisfied");
+        assert.equal(satisfiedCheck.checkAttempts, 2);
+        assert.deepEqual(satisfiedCheck.satisfactionEvidence, {
+            value: "scheduler-validation-1",
+        });
+        assert.equal(
+            (await catalog.getJobExternalOperation(
+                failingSession.sessionId,
+                scheduledOperation.operationId,
+            )).status,
+            "succeeded",
+        );
+
+        const deadlineOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "mock",
+            kind: "scheduler-validation",
+            operationKey: "deadline",
+            request: {},
+            deadlineAt: new Date(Date.now() - 1_000),
+            nextPollAt: new Date(Date.now() - 2_000),
+        });
+        const [deadlineClaim] = await catalog.claimDueJobWaits("wait-scheduler-deadline", 1, 30);
+        assert.equal(deadlineClaim.externalOperationId, deadlineOperation.operationId);
+        const timedOutCheck = await catalog.completeJobWaitCheck({
+            waitId: deadlineClaim.waitId,
+            workerId: "wait-scheduler-deadline",
+            disposition: "pending",
+            observation: { state: "still-running" },
+            nextCheckAt: new Date(Date.now() + 60_000),
+        });
+        assert.equal(timedOutCheck.status, "timed_out");
+        assert.equal(timedOutCheck.lastCheckError, "Job wait deadline elapsed");
+        assert.equal(
+            (await catalog.getJobExternalOperation(
+                failingSession.sessionId,
+                deadlineOperation.operationId,
+            )).status,
+            "failed",
+        );
+        const terminalAfterDeadlineOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "mock",
+            kind: "scheduler-validation",
+            operationKey: "terminal-after-deadline",
+            request: {},
+            deadlineAt: new Date(Date.now() - 1_000),
+            nextPollAt: new Date(Date.now() - 2_000),
+        });
+        const [terminalAfterDeadlineClaim] = await catalog.claimDueJobWaits(
+            "wait-scheduler-terminal-after-deadline",
+            1,
+            30,
+        );
+        const terminalAfterDeadline = await catalog.completeJobWaitCheck({
+            waitId: terminalAfterDeadlineClaim.waitId,
+            workerId: "wait-scheduler-terminal-after-deadline",
+            disposition: "satisfied",
+            observation: { state: "completed" },
+            result: { passed: true },
+            evidence: { runId: "late-terminal-result" },
+        });
+        assert.equal(terminalAfterDeadline.status, "satisfied");
+        assert.equal(
+            (await catalog.getJobExternalOperation(
+                failingSession.sessionId,
+                terminalAfterDeadlineOperation.operationId,
+            )).status,
+            "succeeded",
+        );
+
+        await catalog.setJobSessionExecutionStatus(failingSession.sessionId, "waiting");
+        const timerWait = await catalog.startJobTimerWait({
+            sessionId: failingSession.sessionId,
+            waitKey: `timer:${failingSession.sessionId}:1`,
+            reason: "Integration timer",
+            dueAt: new Date(Date.now() + 30_000),
+        });
+        assert.equal(timerWait.kind, "timer");
+        assert.equal(timerWait.status, "pending");
+        const cancelledTimerWait = await catalog.cancelJobTimerWait(failingSession.sessionId);
+        assert.equal(cancelledTimerWait.waitId, timerWait.waitId);
+        assert.equal(cancelledTimerWait.status, "cancelled");
+        assert.ok(cancelledTimerWait.waitCompletedAt);
+        const resumedTimerWait = await catalog.startJobTimerWait({
+            sessionId: failingSession.sessionId,
+            waitKey: `timer:${failingSession.sessionId}:resume:1`,
+            reason: "Resumed integration timer",
+            dueAt: new Date(Date.now() + 30_000),
+        });
+        const completedTimerWait = await catalog.completeJobTimerWait(failingSession.sessionId);
+        assert.equal(completedTimerWait.waitId, resumedTimerWait.waitId);
+        assert.equal(completedTimerWait.status, "satisfied");
+        assert.ok(completedTimerWait.waitStartedAt);
+        assert.ok(completedTimerWait.waitCompletedAt);
+        assert.equal(await catalog.completeJobTimerWait(failingSession.sessionId), null);
+        await catalog.acknowledgeJobSession(failingSession.sessionId, "git-worker-failure");
+
+        const staleOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "mock",
+            kind: "scheduler-validation",
+            operationKey: "stale-completion",
+            request: {},
+            nextPollAt: new Date(Date.now() - 1_000),
+        });
+        const [leasedWait] = await catalog.claimDueJobWaits("wait-scheduler-expired", 1, 30);
+        assert.equal(leasedWait.externalOperationId, staleOperation.operationId);
+        await catalog.pool.query(
+            `UPDATE "${schema}".job_waits
+             SET check_lease_expires_at = now() - interval '1 second'
+             WHERE wait_id = $1`,
+            [leasedWait.waitId],
+        );
+        const [reclaimedWait] = await catalog.claimDueJobWaits("wait-scheduler-reclaimed", 1, 30);
+        assert.equal(reclaimedWait.waitId, leasedWait.waitId);
+        assert.equal(reclaimedWait.checkAttempts, 2);
         const failureCleanupWait = await catalog.startJobResponseWait({
             sessionId: failingSession.sessionId,
             waitKey: `response:${failingSession.sessionId}:1`,
@@ -676,6 +843,15 @@ test("controller materialization and durable Job lifecycle transitions", {
             cycle.cycleId,
             lifecycleWorker,
             "Intentional integration failure",
+        );
+        await assert.rejects(
+            catalog.completeJobWaitCheck({
+                waitId: reclaimedWait.waitId,
+                workerId: "wait-scheduler-reclaimed",
+                disposition: "satisfied",
+                observation: { state: "late" },
+            }),
+            /no longer pending|stale/,
         );
         assert.equal(
             (await catalog.listJobWaits(failingJob.jobId)).find(

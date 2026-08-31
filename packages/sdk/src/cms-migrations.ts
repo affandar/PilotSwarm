@@ -450,6 +450,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_waits",
             sql: migration_0055_job_waits(schema),
         },
+        {
+            version: "0056",
+            name: "job_wait_scheduling",
+            sql: migration_0056_job_wait_scheduling(schema),
+        },
     ];
 }
 
@@ -15513,5 +15518,47 @@ CREATE INDEX IF NOT EXISTS ix_job_waits_due
     ON ${s}.job_waits(next_check_at)
     WHERE status = 'pending'
       AND kind IN ('observed_condition', 'timer');
+`;
+}
+
+// ─── Migration 0056: durable Job wait scheduling ────────────────
+
+function migration_0056_job_wait_scheduling(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.job_waits
+    ADD COLUMN IF NOT EXISTS signal_key TEXT,
+    ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS consecutive_check_failures INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS check_lease_owner TEXT,
+    ADD COLUMN IF NOT EXISTS check_lease_expires_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS last_check_error TEXT,
+    ADD COLUMN IF NOT EXISTS wait_started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS wait_completed_at TIMESTAMPTZ;
+
+UPDATE ${s}.job_waits wait
+SET signal_key = operation.signal_key,
+    check_lease_owner = operation.poll_lease_owner,
+    check_lease_expires_at = operation.poll_lease_expires_at,
+    wait_started_at = operation.wait_started_at,
+    wait_completed_at = operation.wait_completed_at
+FROM ${s}.job_external_operations operation
+WHERE wait.external_operation_id = operation.operation_id
+  AND (
+      wait.signal_key IS NULL
+      OR wait.check_lease_owner IS DISTINCT FROM operation.poll_lease_owner
+      OR wait.check_lease_expires_at IS DISTINCT FROM operation.poll_lease_expires_at
+      OR wait.wait_started_at IS DISTINCT FROM operation.wait_started_at
+      OR wait.wait_completed_at IS DISTINCT FROM operation.wait_completed_at
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_waits_signal_key
+    ON ${s}.job_waits(signal_key)
+    WHERE signal_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_job_waits_check_lease
+    ON ${s}.job_waits(check_lease_expires_at)
+    WHERE status = 'pending'
+      AND kind = 'observed_condition';
 `;
 }

@@ -1007,6 +1007,7 @@ export type JobStateRunStatus =
 export type JobWaitKind = "response" | "observed_condition" | "timer";
 export type JobWaitStatus = "pending" | "satisfied" | "failed" | "timed_out" | "cancelled";
 export type JobWaitDetectionMode = "direct_submission" | "poll" | "event" | "hybrid" | "timer";
+export type JobWaitCheckDisposition = "pending" | "satisfied" | "failed" | "timed_out";
 export type JobExternalOperationStatus = "pending" | "succeeded" | "failed";
 export type JobExternalOperationSignalStatus = "blocked" | "pending" | "delivering" | "delivered";
 
@@ -1179,6 +1180,15 @@ export interface JobWaitRow {
     predicate: Record<string, unknown> | null;
     providerCursor: unknown;
     latestObservation: unknown;
+    signalKey: string | null;
+    checkAttempts: number;
+    consecutiveCheckFailures: number;
+    lastCheckedAt: Date | null;
+    checkLeaseOwner: string | null;
+    checkLeaseExpiresAt: Date | null;
+    lastCheckError: string | null;
+    waitStartedAt: Date | null;
+    waitCompletedAt: Date | null;
     responseId: string | null;
     response: Record<string, unknown> | null;
     responseDeliveryStatus: "none" | "pending" | "enqueued";
@@ -1234,6 +1244,8 @@ export interface StartJobExternalOperationInput {
     operationKey?: string;
     request?: Record<string, unknown>;
     nextPollAt?: Date;
+    deadlineAt?: Date | null;
+    detectionMode?: Extract<JobWaitDetectionMode, "poll" | "event" | "hybrid">;
 }
 
 export interface StartJobResponseWaitInput {
@@ -1250,6 +1262,25 @@ export interface AcceptJobResponseInput {
     sessionId: string;
     answer: string;
     respondedBy?: JobWaitResponder | null;
+}
+
+export interface StartJobTimerWaitInput {
+    sessionId: string;
+    waitKey: string;
+    reason: string;
+    dueAt: Date;
+}
+
+export interface CompleteJobWaitCheckInput {
+    waitId: string;
+    workerId: string;
+    disposition: JobWaitCheckDisposition;
+    observation?: unknown;
+    providerCursor?: unknown;
+    evidence?: unknown;
+    result?: unknown;
+    error?: string | null;
+    nextCheckAt?: Date | null;
 }
 
 export interface CompleteJobExternalOperationInput {
@@ -1540,6 +1571,22 @@ export interface SessionCatalog {
     acceptJobResponse(input: AcceptJobResponseInput): Promise<JobWaitRow | null>;
     markJobResponseEnqueued(waitId: string, responseId: string): Promise<void>;
     reopenJobResponseWait(waitId: string, responseId: string): Promise<void>;
+    startJobTimerWait(input: StartJobTimerWaitInput): Promise<JobWaitRow | null>;
+    completeJobTimerWait(sessionId: string): Promise<JobWaitRow | null>;
+    cancelJobTimerWait(sessionId: string): Promise<JobWaitRow | null>;
+    claimDueJobWaits(
+        workerId: string,
+        limit?: number,
+        leaseSeconds?: number,
+        providers?: readonly string[],
+    ): Promise<JobWaitRow[]>;
+    completeJobWaitCheck(input: CompleteJobWaitCheckInput): Promise<JobWaitRow>;
+    accelerateJobWaitCheck(waitId: string, expectedStateRevision: number, checkAt?: Date): Promise<boolean>;
+    recordJobWaitBoundary(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean>;
     readJobSourceSession(
         currentSessionId: string,
         sourceSessionId: string,
@@ -2766,9 +2813,12 @@ export class PgSessionCatalog implements SessionCatalog {
                 );
                 await client.query(
                     `UPDATE "${this.sql.schema}".job_waits
-                     SET status = 'cancelled', updated_at = now()
+                     SET status = 'cancelled',
+                         next_check_at = NULL,
+                         check_lease_owner = NULL,
+                         check_lease_expires_at = NULL,
+                         updated_at = now()
                      WHERE state_run_id = $1
-                       AND kind = 'response'
                        AND status = 'pending'`,
                     [stateRun.state_run_id],
                 );
@@ -3040,7 +3090,11 @@ export class PgSessionCatalog implements SessionCatalog {
                  RETURNING sr.job_id, sr.state_run_id
              ), cancelled_wait AS (
                  UPDATE "${this.sql.schema}".job_waits wait
-                 SET status = 'cancelled', updated_at = now()
+                 SET status = 'cancelled',
+                     next_check_at = NULL,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     updated_at = now()
                  FROM failed_run
                  WHERE wait.state_run_id = failed_run.state_run_id
                    AND wait.status = 'pending'
@@ -3357,6 +3411,567 @@ export class PgSessionCatalog implements SessionCatalog {
         }
     }
 
+    async startJobTimerWait(input: StartJobTimerWaitInput): Promise<JobWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const waitKey = input.waitKey.trim();
+        const reason = input.reason.trim();
+        const dueAt = input.dueAt;
+        if (!sessionId || !reason || !Number.isFinite(dueAt.getTime())) {
+            throw new Error("Timer wait requires a sessionId, reason, and valid dueAt");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(waitKey)) {
+            throw new Error("Timer wait key contains unsupported characters");
+        }
+        const prompt = { reason, dueAt: dueAt.toISOString() };
+        const predicate = { dueAt: dueAt.toISOString() };
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.job_id, sr.definition_id,
+                        sr.state_revision, sr.status AS state_run_status,
+                        j.state_revision AS job_state_revision
+                 FROM "${this.sql.schema}".job_sessions js
+                 JOIN "${this.sql.schema}".job_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".jobs j
+                   ON j.job_id = sr.job_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.job_state_revision)
+                || !["active", "waiting", "input_required"].includes(context.state_run_status)) {
+                throw new Error("Timer waits require the current Job state run");
+            }
+            const existingResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_waits
+                 WHERE state_run_id = $1 AND wait_key = $2
+                 FOR UPDATE`,
+                [context.state_run_id, waitKey],
+            );
+            if (existingResult.rows[0]) {
+                const existing = rowToJobWait(existingResult.rows[0]);
+                if (existing.kind !== "timer"
+                    || existing.sessionId !== sessionId
+                    || existing.expectedStateRevision !== Number(context.state_revision)
+                    || canonicalJson(existing.prompt) !== canonicalJson(prompt)
+                    || canonicalJson(existing.predicate) !== canonicalJson(predicate)) {
+                    throw new Error("Timer wait key is already bound to a different contract");
+                }
+                await client.query("COMMIT");
+                return existing;
+            }
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = 'cancelled', updated_at = now()
+                 WHERE state_run_id = $1
+                   AND kind = 'timer'
+                   AND status = 'pending'`,
+                [context.state_run_id],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_waits (
+                     wait_id, job_id, state_run_id, definition_id, session_id,
+                     wait_key, kind, status, detection_mode, expected_state_revision,
+                     prompt, response_schema, responder_policy, predicate, next_check_at,
+                     wait_started_at
+                 ) VALUES (
+                     $1,$2,$3,$4,$5,$6,'timer','pending','timer',$7,
+                     $8,'{}'::jsonb,'{}'::jsonb,$9,$10,now()
+                 )
+                 RETURNING *`,
+                [
+                    randomUUID(),
+                    context.job_id,
+                    context.state_run_id,
+                    context.definition_id,
+                    sessionId,
+                    waitKey,
+                    Number(context.state_revision),
+                    JSON.stringify(prompt),
+                    JSON.stringify(predicate),
+                    dueAt,
+                ],
+            );
+            await client.query("COMMIT");
+            return rowToJobWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeJobTimerWait(sessionId: string): Promise<JobWaitRow | null> {
+        const normalizedSessionId = sessionId.trim();
+        if (!normalizedSessionId) throw new Error("Completing a timer wait requires sessionId");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT wait.*
+                 FROM "${this.sql.schema}".job_waits wait
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = wait.job_id
+                  AND job.state_revision = wait.expected_state_revision
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = $1
+                  AND session.is_current
+                 WHERE wait.session_id = $1
+                   AND wait.kind = 'timer'
+                   AND wait.status = 'pending'
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY wait.created_at DESC, wait.wait_id DESC
+                 LIMIT 1
+                 FOR UPDATE OF wait, state_run, job, session`,
+                [normalizedSessionId],
+            );
+            if (!contextResult.rows[0]) {
+                await client.query("COMMIT");
+                return null;
+            }
+            const firedAt = new Date();
+            const evidence = {
+                source: "durable_timer",
+                sessionId: normalizedSessionId,
+                firedAt: firedAt.toISOString(),
+            };
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = 'satisfied',
+                     latest_observation = $2,
+                     satisfaction_evidence = $2,
+                     next_check_at = NULL,
+                     wait_completed_at = now(),
+                     satisfied_at = now(),
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND status = 'pending'
+                 RETURNING *`,
+                [contextResult.rows[0].wait_id, JSON.stringify(evidence)],
+            );
+            await client.query("COMMIT");
+            return rowToJobWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async cancelJobTimerWait(sessionId: string): Promise<JobWaitRow | null> {
+        const normalizedSessionId = sessionId.trim();
+        if (!normalizedSessionId) throw new Error("Cancelling a timer wait requires sessionId");
+        const { rows } = await this.pool.query(
+            `WITH current_wait AS (
+                 SELECT wait.wait_id
+                 FROM "${this.sql.schema}".job_waits wait
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = wait.job_id
+                  AND job.state_revision = wait.expected_state_revision
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = $1
+                  AND session.is_current
+                 WHERE wait.session_id = $1
+                   AND wait.kind = 'timer'
+                   AND wait.status = 'pending'
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY wait.created_at DESC, wait.wait_id DESC
+                 LIMIT 1
+                 FOR UPDATE OF wait, state_run, job, session
+             )
+             UPDATE "${this.sql.schema}".job_waits wait
+             SET status = 'cancelled',
+                 next_check_at = NULL,
+                 wait_completed_at = COALESCE(wait_completed_at, now()),
+                 updated_at = now()
+             FROM current_wait
+             WHERE wait.wait_id = current_wait.wait_id
+             RETURNING wait.*`,
+            [normalizedSessionId],
+        );
+        return rows[0] ? rowToJobWait(rows[0]) : null;
+    }
+
+    async claimDueJobWaits(
+        workerId: string,
+        limit = 25,
+        leaseSeconds = 30,
+        providers?: readonly string[],
+    ): Promise<JobWaitRow[]> {
+        const normalizedWorkerId = workerId.trim();
+        if (!normalizedWorkerId) throw new Error("Job wait claim requires workerId");
+        if (!Number.isInteger(limit) || limit <= 0) throw new Error("Job wait claim limit must be positive");
+        if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) {
+            throw new Error("Job wait leaseSeconds must be positive");
+        }
+        const normalizedProviders = providers === undefined
+            ? null
+            : [...new Set(providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean))];
+        const { rows } = await this.pool.query(
+            `WITH due AS (
+                 SELECT wait.wait_id
+                 FROM "${this.sql.schema}".job_waits wait
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = wait.job_id
+                  AND job.state_revision = wait.expected_state_revision
+                  AND job.current_state = state_run.state_name
+                  AND job.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = wait.session_id
+                  AND session.is_current
+                 WHERE wait.kind = 'observed_condition'
+                   AND wait.status = 'pending'
+                   AND wait.signal_key IS NOT NULL
+                   AND (
+                       $4::text[] IS NULL
+                       OR wait.provider = ANY($4::text[])
+                       OR (wait.deadline_at IS NOT NULL AND wait.deadline_at <= now())
+                   )
+                   AND (
+                       wait.next_check_at IS NOT NULL
+                       OR wait.check_lease_expires_at IS NOT NULL
+                   )
+                   AND LEAST(
+                       COALESCE(wait.next_check_at, wait.check_lease_expires_at),
+                       COALESCE(
+                           wait.deadline_at,
+                           wait.next_check_at,
+                           wait.check_lease_expires_at
+                       )
+                   ) <= now()
+                   AND (
+                       wait.check_lease_expires_at IS NULL
+                       OR wait.check_lease_expires_at <= now()
+                   )
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                 ORDER BY LEAST(
+                     COALESCE(wait.next_check_at, wait.check_lease_expires_at),
+                     COALESCE(
+                         wait.deadline_at,
+                         wait.next_check_at,
+                         wait.check_lease_expires_at
+                     )
+                 ), wait.created_at
+                 FOR UPDATE OF wait SKIP LOCKED
+                 LIMIT $2
+             )
+             UPDATE "${this.sql.schema}".job_waits wait
+             SET check_lease_owner = $1,
+                 check_lease_expires_at = now() + make_interval(secs => $3),
+                 next_check_at = NULL,
+                 check_attempts = check_attempts + 1,
+                 updated_at = now()
+             FROM due
+             WHERE wait.wait_id = due.wait_id
+             RETURNING wait.*`,
+            [normalizedWorkerId, limit, leaseSeconds, normalizedProviders],
+        );
+        return rows.map(rowToJobWait);
+    }
+
+    async completeJobWaitCheck(input: CompleteJobWaitCheckInput): Promise<JobWaitRow> {
+        const waitId = input.waitId.trim();
+        const workerId = input.workerId.trim();
+        if (!waitId || !workerId) throw new Error("Completing a Job wait check requires waitId and workerId");
+        if (!["pending", "satisfied", "failed", "timed_out"].includes(input.disposition)) {
+            throw new Error("Job wait check disposition is invalid");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT wait.*,
+                        state_run.status AS state_run_status,
+                        state_run.state_revision AS state_run_revision,
+                        state_run.state_name,
+                        job.state_revision AS job_state_revision,
+                        job.current_state AS job_current_state,
+                        job.lifecycle_state,
+                        session.is_current,
+                        wait.check_lease_expires_at > now() AS check_lease_is_valid,
+                        wait.deadline_at IS NOT NULL
+                            AND wait.deadline_at <= now() AS deadline_expired
+                 FROM "${this.sql.schema}".job_waits wait
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = wait.state_run_id
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = wait.job_id
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = wait.state_run_id
+                  AND session.session_id = wait.session_id
+                 WHERE wait.wait_id = $1
+                 FOR UPDATE OF wait, state_run, job, session`,
+                [waitId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) throw new Error(`Job wait not found: ${waitId}`);
+            if (context.kind !== "observed_condition"
+                || context.status !== "pending"
+                || context.check_lease_owner !== workerId
+                || !context.check_lease_expires_at
+                || !context.check_lease_is_valid) {
+                throw new Error("Job wait check lease is stale");
+            }
+            if (!context.is_current
+                || Number(context.expected_state_revision) !== Number(context.job_state_revision)
+                || Number(context.state_run_revision) !== Number(context.job_state_revision)
+                || context.state_name !== context.job_current_state
+                || ["completed", "failed"].includes(context.state_run_status)
+                || ["completed", "cancelled"].includes(context.lifecycle_state)) {
+                throw new Error("Job wait targets a stale state revision");
+            }
+
+            const disposition: JobWaitCheckDisposition = context.deadline_expired
+                && input.disposition === "pending"
+                ? "timed_out"
+                : input.disposition;
+            if (disposition === "pending" && !input.nextCheckAt) {
+                throw new Error("A pending Job wait observation requires nextCheckAt");
+            }
+            const requestedNextCheckAt = disposition === "pending"
+                && context.deadline_at
+                && input.nextCheckAt! > new Date(context.deadline_at)
+                ? new Date(context.deadline_at)
+                : input.nextCheckAt!;
+            const acceleratedNextCheckAt = context.next_check_at
+                ? new Date(context.next_check_at)
+                : null;
+            const nextCheckAt = disposition === "pending"
+                ? (
+                    acceleratedNextCheckAt
+                    && acceleratedNextCheckAt < requestedNextCheckAt
+                        ? acceleratedNextCheckAt
+                        : requestedNextCheckAt
+                )
+                : null;
+            const observation = input.observation === undefined
+                ? context.latest_observation
+                : input.observation;
+            const providerCursor = input.providerCursor === undefined
+                ? context.provider_cursor
+                : input.providerCursor;
+            const evidence = input.evidence === undefined
+                ? context.satisfaction_evidence
+                : jobWaitEvidence(input.evidence);
+            const result = input.result === undefined ? observation : input.result;
+            const error = disposition === "pending" || disposition === "failed" || disposition === "timed_out"
+                ? input.error ?? (disposition === "timed_out" ? "Job wait deadline elapsed" : null)
+                : null;
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = $3,
+                     provider_cursor = $4,
+                     latest_observation = $5,
+                     satisfaction_evidence = CASE
+                         WHEN $3 = 'satisfied' THEN $6::jsonb
+                         ELSE NULL
+                     END,
+                     last_checked_at = now(),
+                     consecutive_check_failures = CASE
+                         WHEN $3 = 'pending' AND $7::text IS NOT NULL
+                             THEN consecutive_check_failures + 1
+                         ELSE 0
+                     END,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     last_check_error = $7::text,
+                     next_check_at = $8,
+                     satisfied_at = CASE WHEN $3 = 'satisfied' THEN now() ELSE NULL END,
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND check_lease_owner = $2
+                   AND check_lease_expires_at > now()
+                   AND status = 'pending'
+                 RETURNING *`,
+                [
+                    waitId,
+                    workerId,
+                    disposition,
+                    providerCursor === undefined ? null : JSON.stringify(providerCursor),
+                    observation === undefined ? null : JSON.stringify(observation),
+                    evidence === null || evidence === undefined ? null : JSON.stringify(evidence),
+                    error,
+                    nextCheckAt,
+                ],
+            );
+            if (!rows[0]) throw new Error("Job wait check lease is stale");
+
+            if (context.external_operation_id) {
+                if (disposition === "pending") {
+                    await client.query(
+                        `UPDATE "${this.sql.schema}".job_external_operations
+                         SET result = $2,
+                             error = $3,
+                             next_poll_at = $4,
+                             poll_lease_owner = NULL,
+                             poll_lease_expires_at = NULL,
+                             updated_at = now()
+                         WHERE operation_id = $1
+                           AND status = 'pending'`,
+                        [
+                            context.external_operation_id,
+                            observation === undefined ? null : JSON.stringify(observation),
+                            error,
+                            nextCheckAt,
+                        ],
+                    );
+                } else {
+                    await client.query(
+                        `UPDATE "${this.sql.schema}".job_external_operations
+                         SET status = $2,
+                             result = $3,
+                             evidence = $4,
+                             error = $5,
+                             completed_at = now(),
+                             poll_lease_owner = NULL,
+                             poll_lease_expires_at = NULL,
+                             signal_status = 'pending',
+                             next_signal_at = now(),
+                             updated_at = now()
+                         WHERE operation_id = $1
+                           AND status = 'pending'`,
+                        [
+                            context.external_operation_id,
+                            disposition === "satisfied" ? "succeeded" : "failed",
+                            result === undefined ? null : JSON.stringify(result),
+                            evidence === null || evidence === undefined ? null : JSON.stringify(evidence),
+                            error,
+                        ],
+                    );
+                }
+            }
+            await client.query("COMMIT");
+            return rowToJobWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async accelerateJobWaitCheck(
+        waitId: string,
+        expectedStateRevision: number,
+        checkAt = new Date(),
+    ): Promise<boolean> {
+        if (!Number.isFinite(checkAt.getTime())) throw new Error("Job wait acceleration requires valid checkAt");
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_waits wait
+             SET next_check_at = LEAST(COALESCE(wait.next_check_at, $3), $3),
+                 updated_at = now()
+             FROM "${this.sql.schema}".job_state_runs state_run,
+                  "${this.sql.schema}".jobs job
+             WHERE wait.wait_id = $1
+               AND wait.expected_state_revision = $2
+               AND wait.kind = 'observed_condition'
+               AND wait.status = 'pending'
+               AND wait.detection_mode IN ('event', 'hybrid')
+               AND state_run.state_run_id = wait.state_run_id
+               AND state_run.status IN ('active', 'waiting', 'input_required')
+               AND job.job_id = wait.job_id
+               AND job.state_revision = wait.expected_state_revision
+               AND job.current_state = state_run.state_name
+               AND job.lifecycle_state NOT IN ('completed', 'cancelled')`,
+            [waitId.trim(), expectedStateRevision, checkAt],
+        );
+        return (result.rowCount ?? 0) === 1;
+    }
+
+    async recordJobWaitBoundary(
+        sessionId: string,
+        signalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        const normalizedSessionId = sessionId.trim();
+        const normalizedSignalKey = signalKey.trim();
+        if (!normalizedSessionId || !normalizedSignalKey) {
+            throw new Error("Recording a Job wait boundary requires sessionId and signalKey");
+        }
+        const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
+        const prerequisite = phase === "completed" ? "AND wait.wait_started_at IS NOT NULL" : "";
+        const signalDeliverySet = phase === "completed"
+            ? `,
+                         signal_status = CASE
+                             WHEN signal_status IN ('pending', 'delivering') THEN 'delivered'
+                             ELSE signal_status
+                         END,
+                         signal_delivered_at = CASE
+                             WHEN signal_status IN ('pending', 'delivering')
+                                 THEN COALESCE(signal_delivered_at, now())
+                             ELSE signal_delivered_at
+                         END,
+                         signal_lease_owner = NULL,
+                         signal_lease_expires_at = NULL,
+                         last_signal_error = NULL`
+            : "";
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".job_waits wait
+                 SET ${timestampColumn} = COALESCE(wait.${timestampColumn}, now()),
+                     session_id = $1,
+                     updated_at = now()
+                 FROM "${this.sql.schema}".job_state_runs state_run,
+                      "${this.sql.schema}".jobs job,
+                      "${this.sql.schema}".job_sessions session
+                 WHERE wait.state_run_id = state_run.state_run_id
+                   AND wait.job_id = job.job_id
+                   AND wait.state_run_id = session.state_run_id
+                   AND session.session_id = $1
+                   AND session.is_current
+                   AND wait.signal_key = $2
+                   AND wait.expected_state_revision = job.state_revision
+                   AND job.current_state = state_run.state_name
+                   ${prerequisite}
+                 RETURNING wait.external_operation_id`,
+                [normalizedSessionId, normalizedSignalKey],
+            );
+            if (!rows[0]) {
+                await client.query("COMMIT");
+                return false;
+            }
+            if (rows[0].external_operation_id) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_external_operations
+                     SET ${timestampColumn} = COALESCE(${timestampColumn}, now()),
+                         session_id = $1
+                         ${signalDeliverySet},
+                         updated_at = now()
+                     WHERE operation_id = $2`,
+                    [normalizedSessionId, rows[0].external_operation_id],
+                );
+            }
+            await client.query("COMMIT");
+            return true;
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
     async readJobSourceSession(
         currentSessionId: string,
         sourceSessionId: string,
@@ -3401,6 +4016,7 @@ export class PgSessionCatalog implements SessionCatalog {
         const provider = input.provider.trim().toLowerCase();
         const kind = input.kind.trim().toLowerCase();
         const operationKey = input.operationKey?.trim() || "default";
+        const detectionMode = input.detectionMode ?? "poll";
         const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
         if (!identifierPattern.test(provider)) {
             throw new Error("External operation provider must be a lowercase identifier");
@@ -3410,6 +4026,12 @@ export class PgSessionCatalog implements SessionCatalog {
         }
         if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(operationKey)) {
             throw new Error("External operation key contains unsupported characters");
+        }
+        if (!["poll", "event", "hybrid"].includes(detectionMode)) {
+            throw new Error("External operation detectionMode must be poll, event, or hybrid");
+        }
+        if (input.deadlineAt && !Number.isFinite(input.deadlineAt.getTime())) {
+            throw new Error("External operation deadlineAt must be valid");
         }
         const client = await this.pool.connect();
         try {
@@ -3429,7 +4051,10 @@ export class PgSessionCatalog implements SessionCatalog {
             if (!context.is_current || context.status !== "active") {
                 throw new Error("External operations require the active current Job state run");
             }
-            const ensureObservedConditionWait = async (operation: any): Promise<void> => {
+            const ensureObservedConditionWait = async (
+                operation: any,
+                rebindSession = false,
+            ): Promise<void> => {
                 const waitStatus = operation.status === "succeeded"
                     ? "satisfied"
                     : operation.status === "failed"
@@ -3441,23 +4066,32 @@ export class PgSessionCatalog implements SessionCatalog {
                          external_operation_id, wait_key, kind, status, detection_mode,
                          expected_state_revision, prompt, response_schema, responder_policy,
                          provider, target, predicate, latest_observation,
-                         satisfaction_evidence, next_check_at, satisfied_at
+                         satisfaction_evidence, signal_key, deadline_at, next_check_at, satisfied_at
                      ) VALUES (
-                         $1,$2,$3,$4,$5,$6,$7,'observed_condition',$8,'poll',
-                         $9,$10,'{}'::jsonb,'{}'::jsonb,$11,$12,$13,$14,$15,$16,$17
+                         $1,$2,$3,$4,$5,$6,$7,'observed_condition',$8,$9,
+                         $10,$11,'{}'::jsonb,'{}'::jsonb,$12,$13,$14,$15,$16,$17,$18,$19,$20
                      )
                      ON CONFLICT (state_run_id, wait_key) DO UPDATE
                      SET session_id = EXCLUDED.session_id,
                          external_operation_id = EXCLUDED.external_operation_id,
                          status = EXCLUDED.status,
+                         detection_mode = EXCLUDED.detection_mode,
                          provider = EXCLUDED.provider,
                          target = EXCLUDED.target,
                          predicate = EXCLUDED.predicate,
                          latest_observation = EXCLUDED.latest_observation,
                          satisfaction_evidence = EXCLUDED.satisfaction_evidence,
+                         signal_key = EXCLUDED.signal_key,
+                         deadline_at = EXCLUDED.deadline_at,
                          next_check_at = EXCLUDED.next_check_at,
+                         check_lease_owner = NULL,
+                         check_lease_expires_at = NULL,
+                         last_check_error = NULL,
+                         wait_started_at = NULL,
+                         wait_completed_at = NULL,
                          satisfied_at = EXCLUDED.satisfied_at,
-                         updated_at = now()`,
+                         updated_at = now()
+                     WHERE $21::boolean`,
                     [
                         randomUUID(),
                         context.job_id,
@@ -3467,6 +4101,7 @@ export class PgSessionCatalog implements SessionCatalog {
                         operation.operation_id,
                         `observed:${provider}:${kind}:${operationKey}`,
                         waitStatus,
+                        detectionMode,
                         Number(context.state_revision),
                         JSON.stringify({ provider, kind, operationKey }),
                         provider,
@@ -3478,8 +4113,17 @@ export class PgSessionCatalog implements SessionCatalog {
                         operation.evidence === null || operation.evidence === undefined
                             ? null
                             : JSON.stringify(jobWaitEvidence(operation.evidence)),
-                        waitStatus === "pending" ? operation.next_poll_at : null,
+                        operation.signal_key,
+                        input.deadlineAt ?? null,
+                        waitStatus === "pending"
+                            ? (
+                                input.deadlineAt && input.deadlineAt < operation.next_poll_at
+                                    ? input.deadlineAt
+                                    : operation.next_poll_at
+                            )
+                            : null,
                         waitStatus === "pending" ? null : operation.completed_at,
+                        rebindSession,
                     ],
                 );
             };
@@ -3522,7 +4166,7 @@ export class PgSessionCatalog implements SessionCatalog {
                          RETURNING *`,
                         [existingOperation.operation_id, input.sessionId],
                     );
-                    await ensureObservedConditionWait(rebound.rows[0]);
+                    await ensureObservedConditionWait(rebound.rows[0], true);
                     await client.query("COMMIT");
                     return rowToJobExternalOperation(rebound.rows[0]);
                 }
@@ -3586,23 +4230,7 @@ export class PgSessionCatalog implements SessionCatalog {
         signalKey: string,
         phase: "started" | "completed",
     ): Promise<boolean> {
-        const normalizedSignalKey = signalKey.trim();
-        if (!normalizedSignalKey) throw new Error("signalKey is required");
-        const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
-        const prerequisite = phase === "completed" ? "AND operation.wait_started_at IS NOT NULL" : "";
-        const result = await this.pool.query(
-            `UPDATE "${this.sql.schema}".job_external_operations operation
-             SET ${timestampColumn} = COALESCE(operation.${timestampColumn}, now()),
-                 session_id = $1,
-                 updated_at = now()
-             FROM "${this.sql.schema}".job_state_runs state_run
-             WHERE operation.state_run_id = state_run.state_run_id
-               AND state_run.session_id = $1
-               AND operation.signal_key = $2
-               ${prerequisite}`,
-            [sessionId, normalizedSignalKey],
-        );
-        return (result.rowCount ?? 0) === 1;
+        return this.recordJobWaitBoundary(sessionId, signalKey, phase);
     }
 
     async claimDueJobExternalOperations(
@@ -3613,14 +4241,32 @@ export class PgSessionCatalog implements SessionCatalog {
     ): Promise<JobExternalOperationRow[]> {
         const { rows } = await this.pool.query(
             `WITH due AS (
-                 SELECT operation_id
-                 FROM "${this.sql.schema}".job_external_operations
-                 WHERE provider = $1
-                   AND status = 'pending'
-                   AND next_poll_at <= now()
-                   AND (poll_lease_expires_at IS NULL OR poll_lease_expires_at <= now())
-                 ORDER BY next_poll_at, created_at
-                 FOR UPDATE SKIP LOCKED
+                 SELECT operation.operation_id
+                 FROM "${this.sql.schema}".job_external_operations operation
+                 JOIN "${this.sql.schema}".job_waits wait
+                   ON wait.external_operation_id = operation.operation_id
+                  AND wait.status = 'pending'
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                  AND state_run.status IN ('active', 'waiting', 'input_required')
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = operation.job_id
+                  AND job.state_revision = wait.expected_state_revision
+                  AND job.current_state = state_run.state_name
+                  AND job.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = operation.state_run_id
+                  AND session.session_id = operation.session_id
+                  AND session.is_current
+                 WHERE operation.provider = $1
+                   AND operation.status = 'pending'
+                   AND operation.next_poll_at <= now()
+                   AND (
+                       operation.poll_lease_expires_at IS NULL
+                       OR operation.poll_lease_expires_at <= now()
+                   )
+                 ORDER BY operation.next_poll_at, operation.created_at
+                 FOR UPDATE OF operation SKIP LOCKED
                  LIMIT $3
              )
              UPDATE "${this.sql.schema}".job_external_operations operation
@@ -3640,7 +4286,7 @@ export class PgSessionCatalog implements SessionCatalog {
     ): Promise<JobExternalOperationRow> {
         const { rows } = await this.pool.query(
             `WITH completed_operation AS (
-                 UPDATE "${this.sql.schema}".job_external_operations
+                 UPDATE "${this.sql.schema}".job_external_operations operation
                  SET status = $3,
                      result = $4,
                      evidence = $5,
@@ -3651,11 +4297,26 @@ export class PgSessionCatalog implements SessionCatalog {
                      signal_status = 'pending',
                      next_signal_at = now(),
                      updated_at = now()
-                 WHERE operation_id = $1
-                   AND poll_lease_owner = $2
-                   AND poll_lease_expires_at > now()
-                   AND status = 'pending'
-                 RETURNING *
+                 FROM "${this.sql.schema}".job_waits wait,
+                      "${this.sql.schema}".job_state_runs state_run,
+                      "${this.sql.schema}".jobs job,
+                      "${this.sql.schema}".job_sessions session
+                 WHERE operation.operation_id = $1
+                   AND operation.poll_lease_owner = $2
+                   AND operation.poll_lease_expires_at > now()
+                   AND operation.status = 'pending'
+                   AND wait.external_operation_id = operation.operation_id
+                   AND wait.status = 'pending'
+                   AND state_run.state_run_id = operation.state_run_id
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                   AND job.job_id = operation.job_id
+                   AND job.state_revision = wait.expected_state_revision
+                   AND job.current_state = state_run.state_name
+                   AND job.lifecycle_state NOT IN ('completed', 'cancelled')
+                   AND session.state_run_id = operation.state_run_id
+                   AND session.session_id = operation.session_id
+                   AND session.is_current
+                 RETURNING operation.*
              ), completed_wait AS (
                  UPDATE "${this.sql.schema}".job_waits wait
                  SET status = CASE WHEN operation.status = 'succeeded' THEN 'satisfied' ELSE 'failed' END,
@@ -3668,8 +4329,17 @@ export class PgSessionCatalog implements SessionCatalog {
                      next_check_at = NULL,
                      satisfied_at = operation.completed_at,
                      updated_at = now()
-                 FROM completed_operation operation
+                 FROM completed_operation operation,
+                      "${this.sql.schema}".job_state_runs state_run,
+                      "${this.sql.schema}".jobs job
                  WHERE wait.external_operation_id = operation.operation_id
+                   AND wait.status = 'pending'
+                   AND state_run.state_run_id = wait.state_run_id
+                   AND state_run.status IN ('active', 'waiting', 'input_required')
+                   AND job.job_id = wait.job_id
+                   AND job.state_revision = wait.expected_state_revision
+                   AND job.current_state = state_run.state_name
+                   AND job.lifecycle_state NOT IN ('completed', 'cancelled')
                  RETURNING wait.wait_id
              )
              SELECT * FROM completed_operation`,
@@ -3695,19 +4365,29 @@ export class PgSessionCatalog implements SessionCatalog {
             `WITH due AS (
                  SELECT operation.operation_id
                  FROM "${this.sql.schema}".job_external_operations operation
+                 JOIN "${this.sql.schema}".job_waits wait
+                   ON wait.external_operation_id = operation.operation_id
+                  AND wait.status IN ('satisfied', 'failed', 'timed_out')
+                  AND wait.wait_started_at IS NOT NULL
+                  AND wait.wait_completed_at IS NULL
+                 JOIN "${this.sql.schema}".job_state_runs state_run
+                   ON state_run.state_run_id = operation.state_run_id
+                  AND state_run.status IN ('waiting', 'input_required', 'active')
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = operation.job_id
+                  AND job.state_revision = wait.expected_state_revision
+                  AND job.current_state = state_run.state_name
+                  AND job.lifecycle_state NOT IN ('completed', 'cancelled')
+                 JOIN "${this.sql.schema}".job_sessions session
+                   ON session.state_run_id = operation.state_run_id
+                  AND session.session_id = operation.session_id
+                  AND session.is_current
                  WHERE operation.status IN ('succeeded', 'failed')
                    AND operation.signal_status IN ('pending', 'delivering')
                    AND operation.next_signal_at <= now()
                    AND (
                        (
                            operation.signal_status = 'pending'
-                           AND (
-                               operation.signal_attempts > 0
-                               OR (
-                                   operation.wait_started_at IS NOT NULL
-                                   AND operation.wait_completed_at IS NULL
-                               )
-                           )
                        )
                        OR (
                            operation.signal_status = 'delivering'
@@ -3742,14 +4422,16 @@ export class PgSessionCatalog implements SessionCatalog {
         const result = await this.pool.query(
             `UPDATE "${this.sql.schema}".job_external_operations
              SET signal_status = 'delivered',
-                 signal_delivered_at = now(),
+                 signal_delivered_at = COALESCE(signal_delivered_at, now()),
                  signal_lease_owner = NULL,
                  signal_lease_expires_at = NULL,
                  last_signal_error = NULL,
                  updated_at = now()
              WHERE operation_id = $1
-               AND signal_status = 'delivering'
-               AND signal_lease_owner = $2`,
+               AND (
+                   (signal_status = 'delivering' AND signal_lease_owner = $2)
+                   OR signal_status = 'delivered'
+               )`,
             [operationId, workerId],
         );
         if ((result.rowCount ?? 0) !== 1) throw new Error("External operation signal lease is stale");
@@ -3926,7 +4608,11 @@ export class PgSessionCatalog implements SessionCatalog {
             );
             await client.query(
                 `UPDATE "${this.sql.schema}".job_waits
-                 SET status = 'cancelled', updated_at = now()
+                 SET status = 'cancelled',
+                     next_check_at = NULL,
+                     check_lease_owner = NULL,
+                     check_lease_expires_at = NULL,
+                     updated_at = now()
                  WHERE state_run_id = $1
                    AND status = 'pending'`,
                 [context.state_run_id],
@@ -6806,6 +7492,7 @@ function rowToJobWait(row: any): JobWaitRow {
         definitionId: row.definition_id,
         sessionId: row.session_id,
         externalOperationId: row.external_operation_id ?? null,
+        signalKey: row.signal_key ?? null,
         waitKey: row.wait_key,
         kind: row.kind,
         status: row.status,
@@ -6827,6 +7514,14 @@ function rowToJobWait(row: any): JobWaitRow {
         satisfiedBy: row.satisfied_by ?? null,
         deadlineAt: row.deadline_at ?? null,
         nextCheckAt: row.next_check_at ?? null,
+        checkAttempts: Number(row.check_attempts ?? 0),
+        consecutiveCheckFailures: Number(row.consecutive_check_failures ?? 0),
+        lastCheckedAt: row.last_checked_at ?? null,
+        checkLeaseOwner: row.check_lease_owner ?? null,
+        checkLeaseExpiresAt: row.check_lease_expires_at ?? null,
+        lastCheckError: row.last_check_error ?? null,
+        waitStartedAt: row.wait_started_at ?? null,
+        waitCompletedAt: row.wait_completed_at ?? null,
         satisfiedAt: row.satisfied_at ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,

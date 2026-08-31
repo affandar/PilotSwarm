@@ -220,11 +220,14 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
         },
     });
     const tool = tools.find((entry) => entry.name === "start_external_operation");
+    const before = Date.now();
     const result = JSON.parse(await tool.handler(
         {
             provider: "mock",
             kind: "pvs",
             operationKey: "validation",
+            detectionMode: "hybrid",
+            deadlineSeconds: 60,
             request: { delayMs: 25, result: { passed: true } },
         },
         { durableSessionId: "session-1" },
@@ -235,6 +238,8 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
     assert.equal(calls[0].provider, "mock");
     assert.equal(calls[0].kind, "pvs");
     assert.equal(calls[0].operationKey, "validation");
+    assert.equal(calls[0].detectionMode, "hybrid");
+    assert.ok(calls[0].deadlineAt.getTime() >= before + 60_000);
     assert.deepEqual(calls[0].request, { delayMs: 25, result: { passed: true } });
     assert.ok(calls[0].nextPollAt instanceof Date);
     assert.deepEqual(result, {

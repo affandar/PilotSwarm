@@ -5,7 +5,8 @@ export * from "./controller.js";
 
 import { hostname } from "node:os";
 import {
-    MockJobExternalOperationProducer,
+    JobWaitScheduler,
+    MockJobWaitObserver,
     PgSessionCatalog,
     PilotSwarmClient,
     PilotSwarmManagementClient,
@@ -33,6 +34,9 @@ export async function runJobGenerator(): Promise<void> {
     const mockOperationsEnabled = ["1", "true", "yes", "on"].includes(
         (process.env.JOBGEN_MOCK_EXTERNAL_OPERATIONS || "").trim().toLowerCase(),
     );
+    const waitSchedulerEnabled = !["0", "false", "no", "off"].includes(
+        (process.env.JOBGEN_WAIT_SCHEDULER_ENABLED || "true").trim().toLowerCase(),
+    );
     const workerId = process.env.JOBGEN_WORKER_ID || `${hostname()}-${process.pid}`;
     const pollIntervalMs = Number(process.env.JOBGEN_POLL_INTERVAL_MS || 15_000);
     const claimLimit = Number(process.env.JOBGEN_CLAIM_LIMIT || 10);
@@ -57,8 +61,8 @@ export async function runJobGenerator(): Promise<void> {
         console.info("[job-generator] session induction client ready");
     }
     let managementClient: PilotSwarmManagementClient | undefined;
-    let mockOperationProducer: MockJobExternalOperationProducer | undefined;
-    if (mockOperationsEnabled) {
+    let waitScheduler: JobWaitScheduler | undefined;
+    if (waitSchedulerEnabled) {
         managementClient = new PilotSwarmManagementClient({
             store: databaseUrl,
             cmsSchema,
@@ -67,13 +71,23 @@ export async function runJobGenerator(): Promise<void> {
             aadDbUser,
         });
         await managementClient.start();
-        mockOperationProducer = new MockJobExternalOperationProducer({
+        waitScheduler = new JobWaitScheduler({
             store: catalog,
             signalSender: managementClient,
-            workerId: `${workerId}-mock-operations`,
-            pollIntervalMs: Number(process.env.JOBGEN_MOCK_OPERATION_POLL_INTERVAL_MS || 500),
+            observers: mockOperationsEnabled ? [new MockJobWaitObserver()] : [],
+            workerId: `${workerId}-job-waits`,
+            pollIntervalMs: Number(process.env.JOBGEN_WAIT_POLL_INTERVAL_MS || 500),
+            defaultCheckIntervalMs: Number(
+                process.env.JOBGEN_WAIT_DEFAULT_CHECK_INTERVAL_MS || 5_000,
+            ),
+            retryDelayMs: Number(process.env.JOBGEN_WAIT_RETRY_DELAY_MS || 1_000),
+            maxRetryDelayMs: Number(process.env.JOBGEN_WAIT_MAX_RETRY_DELAY_MS || 60_000),
+            claimLimit: Number(process.env.JOBGEN_WAIT_CLAIM_LIMIT || claimLimit),
+            leaseSeconds: Number(process.env.JOBGEN_WAIT_LEASE_SECONDS || 30),
         });
-        console.info("[job-generator] deterministic mock external-operation producer ready");
+        console.info(
+            `[job-generator] JobWait scheduler ready observers=${mockOperationsEnabled ? "mock" : "none"}`,
+        );
     }
 
     const evaluators = createEvaluatorsFromEnv();
@@ -85,6 +99,7 @@ export async function runJobGenerator(): Promise<void> {
         `[job-generator] starting mode=${runOnce ? "once" : "continuous"}`
         + ` worker=${workerId} pollMs=${pollIntervalMs} claimLimit=${claimLimit}`
         + ` leaseSeconds=${leaseSeconds} induceSessions=${induceSessions}`
+        + ` waitScheduler=${waitSchedulerEnabled}`
         + ` mockExternalOperations=${mockOperationsEnabled}`
         + ` providers=${providerTypes.join(",") || "none"}`,
     );
@@ -114,9 +129,9 @@ export async function runJobGenerator(): Promise<void> {
     try {
         if (runOnce) {
             await controller.runOnce();
-            await mockOperationProducer?.runOnce();
+            await waitScheduler?.runOnce();
         } else {
-            producerRun = mockOperationProducer?.run(abort.signal);
+            producerRun = waitScheduler?.run(abort.signal);
             await controller.run(abort.signal);
         }
     } finally {

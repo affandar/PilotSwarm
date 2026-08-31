@@ -480,8 +480,8 @@ worker, and resumes only through the corresponding durable boundary:
 - `start_external_operation` and `system_wait` persist an
   observed-condition wait whose result and evidence are owned by the state
   run.
-- The durable scheduler makes a timer wait runnable after its time condition
-  is reached.
+- The existing Duroxide durable timer remains the wake-up engine for `wait`;
+  its start and completion are projected into a timer `JobWait`.
 
 Detection mode is separate from wait kind. A response normally arrives by
 direct submission. An observed condition may be detected by polling, a
@@ -570,8 +570,9 @@ it is not itself a wait type. A subsequent transition from
 wait for PR completion.
 
 A timer wait stores its time condition and deadline in durable state. The
-scheduler, rather than a provider observer or submitted response, makes the
-state run runnable when that condition is reached.
+existing Duroxide timer, rather than a provider observer or submitted
+response, makes the session runnable when that condition is reached; the
+boundary is projected into the canonical JobWait model.
 
 #### Current implementation status
 
@@ -586,11 +587,23 @@ observable. A process crash or ambiguous queue acknowledgement can still leave
 a satisfied response in `pending`; a future scheduler/outbox recovery pass must
 redrive that state before the platform can claim exactly-once response delivery.
 
-The same model reserves `observed_condition` and `timer` kinds so portal and API
-consumers use one taxonomy. The deterministic `mock` external-operation
-provider remains the only implemented observed-condition producer today.
-Provider-specific Azure DevOps observers and the durable due-work scheduler are
-the next implementation slices.
+Observed-condition waits are claimed from the canonical `JobWait` model with
+`SKIP LOCKED` leases. Each check durably records its attempt count, provider
+cursor, latest observation, retry error, next-check time, and optional
+deadline. A check may remain pending, satisfy the predicate, fail terminally,
+or time out. Retryable observer failures use bounded backoff, expired leases
+are reclaimable after process loss, and state-revision fencing prevents a late
+check from reviving a cancelled or superseded wait. Provider events can
+accelerate `event` or `hybrid` waits without replacing polling reconciliation.
+
+The deterministic `mock` observer is the only provider implementation today.
+Provider-specific Azure DevOps observers and response-delivery recovery remain
+separate implementation slices.
+
+Timer waits are now projected into the same model for catalog and portal
+observability. Duroxide remains authoritative for durable timer scheduling and
+session resumption; the JobWait scheduler does not create a second timer
+engine.
 
 ### 7. Complete a state
 
@@ -997,13 +1010,15 @@ and generates its operation ID, provider correlation ID, and exact signal key;
 the agent cannot supply or invent those identities. The agent then calls
 `system_wait` with that returned key.
 
-An external producer claims due operations, persists their result and evidence,
-and delivers the matching signal through `sendSystemSignal`. Signal delivery
-has its own durable lease, attempt count, retry time, and completion marker, so
-producer restarts provide at-least-once delivery without duplicating the
-external operation. Authoritative wait-started and wait-completed timestamps
-live on the operation row; session events remain observational. Delivery waits
-until the exact generated signal key is durably registered as parked.
+The JobWait scheduler claims due observed-condition waits, invokes the
+registered provider observer, and persists current observations, cursors,
+results, and evidence. Signal delivery remains on the linked external-operation
+outbox and has its own durable lease, attempt count, retry time, and completion
+marker, so scheduler restarts provide at-least-once delivery without
+duplicating the external operation. Authoritative wait-started and
+wait-completed timestamps live on the JobWait row and are mirrored to the
+operation row for compatibility. Delivery waits until the exact generated
+signal key is durably registered as parked.
 Only the exact key thaws the wait; unrelated messages and mismatched signals do
 not satisfy it. No worker is pinned while waiting for the external system.
 
@@ -1034,10 +1049,13 @@ pretending that a real external service was called.
 
 ### Timer waits
 
-The scheduler persists the wake time or deadline and makes the state run
-runnable when the time condition is reached. A process does not sleep or
-retain a worker while waiting. Repeated scheduler checks are idempotent and
-cannot resume the same state revision twice.
+Duroxide persists the timer and resumes the session when it fires. The runtime
+projects timer start and completion into the canonical JobWait model so the
+catalog and portal expose the same wait taxonomy without introducing a second
+timer scheduler. Interrupted timers cancel their current projection and create
+a fresh timer wait if the orchestration resumes the remaining duration. A
+process does not sleep or retain a worker while waiting, and timer completion
+remains revision-fenced through the current JobSession.
 
 ### Duplicate tool calls
 
@@ -1179,9 +1197,13 @@ accepted range is 0 through 300 seconds. The previous
 `--human-wait-seconds` and `--system-wait-seconds` names remain accepted as
 hidden compatibility aliases.
 
-Set `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` on the already-running JobGenerator
-controller to enable the deterministic external-operation producer. Optional
-`JOBGEN_MOCK_OPERATION_POLL_INTERVAL_MS` controls its poll interval.
+The JobWait scheduler runs with the JobGenerator by default. Set
+`JOBGEN_WAIT_SCHEDULER_ENABLED=false` to disable it. Optional tuning variables
+are `JOBGEN_WAIT_POLL_INTERVAL_MS`, `JOBGEN_WAIT_DEFAULT_CHECK_INTERVAL_MS`,
+`JOBGEN_WAIT_RETRY_DELAY_MS`, `JOBGEN_WAIT_MAX_RETRY_DELAY_MS`,
+`JOBGEN_WAIT_CLAIM_LIMIT`, and `JOBGEN_WAIT_LEASE_SECONDS`.
+Set `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` to register the deterministic mock
+observer used by lifecycle demos.
 
 ## Implementation sequence
 

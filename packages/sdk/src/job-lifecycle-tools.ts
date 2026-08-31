@@ -183,6 +183,17 @@ export function createJobLifecycleTools(
                         type: "string",
                         description: "Optional stable key when this state needs more than one operation of the same kind.",
                     },
+                    detectionMode: {
+                        type: "string",
+                        enum: ["poll", "event", "hybrid"],
+                        description:
+                            "How the condition is detected. Hybrid events accelerate a check while polling guarantees reconciliation.",
+                    },
+                    deadlineSeconds: {
+                        type: "number",
+                        description:
+                            "Optional deadline in seconds. If the condition is still pending at the deadline, the wait times out.",
+                    },
                     request: {
                         type: "object",
                         description:
@@ -197,6 +208,8 @@ export function createJobLifecycleTools(
                     provider: string;
                     kind: string;
                     operationKey?: string;
+                    detectionMode?: "poll" | "event" | "hybrid";
+                    deadlineSeconds?: number;
                     request?: Record<string, unknown>;
                 },
                 invocation: any,
@@ -216,6 +229,13 @@ export function createJobLifecycleTools(
                 if (outcome !== undefined && outcome !== "succeeded" && outcome !== "failed") {
                     throw new Error("Mock external operation outcome must be succeeded or failed");
                 }
+                const deadlineSeconds = params.deadlineSeconds;
+                if (deadlineSeconds !== undefined
+                    && (!Number.isFinite(deadlineSeconds)
+                        || deadlineSeconds <= 0
+                        || deadlineSeconds > 604_800)) {
+                    throw new Error("External operation deadlineSeconds must be between 1 and 604800");
+                }
                 const operation = await catalog.startJobExternalOperation({
                     sessionId,
                     provider: params.provider,
@@ -223,6 +243,10 @@ export function createJobLifecycleTools(
                     operationKey: params.operationKey,
                     request: params.request,
                     nextPollAt: new Date(Date.now() + rawDelay),
+                    detectionMode: params.detectionMode,
+                    deadlineAt: deadlineSeconds === undefined
+                        ? undefined
+                        : new Date(Date.now() + deadlineSeconds * 1_000),
                 });
                 return JSON.stringify({
                     operationId: operation.operationId,

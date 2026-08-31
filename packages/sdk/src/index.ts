@@ -93,10 +93,18 @@ export type { DuroxideSchemaMigrationOptions, DuroxideSchemaMigrationResult } fr
 export { PgSessionCatalog, PgSessionCatalogProvider, computeCacheHitRatio } from "./cms.js";
 export { normalizeUserRole } from "./cms.js";
 export type { JobSourceSessionContext } from "./cms.js";
-export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobStateRunStatus, JobWaitKind, JobWaitStatus, JobWaitDetectionMode, JobExternalOperationStatus, JobExternalOperationSignalStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobStateOutcome, JobStateRunRow, JobJournalEntryRow, JobWaitResponder, JobWaitRow, JobExternalOperationRow, JobCleanupPlan, JobCleanupResult, StartJobResponseWaitInput, AcceptJobResponseInput, StartJobExternalOperationInput, CompleteJobExternalOperationInput, PrepareJobStateRunInput, CompleteJobStateInput, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
+export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpdates, SessionEvent, PlacementViewer, SessionPlacementResult, TopEventEmitterRow, InsertTurnMetricInput, CompleteTurnWritebackInput, TurnMetricRow, HourlyTokenBucketRow, TokensByModelRow, SessionMetricSummary, SessionMetricSummaryUpsert, FleetStats, UserStats, UserStatsBucket, UserStatsModelBucket, UserStatsOwnerKind, SessionTreeStats, SkillKind, SkillUsageRow, SessionTreeSkillUsage, FleetSkillUsageRow, FleetSkillUsage, RetrievalSurface, RetrievalOperation, RetrievalUsageRow, SessionTreeRetrievalUsage, FleetRetrievalUsageRow, FleetRetrievalUsage, GraphNodeUsageKind, GraphNodeUsageRow, FleetGraphNodeUsageRow, FleetGraphNodeUsage, GraphEdgeSearchUsageRow, UserProfile, UserPrincipal, UserRoleInfo, UserRoleValue, WorkerTimelineEntryKind, WorkerTimelineEntry, JobGeneratorSourceType, JobGeneratorOperationalState, JobLifecycleState, JobSessionStatus, JobStateRunStatus, JobWaitKind, JobWaitStatus, JobWaitDetectionMode, JobWaitCheckDisposition, JobExternalOperationStatus, JobExternalOperationSignalStatus, JobGeneratorRow, JobGeneratorDefinitionRow, JobGeneratorCycleRow, JobRow, JobSessionRow, JobStateOutcome, JobStateRunRow, JobJournalEntryRow, JobWaitResponder, JobWaitRow, JobExternalOperationRow, JobCleanupPlan, JobCleanupResult, StartJobResponseWaitInput, AcceptJobResponseInput, StartJobExternalOperationInput, StartJobTimerWaitInput, CompleteJobWaitCheckInput, CompleteJobExternalOperationInput, PrepareJobStateRunInput, CompleteJobStateInput, JobDiscovery, ReconciledJob, CreateJobGeneratorInput } from "./cms.js";
 export { createJobLifecycleTools } from "./job-lifecycle-tools.js";
 export {
+    JobWaitScheduler,
+    MockJobWaitObserver,
     MockJobExternalOperationProducer,
+    type JobWaitSchedulerStore,
+    type JobWaitSignalSender,
+    type JobWaitObservation,
+    type JobWaitObserver,
+    type JobWaitSchedulerOptions,
+    type JobWaitSchedulerRunResult,
     type JobExternalOperationProducerStore,
     type JobExternalOperationSignalSender,
     type MockJobExternalOperationProducerOptions,
