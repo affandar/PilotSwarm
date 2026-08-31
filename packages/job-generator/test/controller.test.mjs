@@ -198,15 +198,57 @@ test("repeated reconciliation creates one Job and one initial session", async ()
     assert.deepEqual(store.cycles.map((cycle) => cycle.createdCount), [1, 0]);
 });
 
+test("a bootstrapped session is deleted when the post-send attachment fence fails", async () => {
+    const store = new FakeStore();
+    const attachJobSession = store.attachJobSession.bind(store);
+    let attachCalls = 0;
+    store.attachJobSession = async (...args) => {
+        attachCalls += 1;
+        if (attachCalls === 2) {
+            throw new Error("JobGenerator cycle is no longer active");
+        }
+        return attachJobSession(...args);
+    };
+    const createdSessions = [];
+    const deletedSessions = [];
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", evaluator()]]),
+        sessionFactory: {
+            async createInitialSession({ association, onSessionCreated }) {
+                createdSessions.push(association.sessionId);
+                await onSessionCreated();
+            },
+            async deleteInitialSession(sessionId, reason) {
+                deletedSessions.push({ sessionId, reason });
+            },
+        },
+        workerId: "worker",
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await controller.runOnce();
+
+    assert.deepEqual(createdSessions, ["session-1"]);
+    assert.equal(attachCalls, 2);
+    assert.deepEqual(deletedSessions, [{
+        sessionId: "session-1",
+        reason: "Initial session fence failed: JobGenerator cycle is no longer active",
+    }]);
+});
+
 test("induced sessions require the authenticated JobGenerator owner affinity", async () => {
     const creates = [];
     const sends = [];
+    const lifecycleOrder = [];
     const factory = new PilotSwarmInitialSessionFactory({
         async createSession(config) {
             creates.push(config);
+            lifecycleOrder.push("created");
             return {
                 async send(prompt, options) {
                     sends.push({ prompt, options });
+                    lifecycleOrder.push("sent");
                 },
             };
         },
@@ -256,6 +298,9 @@ test("induced sessions require the authenticated JobGenerator owner affinity", a
         definition: ownedDefinition,
         job,
         association,
+        onSessionCreated: async () => {
+            lifecycleOrder.push("attached");
+        },
     });
 
     assert.equal(creates.length, 1);
@@ -265,6 +310,7 @@ test("induced sessions require the authenticated JobGenerator owner affinity", a
     assert.equal(creates[0].gitRef, "main");
     assert.equal("userAffinity" in creates[0], false);
     assert.equal(sends.length, 1);
+    assert.deepEqual(lifecycleOrder, ["created", "attached", "sent"]);
 });
 
 test("materialization-only mode does not reserve sessions when explicitly selected", async () => {

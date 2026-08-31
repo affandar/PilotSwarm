@@ -18,6 +18,22 @@ function makeTransport({ currentUser } = {}) {
             calls.push({ name: "createSessionGroup", input });
             return { groupId: "g1", ...input };
         },
+        getJobGenerator: async (generatorId, includeDeleted) => {
+            calls.push({ name: "getJobGenerator", generatorId, includeDeleted });
+            return { generatorId };
+        },
+        getJob: async (jobId, includeDeleted) => {
+            calls.push({ name: "getJob", jobId, includeDeleted });
+            return { jobId };
+        },
+        deleteJobGenerator: async (generatorId, actor, isAdmin) => {
+            calls.push({ name: "deleteJobGenerator", generatorId, actor, isAdmin });
+            return { aggregateType: "generator", aggregateId: generatorId };
+        },
+        deleteJob: async (jobId, actor, isAdmin) => {
+            calls.push({ name: "deleteJob", jobId, actor, isAdmin });
+            return { aggregateType: "job", aggregateId: jobId };
+        },
     };
     return { transport, calls };
 }
@@ -59,4 +75,21 @@ test("createSessionGroup stamps the current user as owner when the key is omitte
 
     await transport.createSessionGroup({ title: "Anon", owner: null });
     assert.equal(calls[2].input.owner, null, "an explicit null owner (portal runtime, anonymous) passes through");
+});
+
+test("Job cleanup transport forwards deleted reads, actors, and admin scope", async () => {
+    const { transport, calls } = makeTransport();
+    const actor = { provider: "dev", subject: "alice" };
+
+    await transport.getJobGenerator("generator-1", true);
+    await transport.getJob("job-1", true);
+    await transport.deleteJobGenerator("generator-1", actor, true);
+    await transport.deleteJob("job-1", actor, false);
+
+    assert.deepEqual(calls, [
+        { name: "getJobGenerator", generatorId: "generator-1", includeDeleted: true },
+        { name: "getJob", jobId: "job-1", includeDeleted: true },
+        { name: "deleteJobGenerator", generatorId: "generator-1", actor, isAdmin: true },
+        { name: "deleteJob", jobId: "job-1", actor, isAdmin: false },
+    ]);
 });

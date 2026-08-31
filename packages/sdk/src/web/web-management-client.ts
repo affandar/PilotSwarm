@@ -98,6 +98,10 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getJobGenerator", { generatorId });
     }
 
+    async deleteJobGenerator(generatorId: string): Promise<import("../cms.js").JobCleanupResult> {
+        return this._api.call("deleteJobGenerator", { generatorId });
+    }
+
     async getJobGeneratorDefinition(definitionId: string): Promise<JobGeneratorDefinitionRow> {
         return this._api.call("getJobGeneratorDefinition", { definitionId });
     }
@@ -140,6 +144,10 @@ export class WebPilotSwarmManagementClient {
 
     async getJob(jobId: string): Promise<JobRow | null> {
         return this._api.call("getJob", { jobId });
+    }
+
+    async deleteJob(jobId: string): Promise<import("../cms.js").JobCleanupResult> {
+        return this._api.call("deleteJob", { jobId });
     }
 
     async listJobSessions(jobId: string): Promise<JobSessionRow[]> {

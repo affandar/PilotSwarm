@@ -440,6 +440,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_routing_contract",
             sql: migration_0053_session_routing_contract(schema),
         },
+        {
+            version: "0054",
+            name: "job_cleanup_tombstones",
+            sql: migration_0054_job_cleanup_tombstones(schema),
+        },
     ];
 }
 
@@ -15386,5 +15391,56 @@ ALTER TABLE ${s}.sessions
 ALTER TABLE ${s}.sessions
     ADD CONSTRAINT sessions_routing_config_object
     CHECK (routing_config IS NULL OR jsonb_typeof(routing_config) = 'object');
+`;
+}
+
+// ─── Migration 0054: owner-managed logical Job cleanup ──────────
+
+function migration_0054_job_cleanup_tombstones(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.job_generators
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.jobs
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ;
+
+ALTER TABLE ${s}.job_generators
+    DROP CONSTRAINT IF EXISTS job_generators_owner_provider_owner_subject_name_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_generators_active_owner_name
+    ON ${s}.job_generators(owner_provider, owner_subject, name)
+    WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS ${s}.job_cleanup_tombstones (
+    aggregate_type       TEXT NOT NULL CHECK (aggregate_type IN ('generator', 'job')),
+    aggregate_id         TEXT NOT NULL,
+    generator_id         TEXT NOT NULL,
+    job_id               TEXT,
+    owner_provider       TEXT NOT NULL,
+    owner_subject        TEXT NOT NULL,
+    actor_provider       TEXT NOT NULL,
+    actor_subject        TEXT NOT NULL,
+    actor_display_name   TEXT,
+    deleted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cleanup_status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (cleanup_status IN ('pending', 'completed', 'failed')),
+    cleanup_error        TEXT,
+    session_ids          JSONB NOT NULL DEFAULT '[]'::jsonb
+                         CHECK (jsonb_typeof(session_ids) = 'array'),
+    final_outcome        JSONB NOT NULL DEFAULT '{}'::jsonb
+                         CHECK (jsonb_typeof(final_outcome) = 'object'),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (aggregate_type, aggregate_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_owner
+    ON ${s}.job_cleanup_tombstones(owner_provider, owner_subject, deleted_at DESC);
+
+CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status
+    ON ${s}.job_cleanup_tombstones(cleanup_status, updated_at);
 `;
 }

@@ -808,6 +808,7 @@ export class PortalRuntime {
     }
 
     async _authorizeJobGeneratorRead(method, safeParams, authContext, { owner, isAdmin }) {
+        const includeDeleted = method === "deleteJobGenerator" || method === "deleteJob";
         let generatorId = safeParams.generatorId ? String(safeParams.generatorId) : null;
         if (!generatorId && safeParams.definitionId) {
             const definition = await this.transport.getJobGeneratorDefinition(
@@ -816,13 +817,19 @@ export class PortalRuntime {
             generatorId = definition?.generatorId ?? null;
         }
         if (!generatorId && safeParams.jobId) {
-            const job = await this.transport.getJob(String(safeParams.jobId)).catch(() => null);
+            const job = await this.transport.getJob(
+                String(safeParams.jobId),
+                includeDeleted,
+            ).catch(() => null);
             generatorId = job?.generatorId ?? null;
         }
         if (!generatorId) {
             throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
         }
-        const generator = await this.transport.getJobGenerator(generatorId).catch(() => null);
+        const generator = await this.transport.getJobGenerator(
+            generatorId,
+            includeDeleted,
+        ).catch(() => null);
         if (!generator) {
             throw Object.assign(new Error("JobGenerator not found."), { code: "NOT_FOUND", status: 404 });
         }
@@ -1051,6 +1058,16 @@ export class PortalRuntime {
                 }
                 return generator;
             }
+            case "deleteJobGenerator": {
+                const actor = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.deleteJobGenerator(
+                    safeParams.generatorId,
+                    actor,
+                    isAdmin,
+                );
+            }
             case "listJobGeneratorDefinitions":
                 return this.transport.listJobGeneratorDefinitions(safeParams.generatorId);
             case "publishJobGeneratorDefinition":
@@ -1076,6 +1093,16 @@ export class PortalRuntime {
                     throw Object.assign(new Error("Job not found."), { code: "NOT_FOUND", status: 404 });
                 }
                 return job;
+            }
+            case "deleteJob": {
+                const actor = owner ?? (isAdmin
+                    ? { provider: "anonymous", subject: "anonymous", email: null, displayName: "Anonymous" }
+                    : requireUserPrincipal(authContext, method));
+                return this.transport.deleteJob(
+                    safeParams.jobId,
+                    actor,
+                    isAdmin,
+                );
             }
             case "listJobSessions":
                 return this.transport.listJobSessions(safeParams.jobId);

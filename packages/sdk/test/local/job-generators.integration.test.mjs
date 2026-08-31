@@ -90,3 +90,136 @@ test("Postgres JobGenerator reconciliation is exactly-once and retains session h
         await catalog.close();
     }
 });
+
+test("Postgres Job cleanup is owner-scoped, idempotent, and fenced from stale work", {
+    skip: !catalogUrl,
+    timeout: 120_000,
+}, async () => {
+    const schema = `jobcleanup_${randomUUID().replaceAll("-", "")}`;
+    const catalog = await PgSessionCatalog.create(catalogUrl, schema, {
+        useManagedIdentity,
+        aadUser,
+    });
+    const owner = { provider: "test", subject: "owner", displayName: "Owner" };
+    try {
+        await catalog.initialize();
+        await catalog.createSession("tree-root");
+        await catalog.createSession("tree-child", { parentSessionId: "tree-root" });
+        await catalog.beginSessionTreeDeletion("tree-root");
+        assert.equal(await catalog.isSessionActive("tree-root"), false);
+        assert.deepEqual(
+            await catalog.getDescendantSessionIdsIncludingDeleted("tree-root"),
+            ["tree-child"],
+        );
+        await assert.rejects(
+            catalog.createSession("tree-late-child", { parentSessionId: "tree-root" }),
+            /fenced for deletion/,
+        );
+
+        const { generator } = await catalog.createJobGenerator({
+            name: "cleanup",
+            owner,
+            cadenceSeconds: 60,
+            definition: {
+                sourceType: "kusto",
+                sourceConfig: { query: "SampleRecords | take 10" },
+            },
+        });
+        await catalog.claimDueJobGenerators("worker-1", 1, 60);
+        const { cycle } = await catalog.beginJobGeneratorCycle(generator.generatorId, "worker-1");
+        const jobs = await catalog.reconcileJobGeneratorDiscoveries(cycle.cycleId, [
+            { key: "delete-me", payload: { id: 1 } },
+            { key: "keep-me", payload: { id: 2 } },
+        ]);
+        const deletedJob = jobs.find((job) => job.jobKey === "delete-me");
+        assert.ok(deletedJob);
+        await catalog.reserveJobSession(deletedJob.jobId, cycle.cycleId, "worker-1", "session-delete");
+
+        await assert.rejects(
+            catalog.beginJobCleanup({
+                jobId: deletedJob.jobId,
+                actor: { provider: "test", subject: "other" },
+            }),
+            (error) => error.code === "NOT_FOUND",
+        );
+
+        const jobPlan = await catalog.beginJobCleanup({ jobId: deletedJob.jobId, actor: owner });
+        assert.equal(jobPlan.alreadyDeleted, false);
+        assert.deepEqual(jobPlan.sessionIds, ["session-delete"]);
+        assert.deepEqual(
+            await catalog.recordJobCleanupSessions(
+                "job",
+                deletedJob.jobId,
+                ["session-delete", "session-child"],
+            ),
+            ["session-child", "session-delete"],
+        );
+        assert.deepEqual(
+            (await catalog.listJobGeneratorJobs(generator.generatorId)).map((job) => job.jobKey),
+            ["keep-me"],
+        );
+        assert.equal((await catalog.getJob(deletedJob.jobId, true)).lifecycleState, "cancelled");
+        await assert.rejects(
+            catalog.replaceJobSession(deletedJob.jobId, "session-stale"),
+            /Job is terminal/,
+        );
+        assert.deepEqual(
+            await catalog.reconcileJobGeneratorDiscoveries(cycle.cycleId, [
+                { key: "delete-me", payload: { id: 1, stale: true } },
+            ]),
+            [],
+        );
+        await catalog.completeJobCleanup("job", deletedJob.jobId, {
+            status: "completed",
+            deletedSessionCount: 1,
+        });
+
+        const repeatedJobPlan = await catalog.beginJobCleanup({ jobId: deletedJob.jobId, actor: owner });
+        assert.equal(repeatedJobPlan.alreadyDeleted, true);
+        assert.deepEqual(repeatedJobPlan.sessionIds, ["session-child", "session-delete"]);
+        await catalog.completeJobCleanup("job", deletedJob.jobId, {
+            status: "failed",
+            error: "late concurrent failure",
+        });
+        const tombstone = await catalog.pool.query(
+            `SELECT cleanup_status, cleanup_error
+             FROM "${schema}".job_cleanup_tombstones
+             WHERE aggregate_type = 'job' AND aggregate_id = $1`,
+            [deletedJob.jobId],
+        );
+        assert.equal(tombstone.rows[0].cleanup_status, "completed");
+        assert.equal(tombstone.rows[0].cleanup_error, null);
+
+        const generatorPlan = await catalog.beginJobGeneratorCleanup({
+            generatorId: generator.generatorId,
+            actor: owner,
+        });
+        assert.equal(generatorPlan.alreadyDeleted, false);
+        assert.equal((await catalog.listJobGenerators()).length, 0);
+        assert.equal((await catalog.listJobGeneratorJobs(generator.generatorId)).length, 0);
+        assert.equal((await catalog.claimDueJobGenerators("worker-2", 1, 60)).length, 0);
+        await assert.rejects(
+            catalog.registerJobGenerator({
+                generatorId: generator.generatorId,
+                name: "resurrected",
+                owner,
+                cadenceSeconds: 60,
+            }),
+            /JOB_GENERATOR_DELETED/,
+        );
+
+        const replacement = await catalog.createJobGenerator({
+            name: "cleanup",
+            owner,
+            cadenceSeconds: 60,
+            definition: {
+                sourceType: "kusto",
+                sourceConfig: { query: "SampleRecords | take 10" },
+            },
+        });
+        assert.notEqual(replacement.generator.generatorId, generator.generatorId);
+    } finally {
+        await catalog.pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+        await catalog.close();
+    }
+});

@@ -172,6 +172,10 @@ export class HttpApiTransport {
         return this.api.call("getJobGenerator", { generatorId });
     }
 
+    async deleteJobGenerator(generatorId) {
+        return this.api.call("deleteJobGenerator", { generatorId });
+    }
+
     async listJobGeneratorDefinitions(generatorId) {
         return this.api.call("listJobGeneratorDefinitions", { generatorId });
     }
@@ -194,6 +198,10 @@ export class HttpApiTransport {
 
     async getJob(jobId) {
         return this.api.call("getJob", { jobId });
+    }
+
+    async deleteJob(jobId) {
+        return this.api.call("deleteJob", { jobId });
     }
 
     async listJobSessions(jobId) {

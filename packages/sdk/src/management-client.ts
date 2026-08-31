@@ -82,6 +82,8 @@ import type {
     JobSessionRow,
     JobStateRunRow,
     JobJournalEntryRow,
+    JobCleanupPlan,
+    JobCleanupResult,
 } from "./cms.js";
 import type {
     FactStore, EnhancedFactStore, FactsStatsRow, FactsTombstoneStats, FactRecord, StoreFactInput,
@@ -850,7 +852,19 @@ export class PilotSwarmManagementClient {
 
         try {
             await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
-        } catch {}
+        } catch (error) {
+            if (!isIgnorableCancelError(error)) throw error;
+        }
+        try {
+            const info = await this._duroxideClient.getInstanceInfo(`session-${sessionId}`);
+            if (info) {
+                throw new Error(
+                    `SESSION_ORCHESTRATION_DELETE_INCOMPLETE: session-${sessionId} still exists (${info.status || "Unknown"})`,
+                );
+            }
+        } catch (error) {
+            if (!isIgnorableCancelError(error)) throw error;
+        }
     }
 
     private _getSystemAgentPlans(): SystemAgentSessionPlan[] {
@@ -930,9 +944,9 @@ export class PilotSwarmManagementClient {
         return this._catalog!.listJobGenerators(owner);
     }
 
-    async getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null> {
+    async getJobGenerator(generatorId: string, includeDeleted = false): Promise<JobGeneratorRow | null> {
         this._ensureStarted();
-        return this._catalog!.getJobGenerator(generatorId);
+        return this._catalog!.getJobGenerator(generatorId, includeDeleted);
     }
 
     async getJobGeneratorDefinition(definitionId: string): Promise<JobGeneratorDefinitionRow> {
@@ -970,9 +984,190 @@ export class PilotSwarmManagementClient {
         return this._catalog!.listJobGeneratorCycles(generatorId, limit);
     }
 
-    async getJob(jobId: string): Promise<JobRow | null> {
+    async getJob(jobId: string, includeDeleted = false): Promise<JobRow | null> {
         this._ensureStarted();
-        return this._catalog!.getJob(jobId);
+        return this._catalog!.getJob(jobId, includeDeleted);
+    }
+
+    async deleteJobGenerator(
+        generatorId: string,
+        actor: SessionOwnerInfo,
+        isAdmin = false,
+    ): Promise<JobCleanupResult> {
+        this._ensureStarted();
+        const plan = await this._catalog!.beginJobGeneratorCleanup({
+            generatorId,
+            actor,
+            isAdmin,
+        });
+        return this._executeJobCleanup(plan);
+    }
+
+    async deleteJob(
+        jobId: string,
+        actor: SessionOwnerInfo,
+        isAdmin = false,
+    ): Promise<JobCleanupResult> {
+        this._ensureStarted();
+        const plan = await this._catalog!.beginJobCleanup({
+            jobId,
+            actor,
+            isAdmin,
+        });
+        return this._executeJobCleanup(plan);
+    }
+
+    private async _executeJobCleanup(plan: JobCleanupPlan): Promise<JobCleanupResult> {
+        const allSessionIds = new Set(plan.sessionIds);
+        const failures: string[] = [];
+        const deletionFailures: string[] = [];
+        for (const sessionId of plan.sessionIds) {
+            try {
+                await this._catalog!.beginSessionTreeDeletion(sessionId);
+            } catch (error) {
+                failures.push(
+                    `fence ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
+        if (failures.length > 0) {
+            const error = failures.join("; ");
+            await this._catalog!.completeJobCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error,
+                deletedSessionCount: 0,
+            });
+            throw Object.assign(new Error(`JOB_CLEANUP_INCOMPLETE: ${error}`), {
+                code: "JOB_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        const pendingSessionIds = [...plan.sessionIds];
+        const enumeratedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const sessionId = pendingSessionIds.shift()!;
+            if (enumeratedSessionIds.has(sessionId)) continue;
+            enumeratedSessionIds.add(sessionId);
+            try {
+                const descendants = await this._catalog!.getDescendantSessionIdsIncludingDeleted(sessionId);
+                for (const descendantId of descendants) {
+                    if (!allSessionIds.has(descendantId)) {
+                        allSessionIds.add(descendantId);
+                        pendingSessionIds.push(descendantId);
+                    }
+                }
+            } catch (error) {
+                failures.push(
+                    `enumerate ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
+        try {
+            const persistedSessionIds = await this._catalog!.recordJobCleanupSessions(
+                plan.aggregateType,
+                plan.aggregateId,
+                [...allSessionIds],
+            );
+            for (const sessionId of persistedSessionIds) allSessionIds.add(sessionId);
+        } catch (error) {
+            const message = `persist session closure: ${error instanceof Error ? error.message : String(error)}`;
+            await this._catalog!.completeJobCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error: message,
+                deletedSessionCount: 0,
+            });
+            throw Object.assign(new Error(`JOB_CLEANUP_INCOMPLETE: ${message}`), {
+                code: "JOB_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        const reason = plan.aggregateType === "generator"
+            ? `JobGenerator ${plan.aggregateId} deleted`
+            : `Job ${plan.aggregateId} deleted`;
+        const rootSessionIds = new Set(plan.sessionIds);
+        const deletionOrder = [
+            ...[...allSessionIds].filter((sessionId) => !rootSessionIds.has(sessionId)),
+            ...plan.sessionIds,
+        ];
+        for (const sessionId of deletionOrder) {
+            try {
+                await this.deleteSession(sessionId, reason);
+            } catch (error) {
+                deletionFailures.push(
+                    `delete ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+            try {
+                await this._duroxideClient.deleteInstance(`session-${sessionId}`, true);
+            } catch (error) {
+                if (!isIgnorableCancelError(error)) {
+                    deletionFailures.push(
+                        `delete orchestration ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                }
+            }
+        }
+
+        const remaining: string[] = [];
+        const remainingOrchestrations: string[] = [];
+        let verifiedDeletedCount = 0;
+        for (const sessionId of allSessionIds) {
+            try {
+                if (await this._catalog!.getSession(sessionId)) remaining.push(sessionId);
+                else verifiedDeletedCount += 1;
+            } catch (error) {
+                failures.push(
+                    `verify ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+            try {
+                const info = await this._duroxideClient.getInstanceInfo(`session-${sessionId}`);
+                if (info) {
+                    remainingOrchestrations.push(`${sessionId} (${info.status || "Unknown"})`);
+                }
+            } catch (error) {
+                if (!isIgnorableCancelError(error)) {
+                    failures.push(
+                        `verify orchestration ${sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                }
+            }
+        }
+        if (remaining.length > 0) {
+            failures.push(`sessions still active: ${remaining.join(", ")}`);
+        }
+        if (remainingOrchestrations.length > 0) {
+            failures.push(`orchestrations still present: ${remainingOrchestrations.join(", ")}`);
+        }
+        if (failures.length > 0 && deletionFailures.length > 0) {
+            failures.push(...deletionFailures);
+        }
+
+        if (failures.length > 0) {
+            const error = failures.join("; ");
+            await this._catalog!.completeJobCleanup(plan.aggregateType, plan.aggregateId, {
+                status: "failed",
+                error,
+                deletedSessionCount: verifiedDeletedCount,
+            });
+            throw Object.assign(new Error(`JOB_CLEANUP_INCOMPLETE: ${error}`), {
+                code: "JOB_CLEANUP_INCOMPLETE",
+                status: 409,
+            });
+        }
+
+        await this._catalog!.completeJobCleanup(plan.aggregateType, plan.aggregateId, {
+            status: "completed",
+            deletedSessionCount: allSessionIds.size,
+        });
+        return {
+            aggregateType: plan.aggregateType,
+            aggregateId: plan.aggregateId,
+            alreadyDeleted: plan.alreadyDeleted,
+            deletedSessionCount: allSessionIds.size,
+        };
     }
 
     async listJobSessions(jobId: string): Promise<JobSessionRow[]> {
@@ -1575,14 +1770,15 @@ export class PilotSwarmManagementClient {
     async deleteSession(sessionId: string, reason?: string): Promise<void> {
         this._ensureStarted();
         const session = await this.getSession(sessionId);
-        if (!session) return;
-        if (session.isSystem) {
+        if (session?.isSystem) {
             throw new Error("Cannot delete system session");
         }
+        await this._catalog!.beginSessionTreeDeletion(sessionId);
         const deleteReason = reason ?? "Deleted by management client";
 
         if (
-            session.status === "pending"
+            !session
+            || session.status === "pending"
             || session.orchestrationStatus === "Unknown"
             || session.orchestrationStatus == null
             || session.status === "completed"
@@ -1595,22 +1791,23 @@ export class PilotSwarmManagementClient {
             // here. Enumerate BEFORE deleting the target — the descendant
             // walk skips soft-deleted rows, so deleting the target first
             // would orphan its subtree.
-            let descendants: string[] = [];
-            try {
-                descendants = await this._catalog!.getDescendantSessionIds(sessionId);
-            } catch (err) {
-                console.error(`[PilotSwarmManagementClient] descendant enumeration failed for ${sessionId}:`, err);
-            }
+            const descendants = await this._catalog!.getDescendantSessionIdsIncludingDeleted(sessionId);
+            const failures: Error[] = [];
             for (const descendantId of descendants) {
                 try {
                     await this._forceDeleteSession(descendantId, `Ancestor ${sessionId} deleted: ${deleteReason}`);
                 } catch (err) {
-                    // Non-fatal (e.g. a system/service descendant): keep
-                    // going so one refusal doesn't strand its siblings.
-                    console.error(`[PilotSwarmManagementClient] failed to delete descendant ${descendantId} of ${sessionId}:`, err);
+                    failures.push(err instanceof Error ? err : new Error(String(err)));
                 }
             }
-            await this._forceDeleteSession(sessionId, deleteReason);
+            try {
+                await this._forceDeleteSession(sessionId, deleteReason);
+            } catch (err) {
+                failures.push(err instanceof Error ? err : new Error(String(err)));
+            }
+            if (failures.length > 0) {
+                throw new AggregateError(failures, `Session ${sessionId} deletion was incomplete`);
+            }
             return;
         }
 
@@ -1625,6 +1822,7 @@ export class PilotSwarmManagementClient {
             (current) => current == null,
             SESSION_COMMAND_SETTLE_TIMEOUT_MS,
         );
+        await this.deleteSession(sessionId, deleteReason);
     }
 
     /**

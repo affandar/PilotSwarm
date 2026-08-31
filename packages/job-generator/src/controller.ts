@@ -41,7 +41,9 @@ export interface InitialSessionFactory {
         definition: JobGeneratorDefinitionRow;
         job: JobRow;
         association: JobSessionRow;
+        onSessionCreated?: () => Promise<void>;
     }): Promise<void>;
+    deleteInitialSession(sessionId: string, reason: string): Promise<void>;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -219,6 +221,7 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
         definition: JobGeneratorDefinitionRow;
         job: JobRow;
         association: JobSessionRow;
+        onSessionCreated?: () => Promise<void>;
     }): Promise<void> {
         const lifecycle = lifecycleConfig(input.definition);
         const sessionConfig = object(lifecycle.session);
@@ -292,10 +295,15 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             owner: input.generator.owner,
             requireOwnerAffinity: true,
         });
+        await input.onSessionCreated?.();
         await session.send(prompt, {
             bootstrap: true,
             clientMessageIds: [`job-generator:${input.job.jobId}:state:${input.job.stateRevision}`],
         });
+    }
+
+    async deleteInitialSession(sessionId: string): Promise<void> {
+        await this.client.deleteSession(sessionId);
     }
 }
 
@@ -408,6 +416,8 @@ export class JobGeneratorController {
                     const current = history.find((entry) => entry.isCurrent);
                     if (current?.status === "unacked" || current?.status === "active") continue;
                     let association: JobSessionRow | undefined;
+                    let sessionCreationAttempted = false;
+                    let sessionAttached = false;
                     try {
                         association = current ?? await this.store.reserveJobSession(
                             job.jobId,
@@ -419,30 +429,72 @@ export class JobGeneratorController {
                         const jobDefinition = currentJob.definitionId === definition.definitionId
                             ? definition
                             : await this.store.getJobGeneratorDefinition(currentJob.definitionId);
+                        sessionCreationAttempted = true;
                         await this.sessionFactory!.createInitialSession({
                             generator,
                             definition: jobDefinition,
                             job: currentJob,
                             association,
+                            onSessionCreated: async () => {
+                                await this.store.attachJobSession(
+                                    job.jobId,
+                                    association!.sessionId,
+                                    cycle.cycleId,
+                                    this.workerId,
+                                );
+                                sessionAttached = true;
+                            },
                         });
+                        // Re-check the durable fence after bootstrap. If cleanup
+                        // raced the send, this fails and compensation removes the
+                        // newly started session/orchestration.
                         await this.store.attachJobSession(
                             job.jobId,
                             association.sessionId,
                             cycle.cycleId,
                             this.workerId,
                         );
+                        sessionAttached = true;
                     } catch (error) {
                         const failure = error instanceof Error ? error : new Error(String(error));
-                        if (association) {
-                            await this.store.failJobSession(
-                                job.jobId,
-                                association.sessionId,
-                                cycle.cycleId,
-                                this.workerId,
-                                failure.message,
-                            );
+                        const cleanupFailures: Error[] = [];
+                        if (association && sessionCreationAttempted) {
+                            try {
+                                await this.sessionFactory!.deleteInitialSession(
+                                    association.sessionId,
+                                    `Initial session fence failed: ${failure.message}`,
+                                );
+                            } catch (cleanupError) {
+                                cleanupFailures.push(
+                                    cleanupError instanceof Error
+                                        ? cleanupError
+                                        : new Error(String(cleanupError)),
+                                );
+                            }
                         }
-                        sessionErrors.push(failure);
+                        if (association) {
+                            try {
+                                await this.store.failJobSession(
+                                    job.jobId,
+                                    association.sessionId,
+                                    cycle.cycleId,
+                                    this.workerId,
+                                    failure.message,
+                                );
+                            } catch (storeError) {
+                                cleanupFailures.push(
+                                    storeError instanceof Error
+                                        ? storeError
+                                        : new Error(String(storeError)),
+                                );
+                            }
+                        }
+                        sessionErrors.push(cleanupFailures.length > 0
+                            ? new AggregateError(
+                                [failure, ...cleanupFailures],
+                                `Initial session failed and cleanup was incomplete: ${failure.message}`,
+                            )
+                            : failure);
                     }
                 }
             }

@@ -90,18 +90,27 @@ The owner-scoped read surface is:
 | `GET` | `/api/v1/job-generator-definitions/{id}` | One definition |
 | `GET` | `/api/v1/job-generators/{id}/jobs` | Durable generated Jobs |
 | `GET` | `/api/v1/job-generators/{id}/cycles` | Materialization history |
+| `DELETE` | `/api/v1/job-generators/{id}` | Logically delete the generator and all induced Jobs |
 | `GET` | `/api/v1/jobs/{id}` | One durable Job |
 | `GET` | `/api/v1/jobs/{id}/sessions` | Ordered PilotSwarm session history |
+| `DELETE` | `/api/v1/jobs/{id}` | Logically delete one Job without affecting its siblings |
 
 Generator, definition, Job, and session-history reads require generator
 ownership or admin role. An unauthorized point lookup returns `404`, avoiding
 an existence oracle across users.
 
+Deletion is owner-authorized and idempotent. A normal user may delete only a
+generator they own or an individual Job induced by that generator; an
+administrator may delete across owners. Deleted aggregates disappear from
+normal list and point-read APIs. The service still resolves them internally
+during a repeated delete so an interrupted cleanup can be retried by the
+original owner without exposing the tombstone through the read surface.
+
 ## Persistence model
 
 | Table | Responsibility | Key invariants |
 |---|---|---|
-| `job_generators` | Mutable registration, owner, cadence, state, watermark, counters, lease | Unique owner/name; active definition belongs to the same generator |
+| `job_generators` | Mutable registration, owner, cadence, state, watermark, counters, lease | Unique active owner/name; active definition belongs to the same generator |
 | `job_generator_definitions` | Immutable source, lifecycle, affinities, validation, guardrails | Unique `(generator_id, version)`; update trigger rejects mutation |
 | `job_generator_cycles` | One claimed evaluation/reconciliation pass | At most one running cycle per generator |
 | `jobs` | Durable source-native work identity and lifecycle | Unique `(generator_id, job_key)`; pinned `definition_id` |
@@ -109,6 +118,7 @@ an existence oracle across users.
 | `job_state_runs` | One revision-fenced execution of a lifecycle state | Unique `(job_id, state_revision)`; one durable session association |
 | `job_external_operations` | Infrastructure-owned external work, authoritative wait state, and signal delivery | Idempotent per state run/provider/kind/key; generated correlation and signal keys; rebinds across session replacement |
 | `job_journal_entries` | Ordered state-transition handoffs | Unique state run and idempotency key; append-only sequence per Job |
+| `job_cleanup_tombstones` | Durable owner, actor, complete session closure, progress, failure, and outcome record for logical deletion | One tombstone per generator or Job; `pending`, `completed`, or retryable `failed` cleanup |
 
 Registration is one database transaction: the generator references definition
 version 1 through a deferred same-generator foreign key, so either both rows
@@ -142,6 +152,36 @@ PilotSwarm session, so `job_sessions` durably records the concrete
 `job_id`/`session_id` relationship. Its current association transitions from
 `reserved` to `unacked` after the turn is queued, then to `active` when a worker
 enters `runTurn`.
+
+## Owner-managed logical cleanup
+
+The database transaction is the stop-new-work boundary. Deleting a
+JobGenerator disables it, releases its lease, fails any running controller
+cycle, and marks every induced Job deleted and cancelled. Deleting one Job
+applies the same fencing only to that Job, leaving sibling Jobs available.
+Both paths fail runnable state runs, release state leases, fail pending
+external operations, block undelivered signals, and end current JobSession
+associations. `JobStateRunStatus` has no cancelled value, so deletion records
+runnable state runs as `failed` with `Job deleted` as the error.
+
+Before enumerating a JobSession tree, cleanup marks it with a durable deletion
+fence. Session sends and child creation check that fence, preventing new work
+from entering the tree while its transitive deletion closure is captured.
+
+PilotSwarm then terminates or deletes every known root session and descendant.
+The complete transitive session-ID closure is persisted in the tombstone
+before deletion starts, so retries still target descendants hidden behind
+already soft-deleted intermediate sessions.
+The API reports success only after the CMS no longer returns any of those
+sessions. A partial session or orchestration failure records a `failed`
+tombstone and returns an explicit cleanup error; retrying the same DELETE
+continues from the durable tombstone. Stale controller work cannot recreate a
+deleted generator, materialize more Jobs, complete a deleted cycle, or reserve
+another JobSession.
+
+This MVP does not physically purge generator, definition, Job, lifecycle,
+journal, session-association, or tombstone rows. Retention policy and physical
+purge are separate administrative concerns.
 
 ## Direct SDK registration
 

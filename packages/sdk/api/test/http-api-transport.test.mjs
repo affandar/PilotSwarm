@@ -69,6 +69,32 @@ test("JobGenerator transport registers, publishes, and lists through generated R
             jsonResponse({ ok: true, result: [created.generator] }),
         ],
     });
+
+    test("JobGenerator transport deletes generators and individual Jobs through resource routes", async () => {
+        const result = {
+            aggregateType: "generator",
+            aggregateId: "g1",
+            alreadyDeleted: false,
+            deletedSessionCount: 2,
+        };
+        const { transport, calls } = createTransport({
+            responses: [
+                jsonResponse({ ok: true, result }),
+                jsonResponse({
+                    ok: true,
+                    result: { ...result, aggregateType: "job", aggregateId: "j1", deletedSessionCount: 1 },
+                }),
+            ],
+        });
+
+        assert.deepEqual(await transport.deleteJobGenerator("g1"), result);
+        assert.equal(new URL(calls[0].url).pathname, `${API_PREFIX}/job-generators/g1`);
+        assert.equal(calls[0].options.method, "DELETE");
+
+        assert.equal((await transport.deleteJob("j1")).aggregateType, "job");
+        assert.equal(new URL(calls[1].url).pathname, `${API_PREFIX}/jobs/j1`);
+        assert.equal(calls[1].options.method, "DELETE");
+    });
     const input = {
         name: "HelloWorld",
         cadenceSeconds: 300,

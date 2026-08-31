@@ -34,6 +34,8 @@ const admin = {
 
 function createRuntime() {
     const calls = [];
+    const deletedGeneratorIds = new Set();
+    const deletedJobIds = new Set();
     const generators = new Map([
         ["g-alice", {
             generatorId: "g-alice",
@@ -57,8 +59,11 @@ function createRuntime() {
         async listJobGenerators(owner) {
             calls.push({ method: "listJobGenerators", owner });
             return [...generators.values()].filter((generator) => (
-                !owner
-                || (generator.owner.provider === owner.provider && generator.owner.subject === owner.subject)
+                !deletedGeneratorIds.has(generator.generatorId)
+                && (
+                    !owner
+                    || (generator.owner.provider === owner.provider && generator.owner.subject === owner.subject)
+                )
             ));
         },
         async createJobGenerator(input) {
@@ -77,7 +82,8 @@ function createRuntime() {
             calls.push({ method: "publishJobGeneratorDefinition", input });
             return { definitionId: "d-alice-v2", generatorId: input.generatorId, version: 2, ...input };
         },
-        async getJobGenerator(generatorId) {
+        async getJobGenerator(generatorId, includeDeleted = false) {
+            if (deletedGeneratorIds.has(generatorId) && !includeDeleted) return null;
             return generators.get(generatorId) ?? null;
         },
         async getJobGeneratorDefinition(definitionId) {
@@ -85,7 +91,8 @@ function createRuntime() {
             if (!generatorId) throw new Error("not found");
             return { definitionId, generatorId, version: 1 };
         },
-        async getJob(jobId) {
+        async getJob(jobId, includeDeleted = false) {
+            if (deletedJobIds.has(jobId) && !includeDeleted) return null;
             if (jobId === "j-alice") return { jobId, generatorId: "g-alice" };
             if (jobId === "j-bob") return { jobId, generatorId: "g-bob" };
             return null;
@@ -99,6 +106,28 @@ function createRuntime() {
         async getWorkerTimeline(workerNodeId, options) {
             calls.push({ method: "getWorkerTimeline", workerNodeId, options });
             return [{ timelineId: "event:1", workerNodeId }];
+        },
+        async deleteJobGenerator(generatorId, actor, isAdmin) {
+            calls.push({ method: "deleteJobGenerator", generatorId, actor, isAdmin });
+            const alreadyDeleted = deletedGeneratorIds.has(generatorId);
+            deletedGeneratorIds.add(generatorId);
+            return {
+                aggregateType: "generator",
+                aggregateId: generatorId,
+                alreadyDeleted,
+                deletedSessionCount: 0,
+            };
+        },
+        async deleteJob(jobId, actor, isAdmin) {
+            calls.push({ method: "deleteJob", jobId, actor, isAdmin });
+            const alreadyDeleted = deletedJobIds.has(jobId);
+            deletedJobIds.add(jobId);
+            return {
+                aggregateType: "job",
+                aggregateId: jobId,
+                alreadyDeleted,
+                deletedSessionCount: 0,
+            };
         },
         async recordAuthzAudit(entry) { calls.push({ method: "audit", entry }); },
     };
@@ -304,4 +333,82 @@ test("JobGenerator registration rejects malformed definition contracts", async (
         }, alice),
         (error) => error.code === "INVALID_REQUEST",
     );
+});
+
+test("owners can delete JobGenerators idempotently while cross-owner callers see not found", async () => {
+    const { runtime, calls } = createRuntime();
+
+    const first = await runtime.call("deleteJobGenerator", { generatorId: "g-alice" }, alice);
+    assert.equal(first.aggregateType, "generator");
+    assert.equal(first.alreadyDeleted, false);
+
+    const second = await runtime.call("deleteJobGenerator", { generatorId: "g-alice" }, alice);
+    assert.equal(second.alreadyDeleted, true);
+
+    await assert.rejects(
+        runtime.call("deleteJobGenerator", { generatorId: "g-bob" }, alice),
+        (error) => error.code === "NOT_FOUND",
+    );
+    await assert.rejects(
+        runtime.call("deleteJobGenerator", { generatorId: "g-alice" }, bob),
+        (error) => error.code === "NOT_FOUND",
+    );
+
+    const deletes = calls.filter((call) => call.method === "deleteJobGenerator");
+    assert.equal(deletes.length, 2);
+    assert.deepEqual(deletes[0], {
+        method: "deleteJobGenerator",
+        generatorId: "g-alice",
+        actor: alice.principal,
+        isAdmin: false,
+    });
+});
+
+test("owners can delete individual Jobs while administrators can delete across owners", async () => {
+    const { runtime, calls } = createRuntime();
+
+    const ownerResult = await runtime.call("deleteJob", { jobId: "j-alice" }, alice);
+    assert.equal(ownerResult.aggregateType, "job");
+    assert.equal(ownerResult.alreadyDeleted, false);
+
+    await assert.rejects(
+        runtime.call("deleteJob", { jobId: "j-bob" }, alice),
+        (error) => error.code === "NOT_FOUND",
+    );
+
+    const adminResult = await runtime.call("deleteJob", { jobId: "j-bob" }, admin);
+    assert.equal(adminResult.aggregateId, "j-bob");
+    assert.deepEqual(calls.filter((call) => call.method === "deleteJob"), [
+        {
+            method: "deleteJob",
+            jobId: "j-alice",
+            actor: alice.principal,
+            isAdmin: false,
+        },
+        {
+            method: "deleteJob",
+            jobId: "j-bob",
+            actor: admin.principal,
+            isAdmin: true,
+        },
+    ]);
+});
+
+test("trusted anonymous deployments use a synthetic cleanup actor", async () => {
+    const { runtime, calls } = createRuntime();
+    const anonymous = {
+        principal: null,
+        authorization: { allowed: true, role: "anonymous", reason: "no-auth", matchedGroups: [] },
+    };
+
+    await runtime.call("deleteJobGenerator", { generatorId: "g-alice" }, anonymous);
+
+    const deletion = calls.find((call) => call.method === "deleteJobGenerator");
+    assert.deepEqual(deletion.actor, {
+        provider: "anonymous",
+        subject: "anonymous",
+        email: null,
+        displayName: "Anonymous",
+    });
+    assert.equal(deletion.isAdmin, true);
 });

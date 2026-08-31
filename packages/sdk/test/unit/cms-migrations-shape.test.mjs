@@ -89,3 +89,23 @@ test("0053: sessions persist an immutable routing contract", () => {
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS routing_config JSONB/);
     assert.match(migration.sql, /jsonb_typeof\(routing_config\) = 'object'/);
 });
+
+test("0054: Jobs use logical deletion with durable cleanup tombstones", () => {
+    const migration = migrations.find((m) => m.version === "0054");
+    assert.ok(migration, "migration 0054 must be registered");
+    assert.equal(migration.name, "job_cleanup_tombstones");
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.job_generators\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.jobs\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /ALTER TABLE "shape_check"\.sessions\s+ADD COLUMN IF NOT EXISTS deletion_requested_at TIMESTAMPTZ/i);
+    assert.match(migration.sql, /DROP CONSTRAINT IF EXISTS job_generators_owner_provider_owner_subject_name_key/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_job_generators_active_owner_name/i);
+    assert.match(migration.sql, /WHERE deleted_at IS NULL/i);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.job_cleanup_tombstones/i);
+    assert.match(migration.sql, /aggregate_type\s+TEXT NOT NULL CHECK \(aggregate_type IN \('generator', 'job'\)\)/i);
+    assert.match(migration.sql, /cleanup_status\s+TEXT NOT NULL DEFAULT 'pending'/i);
+    assert.match(migration.sql, /cleanup_status IN \('pending', 'completed', 'failed'\)/i);
+    assert.match(migration.sql, /session_ids\s+JSONB NOT NULL DEFAULT '\[\]'::jsonb/i);
+    assert.match(migration.sql, /jsonb_typeof\(session_ids\) = 'array'/i);
+    assert.match(migration.sql, /PRIMARY KEY \(aggregate_type, aggregate_id\)/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status/i);
+});

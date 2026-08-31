@@ -1100,8 +1100,12 @@ export class NodeSdkTransport {
         return this.mgmt.listJobGenerators(owner);
     }
 
-    async getJobGenerator(generatorId) {
-        return this.mgmt.getJobGenerator(generatorId);
+    async getJobGenerator(generatorId, includeDeleted = false) {
+        return this.mgmt.getJobGenerator(generatorId, includeDeleted);
+    }
+
+    async deleteJobGenerator(generatorId, actor, isAdmin = false) {
+        return this.mgmt.deleteJobGenerator(generatorId, actor, isAdmin);
     }
 
     async getJobGeneratorDefinition(definitionId) {
@@ -1124,8 +1128,12 @@ export class NodeSdkTransport {
         return this.mgmt.listJobGeneratorCycles(generatorId, limit);
     }
 
-    async getJob(jobId) {
-        return this.mgmt.getJob(jobId);
+    async getJob(jobId, includeDeleted = false) {
+        return this.mgmt.getJob(jobId, includeDeleted);
+    }
+
+    async deleteJob(jobId, actor, isAdmin = false) {
+        return this.mgmt.deleteJob(jobId, actor, isAdmin);
     }
 
     async listJobSessions(jobId) {

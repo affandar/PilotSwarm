@@ -91,6 +91,9 @@ test("JobGenerator operations use resource-shaped REST paths and bodies", () => 
 
     const jobs = buildOperationRequest("listJobGeneratorJobs", { generatorId: "g/1" });
     assert.equal(jobs.path, `${API_PREFIX}/job-generators/g%2F1/jobs`);
+    const deleteGenerator = buildOperationRequest("deleteJobGenerator", { generatorId: "g/1" });
+    assert.equal(deleteGenerator.method, "DELETE");
+    assert.equal(deleteGenerator.path, `${API_PREFIX}/job-generators/g%2F1`);
 
     const cycles = buildOperationRequest("listJobGeneratorCycles", { generatorId: "g1", limit: 25 });
     assert.equal(cycles.query.get("limit"), "25");
@@ -101,6 +104,9 @@ test("JobGenerator operations use resource-shaped REST paths and bodies", () => 
     assert.equal(stateRuns.path, `${API_PREFIX}/jobs/job-1/state-runs`);
     const journal = buildOperationRequest("listJobJournal", { jobId: "job-1" });
     assert.equal(journal.path, `${API_PREFIX}/jobs/job-1/journal`);
+    const deleteJob = buildOperationRequest("deleteJob", { jobId: "job/1" });
+    assert.equal(deleteJob.method, "DELETE");
+    assert.equal(deleteJob.path, `${API_PREFIX}/jobs/job%2F1`);
 });
 
 test("json query params round-trip through encode + coerce", () => {

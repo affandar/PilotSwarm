@@ -6556,6 +6556,8 @@ function JobGeneratorPane({
     loading,
     loadError,
     onCreateGenerator,
+    onDeleteGenerator,
+    onDeleteJob,
 }) {
     const viewState = useControllerSelector(controller, (state) => ({
         focused: state.ui.focusRegion === "sessions",
@@ -6564,6 +6566,7 @@ function JobGeneratorPane({
     const [expandedJobs, setExpandedJobs] = React.useState(() => new Set());
     const [selected, setSelected] = React.useState({ kind: "none", generatorId: null });
     const [createOpen, setCreateOpen] = React.useState(false);
+    const [cleanup, setCleanup] = React.useState({ pendingKey: null, error: "" });
     const [timeline, setTimeline] = React.useState({
         transitionId: null,
         loading: false,
@@ -6732,6 +6735,57 @@ function JobGeneratorPane({
             : selectedGenerator
                 ? `${selectedGenerator.status} · owner-affined to ${selectedGenerator.ownerLabel} · definition v${selectedGenerator.definitionVersion} · ${selectedGenerator.definition?.sourceType || "preview source"} · ${selectedGenerator.jobs.length} job${selectedGenerator.jobs.length === 1 ? "" : "s"}`
                 : "";
+    const cleanupTarget = selected.kind === "generator" && selectedGenerator
+        ? {
+            kind: "generator",
+            key: `generator:${selectedGenerator.id}`,
+            label: selectedGenerator.name,
+            id: selectedGenerator.id,
+        }
+        : selected.kind === "job" && selectedJob
+            ? {
+                kind: "job",
+                key: `job:${selectedJob.id}`,
+                label: selectedJob.label,
+                id: selectedJob.id,
+            }
+            : null;
+    const confirmCleanup = async () => {
+        if (!cleanupTarget || cleanup.pendingKey) return;
+        const noun = cleanupTarget.kind === "generator" ? "JobGenerator" : "Job";
+        const scope = cleanupTarget.kind === "generator"
+            ? "This logically deletes the generator and all Jobs it induced, cancels active work, and removes them from normal views."
+            : "This logically deletes only this Job, cancels its active work, and removes it from normal views.";
+        if (!window.confirm(
+            `Delete ${noun} "${cleanupTarget.label}"?\n\n${scope} Historical records are retained for audit and retry.`,
+        )) return;
+
+        setCleanup({ pendingKey: cleanupTarget.key, error: "" });
+        try {
+            if (cleanupTarget.kind === "generator") {
+                await onDeleteGenerator(cleanupTarget.id);
+                setExpandedGenerators((current) => {
+                    const next = new Set(current);
+                    next.delete(cleanupTarget.id);
+                    return next;
+                });
+            } else {
+                await onDeleteJob(cleanupTarget.id);
+                setExpandedJobs((current) => {
+                    const next = new Set(current);
+                    next.delete(cleanupTarget.id);
+                    return next;
+                });
+            }
+            setSelected({ kind: "none", generatorId: null });
+            setCleanup({ pendingKey: null, error: "" });
+        } catch (error) {
+            setCleanup({
+                pendingKey: null,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    };
 
     const actions = React.createElement(IconButton, {
         className: "ps-mini-button",
@@ -6889,6 +6943,23 @@ function JobGeneratorPane({
                     : selectedJob
                     ? React.createElement("span", null,
                         "Expand the Job and select a state run to inspect its durable transition timeline.")
+                    : null,
+                cleanupTarget
+                    ? React.createElement("div", { className: "ps-job-generator-detail-actions" },
+                        React.createElement("button", {
+                            type: "button",
+                            className: "ps-mini-button is-danger",
+                            onClick: confirmCleanup,
+                            disabled: Boolean(cleanup.pendingKey),
+                        }, cleanup.pendingKey === cleanupTarget.key
+                            ? "Deleting..."
+                            : `Delete ${cleanupTarget.kind === "generator" ? "JobGenerator" : "Job"}`))
+                    : null,
+                cleanup.error
+                    ? React.createElement("div", {
+                        className: "ps-job-generator-cleanup-error",
+                        role: "alert",
+                    }, cleanup.error)
                     : null)
             : null),
         createOpen
@@ -6965,6 +7036,16 @@ function WorkIndexPane({
         if (!created) throw new Error("JobGenerator was created but could not be reloaded.");
         return created;
     }, [controller, refreshJobGenerators]);
+    const deleteJobGenerator = React.useCallback(async (generatorId) => {
+        const result = await controller.transport.deleteJobGenerator(generatorId);
+        await refreshJobGenerators();
+        return result;
+    }, [controller, refreshJobGenerators]);
+    const deleteJob = React.useCallback(async (jobId) => {
+        const result = await controller.transport.deleteJob(jobId);
+        await refreshJobGenerators();
+        return result;
+    }, [controller, refreshJobGenerators]);
     const panelId = "ps-work-index-panel";
     const title = React.createElement(WorkIndexTabs, {
         activeTab,
@@ -6981,6 +7062,8 @@ function WorkIndexPane({
             loading: jobGeneratorsLoading,
             loadError: jobGeneratorsError,
             onCreateGenerator: createJobGenerator,
+            onDeleteGenerator: deleteJobGenerator,
+            onDeleteJob: deleteJob,
         })
         : React.createElement(SessionPane, {
             controller,

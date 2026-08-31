@@ -2340,6 +2340,21 @@ body.is-resizing-pane-y iframe {
   font-size: 0.76rem;
 }
 
+.ps-job-generator-detail-actions {
+  display: flex;
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--ps-border);
+}
+
+.ps-job-generator-cleanup-error {
+  margin-top: 4px;
+  color: var(--ps-danger);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  white-space: normal;
+}
+
 .ps-job-transition-timeline {
   display: flex;
   flex-direction: column;
