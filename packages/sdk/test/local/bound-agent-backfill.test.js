@@ -169,6 +169,37 @@ describe("Durable creation config across replicas", () => {
         });
     }, TIMEOUT);
 
+    it("a PARTIAL resume override before the first message overrides its fields and inherits the rest from the row", async () => {
+        const env = getEnv();
+        const tracker = {};
+        const addTool = createAddTool(tracker);
+        await withSplitClients(env, { tools: [addTool] }, async (clientA, clientB) => {
+            const created = await clientA.createSessionForAgent("backfill-marker", {
+                model: TEST_GPT_MODEL,
+            });
+
+            // The realistic partial override: a process resumes just to grant
+            // a tool. Under entry-level replace this CLOBBERED the creation
+            // config — the binding, system message and tool list all lost to
+            // absence. Under the field-level merge, only toolNames overrides;
+            // everything else comes from the durable row.
+            const resumed = await clientB.resumeSession(created.sessionId, {
+                toolNames: ["test_add"],
+            });
+            const response = await resumed.sendAndWait(
+                "Use your test_add tool to add 4 and 5, then state the result.",
+                TIMEOUT,
+            );
+            console.log(`  Response: "${response}"`);
+            assertIncludes(response, AGENT_MARKER, "the agent binding must be inherited from the row, not clobbered by the partial override");
+            assert(tracker.called, "the explicit toolNames override must be honored");
+
+            // Inherited durably — not rescued by the worker-side backfill.
+            const restored = await restoredEvents(env, created.sessionId);
+            assertEqual(restored.length, 0, "the merge must carry the binding; the safety net must stay idle");
+        });
+    }, TIMEOUT);
+
     it("a legacy session (row without creation config) heals through the safety net, announced exactly once", async () => {
         const env = getEnv();
         await withSplitClients(env, {}, async (clientA, clientB) => {

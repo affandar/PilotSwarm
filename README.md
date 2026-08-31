@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.55** — A session's creation config is now durable: the create persists it to the session catalog row and the orchestration start restores it on any process, so nothing is lost when the first message lands on a different API-server replica. The 0.5.54 agent-binding backfill remains as the safety net for pre-existing sessions.
+> **Latest release: v0.5.56** — A session's creation config is durable and a resume override is field-level: the create persists the full config to the session catalog row, the orchestration start restores it on any process, and a partial resume overrides only the fields it actually sets instead of erasing the rest.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

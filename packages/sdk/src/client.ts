@@ -681,32 +681,50 @@ export class PilotSwarmClient {
         const orchestrationId = `session-${sessionId}`;
         const fullConfig = this.sessionConfigs.get(sessionId);
 
-        // The creation config, from memory when this process ran the create.
-        // When it did not (another replica did — the load-balanced API case),
-        // restore the SAME projection from the catalog row below, before the
-        // orchestration is started. Starting from an empty config here is
-        // exactly the bug that ran every API-created agent session without
-        // its agent (see projectSerializableSessionConfig).
-        let serializableConfig: SerializableSessionConfig | undefined = fullConfig
-            ? projectSerializableSessionConfig(fullConfig, this.config.waitThreshold)
-            : undefined;
+        // The start config is a FIELD-LEVEL merge, durable under explicit:
+        //
+        //   base:      the creation config persisted on the catalog row at
+        //              create (migration 0072) — the durable truth, readable
+        //              on ANY process. Starting from an empty base is exactly
+        //              the bug that ran every API-created agent session
+        //              without its agent.
+        //   overrides: the in-memory map entry, when THIS process has one —
+        //              either the create it ran, or an explicit
+        //              resumeSession(config). Only fields the caller actually
+        //              SET override (the JSON round-trip strips undefined),
+        //              so a partial resume — say tools alone, to re-attach
+        //              handlers — inherits the binding, system message and
+        //              tool names from the row instead of clobbering them
+        //              with absence. Entry-level replace was the old rule,
+        //              and a partial resume before the first message silently
+        //              erased the creation config under it.
+        //
+        // No fallbackWaitThreshold in the override projection: an unset
+        // waitThreshold must inherit the row's creation-time value, not this
+        // process's default. The default applies only if neither side set it.
+        let serializableConfig: SerializableSessionConfig | undefined;
 
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
-        if (!serializableConfig) {
+        {
             const stored = this._catalog.getSessionCreationConfig
                 ? await this._catalog.getSessionCreationConfig(sessionId).catch(() => null)
                 : null;
-            if (stored) {
+            if (stored && !fullConfig) {
                 trace(`[client] creation config restored from catalog row (in-memory config miss)`);
-                serializableConfig = stored as SerializableSessionConfig;
-            } else {
-                // Nothing durable either: a pre-0072 row, or a session created
-                // with no config at all. The worker-side bound-agent backfill
-                // remains the safety net for the agent binding.
-                serializableConfig = projectSerializableSessionConfig(undefined, this.config.waitThreshold);
             }
+            const overrides: Partial<SerializableSessionConfig> = fullConfig
+                ? JSON.parse(JSON.stringify(projectSerializableSessionConfig(fullConfig, undefined)))
+                : {};
+            const merged: SerializableSessionConfig = {
+                ...((stored ?? {}) as SerializableSessionConfig),
+                ...overrides,
+            };
+            if (merged.waitThreshold == null) merged.waitThreshold = this.config.waitThreshold;
+            serializableConfig = merged;
+            // A pre-0072 row with no map entry still starts minimal; the
+            // worker-side bound-agent backfill remains the safety net there.
         }
         // The CMS row's is_system flag is authoritative and durable; the
         // in-memory systemSessions set is not — a worker restart empties it,

@@ -66,3 +66,11 @@ test("the persisted shape and the start shape are the same function output — r
     const rebuilt = projectSerializableSessionConfig(FULL, 30);
     assert.deepEqual(stored, JSON.parse(JSON.stringify(rebuilt)));
 });
+
+test("with no fallback, an unset waitThreshold stays unset — so a merge can inherit the row's value", () => {
+    const p = projectSerializableSessionConfig({ toolNames: ["alpha"] }, undefined);
+    assert.equal(p.waitThreshold, undefined);
+    const clean = JSON.parse(JSON.stringify(p));
+    assert.ok(!("waitThreshold" in clean), "stripped for the override merge");
+    assert.deepEqual(clean.toolNames, ["alpha"]);
+});

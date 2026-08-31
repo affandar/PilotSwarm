@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.56 — 2026-08-31
+
+A resume override becomes field-level, completing 0.5.55.
+
+### Fixed
+
+- **A partial `resumeSession(config)` before a session's first message no
+  longer erases its creation config.** 0.5.55 made the creation config
+  durable, but kept the old precedence: any in-memory map entry replaced
+  the stored config wholesale. A partial resume — the realistic case being
+  `{ tools }` to re-attach handlers — therefore clobbered the agent
+  binding, system message and tool names with absence. The start config is
+  now a field-level merge, durable under explicit: fields the caller
+  actually set override; everything else inherits from the catalog row.
+  An unset `waitThreshold` inherits the creation-time value rather than
+  this process's default; the default applies only when neither side set
+  it.
+
+### Tests
+
+- A fourth cross-replica integration test: create the agent session on
+  client A, resume on client B with `toolNames` alone, first message via B
+  — the override is honored, the binding is inherited from the row, and
+  the safety net is asserted idle. Verified red with replace semantics
+  restored. A sixth projection unit test pins that the no-fallback
+  projection leaves `waitThreshold` unset so the merge can inherit it.
+
 ## 0.5.55 — 2026-08-31
 
 The creation config becomes durable — the proper fix behind 0.5.54's
