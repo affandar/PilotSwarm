@@ -51,6 +51,14 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
   }
 
   // 1) docker buildx build (platform pinned per repo Docker convention).
+  const workerBuildArgs = service === "worker"
+    ? [
+        "--build-arg",
+        `PILOTSWARM_SOURCE_COMMIT=${run("git", ["rev-parse", "HEAD"], { capture: true }).stdout.trim()}`,
+        "--build-arg",
+        `PILOTSWARM_BUILD_ID=${imageTag}`,
+      ]
+    : [];
   log("info", `docker buildx build → ${localTag}`);
   await runForeground("docker", [
     "buildx",
@@ -58,6 +66,7 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
     "--platform",
     "linux/amd64",
     "--load",
+    ...workerBuildArgs,
     "-t",
     localTag,
     "-f",

@@ -109,6 +109,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: PILOTSWARM_WORKER_DISPLAY_NAME
+              value: "__REPO_NAME__ worker"
+            - name: PILOTSWARM_IMAGE_REF
+              value: "__IMAGE__"
             - name: RUST_LOG
               value: "info"
             - name: PS_MODEL_PROVIDERS_PATH

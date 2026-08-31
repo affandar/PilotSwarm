@@ -1415,10 +1415,53 @@ export class PilotSwarmWorker {
     /** Process-stable identity/build/capability record refreshed on each heartbeat. */
     private _buildRegistrarInfo(): Record<string, unknown> {
         if (this._registrarInfo) return this._registrarInfo;
+        const configuredProvenance = this.config.workerProvenance ?? {};
+        const explicitString = (...values: unknown[]): string | null => {
+            for (const value of values) {
+                if (typeof value !== "string") continue;
+                const trimmed = value.trim();
+                if (trimmed) return trimmed;
+            }
+            return null;
+        };
         let sdkVersion = "unknown";
         try {
             sdkVersion = require("../package.json").version ?? "unknown";
         } catch { /* packed layouts without a reachable package.json */ }
+        let bundledApplicationVersion: string | null = null;
+        try {
+            bundledApplicationVersion = explicitString(require("../../app/package.json").version);
+        } catch { /* SDK-only installations do not have a sibling app package. */ }
+        const hostname = os.hostname();
+        const processStartedAt = new Date(
+            Date.now() - Math.round(process.uptime() * 1000),
+        ).toISOString();
+        const displayName = explicitString(
+            configuredProvenance.displayName,
+            process.env.PILOTSWARM_WORKER_DISPLAY_NAME,
+        );
+        const applicationVersion = explicitString(
+            configuredProvenance.applicationVersion,
+            process.env.PILOTSWARM_APPLICATION_VERSION,
+            bundledApplicationVersion,
+        );
+        const sourceCommit = explicitString(
+            configuredProvenance.sourceCommit,
+            process.env.PILOTSWARM_SOURCE_COMMIT,
+        );
+        const buildId = explicitString(
+            configuredProvenance.buildId,
+            process.env.PILOTSWARM_BUILD_ID,
+        );
+        const imageRef = explicitString(
+            configuredProvenance.imageRef,
+            process.env.PILOTSWARM_IMAGE_REF,
+            process.env.IMAGE,
+        );
+        const imageDigest = explicitString(
+            configuredProvenance.imageDigest,
+            process.env.PILOTSWARM_IMAGE_DIGEST,
+        );
         // Advertise this worker's repo affinity so consumers (e.g. the portal's
         // serviceable-repo allowlist) can derive which repos have live workers
         // straight from the registry, instead of a hand-maintained env list.
@@ -1456,6 +1499,26 @@ export class PilotSwarmWorker {
         this._registrarInfo = {
             sdkVersion,
             authz: { adminScope: loadAdminScope(), policyVersion: ADMIN_SCOPE_POLICY_VERSION },
+            provenance: {
+                displayName,
+                hostname,
+                processStartedAt,
+                sdkVersion,
+                applicationVersion,
+                sourceCommit,
+                buildId,
+                image: {
+                    ref: imageRef,
+                    digest: imageDigest,
+                },
+            },
+            ...(displayName ? { displayName } : {}),
+            ...(applicationVersion ? { applicationVersion } : {}),
+            ...(sourceCommit ? { sourceCommit } : {}),
+            ...(buildId ? { buildId } : {}),
+            ...(imageRef || imageDigest
+                ? { image: { ref: imageRef, digest: imageDigest } }
+                : {}),
             orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
             consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
             ...(routingTags.length ? { routingTags } : {}),
@@ -1468,9 +1531,9 @@ export class PilotSwarmWorker {
             },
             runtime: {
                 substrate: process.env.KUBERNETES_SERVICE_HOST ? "kubernetes" : "process",
-                hostname: os.hostname(),
+                hostname,
                 pid: process.pid,
-                startedAt: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString(),
+                startedAt: processStartedAt,
             },
         };
         return this._registrarInfo;
@@ -1494,7 +1557,10 @@ export class PilotSwarmWorker {
             eventLoopDelayP99Ms,
             activeSessions: this.sessionManager.activeSessionCount,
             orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, 2) },
-            workerSlots: { total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2) },
+            workerSlots: {
+                busy: this.sessionManager.busyWorkerSlotCount,
+                total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2),
+            },
         };
     }
 

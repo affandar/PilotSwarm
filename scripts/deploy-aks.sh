@@ -193,12 +193,17 @@ if [ "$SKIP_BUILD" = false ]; then
     # Set NPM_REGISTRY (here or in .env.remote) to build through a mirror when
     # the network blocks registry.npmjs.org. Unset = the public registry.
     NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}"
+    SOURCE_COMMIT="$(git rev-parse HEAD)"
+    BUILD_ID="legacy-${SOURCE_COMMIT:0:12}"
     echo "   npm registry: $NPM_REGISTRY"
     az acr login --name "$ACR_NAME" "${AZ_SUB_ARGS[@]}"
     docker buildx build \
         --platform linux/amd64 \
         -f deploy/Dockerfile.worker \
         --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
+        --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+        --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+        --build-arg PILOTSWARM_IMAGE_REF="${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest" \
         -t "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest" \
         --push .
     echo "   ✅ Image pushed: ${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest"

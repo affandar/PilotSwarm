@@ -768,10 +768,16 @@ az acr login --name <your-acr-name>
 npm run build
 
 # Build and push Docker image
+IMAGE=<your-acr-name>.azurecr.io/copilot-runtime-worker:latest
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
 docker buildx build \
     --platform linux/amd64 \
     -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest \
+    --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+    --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+    -t "$IMAGE" \
     --push .
 ```
 
@@ -969,8 +975,14 @@ owners/shares/ledgers. Rollback is an explicit operator change to
 ```bash
 # Rebuild and push
 npm run build
+IMAGE=<your-acr-name>.azurecr.io/copilot-runtime-worker:latest
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
 docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
-    -t <your-acr-name>.azurecr.io/copilot-runtime-worker:latest --push .
+    --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+    --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+    -t "$IMAGE" --push .
 
 # Restart pods (pulls latest image)
 kubectl rollout restart deployment/copilot-runtime-worker -n copilot-runtime

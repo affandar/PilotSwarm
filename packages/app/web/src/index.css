@@ -6797,6 +6797,37 @@ body.is-resizing-pane-y iframe {
     font-size: var(--ps-font-size-dense);
     flex: 1;
 }
+.ps-admin-workers__controls {
+    display: flex;
+    align-items: end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.ps-admin-workers__controls label {
+    display: grid;
+    gap: 3px;
+    color: var(--ps-muted);
+    font-size: var(--ps-font-size-dense);
+}
+.ps-admin-workers__controls select,
+.ps-admin-workers__controls input {
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    background: var(--ps-surface);
+    color: var(--ps-foreground);
+    font: inherit;
+}
+.ps-admin-workers__controls input {
+    min-width: min(260px, 100%);
+}
+.ps-admin-workers__shown {
+    margin-left: auto;
+    color: var(--ps-muted);
+    font-size: var(--ps-font-size-dense);
+}
 .ps-admin-workers__scroll { overflow-x: auto; }
 /* On the console's own type scale rather than a private set of px values:
    this table sat at 12/11/10px beside a 12.5px console, which is the sort of
@@ -6820,8 +6851,24 @@ body.is-resizing-pane-y iframe {
     padding: 6px 10px;
     border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 55%, transparent);
     white-space: nowrap;
+    vertical-align: top;
 }
 .ps-admin-workers__table tr.is-stale td { opacity: 0.5; }
+.ps-admin-workers__cell-lines {
+    display: inline-grid;
+    gap: 2px;
+    vertical-align: top;
+}
+.ps-admin-workers__cell-lines > span {
+    display: block;
+    max-width: 34ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ps-admin-workers__cell-lines > .is-muted {
+    color: var(--ps-muted);
+    font-size: var(--ps-font-size-dense);
+}
 
 .ps-worker-timeline {
   display: flex;

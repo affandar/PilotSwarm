@@ -48,6 +48,7 @@ import {
     parseMarkdownLines,
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
+    applyWorkerFleetViewOptions,
     selectActivityPane,
     selectWorkerDetailsPane,
     selectAdminConsole,
@@ -15366,8 +15367,24 @@ function AdminConsolePanel({ controller, mobile = false }) {
 
 function AdminWorkersPane({ controller, view }) {
     const workers = view.workers || {};
-    const rows = workers.rows || [];
     const counts = workers.counts || {};
+    const [status, setStatus] = React.useState("all");
+    const [field, setField] = React.useState("all");
+    const [query, setQuery] = React.useState("");
+    const [sort, setSort] = React.useState("default");
+    const rows = React.useMemo(() => applyWorkerFleetViewOptions(workers.rows || [], {
+        status,
+        field,
+        query,
+        sort,
+    }), [workers.rows, status, field, query, sort]);
+    const option = (value, label) => React.createElement("option", { key: value, value }, label);
+    const cellLines = (...lines) => React.createElement("div", { className: "ps-admin-workers__cell-lines" },
+        lines.filter(Boolean).map((line, index) => React.createElement("span", {
+            key: `${index}:${line}`,
+            className: index === 0 ? undefined : "is-muted",
+            title: String(line),
+        }, line)));
     // Liveness is heartbeat recency (~20s beats, 90s window): a static
     // snapshot rots into "0 live" while the pane sits open. Poll while
     // mounted; the TUI refreshes on `r`.
@@ -15397,34 +15414,101 @@ function AdminWorkersPane({ controller, view }) {
         workers.error
             ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, workers.error)
             : null,
+        React.createElement("div", { className: "ps-admin-workers__controls" },
+            React.createElement("label", null,
+                React.createElement("span", null, "State"),
+                React.createElement("select", {
+                    "aria-label": "Worker state filter",
+                    value: status,
+                    onChange: (event) => setStatus(event.target.value),
+                }, [
+                    option("all", "All"),
+                    option("live", "Live"),
+                    option("stale", "Stale"),
+                ])),
+            React.createElement("label", null,
+                React.createElement("span", null, "Filter"),
+                React.createElement("select", {
+                    "aria-label": "Worker filter field",
+                    value: field,
+                    onChange: (event) => setField(event.target.value),
+                }, [
+                    option("all", "All fields"),
+                    option("owner", "Owner"),
+                    option("version", "Version"),
+                    option("commit", "Commit"),
+                    option("build", "Build / image"),
+                ])),
+            React.createElement("input", {
+                type: "search",
+                "aria-label": "Filter workers",
+                placeholder: "Filter workers…",
+                value: query,
+                onChange: (event) => setQuery(event.target.value),
+            }),
+            React.createElement("label", null,
+                React.createElement("span", null, "Sort"),
+                React.createElement("select", {
+                    "aria-label": "Worker sort",
+                    value: sort,
+                    onChange: (event) => setSort(event.target.value),
+                }, [
+                    option("default", "Pool / worker"),
+                    option("stale", "Stale first"),
+                    option("owner", "Owner"),
+                    option("version", "Application version"),
+                    option("commit", "Commit"),
+                    option("build", "Build / image"),
+                ])),
+            React.createElement("span", { className: "ps-admin-workers__shown" }, `${rows.length} shown`)),
         workers.empty
             ? React.createElement("p", { className: "ps-admin-console__hint" },
                 "No workers registered. Workers appear here on their first heartbeat and self-prune after an hour of silence.")
+            : rows.length === 0
+                ? React.createElement("p", { className: "ps-admin-console__hint" }, "No workers match the current filters.")
             : React.createElement("div", { className: "ps-admin-workers__scroll" },
                 React.createElement("table", { className: "ps-admin-workers__table" },
                     React.createElement("thead", null, React.createElement("tr", null,
-                        ["Worker", "Pool", "Phase", "Heartbeat", "Uptime", "RSS", "Sessions", "Loop p99", "Packages", "SDK"]
+                        ["Worker", "Pool / phase", "Heartbeat", "Owner", "Version / commit", "Build / image", "Affinities", "Utilization", "Health", "Packages"]
                             .map((label) => React.createElement("th", { key: label }, label)))),
                     React.createElement("tbody", null, rows.map((row) => React.createElement("tr", {
                         key: row.id,
                         className: row.live ? "is-live" : "is-stale",
                     },
-                        React.createElement("td", { className: "ps-admin-workers__id", title: row.owner ? `owner: ${row.owner}` : undefined },
+                        React.createElement("td", { className: "ps-admin-workers__id" },
                             React.createElement("span", { className: `ps-worker-dot${row.live ? " is-live" : ""}` }),
-                            row.id,
+                            cellLines(row.displayName, row.hostname, row.id),
                             row.substrate && row.substrate !== "kubernetes"
                                 ? React.createElement("span", { className: "ps-admin-workers__substrate" }, row.substrate)
                                 : null),
-                        React.createElement("td", null, row.pool),
                         React.createElement("td", null,
+                            cellLines(row.pool),
                             React.createElement("span", { className: `ps-worker-phase is-${row.phase}` }, row.phase)),
-                        React.createElement("td", null, row.agoText),
-                        React.createElement("td", null, row.uptimeText ?? "—"),
-                        React.createElement("td", null, row.rssText ?? "—"),
-                        React.createElement("td", null, row.sessions ?? "—"),
-                        React.createElement("td", null, row.eventLoopText ?? "—"),
+                        React.createElement("td", null, cellLines(
+                            row.live ? `${row.agoText} · live` : `${row.agoText} · stale`,
+                            `started ${row.processStartedAt}`,
+                        )),
+                        React.createElement("td", null, row.owner),
+                        React.createElement("td", null, cellLines(
+                            `app ${row.applicationVersion}`,
+                            `SDK ${row.sdkVersion}`,
+                            `commit ${row.sourceCommitShort}`,
+                        )),
+                        React.createElement("td", null, cellLines(
+                            `build ${row.buildId}`,
+                            row.imageRef,
+                            row.imageDigest,
+                        )),
+                        React.createElement("td", { title: row.affinityText }, row.affinityText),
+                        React.createElement("td", null, row.utilizationText),
+                        React.createElement("td", null, cellLines(
+                            row.uptimeText ? `up ${row.uptimeText}` : "uptime unknown",
+                            row.rssText ? `rss ${row.rssText}` : "rss unknown",
+                            row.sessions != null ? `${row.sessions} resident sessions` : "resident sessions unknown",
+                            row.eventLoopText ? `loop ${row.eventLoopText}` : "loop unknown",
+                        )),
                         React.createElement("td", { title: row.pkgEpoch != null ? `epoch ${row.pkgEpoch}` : undefined }, row.pkgText ?? "—"),
-                        React.createElement("td", null, row.sdkVersion ?? "—")))))));
+                    ))))));
 }
 
 function AdminSettingsTree({ controller, view }) {

@@ -2249,16 +2249,28 @@ function buildAdminWorkersLines(view) {
             lines.push([{ text: `  ${row.pool}`, color: "gray", bold: true }]);
         }
         const phaseColor = row.phase === "ready" ? "green" : row.phase === "draining" ? "red" : "yellow";
+        const identity = row.displayName && row.displayName !== "unknown"
+            ? `${row.displayName} (${row.id})`
+            : row.id;
         lines.push([
             { text: row.live ? "   ● " : "   ○ ", color: row.live ? "green" : "gray" },
-            { text: row.id, color: row.live ? "white" : "gray", bold: row.live },
+            { text: identity, color: row.live ? "white" : "gray", bold: row.live },
             { text: `  ${row.phase}`, color: phaseColor },
             { text: `  ${row.agoText}`, color: "gray" },
             ...(row.uptimeText ? [{ text: `  up ${row.uptimeText}`, color: "gray" }] : []),
             ...(row.rssText ? [{ text: `  ${row.rssText}`, color: "gray" }] : []),
-            ...(row.sessions != null ? [{ text: `  ${row.sessions} sess`, color: "gray" }] : []),
+            ...(row.utilizationText ? [{ text: `  ${row.utilizationText}`, color: "gray" }] : []),
             ...(row.pkgText ? [{ text: `  pkgs ${row.pkgText}`, color: row.pkgText.includes("error") ? "red" : "gray" }] : []),
-            ...(row.sdkVersion ? [{ text: `  v${row.sdkVersion}`, color: "gray" }] : []),
+        ]);
+        lines.push([
+            { text: "     ", color: "gray" },
+            { text: `host ${row.hostname || "unknown"}`, color: "gray" },
+            { text: `  owner ${row.owner || "unknown"}`, color: "gray" },
+            { text: `  app ${row.applicationVersion || "unknown"}`, color: "gray" },
+            { text: `  SDK ${row.sdkVersion || "unknown"}`, color: "gray" },
+            { text: `  commit ${row.sourceCommitShort || "unknown"}`, color: "gray" },
+            { text: `  build ${row.buildIdentity || "unknown"}`, color: "gray" },
+            { text: `  affinity ${row.affinityText || "none"}`, color: "gray" },
         ]);
     }
     if (counts.draining) {

@@ -108,9 +108,15 @@ That means:
   az acr login --name "${ACR_NAME:?set ACR_NAME in .env.remote}"
   # NPM_REGISTRY is required on managed devices (public npm is blocked, and the
   # container inherits the block); .env.remote sets it. Harmless elsewhere.
+  IMAGE="${ACR_NAME:?set ACR_NAME in .env.remote}.azurecr.io/copilot-runtime-worker:latest"
+  SOURCE_COMMIT="$(git rev-parse HEAD)"
+  BUILD_ID="reset-${SOURCE_COMMIT:0:12}"
   docker buildx build --platform linux/amd64 -f deploy/Dockerfile.worker \
     --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
-    -t "${ACR_NAME:?set ACR_NAME in .env.remote}.azurecr.io/copilot-runtime-worker:latest" --push .
+    --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+    --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+    -t "$IMAGE" --push .
 
   # 4. Apply any manifest changes, then scale back up
   kubectl apply -f deploy/k8s/worker-deployment.yaml

@@ -450,6 +450,11 @@ export class SessionManager {
     get activeSessionCount(): number {
         return this.sessions.size;
     }
+
+    /** Session-scoped operations currently occupying worker activity slots. */
+    get busyWorkerSlotCount(): number {
+        return this.sessionLocks.size;
+    }
     /**
      * True iff a warm ManagedSession for `sessionId` is already resident in
      * this worker's memory (i.e. the next turn is a WARM turn on a pinned

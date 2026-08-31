@@ -60,6 +60,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: PILOTSWARM_WORKER_DISPLAY_NAME
+              value: "PilotSwarm worker"
             - name: RUST_LOG
               value: "info"
             - name: PS_MODEL_PROVIDERS_PATH

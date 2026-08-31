@@ -21,6 +21,12 @@
  *   PILOTSWARM_FACTS_PG_POOL_MAX    — Max facts pg pool connections (default: 3)
  *   PILOTSWARM_ORCHESTRATION_CONCURRENCY — Duroxide orchestration slots (default: 2)
  *   PILOTSWARM_WORKER_CONCURRENCY   — Duroxide worker/activity slots (default: 2)
+ *   PILOTSWARM_WORKER_DISPLAY_NAME  — Human-readable fleet label
+ *   PILOTSWARM_APPLICATION_VERSION  — Hosting application version (auto-detected in bundled app)
+ *   PILOTSWARM_SOURCE_COMMIT        — Full source revision used for this worker build
+ *   PILOTSWARM_BUILD_ID             — Deployment/image build identifier
+ *   PILOTSWARM_IMAGE_REF            — Container image repository/tag
+ *   PILOTSWARM_IMAGE_DIGEST         — Immutable container digest when available
  *   HORIZON_DATABASE_URL            — Optional EnhancedFactStore (HorizonDB); enables multi-signal search
  *   HORIZON_GRAPH_DATABASE_URL      — Optional knowledge graph (Apache AGE) target (opt-in)
  *   HORIZON_EMBED_URL/MODEL/DIM     — Optional durable in-DB embedder endpoint

@@ -155,11 +155,17 @@ an image-only variant of the deploy, with no data reset or config refresh.
      ```
    - Build and push the image:
      ```bash
+     IMAGE="$ACR_NAME.azurecr.io/copilot-runtime-worker:latest"
+     SOURCE_COMMIT="$(git rev-parse HEAD)"
+     BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
      docker buildx build \
          --platform linux/amd64 \
          -f deploy/Dockerfile.worker \
          --build-arg NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org/}" \
-         -t "$ACR_NAME.azurecr.io/copilot-runtime-worker:latest" \
+         --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+         --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+         --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+         -t "$IMAGE" \
          --push .
      ```
    - Apply namespace/deployment manifests and restart the deployment.

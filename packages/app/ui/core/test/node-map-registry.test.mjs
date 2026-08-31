@@ -27,8 +27,29 @@ function workerRow(id, overrides = {}) {
         owner: null,
         registeredAt: new Date(Date.now() - 3_600_000),
         updatedAt: new Date(),
-        info: { sdkVersion: "0.5.29" },
-        health: { uptimeS: 7200, rssBytes: 180 * 1024 * 1024, activeSessions: 1 },
+        info: {
+            sdkVersion: "0.5.29",
+            repos: ["PilotSwarm"],
+            provenance: {
+                displayName: "Repo worker",
+                hostname: "aks-host-7",
+                processStartedAt: "2026-08-30T01:00:00.000Z",
+                sdkVersion: "0.5.29",
+                applicationVersion: "0.5.37",
+                sourceCommit: "0123456789abcdef",
+                buildId: "build-37",
+                image: {
+                    ref: "registry/pilotswarm-worker:build-37",
+                    digest: "sha256:037",
+                },
+            },
+        },
+        health: {
+            uptimeS: 7200,
+            rssBytes: 180 * 1024 * 1024,
+            activeSessions: 1,
+            workerSlots: { busy: 1, total: 4 },
+        },
         state: {},
         ...overrides,
     };
@@ -82,6 +103,14 @@ test("registry-first: registered nodes lead with specs; history-only nodes appen
     assert.equal(a.live, true);
     assert.equal(a.pool, "aks-default");
     assert.equal(a.uptimeText, "2h 0m");
+    assert.equal(a.displayName, "Repo worker");
+    assert.equal(a.hostname, "aks-host-7");
+    assert.equal(a.owner, "unknown");
+    assert.equal(a.applicationVersion, "0.5.37");
+    assert.equal(a.sourceCommitShort, "0123456789ab");
+    assert.equal(a.imageDigest, "sha256:037");
+    assert.equal(a.affinityText, "repo:PilotSwarm");
+    assert.equal(a.utilizationText, "1/4 (25%)");
     assert.equal(a.executing.length, 1, "session s1 maps onto its last-known node");
     assert.equal(a.executing[0].text.includes("triage"), true);
 
@@ -144,8 +173,20 @@ test("worker details pane replaces Activity with the selected node's specs and s
     assert.match(titleText, /Worker z6dcb/, "the pane is titled for the worker, not 'Activity'");
     const text = pane.lines.map((line) => (Array.isArray(line) ? line : [line]).map((run) => run.text).join("")).join("\n");
     assert.match(text, new RegExp(podA), "full node id");
+    assert.match(text, /Name\s+Repo worker/);
+    assert.match(text, /Host\s+aks-host-7/);
+    assert.match(text, /Started\s+2026-08-30T01:00:00\.000Z/);
     assert.match(text, /Phase\s+ready/);
     assert.match(text, /Pool\s+aks-default/);
+    assert.match(text, /Owner\s+unknown/);
+    assert.match(text, /Usage\s+1\/4 \(25%\)/);
+    assert.match(text, /App\s+0\.5\.37/);
+    assert.match(text, /SDK\s+0\.5\.29/);
+    assert.match(text, /Commit\s+0123456789abcdef/);
+    assert.match(text, /Build\s+build-37/);
+    assert.match(text, /Image\s+registry\/pilotswarm-worker:build-37/);
+    assert.match(text, /Digest\s+sha256:037/);
+    assert.match(text, /Affinity\s+repo:PilotSwarm/);
     assert.match(text, /Packages\s+epoch 12 · 1 ok/);
     assert.match(text, /demo-kit@0\.2\.0/);
     assert.match(text, /EXECUTING \(1\)/);
@@ -155,6 +196,36 @@ test("worker details pane replaces Activity with the selected node's specs and s
     const activityTitle = selectActivityPane(store.getState()).title.map((run) => run.text).join("");
     assert.match(activityTitle, /Activity/);
     assert.equal(/Worker/.test(activityTitle), false);
+});
+
+test("registered node details render unknown provenance instead of inferring from node id", () => {
+    const store = createStore(appReducer, createInitialState());
+    seedState(store, {
+        workers: [workerRow("hostname-looking-worker", {
+            owner: null,
+            info: {},
+            health: {},
+        })],
+    });
+
+    const node = selectNodeMapView(store.getState()).nodes[0];
+    assert.equal(node.workerNodeId, "hostname-looking-worker");
+    assert.equal(node.workerName, "unknown");
+    assert.equal(node.hostname, "unknown");
+    assert.equal(node.owner, "unknown");
+    assert.equal(node.applicationVersion, "unknown");
+    assert.equal(node.sourceCommit, "unknown");
+    assert.equal(node.buildIdentity, "unknown");
+
+    const text = selectWorkerDetailsPane(store.getState()).lines
+        .map((line) => (Array.isArray(line) ? line : [line]).map((run) => run.text).join(""))
+        .join("\n");
+    assert.match(text, /Name\s+unknown/);
+    assert.match(text, /Host\s+unknown/);
+    assert.match(text, /Owner\s+unknown/);
+    assert.match(text, /App\s+unknown/);
+    assert.match(text, /Commit\s+unknown/);
+    assert.match(text, /Build\s+unknown/);
 });
 
 test("degraded mode: no registry data still yields activity-derived nodes", () => {

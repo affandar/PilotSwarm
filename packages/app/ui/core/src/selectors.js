@@ -4462,15 +4462,25 @@ export function selectWorkerDetailsPane(state) {
         lines.push([{ text: `${label.padEnd(10)} `, color: "gray" }, { text: String(value), color }]);
     };
     if (node.registered) {
+        spec("Name", node.displayName);
         spec("Node", node.workerNodeId);
+        spec("Host", node.hostname);
+        spec("Started", node.processStartedAt);
         spec("Phase", node.phase, node.phase === "draining" ? "red" : node.phase === "starting" ? "yellow" : "green");
         spec("Pool", node.pool);
-        if (node.owner) spec("Owner", node.owner);
+        spec("Owner", node.owner);
         spec("Heartbeat", node.live ? `${node.agoText ?? "now"} · live` : `${node.agoText ?? "unknown"} · stale`, node.live ? "green" : "red");
         spec("Uptime", node.uptimeText);
+        spec("Usage", node.utilizationText);
         spec("Memory", [node.rssText ? `rss ${node.rssText}` : null, node.heapText ? `heap ${node.heapText}` : null].filter(Boolean).join(" · ") || null);
         spec("Loop p99", node.eventLoopText);
+        spec("App", node.applicationVersion);
         spec("SDK", node.sdkVersion);
+        spec("Commit", node.sourceCommit);
+        spec("Build", node.buildId);
+        spec("Image", node.imageRef);
+        spec("Digest", node.imageDigest);
+        spec("Affinity", node.affinityText);
         spec("Runtime", node.substrate);
         if (node.capabilities.length) spec("Caps", node.capabilities.join(", "));
         if (node.consumes.length) spec("Consumes", node.consumes.join(", "));
@@ -5601,23 +5611,33 @@ export function selectAdminConsole(state) {
             const ageMs = Number.isNaN(at.getTime()) ? Number.NaN : workersNow - at.getTime();
             const health = worker?.health || {};
             const info = worker?.info || {};
+            const provenance = normalizeWorkerProvenance(worker);
             const pkg = worker?.state?.["agent-packages"] || null;
             const installed = pkg?.installed && typeof pkg.installed === "object" ? Object.values(pkg.installed) : [];
             const pkgErrors = installed.filter((entry) => entry?.status === "error").length;
+            const workerSlots = Number.isFinite(health?.workerSlots?.total)
+                ? Math.max(1, Math.trunc(health.workerSlots.total))
+                : null;
+            const busyWorkerSlots = Number.isFinite(health?.workerSlots?.busy)
+                ? Math.max(0, Math.trunc(health.workerSlots.busy))
+                : null;
+            const sessions = Number.isFinite(health.activeSessions) ? health.activeSessions : null;
             return {
                 id: String(worker?.workerNodeId ?? ""),
+                ...provenance,
                 pool: String(worker?.pool ?? "default"),
                 phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
                 live: Number.isFinite(ageMs) && ageMs <= WORKERS_LIVE_MS,
                 agoText: workerAgo(ageMs),
                 uptimeText: workerUptime(health.uptimeS),
                 rssText: adminPkgSize(health.rssBytes),
-                sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
+                sessions,
+                busyWorkerSlots,
+                workerSlots,
+                utilizationText: workerUtilizationText(busyWorkerSlots, workerSlots),
                 eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
-                sdkVersion: typeof info.sdkVersion === "string" ? info.sdkVersion : null,
                 substrate: typeof info.runtime?.substrate === "string" ? info.runtime.substrate : null,
                 consumes: Array.isArray(info.consumes) ? info.consumes : [],
-                owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
                 pkgEpoch: Number.isFinite(pkg?.epoch) ? pkg.epoch : null,
                 pkgText: pkg
                     ? `${installed.length - pkgErrors} ok${pkgErrors ? ` · ${pkgErrors} error` : ""}`
@@ -7636,6 +7656,136 @@ function nodeMapUptimeText(seconds) {
     return h < 48 ? `${h}h ${Math.floor((seconds % 3600) / 60)}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+const WORKER_UNKNOWN = "unknown";
+
+function explicitWorkerString(...values) {
+    for (const value of values) {
+        if (typeof value !== "string") continue;
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+    }
+    return null;
+}
+
+function normalizeWorkerProvenance(worker) {
+    const info = worker?.info && typeof worker.info === "object" ? worker.info : {};
+    const provenance = info.provenance && typeof info.provenance === "object"
+        ? info.provenance
+        : {};
+    const image = provenance.image && typeof provenance.image === "object"
+        ? provenance.image
+        : info.image && typeof info.image === "object"
+            ? info.image
+            : {};
+    const routingTags = Array.isArray(info.routingTags)
+        ? info.routingTags.map((tag) => explicitWorkerString(tag)).filter(Boolean)
+        : [];
+    const repoTags = [
+        ...(Array.isArray(info.repos) ? info.repos : []),
+        ...(Array.isArray(info.ownerScopedRepos) ? info.ownerScopedRepos : []),
+    ].map((repo) => explicitWorkerString(repo)).filter(Boolean).map((repo) => `repo:${repo}`);
+    const affinities = [...new Set(routingTags.length ? routingTags : repoTags)].sort();
+    const sourceCommit = explicitWorkerString(provenance.sourceCommit, info.sourceCommit) || WORKER_UNKNOWN;
+    const buildId = explicitWorkerString(provenance.buildId, info.buildId) || WORKER_UNKNOWN;
+    const imageRef = explicitWorkerString(image.ref) || WORKER_UNKNOWN;
+    const imageDigest = explicitWorkerString(image.digest) || WORKER_UNKNOWN;
+    return {
+        displayName: explicitWorkerString(
+            provenance.displayName,
+            info.displayName,
+            info.name,
+            info.runtime?.displayName,
+            info.runtime?.name,
+        ) || WORKER_UNKNOWN,
+        hostname: explicitWorkerString(provenance.hostname, info.runtime?.hostname) || WORKER_UNKNOWN,
+        processStartedAt: explicitWorkerString(provenance.processStartedAt, info.runtime?.startedAt) || WORKER_UNKNOWN,
+        sdkVersion: explicitWorkerString(provenance.sdkVersion, info.sdkVersion) || WORKER_UNKNOWN,
+        applicationVersion: explicitWorkerString(provenance.applicationVersion, info.applicationVersion) || WORKER_UNKNOWN,
+        sourceCommit,
+        sourceCommitShort: sourceCommit === WORKER_UNKNOWN ? WORKER_UNKNOWN : sourceCommit.slice(0, 12),
+        buildId,
+        imageRef,
+        imageDigest,
+        buildIdentity: [buildId, imageDigest, imageRef].find((value) => value !== WORKER_UNKNOWN) || WORKER_UNKNOWN,
+        imageText: [imageRef, imageDigest].filter((value) => value !== WORKER_UNKNOWN).join(" · ") || WORKER_UNKNOWN,
+        owner: explicitWorkerString(worker?.owner?.subject) || WORKER_UNKNOWN,
+        affinities,
+        affinityText: affinities.length ? affinities.join(", ") : "none",
+    };
+}
+
+function workerUtilizationText(activeSessions, workerSlots) {
+    if (Number.isFinite(activeSessions) && Number.isFinite(workerSlots) && workerSlots > 0) {
+        return `${activeSessions}/${workerSlots} (${Math.round((activeSessions / workerSlots) * 100)}%)`;
+    }
+    if (Number.isFinite(activeSessions)) return `${activeSessions} active`;
+    return WORKER_UNKNOWN;
+}
+
+/**
+ * Apply the portal fleet controls without mutating the registry view-model.
+ * Status filtering is independent of text filtering; unknown values sort last.
+ */
+export function applyWorkerFleetViewOptions(rows, options = {}) {
+    const status = ["live", "stale"].includes(options.status) ? options.status : "all";
+    const field = ["owner", "version", "commit", "build"].includes(options.field) ? options.field : "all";
+    const sort = ["stale", "owner", "version", "commit", "build"].includes(options.sort) ? options.sort : "default";
+    const query = String(options.query || "").trim().toLocaleLowerCase();
+    const source = Array.isArray(rows) ? rows : [];
+    const matchesQuery = (row) => {
+        if (!query) return true;
+        const fields = {
+            owner: [row.owner],
+            version: [row.applicationVersion, row.sdkVersion],
+            commit: [row.sourceCommit],
+            build: [row.buildId, row.imageRef, row.imageDigest],
+            all: [
+                row.id,
+                row.displayName,
+                row.hostname,
+                row.owner,
+                row.applicationVersion,
+                row.sdkVersion,
+                row.sourceCommit,
+                row.buildId,
+                row.imageRef,
+                row.imageDigest,
+                row.affinityText,
+            ],
+        };
+        return fields[field].some((value) => String(value || "").toLocaleLowerCase().includes(query));
+    };
+    const filtered = source.filter((row) => {
+        if (status === "live" && !row.live) return false;
+        if (status === "stale" && row.live) return false;
+        return matchesQuery(row);
+    });
+    const sortValue = (row) => {
+        if (sort === "owner") return row.owner;
+        if (sort === "version") return row.applicationVersion;
+        if (sort === "commit") return row.sourceCommit;
+        if (sort === "build") return row.buildIdentity;
+        return "";
+    };
+    return filtered
+        .map((row, index) => ({ row, index }))
+        .sort((a, b) => {
+            if (sort === "default") return a.index - b.index;
+            if (sort === "stale" && a.row.live !== b.row.live) return a.row.live ? 1 : -1;
+            if (sort === "stale") return a.index - b.index;
+            const av = sortValue(a.row);
+            const bv = sortValue(b.row);
+            if (av === WORKER_UNKNOWN && bv !== WORKER_UNKNOWN) return 1;
+            if (bv === WORKER_UNKNOWN && av !== WORKER_UNKNOWN) return -1;
+            const compared = String(av).localeCompare(String(bv), undefined, {
+                numeric: true,
+                sensitivity: "base",
+            });
+            return compared || a.index - b.index;
+        })
+        .map(({ row }) => row);
+}
+
 function nodeMapSessionEntry(session, brandingTitle, active) {
     const label = session?.isSystem
         ? canonicalSystemTitle(session, brandingTitle)
@@ -7675,18 +7825,19 @@ export function selectNodeMapView(state) {
         const at = worker?.updatedAt instanceof Date ? worker.updatedAt.getTime() : new Date(worker?.updatedAt ?? 0).getTime();
         const ageMs = Number.isFinite(at) ? now - at : Number.NaN;
         const health = worker?.health || {};
+        const provenance = normalizeWorkerProvenance(worker);
+        const workerConcurrency = Number.isFinite(health?.workerSlots?.total)
+            ? Math.max(1, Math.trunc(health.workerSlots.total))
+            : null;
+        const busyWorkerSlots = Number.isFinite(health?.workerSlots?.busy)
+            ? Math.max(0, Math.trunc(health.workerSlots.busy))
+            : null;
+        const sessions = Number.isFinite(health.activeSessions) ? health.activeSessions : null;
         byLabel.set(label, {
             label,
             workerNodeId: String(worker?.workerNodeId ?? ""),
-            workerName: [
-                worker?.displayName,
-                worker?.name,
-                worker?.info?.displayName,
-                worker?.info?.name,
-                worker?.info?.runtime?.displayName,
-                worker?.info?.runtime?.name,
-                worker?.workerNodeId,
-            ].map((value) => String(value || "").trim()).find(Boolean) || null,
+            workerName: provenance.displayName,
+            ...provenance,
             registered: true,
             live: Number.isFinite(ageMs) && ageMs <= NODE_LIVE_MS,
             phase: ["starting", "ready", "draining"].includes(worker?.phase) ? worker.phase : "ready",
@@ -7696,17 +7847,15 @@ export function selectNodeMapView(state) {
             rssText: Number.isFinite(health.rssBytes) ? adminPkgSize(health.rssBytes) : null,
             heapText: Number.isFinite(health.heapUsedBytes) ? adminPkgSize(health.heapUsedBytes) : null,
             eventLoopText: Number.isFinite(health.eventLoopDelayP99Ms) ? `${health.eventLoopDelayP99Ms}ms` : null,
-            sessions: Number.isFinite(health.activeSessions) ? health.activeSessions : null,
-            workerConcurrency: Number.isFinite(health?.workerSlots?.total)
-                ? Math.max(1, Math.trunc(health.workerSlots.total))
-                : null,
-            sdkVersion: typeof worker?.info?.sdkVersion === "string" ? worker.info.sdkVersion : null,
+            sessions,
+            busyWorkerSlots,
+            workerConcurrency,
+            utilizationText: workerUtilizationText(busyWorkerSlots, workerConcurrency),
             substrate: typeof worker?.info?.runtime?.substrate === "string" ? worker.info.runtime.substrate : null,
             capabilities: worker?.info?.capabilities && typeof worker.info.capabilities === "object"
                 ? Object.entries(worker.info.capabilities).filter(([, on]) => Boolean(on)).map(([cap]) => cap).sort()
                 : [],
             consumes: Array.isArray(worker?.info?.consumes) ? worker.info.consumes : [],
-            owner: worker?.owner?.subject ? String(worker.owner.subject) : null,
             pkgEpoch: Number.isFinite(worker?.state?.["agent-packages"]?.epoch) ? worker.state["agent-packages"].epoch : null,
             pkgInstalled: worker?.state?.["agent-packages"]?.installed && typeof worker.state["agent-packages"].installed === "object"
                 ? Object.entries(worker.state["agent-packages"].installed).map(([name, entry]) => ({
@@ -7727,8 +7876,14 @@ export function selectNodeMapView(state) {
             workerName: null,
             phase: null, pool: null, agoText: null, uptimeText: null,
             rssText: null, heapText: null, eventLoopText: null, sessions: null,
-            workerConcurrency: null,
-            sdkVersion: null, substrate: null, capabilities: [], consumes: [],
+            busyWorkerSlots: null, workerConcurrency: null,
+            displayName: null, hostname: null, processStartedAt: null,
+            sdkVersion: null, applicationVersion: null,
+            sourceCommit: null, sourceCommitShort: null,
+            buildId: null, imageRef: null, imageDigest: null,
+            buildIdentity: null, imageText: null,
+            affinities: [], affinityText: null, utilizationText: null,
+            substrate: null, capabilities: [], consumes: [],
             owner: null, pkgEpoch: null, pkgInstalled: [], pkgLastError: null,
             executing: [],
         });

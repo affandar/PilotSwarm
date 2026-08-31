@@ -14,6 +14,7 @@ import {
     appReducer,
     createInitialState,
     createStore,
+    applyWorkerFleetViewOptions,
     selectAdminConsole,
     selectWorkerDetailsPane,
 } from "../src/index.js";
@@ -42,8 +43,33 @@ function workerRow(id, overrides = {}) {
         owner: null,
         registeredAt: new Date(Date.now() - 3_600_000),
         updatedAt: new Date(),
-        info: { sdkVersion: "0.5.29", consumes: ["agent-packages"], runtime: { substrate: "kubernetes" } },
-        health: { uptimeS: 7500, rssBytes: 210 * 1024 * 1024, heapUsedBytes: 90e6, eventLoopDelayP99Ms: 4.2, activeSessions: 3 },
+        info: {
+            sdkVersion: "0.5.29",
+            consumes: ["agent-packages"],
+            repos: ["PilotSwarm"],
+            provenance: {
+                displayName: "General worker",
+                hostname: "aks-node-1",
+                processStartedAt: "2026-08-30T01:00:00.000Z",
+                sdkVersion: "0.5.29",
+                applicationVersion: "0.5.37",
+                sourceCommit: "0123456789abcdef",
+                buildId: "build-37",
+                image: {
+                    ref: "registry/pilotswarm-worker:build-37",
+                    digest: "sha256:037",
+                },
+            },
+            runtime: { substrate: "kubernetes", hostname: "aks-node-1" },
+        },
+        health: {
+            uptimeS: 7500,
+            rssBytes: 210 * 1024 * 1024,
+            heapUsedBytes: 90e6,
+            eventLoopDelayP99Ms: 4.2,
+            activeSessions: 3,
+            workerSlots: { busy: 3, total: 8 },
+        },
         state: { "agent-packages": { epoch: 7, installed: { "incident-kit": { semver: "1.4.0", status: "ok" }, "broken-kit": { semver: "1.0.0", status: "error" } } } },
         ...overrides,
     };
@@ -102,11 +128,102 @@ test("workers view: liveness window, phase counts, pool sort, health text", asyn
     assert.equal(podB.pkgEpoch, 7);
     assert.equal(podB.pkgText, "1 ok · 1 error");
     assert.equal(podB.substrate, "kubernetes");
+    assert.equal(podB.displayName, "General worker");
+    assert.equal(podB.hostname, "aks-node-1");
+    assert.equal(podB.owner, "unknown");
+    assert.equal(podB.applicationVersion, "0.5.37");
+    assert.equal(podB.sourceCommitShort, "0123456789ab");
+    assert.equal(podB.buildId, "build-37");
+    assert.equal(podB.imageDigest, "sha256:037");
+    assert.equal(podB.affinityText, "repo:PilotSwarm");
+    assert.equal(podB.utilizationText, "3/8 (38%)");
 
     const laptop = workers.rows.find((row) => row.id === "laptop-1");
     assert.equal(laptop.owner, "affan");
     assert.equal(laptop.substrate, "process");
     assert.equal(laptop.pkgText, null, "worker without agent-packages state shows no pkg column");
+    assert.equal(laptop.displayName, "unknown");
+    assert.equal(laptop.hostname, "unknown", "hostname is never derived from workerNodeId");
+});
+
+test("workers view filters and sorts mixed provenance without guessing missing values", async () => {
+    const { controller, store } = makeController({
+        listWorkers: async () => [
+            workerRow("worker-v2", {
+                owner: { provider: "team", subject: "Build Systems" },
+                info: {
+                    sdkVersion: "0.6.0",
+                    provenance: {
+                        displayName: "Build worker",
+                        hostname: "host-v2",
+                        processStartedAt: "2026-08-30T03:00:00.000Z",
+                        sdkVersion: "0.6.0",
+                        applicationVersion: "2.0.0",
+                        sourceCommit: "bbbbbbbbbbbbbbbb",
+                        buildId: "build-200",
+                        image: { ref: "registry/worker:v2", digest: "sha256:200" },
+                    },
+                },
+            }),
+            workerRow("worker-v1", {
+                owner: { provider: "team", subject: "Agent Platform" },
+                info: {
+                    sdkVersion: "0.5.0",
+                    provenance: {
+                        displayName: "Legacy worker",
+                        hostname: "host-v1",
+                        processStartedAt: "2026-08-30T02:00:00.000Z",
+                        sdkVersion: "0.5.0",
+                        applicationVersion: "1.0.0",
+                        sourceCommit: "aaaaaaaaaaaaaaaa",
+                        buildId: "build-100",
+                        image: { ref: "registry/worker:v1", digest: "sha256:100" },
+                    },
+                },
+            }),
+            workerRow("worker-unknown", {
+                updatedAt: new Date(Date.now() - 10 * 60_000),
+                info: {},
+                health: {},
+            }),
+        ],
+    });
+    store.dispatch({ type: "admin/visibility", visible: true });
+    store.dispatch({ type: "admin/profile/loaded", profile: { ...ADMIN, githubCopilotKeySet: false, profileSettings: {} } });
+    controller.setAdminSection("workers");
+    await controller.refreshAdminWorkers();
+
+    const rows = selectAdminConsole(store.getState()).workers.rows;
+    const unknown = rows.find((row) => row.id === "worker-unknown");
+    assert.equal(unknown.displayName, "unknown");
+    assert.equal(unknown.hostname, "unknown");
+    assert.equal(unknown.owner, "unknown");
+    assert.equal(unknown.applicationVersion, "unknown");
+    assert.equal(unknown.sourceCommit, "unknown");
+    assert.equal(unknown.buildIdentity, "unknown");
+    assert.equal(unknown.utilizationText, "unknown");
+
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        field: "owner", query: "agent platform",
+    }).map((row) => row.id), ["worker-v1"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        field: "version", query: "2.0",
+    }).map((row) => row.id), ["worker-v2"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        field: "commit", query: "bbbb",
+    }).map((row) => row.id), ["worker-v2"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        field: "build", query: "sha256:100",
+    }).map((row) => row.id), ["worker-v1"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        status: "stale",
+    }).map((row) => row.id), ["worker-unknown"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        sort: "version",
+    }).map((row) => row.id), ["worker-v1", "worker-v2", "worker-unknown"]);
+    assert.deepEqual(applyWorkerFleetViewOptions(rows, {
+        sort: "stale",
+    }).map((row) => row.id), ["worker-unknown", "worker-v1", "worker-v2"]);
 });
 
 test("workers section is hidden from non-admins; unknown sections fall back to providers", async () => {
@@ -208,7 +325,7 @@ test("selected worker details render a chronological durable Job timeline", asyn
     assert.equal(calls.at(-1).options.limit, 1_000);
     assert.ok(Number.isFinite(new Date(calls.at(-1).options.since).getTime()));
     const pane = selectWorkerDetailsPane(store.getState());
-    assert.equal(pane.timelineSwimlane.workerName, "pod-a");
+    assert.equal(pane.timelineSwimlane.workerName, "General worker");
     assert.equal(pane.timelineSwimlane.workerNodeId, "pod-a");
     assert.deepEqual(pane.timelineTable.rows.map((row) => ({
         timestamp: row.timestamp,

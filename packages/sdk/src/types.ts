@@ -871,6 +871,26 @@ export type AfterRunTurnHook = (ctx: {
     gitBlobs: GitBlobIO;
 }) => void | Promise<void>;
 
+/**
+ * Process-stable worker identity and build metadata published with every
+ * registry heartbeat. Explicit options override the corresponding
+ * PILOTSWARM_* environment variables.
+ */
+export interface WorkerProvenanceOptions {
+    /** Human-readable fleet label. Env: PILOTSWARM_WORKER_DISPLAY_NAME. */
+    displayName?: string;
+    /** Version of the application hosting the SDK. Env: PILOTSWARM_APPLICATION_VERSION. */
+    applicationVersion?: string;
+    /** Full source revision used to build the worker. Env: PILOTSWARM_SOURCE_COMMIT. */
+    sourceCommit?: string;
+    /** Deployment or image build identifier. Env: PILOTSWARM_BUILD_ID. */
+    buildId?: string;
+    /** Container image repository/tag reference. Env: PILOTSWARM_IMAGE_REF. */
+    imageRef?: string;
+    /** Immutable container image digest when available. Env: PILOTSWARM_IMAGE_DIGEST. */
+    imageDigest?: string;
+}
+
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
@@ -947,6 +967,12 @@ export interface PilotSwarmWorkerOptions {
      * worker. Defaults to PILOTSWARM_WORKER_OWNER_PROVIDER/SUBJECT when set.
      */
     workerOwner?: { provider: string; subject: string } | null;
+    /**
+     * Worker display/build provenance. Hostname, process start time, SDK
+     * version, and owner are supplied independently by the runtime/registry
+     * and cannot be inferred from workerNodeId.
+     */
+    workerProvenance?: WorkerProvenanceOptions;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
     /** Blob container name for the built-in blob-backed session store. */

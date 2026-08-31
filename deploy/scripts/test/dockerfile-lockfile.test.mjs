@@ -54,3 +54,25 @@ test("starter image stages every workspace manifest before npm ci", () => {
   assert.match(source, /COPY packages\/app\/package\.json \.\/packages\/app\//);
   assert.match(stripComments(source), /RUN\s+npm\s+ci\b/);
 });
+
+for (const file of ["Dockerfile.worker", "Dockerfile.worker.windows"]) {
+  test(`${file} bakes worker build provenance into the runtime environment`, () => {
+    const src = stripComments(readDockerfile(file));
+    for (const name of [
+      "PILOTSWARM_SOURCE_COMMIT",
+      "PILOTSWARM_BUILD_ID",
+      "PILOTSWARM_IMAGE_REF",
+    ]) {
+      assert.match(src, new RegExp(`ARG\\s+${name}\\b`));
+      assert.match(src, new RegExp(`ENV\\s+${name}=\\$\\{${name}\\}`));
+    }
+  });
+}
+
+test("deployment image builder supplies worker build provenance arguments", () => {
+  const src = readFileSync(join(REPO_ROOT, "deploy", "scripts", "lib", "build-image.mjs"), "utf8");
+  assert.match(src, /PILOTSWARM_SOURCE_COMMIT=.*rev-parse/);
+  assert.match(src, /PILOTSWARM_BUILD_ID=\$\{imageTag\}/);
+  assert.doesNotMatch(src, /PILOTSWARM_IMAGE_REF=\$\{localTag\}/,
+    "the build-time local tag is not the deployed image reference");
+});

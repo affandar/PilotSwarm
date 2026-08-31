@@ -53,7 +53,14 @@ Building Docker images on macOS (Apple Silicon) produces ARM64 images by default
 AKS nodes run linux/amd64. Always use `--platform linux/amd64` when building:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile.worker -t <tag> .
+IMAGE=<tag>
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+BUILD_ID="manual-${SOURCE_COMMIT:0:12}"
+docker build --platform linux/amd64 -f deploy/Dockerfile.worker \
+  --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+  --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+  --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+  -t "$IMAGE" .
 ```
 
 Without this, pods will fail with `no match for platform in manifest` on image pull.

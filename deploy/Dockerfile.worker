@@ -99,6 +99,15 @@ COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 # one-time compatibility seed.
 COPY deploy/config/model_providers.ghcp.json ./.model_providers.json
 
+# Keep changing build metadata after expensive dependency/source layers so
+# provenance updates do not invalidate the worker image cache.
+ARG PILOTSWARM_SOURCE_COMMIT
+ARG PILOTSWARM_BUILD_ID
+ARG PILOTSWARM_IMAGE_REF
+ENV PILOTSWARM_SOURCE_COMMIT=${PILOTSWARM_SOURCE_COMMIT}
+ENV PILOTSWARM_BUILD_ID=${PILOTSWARM_BUILD_ID}
+ENV PILOTSWARM_IMAGE_REF=${PILOTSWARM_IMAGE_REF}
+
 # Run as the built-in node user (non-root)
 USER node
 

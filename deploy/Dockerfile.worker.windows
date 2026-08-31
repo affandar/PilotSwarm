@@ -75,6 +75,15 @@ COPY packages/horizon-store/migrations/ ./packages/horizon-store/migrations/
 # Model providers config (if present).
 COPY .model_providers.json* ./
 
+# Keep changing build metadata after expensive dependency/source layers so
+# provenance updates preserve the thin worker image's cache.
+ARG PILOTSWARM_SOURCE_COMMIT
+ARG PILOTSWARM_BUILD_ID
+ARG PILOTSWARM_IMAGE_REF
+ENV PILOTSWARM_SOURCE_COMMIT=${PILOTSWARM_SOURCE_COMMIT}
+ENV PILOTSWARM_BUILD_ID=${PILOTSWARM_BUILD_ID}
+ENV PILOTSWARM_IMAGE_REF=${PILOTSWARM_IMAGE_REF}
+
 # Least-privilege runtime: run as the built-in low-privilege ContainerUser
 # (the Windows analog of the Linux image's non-root `node` user). All build
 # steps above ran as the default ContainerAdministrator; runtime writes go to

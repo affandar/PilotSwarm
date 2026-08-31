@@ -106,6 +106,9 @@ $baseImageRef = "$loginServer/${baseRepo}:$BaseTag"
 # -WorkerTags overrides the single -WorkerTag when provided (back-compat).
 if (-not $WorkerTags -or $WorkerTags.Count -eq 0) { $WorkerTags = @($WorkerTag) }
 $workerRefs = $WorkerTags | ForEach-Object { "$loginServer/${workerRepo}:$_" }
+$sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE) { throw "git rev-parse HEAD failed ($LASTEXITCODE)" }
+$buildId = $WorkerTags[0]
 
 $mode      = if ($UseAcrBuild) { 'az acr build (server-side)' } else { 'docker build (local)' }
 $published  = [bool]($Push -or $UseAcrBuild)
@@ -199,6 +202,8 @@ try {
             '--file','deploy/Dockerfile.worker.windows',
             '--build-arg',"WORKER_BASE_IMAGE=$baseImageRef",
             '--build-arg',"NPM_REGISTRY=$NpmRegistry",
+            '--build-arg',"PILOTSWARM_SOURCE_COMMIT=$sourceCommit",
+            '--build-arg',"PILOTSWARM_BUILD_ID=$buildId",
             '.'
         )
         & az @acrArgs
@@ -209,7 +214,9 @@ try {
         $buildArgs += @(
             '--file','deploy/Dockerfile.worker.windows',
             '--build-arg',"WORKER_BASE_IMAGE=$baseImageRef",
-            '--build-arg',"NPM_REGISTRY=$NpmRegistry"
+            '--build-arg',"NPM_REGISTRY=$NpmRegistry",
+            '--build-arg',"PILOTSWARM_SOURCE_COMMIT=$sourceCommit",
+            '--build-arg',"PILOTSWARM_BUILD_ID=$buildId"
         )
         if ($Isolation) { $buildArgs += @('--isolation',$Isolation) }
         $buildArgs += '.'

@@ -273,9 +273,15 @@ if [[ "$MODE" == "remote" ]]; then
     # Build and push Docker image
     REGISTRY="${ACR_REGISTRY:-toygresaksacr.azurecr.io}"
     IMAGE="${REGISTRY}/copilot-runtime-worker:latest"
+    SOURCE_COMMIT="$(git rev-parse HEAD)"
+    BUILD_ID="reset-${SOURCE_COMMIT:0:12}"
     echo "   Building and pushing Docker image..."
     az acr login --name "${REGISTRY%%.*}" 2>/dev/null
-    docker buildx build --platform linux/amd64 -t "$IMAGE" -f deploy/Dockerfile.worker --push . 2>/dev/null \
+    docker buildx build --platform linux/amd64 -t "$IMAGE" -f deploy/Dockerfile.worker \
+        --build-arg PILOTSWARM_SOURCE_COMMIT="$SOURCE_COMMIT" \
+        --build-arg PILOTSWARM_BUILD_ID="$BUILD_ID" \
+        --build-arg PILOTSWARM_IMAGE_REF="$IMAGE" \
+        --push . 2>/dev/null \
         && echo "   ✅ Image pushed: ${IMAGE}" \
         || { echo "   ⚠️  Docker build/push failed — falling back to pod restart only"; }
 
