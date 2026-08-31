@@ -73,9 +73,14 @@ describe("runTurn config backfill", () => {
         });
         await session.send("Resolve the anchors", { bootstrap: true });
 
+        // Structural, not reference, equality: since 0.5.56 the start config
+        // is projected through a JSON round-trip (undefined-stripping merge
+        // with the durable creation config), so the input carries a
+        // deep-equal CLONE. Reference identity never survived the durable
+        // boundary anyway — duroxide serializes the input to JSON.
         assertEqual(
-            orchestrationInput?.config?.childContract,
-            childContract,
+            JSON.stringify(orchestrationInput?.config?.childContract),
+            JSON.stringify(childContract),
             "child contract should reach the durable orchestration input",
         );
     });
