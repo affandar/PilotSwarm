@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.5.54 — 2026-08-31
+
+An API-created agent session now always gets its agent's instructions.
+
+### Fixed
+
+- **A session created through the Web API ran without its agent prompt and
+  without its agent's MCP servers.** A top-level session's creation config
+  lives in an in-memory map on the API server process that created it, and
+  the orchestration is started lazily by whichever process handles the FIRST
+  message. With more than one portal replica behind a load balancer, that is
+  routinely a different process: the lookup missed and the orchestration was
+  started with an empty config — `{"waitThreshold":30}` verbatim in the
+  durable input, measured on a live fleet. The session still LOOKED bound
+  (the CMS row's agentId drives the title, listings, and the agentIdentity
+  fallback), which is why it went unnoticed: the only things keyed off the
+  lost `boundAgentName` were the agent prompt layer and per-agent MCP
+  grants — precisely the parts with no other fallback. The portal UI never
+  hit it (it sends the initial prompt inside the create call, on the create
+  process), and sub-agents never hit it (the worker stamps their binding
+  itself), so every human-driven path looked healthy while every scripted
+  path was silently agentless.
+
+  The fix mirrors the existing catalog-authoritative model adoption: on
+  every turn, when the orchestration input carries no `boundAgentName` and
+  the session's catalog row names an agent that resolves to a loaded USER
+  agent, the worker restores the binding from the row
+  (`resolveBoundAgentBackfill` in `session-proxy.ts`) and records a
+  `session.bound_agent_restored` CMS event. System agents are never
+  backfilled — that would hand them the app default layer they deliberately
+  do not get. Because the heal runs per turn, every existing broken session
+  recovers on its next message with no migration.
+
+### Tests
+
+- 7 unit tests for the backfill guard set, and one integration test that
+  fails the way production fails: client A creates the agent-bound session,
+  client B — a separate client instance whose in-memory config map never saw
+  the create — sends the first message. Without the fix the reply provably
+  lacks the agent's instructions; with it, the binding is restored and the
+  heal is observable in the event stream. Both verified red with the fix
+  disabled.
+
+
 ## 0.5.53 — 2026-08-31
 
 A third off the base prompt, private skills that load on demand, and a ledger

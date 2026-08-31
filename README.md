@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.53** — The base agent prompt is a third smaller with no rules lost, cutting roughly 2,300 tokens from every model call of every session. A user-scope package's private skills can now be loaded on demand by their owner instead of being pasted into every call. The usage ledger also answers a new question: a **Tokens by agent** view showing which agent spent what, how many turns it took, and its tokens-per-turn average.
+> **Latest release: v0.5.54** — A session created through the Web API now always gets its agent's instructions. The creation config could be lost when the first message landed on a different portal replica than the create; the worker now restores the agent binding from the session catalog row on every turn, healing existing sessions too.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

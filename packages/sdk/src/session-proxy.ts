@@ -798,6 +798,53 @@ export function resolveCrawlerRole(
     return matches.every(hasCrawlerRole);
 }
 
+/**
+ * Backfill a session's bound agent from the CMS catalog row.
+ *
+ * WHY THIS EXISTS: a top-level session's creation config lives in an
+ * IN-MEMORY map on the API server that created it (`client.ts`
+ * `sessionConfigs`). The orchestration is started lazily by whichever server
+ * process handles the FIRST MESSAGE — and with more than one portal replica
+ * behind a load balancer, that is routinely a different process. The lookup
+ * misses, and the orchestration input is started with an empty config: no
+ * `boundAgentName`, no model, nothing. The model already self-heals from the
+ * catalog row (catalog-authoritative adoption in runTurn) and so does
+ * `agentIdentity` — but the PROMPT layer and per-agent MCP grants key off
+ * `boundAgentName`, so an API-created agent session ran with its agent's
+ * title and tools-ish surface but NONE of its instructions. Measured on a
+ * live fleet 2026-08-31: every MCP-created agent session composed only the
+ * base + app-default layers.
+ *
+ * The CMS row's `agentId` is written by createSessionForAgent at create time
+ * and is authoritative, exactly like the model. Backfill from it, guarded:
+ *
+ *   - only when the input carried no boundAgentName (never override);
+ *   - only when the id matches a loaded USER agent by canonical name/id —
+ *     a system agent must never be backfilled into the app-agent layering,
+ *     which would hand it the app default prompt it deliberately does not
+ *     get (and service identities like regen-distiller are not user agents,
+ *     so they fall out here too);
+ *   - never when the input explicitly declared a non-app prompt layering.
+ *
+ * Exact-name result: the prompt lookup is keyed by the agent's exact name,
+ * so the matched agent's own `name` is returned, not the raw row value.
+ *
+ * @internal exported for tests
+ */
+export function resolveBoundAgentBackfill(
+    runConfig: SerializableSessionConfig,
+    catalogAgentId: string | null | undefined,
+    userAgents?: Array<{ name?: string; id?: string }>,
+): string | undefined {
+    if (runConfig.boundAgentName) return undefined;
+    const kind = runConfig.promptLayering?.kind;
+    if (kind && kind !== "app-agent") return undefined;
+    const wanted = String(catalogAgentId ?? "").trim();
+    if (!wanted) return undefined;
+    const match = (userAgents ?? []).find((a) => a.name === wanted || a.id === wanted);
+    return match?.name || undefined;
+}
+
 /** @deprecated Use `resolveCrawlerRole`; retained for compatibility. */
 export const resolveHarvesterRole = resolveCrawlerRole;
 
@@ -1114,6 +1161,33 @@ export function registerActivities(
             runConfig.reasoningEffort = catalogSessionRow.reasoningEffort ?? undefined;
             runConfig.contextTier = catalogSessionRow.contextTier ?? undefined;
         }
+        // Self-heal the bound agent the same way the model is self-healed
+        // above: the catalog row is authoritative, the orchestration input is
+        // not (see resolveBoundAgentBackfill for how API-created sessions
+        // lose their entire creation config). Runs every turn, so existing
+        // broken sessions heal on their next turn with no migration.
+        const backfilledBoundAgent = resolveBoundAgentBackfill(
+            runConfig, catalogSessionRow?.agentId, userAgents,
+        );
+        if (backfilledBoundAgent) {
+            runConfig.boundAgentName = backfilledBoundAgent;
+            if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
+            activityCtx.traceInfo(`[runTurn] boundAgentName restored from catalog agentId=${backfilledBoundAgent} (orchestration input carried none)`);
+            if (catalog) {
+                await cmsRetryBestEffort(
+                    `runTurn.recordEvent bound-agent-restored session=${input.sessionId}`,
+                    () => catalog!.recordEvents(input.sessionId, [{
+                        eventType: "session.bound_agent_restored",
+                        data: {
+                            agentId: backfilledBoundAgent,
+                            message: "Orchestration input carried no boundAgentName; restored from the authoritative session catalog row. The creation config was lost at start (API-server in-memory config miss).",
+                        },
+                    }], workerNodeId),
+                    (msg) => activityCtx.traceInfo(msg),
+                ).catch(() => {});
+            }
+        }
+
         // Derive the app-assigned crawler role authoritatively from the bound
         // agent definition EVERY turn.
         // It is a property of the agent, resolved from static worker config, so
