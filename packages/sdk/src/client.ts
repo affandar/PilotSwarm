@@ -62,6 +62,50 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
  * Creates its own duroxide Client and CMS catalog from the store URL.
  * Completely independent of PilotSwarmWorker.
  */
+/**
+ * Project a full (in-memory) session config down to the serializable shape
+ * the durable orchestration input carries.
+ *
+ * ONE function on purpose: this exact projection is (a) persisted to the
+ * catalog row at create (migration 0072 `creation_config`) and (b) built at
+ * orchestration start. Before 0072 the start-side copy was the only one, fed
+ * from an in-memory map — and when the first message landed on a different
+ * API-server process than the create, the map missed and the orchestration
+ * started from an empty config: no agent binding, no system message, no tool
+ * names. Persisting the SAME projection at create is what makes the start
+ * reproducible from durable state on any process.
+ *
+ * reasoningEffort was historically omitted from the start-side copy, which
+ * silently dropped the user's creation-time effort on the worker side —
+ * this seam has eaten fields before, which is why it is now one function.
+ *
+ * @internal exported for tests
+ */
+export function projectSerializableSessionConfig(
+    fullConfig: ManagedSessionConfig | undefined,
+    fallbackWaitThreshold: number | undefined,
+): SerializableSessionConfig {
+    // toolNames: merge explicit names with names extracted from Tool objects
+    // (functions cannot ride durable state; their names can).
+    const explicitNames: string[] = fullConfig?.toolNames ?? [];
+    const objectNames: string[] = (fullConfig?.tools ?? [])
+        .map((t: any) => typeof t === "string" ? t : t?.name)
+        .filter((n: string) => n && n !== "wait" && n !== "ask_user");
+    const allNames = [...new Set([...explicitNames, ...objectNames])];
+    return {
+        model: fullConfig?.model,
+        reasoningEffort: fullConfig?.reasoningEffort,
+        contextTier: fullConfig?.contextTier,
+        systemMessage: fullConfig?.systemMessage,
+        workingDirectory: fullConfig?.workingDirectory,
+        waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
+        boundAgentName: fullConfig?.boundAgentName,
+        promptLayering: fullConfig?.promptLayering,
+        childContract: fullConfig?.childContract,
+        toolNames: allNames.length ? allNames : undefined,
+    };
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -182,7 +226,12 @@ export class PilotSwarmClient {
             this.sessionConfigs.set(sessionId, fullConfig);
         }
 
-        // CMS: write session record (state=pending, no orchestration yet)
+        // CMS: write session record (state=pending, no orchestration yet).
+        // The creation config is persisted alongside it (migration 0072) so
+        // the orchestration start can rebuild it on ANY process — the
+        // in-memory map above only covers the process that ran this create.
+        // JSON round-trip strips undefined fields for clean JSONB.
+        const configForRow = this.sessionConfigs.get(sessionId);
         await this._catalog.createSession(sessionId, {
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
@@ -192,6 +241,9 @@ export class PilotSwarmClient {
             owner: config?.owner ?? null,
             groupId: config?.groupId ?? null,
             visibility: config?.visibility ?? null,
+            creationConfig: configForRow
+                ? JSON.parse(JSON.stringify(projectSerializableSessionConfig(configForRow, this.config.waitThreshold)))
+                : null,
         });
         if (resolved) {
             await this._catalog.recordEvents(sessionId, [{
@@ -629,34 +681,33 @@ export class PilotSwarmClient {
         const orchestrationId = `session-${sessionId}`;
         const fullConfig = this.sessionConfigs.get(sessionId);
 
-        // Build toolNames: merge explicit toolNames with names extracted from Tool objects.
-        const explicitNames: string[] = fullConfig?.toolNames ?? [];
-        const objectNames: string[] = (fullConfig?.tools ?? [])
-            .map((t: any) => typeof t === "string" ? t : t.name)
-            .filter((n: string) => n && n !== "wait" && n !== "ask_user");
-        const allNames = [...new Set([...explicitNames, ...objectNames])];
-
-        const serializableConfig: SerializableSessionConfig = {
-            model: fullConfig?.model,
-            // Creation-time model options must ride the durable orchestration
-            // input — the worker builds the CopilotSession from input.config,
-            // not from the CMS row (the CMS copy is for display/management).
-            // reasoningEffort was historically omitted here, which silently
-            // dropped the user's creation-time effort on the worker side.
-            reasoningEffort: fullConfig?.reasoningEffort,
-            contextTier: fullConfig?.contextTier,
-            systemMessage: fullConfig?.systemMessage,
-            workingDirectory: fullConfig?.workingDirectory,
-            waitThreshold: fullConfig?.waitThreshold ?? this.config.waitThreshold,
-            boundAgentName: fullConfig?.boundAgentName,
-            promptLayering: fullConfig?.promptLayering,
-            childContract: fullConfig?.childContract,
-            toolNames: allNames.length ? allNames : undefined,
-        };
+        // The creation config, from memory when this process ran the create.
+        // When it did not (another replica did — the load-balanced API case),
+        // restore the SAME projection from the catalog row below, before the
+        // orchestration is started. Starting from an empty config here is
+        // exactly the bug that ran every API-created agent session without
+        // its agent (see projectSerializableSessionConfig).
+        let serializableConfig: SerializableSessionConfig | undefined = fullConfig
+            ? projectSerializableSessionConfig(fullConfig, this.config.waitThreshold)
+            : undefined;
 
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
+        if (!serializableConfig) {
+            const stored = this._catalog.getSessionCreationConfig
+                ? await this._catalog.getSessionCreationConfig(sessionId).catch(() => null)
+                : null;
+            if (stored) {
+                trace(`[client] creation config restored from catalog row (in-memory config miss)`);
+                serializableConfig = stored as SerializableSessionConfig;
+            } else {
+                // Nothing durable either: a pre-0072 row, or a session created
+                // with no config at all. The worker-side bound-agent backfill
+                // remains the safety net for the agent binding.
+                serializableConfig = projectSerializableSessionConfig(undefined, this.config.waitThreshold);
+            }
+        }
         // The CMS row's is_system flag is authoritative and durable; the
         // in-memory systemSessions set is not — a worker restart empties it,
         // and a resumed managed system agent (a deterministic system child,

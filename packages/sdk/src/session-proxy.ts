@@ -799,6 +799,18 @@ export function resolveCrawlerRole(
 }
 
 /**
+ * Sessions whose bound-agent restore has already been announced by THIS
+ * worker process. The backfill re-fires every turn for a session whose
+ * durable input lacks the binding (the input itself cannot be repaired), and
+ * without this set each of those turns wrote another
+ * `session.bound_agent_restored` event. Once per session per process is
+ * enough for observability; a pod move costs at most one duplicate. Swept
+ * wholesale at a bound so a long-lived worker cannot grow it forever.
+ */
+const boundAgentRestoreAnnounced = new Set<string>();
+const BOUND_AGENT_RESTORE_ANNOUNCED_SWEEP_AT = 5_000;
+
+/**
  * Backfill a session's bound agent from the CMS catalog row.
  *
  * WHY THIS EXISTS: a top-level session's creation config lives in an
@@ -1173,7 +1185,9 @@ export function registerActivities(
             runConfig.boundAgentName = backfilledBoundAgent;
             if (!runConfig.promptLayering) runConfig.promptLayering = { kind: "app-agent" };
             activityCtx.traceInfo(`[runTurn] boundAgentName restored from catalog agentId=${backfilledBoundAgent} (orchestration input carried none)`);
-            if (catalog) {
+            if (catalog && !boundAgentRestoreAnnounced.has(input.sessionId)) {
+                if (boundAgentRestoreAnnounced.size >= BOUND_AGENT_RESTORE_ANNOUNCED_SWEEP_AT) boundAgentRestoreAnnounced.clear();
+                boundAgentRestoreAnnounced.add(input.sessionId);
                 await cmsRetryBestEffort(
                     `runTurn.recordEvent bound-agent-restored session=${input.sessionId}`,
                     () => catalog!.recordEvents(input.sessionId, [{

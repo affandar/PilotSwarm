@@ -370,6 +370,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "provider_usage_agents",
             sql: migration_0071_provider_usage_agents(schema),
         },
+        {
+            version: "0072",
+            name: "session_creation_config",
+            sql: migration_0072_session_creation_config(schema),
+        },
     ];
 }
 
@@ -14369,6 +14374,32 @@ UPDATE ${s}.provider_meters_user m
  * A row with no agent_id is a session bound to no agent; it reports as
  * '(none)' rather than vanishing, because its tokens are still real.
  */
+/**
+ * 0072 — durable creation config.
+ *
+ * A session's creation config (bound agent, system message, tool names,
+ * layering, contract) used to live ONLY in an in-memory map on the API
+ * server process that handled the create. The orchestration is started by
+ * whichever process handles the first message; behind a load balancer that
+ * is routinely a different process, so the durable input started empty and
+ * the session ran without its agent (see resolveBoundAgentBackfill). The
+ * catalog row is where the rest of the creation-time truth already lives
+ * (model, effort, tier, agentId) — this column completes it.
+ *
+ * Nullable JSONB, no backfill, no proc change: an ADD COLUMN with no
+ * default is metadata-only in Postgres, so it is safe on the hot sessions
+ * table. Read through a DEDICATED catalog method only — deliberately NOT
+ * joined into cms_get_session/rowToSessionRow, because the web getSession
+ * op hands that row to any viewer with read access and a stored
+ * systemMessage is the owner's business.
+ */
+function migration_0072_session_creation_config(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS creation_config JSONB;
+`;
+}
+
 function migration_0071_provider_usage_agents(schema: string): string {
     const s = schema;
     return `

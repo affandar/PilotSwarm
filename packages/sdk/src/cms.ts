@@ -1123,7 +1123,16 @@ export interface SessionCatalog {
         /** Service sessions (tree-scoped machinery, migration 0037). */
         serviceKind?: string | null;
         serviceOf?: string | null;
+        /** Durable creation config (migration 0072); see getSessionCreationConfig. */
+        creationConfig?: Record<string, unknown> | null;
     }): Promise<void>;
+
+    /**
+     * The session's durable creation config (migration 0072), or null.
+     * Optional: stores that predate it simply leave the start path on the
+     * in-memory map plus the worker-side bound-agent backfill.
+     */
+    getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
 
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
@@ -1607,6 +1616,14 @@ export class PgSessionCatalog implements SessionCatalog {
         /** Service sessions (tree-scoped machinery, e.g. the regen distiller). */
         serviceKind?: string | null;
         serviceOf?: string | null;
+        /**
+         * The session's full serializable creation config (migration 0072).
+         * Durable so the orchestration start — which can run on a DIFFERENT
+         * process than the create — rebuilds the exact config instead of an
+         * empty one. Read back only via getSessionCreationConfig, never
+         * through the shared getSession row (viewers must not see it).
+         */
+        creationConfig?: Record<string, unknown> | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -1614,6 +1631,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // A 42883 mid-transaction aborts it, so probe the newer overloads'
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
+        const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
@@ -1642,6 +1660,17 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
                     baseArgs,
+                );
+            }
+
+            // Creation config rides the same transaction as a raw UPDATE, like
+            // the service columns below — the create proc's signature stays
+            // untouched, and a pre-0072 database simply skips the write (the
+            // in-memory map still covers the same-process path there).
+            if (useCreationConfig) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
+                    [sessionId, JSON.stringify(opts!.creationConfig)],
                 );
             }
 
@@ -1743,6 +1772,22 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     /** Whether the DB has migration 0029's 10-arg cms_create_session overload. Cached per catalog instance. */
+    private _creationConfigColumnSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0072's creation_config column. Cached per catalog instance. */
+    private async supportsCreationConfig(): Promise<boolean> {
+        if (this._creationConfigColumnSupported !== null) return this._creationConfigColumnSupported;
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = 'sessions' AND column_name = 'creation_config'
+             ) AS supported`,
+            [this.sql.schema],
+        );
+        this._creationConfigColumnSupported = Boolean(rows[0]?.supported);
+        return this._creationConfigColumnSupported;
+    }
+
     private async supportsVisibilityCreate(): Promise<boolean> {
         if (this._visibilityCreateSupported !== null) return this._visibilityCreateSupported;
         const { rows } = await this.pool.query(
@@ -1892,6 +1937,26 @@ export class PgSessionCatalog implements SessionCatalog {
             [sessionId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.length > 0 ? rowToSessionRow(rows[0]) : null;
+    }
+
+    /**
+     * The session's durable creation config (migration 0072), or null.
+     *
+     * Deliberately its own narrow query: the shared getSession row is handed
+     * to any viewer with read access by the web getSession op, and a stored
+     * systemMessage is the owner's business. Called only on the
+     * orchestration-start path when the in-memory config map misses, so it
+     * adds nothing to the per-turn hot path. Fails soft on a pre-0072
+     * database (probe short-circuits before querying the column).
+     */
+    async getSessionCreationConfig(sessionId: string): Promise<Record<string, unknown> | null> {
+        if (!await this.supportsCreationConfig()) return null;
+        const { rows } = await this.pool.query(
+            `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1`,
+            [sessionId],
+        );
+        const value = rows[0]?.creation_config;
+        return value && typeof value === "object" ? value : null;
     }
 
     async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {

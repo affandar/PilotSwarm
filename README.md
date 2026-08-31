@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.54** — A session created through the Web API now always gets its agent's instructions. The creation config could be lost when the first message landed on a different portal replica than the create; the worker now restores the agent binding from the session catalog row on every turn, healing existing sessions too.
+> **Latest release: v0.5.55** — A session's creation config is now durable: the create persists it to the session catalog row and the orchestration start restores it on any process, so nothing is lost when the first message lands on a different API-server replica. The 0.5.54 agent-binding backfill remains as the safety net for pre-existing sessions.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

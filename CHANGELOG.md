@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.5.55 — 2026-08-31
+
+The creation config becomes durable — the proper fix behind 0.5.54's
+safety net.
+
+### Fixed
+
+- **A session's creation config now survives the process that created it.**
+  0.5.54 diagnosed the bug: the config lived only in an in-memory map on the
+  API-server process that handled the create, and the orchestration is
+  started by whichever process handles the first message — behind a load
+  balancer, routinely a different one, so the durable input started empty.
+  0.5.54's worker-side backfill restored the agent binding from the catalog
+  row; it could not restore a custom system message, tool names, or a child
+  contract, and it had to re-fire (and re-announce) every turn because the
+  input itself was beyond repair.
+
+  Now the create persists the full serializable config to the session
+  catalog row (migration 0072, nullable `creation_config` JSONB on
+  `sessions` — additive, no proc change, no backfill), and the orchestration
+  start restores it whenever the in-memory map misses. One projection
+  function (`projectSerializableSessionConfig`) produces both the persisted
+  shape and the start shape, so this seam cannot silently drop fields again
+  — it had eaten `reasoningEffort` once before. The stored config is read
+  through a dedicated narrow query, deliberately NOT joined into the shared
+  `getSession` row: the web `getSession` op hands that row to any viewer
+  with read access, and a stored system message is the owner's business.
+  The extra query runs only when the map misses — never on the per-turn
+  path.
+
+- **The 0.5.54 backfill stays as the safety net** for sessions whose
+  durable input predates the fix, and its `session.bound_agent_restored`
+  event is now announced once per session per worker process instead of on
+  every turn.
+
+### Tests
+
+- 5 unit tests for the projection (field pass-through, tool-name merge,
+  round-trip identity between the persisted and start shapes). The
+  integration file grows to three cross-replica tests: an agent session
+  created on client A and first-messaged on client B keeps its agent
+  durably — and asserts the safety net stayed idle, so a silent fall-through
+  to the backfill fails the test; a custom systemMessage and toolNames —
+  the fields the safety net cannot save — survive the same split; and a
+  legacy row (creation_config nulled) heals through the backfill with the
+  restored-event recorded exactly once across two turns. Each layer
+  verified red with its mechanism disabled: no-persist fails the first two,
+  no-restore fails the first, no-backfill fails the third.
+
 ## 0.5.54 — 2026-08-31
 
 An API-created agent session now always gets its agent's instructions.
