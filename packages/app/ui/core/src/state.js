@@ -550,6 +550,15 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 // The last answer, verbatim from getProviderUsageSummary.
                 data: null,
             },
+            // The Agents tab: the per-agent pivot over the same window and
+            // provider filter as the Cluster summary (one filter, two views).
+            agents: {
+                loading: false,
+                error: null,
+                fetchedAt: 0,
+                // The last answer, verbatim from getProviderUsageAgents.
+                data: null,
+            },
             // A first load, with nothing on screen yet.
             loading: false,
             // A re-read WITH numbers already on screen. Separate from

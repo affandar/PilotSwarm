@@ -5049,6 +5049,67 @@ function budgetTableRow(raw, { overall, selectedProvider, selectedScope = "*", n
  * (the database returns only days that had turns), the per-model rows with
  * a sparkline aligned to those same days, and the charge-class split.
  */
+
+/**
+ * The Agents tab view: per-agent aggregates (with tokens-per-turn and share
+ * derived here so every renderer agrees), the day×agent series for the
+ * stacked chart, and the same filter state the Cluster summary holds — one
+ * filter, two views of the same ledger rows.
+ */
+export function selectUsageAgents(state) {
+    const budget = state.budget || {};
+    const slice = budget.agents || {};
+    const filter = budget.summary || {};
+    const data = slice.data && typeof slice.data === "object" ? slice.data : null;
+    const days = [14, 30, 90].includes(Number(filter.days)) ? Number(filter.days) : 14;
+
+    const agents = (Array.isArray(data?.agents) ? data.agents : []).map((a) => {
+        const turns = Number(a.turns) || 0;
+        const total = Number(a.total) || 0;
+        return {
+            agent: String(a.agent || "(none)"),
+            models: Array.isArray(a.models) ? a.models.map(String) : [],
+            turns,
+            sessions: Number(a.sessions) || 0,
+            input: Number(a.input) || 0,
+            output: Number(a.output) || 0,
+            cacheRead: Number(a.cacheRead) || 0,
+            cacheWrite: Number(a.cacheWrite) || 0,
+            total,
+            perTurn: turns > 0 ? total / turns : 0,
+            daily: Array.isArray(a.daily) ? a.daily : [],
+        };
+    });
+    const windowTotal = agents.reduce((sum, a) => sum + a.total, 0);
+    for (const a of agents) a.share = windowTotal > 0 ? a.total / windowTotal : 0;
+
+    // Day axis mirrors selectUsageSummary: every UTC day of the window,
+    // oldest first, so a quiet day is a zero column, not a missing one.
+    const today = typeof data?.today === "string" ? data.today : new Date().toISOString().slice(0, 10);
+    const dayKeys = [];
+    {
+        const end = new Date(`${today}T00:00:00Z`).getTime();
+        for (let i = days - 1; i >= 0; i -= 1) dayKeys.push(new Date(end - i * 86_400_000).toISOString().slice(0, 10));
+    }
+    const daily = new Map(dayKeys.map((d) => [d, new Map()]));
+    for (const row of Array.isArray(data?.daily) ? data.daily : []) {
+        const perDay = daily.get(row.day);
+        if (perDay) perDay.set(String(row.agent || "(none)"), Number(row.total) || 0);
+    }
+
+    return {
+        loading: Boolean(slice.loading),
+        error: slice.error || null,
+        loaded: Boolean(data),
+        days,
+        scope: data?.scope === "cluster" ? "cluster" : "mine",
+        agents,
+        windowTotal,
+        dayKeys,
+        daily,
+    };
+}
+
 export function selectUsageSummary(state) {
     const budget = state.budget || {};
     const summary = budget.summary || {};

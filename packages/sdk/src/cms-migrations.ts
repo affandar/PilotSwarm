@@ -365,6 +365,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "token_total_is_input_plus_output",
             steps: migration_0070_token_total_is_input_plus_output(schema),
         },
+        {
+            version: "0071",
+            name: "provider_usage_agents",
+            sql: migration_0071_provider_usage_agents(schema),
+        },
     ];
 }
 
@@ -14350,4 +14355,71 @@ UPDATE ${s}.provider_meters_user m
        updated_at = now();
 `,
     ];
+}
+
+/**
+ * 0071: the agent pivot for the Cluster summary's "Agents" tab.
+ *
+ * The ledger has carried agent_id on every settled turn since 0.5.48
+ * (session-proxy settleTurn: runConfig.agentIdentity), so tokens-per-agent
+ * and tokens-per-turn-per-agent are one GROUP BY away — this function is
+ * that GROUP BY, shaped like cms_provider_usage_summary so the portal tab
+ * reads one answer: per-agent aggregates (with the model list and a
+ * per-day sparkline) plus a flat day×agent series for a stacked chart.
+ * A row with no agent_id is a session bound to no agent; it reports as
+ * '(none)' rather than vanishing, because its tokens are still real.
+ */
+function migration_0071_provider_usage_agents(schema: string): string {
+    const s = schema;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_agents(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days   INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    v_today  DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from   TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_agents JSONB;
+    v_daily  JSONB;
+BEGIN
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'agent', a.agent, 'turns', a.n, 'sessions', a.sessions,
+               'input', a.i, 'output', a.o, 'cacheRead', a.cr, 'cacheWrite', a.cw, 'total', a.t,
+               'models', a.models, 'daily', a.daily) ORDER BY a.t DESC, a.agent), '[]'::jsonb)
+      INTO v_agents
+      FROM (
+        SELECT g.agent, count(*) n, count(DISTINCT g.session_id) sessions,
+               sum(g.tokens_input) i, sum(g.tokens_output) o,
+               sum(g.tokens_cache_read) cr, sum(g.tokens_cache_write) cw, sum(g.tokens_total) t,
+               (SELECT COALESCE(jsonb_agg(DISTINCT substr(x.model_qualified, position(':' IN x.model_qualified) + 1)), '[]'::jsonb)
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) x
+                 WHERE COALESCE(x.agent_id, '(none)') = g.agent AND x.model_qualified IS NOT NULL) AS models,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (y.created_at AT TIME ZONE 'UTC')::date AS day, sum(y.tokens_total) t
+                          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) y
+                         WHERE COALESCE(y.agent_id, '(none)') = g.agent
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, COALESCE(r.agent_id, '(none)') AS agent
+                  FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.agent) a;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'), 'agent', d.agent, 'total', d.t, 'turns', d.n) ORDER BY d.day, d.t DESC), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(r.agent_id, '(none)') AS agent,
+               sum(r.tokens_total) t, count(*) n
+          FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1, 2) d;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'agents', v_agents,
+        'daily', v_daily);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+`;
 }

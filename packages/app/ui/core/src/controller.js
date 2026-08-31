@@ -4159,6 +4159,7 @@ export class PilotSwarmUiController {
     setBudgetTab(tab) {
         this.dispatch({ type: "budget/tab", tab });
         if (tab === "summary") this.loadUsageSummary().catch(() => {});
+        if (tab === "agents") this.loadUsageAgents().catch(() => {});
     }
 
     /**
@@ -4168,7 +4169,29 @@ export class PilotSwarmUiController {
      */
     async setUsageSummaryFilter({ days, providers, preset } = {}) {
         this.dispatch({ type: "budget/summary/filter", days, providers, preset });
-        await this.loadUsageSummary();
+        // One filter drives both ledger views; refresh whichever have data.
+        const jobs = [this.loadUsageSummary()];
+        if (this.getState().budget?.agents?.data || this.getState().budget?.tab === "agents") jobs.push(this.loadUsageAgents());
+        await Promise.all(jobs);
+    }
+
+    /** Read the per-agent pivot for the current summary filter. */
+    async loadUsageAgents() {
+        if (typeof this.transport.getProviderUsageAgents !== "function") {
+            this.dispatch({ type: "budget/agents/failed", error: "The agent pivot is not available on this transport." });
+            return;
+        }
+        const filter = this.getState().budget?.summary || {};
+        this.dispatch({ type: "budget/agents/loading" });
+        try {
+            const data = await this.transport.getProviderUsageAgents({
+                days: filter.days || 14,
+                ...(Array.isArray(filter.providers) && filter.providers.length ? { providers: filter.providers } : {}),
+            });
+            this.dispatch({ type: "budget/agents/loaded", data, fetchedAt: Date.now() });
+        } catch (error) {
+            this.dispatch({ type: "budget/agents/failed", error: budgetRefusalMessage(error) });
+        }
     }
 
     /**

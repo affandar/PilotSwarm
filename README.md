@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.52** — Sessions stop paying for their own wake-ups. The note that says why a session woke used to rewrite the first bytes of every request, so each wake-up threw away the provider's prompt cache; it now rides in the user turn and wake-up cache hits went from 0–65% to 99%. Parents also wake for their children less often — a child's plain `wait` is a heartbeat, updates ride the parent's own schedule when one is imminent — and `check_agents` reports only what changed.
+> **Latest release: v0.5.53** — The base agent prompt is a third smaller with no rules lost, cutting roughly 2,300 tokens from every model call of every session. A user-scope package's private skills can now be loaded on demand by their owner instead of being pasted into every call. The usage ledger also answers a new question: a **Tokens by agent** view showing which agent spent what, how many turns it took, and its tokens-per-turn average.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

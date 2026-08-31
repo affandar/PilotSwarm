@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.5.53 — 2026-08-31
+
+A third off the base prompt, private skills that load on demand, and a ledger
+that can now answer "which agent spent this?"
+
+### Added
+
+- **Tokens by agent.** The usage ledger has carried `agent_id` on every
+  settled turn since 0.5.48, so tokens-per-agent and tokens-per-turn were
+  always one `GROUP BY` away — this release adds that pivot end to end.
+  New CMS function `cms_provider_usage_agents` (migration 0071) returns
+  per-agent totals, turns, sessions, the models each agent ran and a per-day
+  series, plus a flat day-by-agent series; it reuses the summary's viewer
+  scoping, so an admin sees the cluster and everyone else sees their own
+  turns. New operation `GET /providers/usage-agents`. The Providers screen
+  gains an **Agents** tab: daily tokens stacked by agent, and a table of
+  agent / models / turns / sessions / total / tokens-per-turn / cache split /
+  share / trend. Untick a row to drop that agent from the chart; click a
+  column to sort. Turns from a session bound to no agent are reported as
+  `(none)` rather than dropped — those tokens are real. The same capability
+  reaches the MCP surface as `get_provider_usage_agents` and the Token
+  Manager agent as a tool of the same name, so an agent that manages budgets
+  can ask which agent is spending without iterating sessions.
+
+- **A user-scope package's skills can be loaded on demand, by their owner.**
+  Progressive skill discovery (0.5.45) indexes each skill as one line in the
+  prompt and serves the body through `load_skill` only when a task needs it.
+  That catalog was fleet-wide, and every session can call `load_skill`, so a
+  user-scope package's skills — private to the person who published them —
+  had to be left out of it. Their only route into a prompt was the
+  `skills:` frontmatter declaration, which pastes the whole body in on every
+  call whether or not it is used. The catalog is now owner aware: the worker
+  keeps private skills in a second map keyed by owner
+  (`_ownerScopedSkills`), and the session manager hands each session the
+  shared list plus its own owner's bucket. Their names are listed in that
+  session's prompt in a section of their own, so the model knows what it can
+  ask for. A person's own copy wins a name collision with a shared skill.
+  Nobody else can see or load them — not another person, not a system
+  session, not an ownerless one — and a session whose owner cannot be read
+  falls back to the shared list, because a failed identity lookup must never
+  hand out somebody's private skills. This is what lets a user-scope package
+  drop `skills:` and stop paying for bodies it may not use.
+
+### Changed
+
+- **The base agent prompt is a third smaller, with no rules lost.**
+  `default.agent.md` goes 26,981 → 17,810 characters (version 1.19.0), and it
+  rides on every model call of every session: measured on a live cluster, the
+  system-message cost per call fell from 13,367 to 11,107 tokens on Claude
+  Sonnet 5 and 12,303 to 10,424 on gpt-5.6-sol. The Critical Rules section
+  had grown to thirty numbered rules with four duplicated numbers and several
+  restatements of the same instruction; it is now fifteen, each said once.
+  Every rule's meaning is preserved — the compression was audited sentence by
+  sentence against the previous text, and the five test files that pin prompt
+  phrases pass unchanged. The sub-agent spawn preamble (4,338 → 2,871 chars)
+  and the `wait` tool description (765 → 611) got the same treatment.
+
+- **The tokens-per-day chart is always linear.** It used to switch itself to
+  a log axis when one day towered over the others. On a stacked bar a log
+  axis is a lie: segment boundaries sit at the log of the running total, so
+  equal heights mean equal ratios, not equal amounts — a segment worth 0.002%
+  of the day could fill a quarter of the bar. The axis is now linear always;
+  a spike is allowed to look like a spike.
+
+### Tests
+
+- 8 new tests for the owner-aware skill catalog in `skills-index.test.mjs`:
+  the owner can load hers and her prompt lists it; another person, a system
+  session and an ownerless session all get the shared list only; a thrown
+  owner lookup falls back to shared; the shared list is passed through
+  untouched when no user-scope package exists; collision resolution; the
+  live map is re-read so a republish reaches open sessions; sort and clip
+  match the fleet-wide index; and both catalogs are refilled in place on
+  reload, since the session manager holds them by reference. Each verified
+  red under three mutations — a catalog that ignores the owner, private
+  skills leaking to every session, and the worker putting user-scope skills
+  back in the shared catalog.
+
 ## 0.5.52 — 2026-08-30
 
 Sessions stop paying for their own wake-ups. Orchestration 1.0.71.

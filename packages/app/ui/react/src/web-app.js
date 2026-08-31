@@ -48,6 +48,7 @@ import {
     selectNavigationError,
     selectProviderTable,
     selectUsageSummary,
+    selectUsageAgents,
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
@@ -10978,6 +10979,172 @@ function budgetViewDeps(state) {
     ];
 }
 
+
+// ─── Agents tab ─────────────────────────────────────────────────────────
+
+/** Categorical fills for agent segments — readable on light and dark. */
+const AGENT_PALETTE = ["#5b8def", "#e8833a", "#3fb27f", "#c95d63", "#8f6fd8", "#2fa8bf", "#c9a227", "#d1699e", "#7a9a3b", "#8a8a8a"];
+const agentColor = (i) => AGENT_PALETTE[i % AGENT_PALETTE.length];
+
+/** Stacked-by-agent daily bars, linear axis — same geometry as SummaryChart. */
+function AgentStackChart({ view, included }) {
+    const W = 720; const H = 210; const padL = 58; const padB = 22; const padT = 8;
+    const order = view.agents.filter((a) => included.has(a.agent)).map((a) => a.agent);
+    const totals = view.dayKeys.map((day) => {
+        const perDay = view.daily.get(day) || new Map();
+        return order.reduce((sum, agent) => sum + (perDay.get(agent) || 0), 0);
+    });
+    const max = Math.max(0, ...totals) || 1;
+    const innerH = H - padB - padT;
+    const y = (v) => innerH - (v / max) * innerH;
+    const n = Math.max(1, view.dayKeys.length);
+    const slot = (W - padL) / n;
+    const barW = Math.max(3, slot * 0.66);
+    const labelEvery = n > 40 ? 10 : (n > 20 ? 5 : 1);
+    return React.createElement("svg", {
+        className: "ps-summary-chart", viewBox: `0 0 ${W} ${H}`, role: "img",
+        "aria-label": `Tokens per day by agent, ${n} days`,
+    },
+        [0, 0.25, 0.5, 0.75, 1].map((f) => React.createElement("g", { key: f },
+            React.createElement("line", { x1: padL, x2: W, y1: padT + innerH - f * innerH, y2: padT + innerH - f * innerH, className: "ps-summary-chart__grid" }),
+            React.createElement("text", { x: padL - 6, y: padT + innerH - f * innerH + 3, className: "ps-summary-chart__tick", textAnchor: "end" }, summaryTokens(f * max)))),
+        view.dayKeys.map((day, i) => {
+            const perDay = view.daily.get(day) || new Map();
+            const x = padL + i * slot + (slot - barW) / 2;
+            let cum = 0;
+            const segs = order.map((agent, ai) => {
+                const v = perDay.get(agent) || 0;
+                if (v <= 0) return null;
+                const y0 = padT + y(cum); cum += v; const y1 = padT + y(cum);
+                return React.createElement("rect", { key: agent, x, y: y1, width: barW, height: Math.max(0.5, y0 - y1 - 0.5), fill: agentColor(view.agents.findIndex((a) => a.agent === agent)) });
+            });
+            const title = `${day}: ${summaryTokens(cum)} tokens\n` + order
+                .map((agent) => [agent, perDay.get(agent) || 0]).filter(([, v]) => v > 0)
+                .sort((a, b) => b[1] - a[1]).map(([agent, v]) => `${agent}: ${summaryTokens(v)}`).join("\n");
+            return React.createElement("g", { key: day, className: "ps-summary-chart__bar" },
+                React.createElement("title", null, title),
+                segs,
+                (i % labelEvery === 0 || i === n - 1)
+                    ? React.createElement("text", { x: x + barW / 2, y: H - 6, className: "ps-summary-chart__day", textAnchor: "middle" }, day.slice(5))
+                    : null);
+        }));
+}
+
+const AGENT_SORTS = {
+    agent: (a, b) => a.agent.localeCompare(b.agent),
+    turns: (a, b) => b.turns - a.turns,
+    sessions: (a, b) => b.sessions - a.sessions,
+    total: (a, b) => b.total - a.total,
+    perTurn: (a, b) => b.perTurn - a.perTurn,
+    cacheRead: (a, b) => b.cacheRead - a.cacheRead,
+};
+
+function agentsViewDeps(state) {
+    const a = state.budget?.agents || {};
+    const s = state.budget?.summary || {};
+    return [a.loading, a.error, a.fetchedAt, s.days, s.preset, (s.providers || []).join(","), (state.budget?.grid || []).length];
+}
+
+/**
+ * The Agents tab: the same ledger rows as the Cluster summary, pivoted by
+ * the agent that ran the turn. The checkbox on each row slices the chart;
+ * clicking a column header re-sorts the table. '(none)' is a session bound
+ * to no agent — its tokens are real, so it is a row, not an omission.
+ */
+function AgentUsagePane({ controller }) {
+    const deps = useControllerSelector(controller, agentsViewDeps, shallowEqualObject);
+    const view = React.useMemo(() => selectUsageAgents(controller.getState()), [controller, deps]);
+    const summaryView = React.useMemo(() => selectUsageSummary(controller.getState()), [controller, deps]);
+    React.useEffect(() => {
+        if (!view.loaded && !view.loading && !view.error) controller.loadUsageAgents().catch(() => {});
+    }, [controller]);
+
+    const [excluded, setExcluded] = React.useState(() => new Set());
+    const [sortKey, setSortKey] = React.useState("total");
+    const included = React.useMemo(() => new Set(view.agents.map((a) => a.agent).filter((name) => !excluded.has(name))), [view, excluded]);
+    const toggleAgent = (name) => setExcluded((prev) => {
+        const next = new Set(prev);
+        if (next.has(name)) next.delete(name); else next.add(name);
+        return next;
+    });
+    const rows = React.useMemo(() => [...view.agents].sort(AGENT_SORTS[sortKey] || AGENT_SORTS.total), [view, sortKey]);
+    const setRange = (days) => controller.setUsageSummaryFilter({ days }).catch(() => {});
+    const setProviders = ({ preset, providers }) => controller.setUsageSummaryFilter({ preset, providers }).catch(() => {});
+    const sortableHead = (key, label, title) => React.createElement("th", {
+        key: label, title: title || "Click to sort by this column",
+        style: { cursor: "pointer" },
+        onClick: () => setSortKey(key),
+    }, label, sortKey === key ? " ▾" : "");
+
+    return React.createElement("div", { className: `ps-summary${view.loading ? " is-loading" : ""}` },
+        React.createElement("div", { className: "ps-summary__filters" },
+            React.createElement(SummaryProviderPicker, { view: summaryView, onChange: setProviders }),
+            React.createElement("div", { className: "ps-budget-seg", role: "group", "aria-label": "Window" },
+                SUMMARY_RANGES.map((days) => React.createElement("button", {
+                    key: days, type: "button",
+                    className: `ps-budget-seg__button${view.days === days ? " is-on" : ""}`,
+                    "aria-pressed": view.days === days,
+                    onClick: () => setRange(days),
+                }, `${days}d`))),
+            React.createElement("span", { className: "ps-summary__scope" },
+                view.scope === "cluster" ? "Whole cluster, system sessions included" : "Your own turns")),
+        view.error ? React.createElement("div", { className: "ps-budget-empty is-error", role: "alert" },
+            React.createElement("div", null, "The agent pivot could not be read. "),
+            React.createElement("div", { className: "ps-budget-sub" }, view.error)) : null,
+        React.createElement("div", { className: "ps-summary__card" },
+            React.createElement("div", { className: "ps-summary__card-head" },
+                React.createElement("b", null, "Tokens per day, by agent"),
+                React.createElement("span", { className: "ps-summary__muted" },
+                    `last ${view.days} days · ${summaryTokens(view.windowTotal)} tokens · untick a row below to slice the chart`)),
+            view.loaded || view.windowTotal > 0
+                ? React.createElement(AgentStackChart, { view, included })
+                : null,
+            React.createElement("div", { className: "ps-summary__legend", style: { flexWrap: "wrap", marginTop: "6px" } },
+                view.agents.map((a, i) => included.has(a.agent) ? React.createElement("span", { key: a.agent },
+                    React.createElement("i", { className: "ps-summary-dot", style: { background: agentColor(i) } }), a.agent) : null))),
+        React.createElement("div", { className: "ps-summary__card" },
+            React.createElement("div", { className: "ps-summary__card-head" },
+                React.createElement("b", null, "By agent"),
+                React.createElement("span", { className: "ps-summary__muted" }, "tokens/turn is the window average — a ledger row is one turn")),
+            view.agents.length === 0
+                ? React.createElement("div", { className: "ps-budget-empty" }, view.loaded ? "No token usage in this window." : (view.loading ? "Reading…" : ""))
+                : React.createElement("div", { className: "ps-summary__table-wrap" },
+                    React.createElement("table", { className: "ps-summary__table" },
+                        React.createElement("thead", null, React.createElement("tr", null,
+                            React.createElement("th", { title: "Untick to remove this agent from the chart" }, ""),
+                            sortableHead("agent", "Agent"),
+                            React.createElement("th", { title: "Distinct model names this agent ran in the window" }, "Models"),
+                            sortableHead("turns", "Turns"),
+                            sortableHead("sessions", "Sessions"),
+                            sortableHead("total", "Total"),
+                            sortableHead("perTurn", "Tok/turn", "Window average: total tokens over ledger turns"),
+                            sortableHead("cacheRead", "Cache read"),
+                            React.createElement("th", null, "Cache write"),
+                            React.createElement("th", null, "Share"),
+                            React.createElement("th", null, "Trend"))),
+                        React.createElement("tbody", null, rows.map((a) => React.createElement("tr", { key: a.agent },
+                            React.createElement("td", null, React.createElement("input", {
+                                type: "checkbox", checked: !excluded.has(a.agent),
+                                onChange: () => toggleAgent(a.agent), "aria-label": `Include ${a.agent} in the chart`,
+                            })),
+                            React.createElement("td", { className: "is-model" },
+                                React.createElement("i", { className: "ps-summary-dot", style: { background: agentColor(view.agents.findIndex((x) => x.agent === a.agent)) } }),
+                                " ", a.agent),
+                            React.createElement("td", { title: a.models.join(", ") }, a.models.length <= 2 ? a.models.join(", ") : `${a.models.slice(0, 2).join(", ")} +${a.models.length - 2}`),
+                            React.createElement("td", null, a.turns),
+                            React.createElement("td", null, a.sessions),
+                            React.createElement("td", { className: "is-total" }, summaryTokens(a.total)),
+                            React.createElement("td", null, summaryTokens(Math.round(a.perTurn))),
+                            React.createElement("td", null, summaryTokens(a.cacheRead)),
+                            React.createElement("td", null, summaryTokens(a.cacheWrite)),
+                            React.createElement("td", { className: "is-share" },
+                                React.createElement("i", { className: "ps-summary-share", style: { width: `${Math.max(1, Math.round(a.share * 100))}px` } }),
+                                `${(a.share * 100).toFixed(a.share < 0.1 ? 1 : 0)}%`),
+                            React.createElement("td", null, React.createElement(SummarySparkline, {
+                                values: view.dayKeys.map((day) => { const found = a.daily.find((d) => d.day === day); return found ? Number(found.total) || 0 : 0; }),
+                            })))))))));
+}
+
 // ─── Cluster summary tab ────────────────────────────────────────────────
 
 const SUMMARY_RANGES = [14, 30, 90];
@@ -11077,24 +11244,12 @@ function summaryTokens(n) {
  * Linear by default; when one day is more than ten times the median of the
  * others, the axis goes to log10(1 + n) so the rest are not hairlines.
  */
-/**
- * Log or linear? Log when one day is more than ten times the median of the
- * days that had anything — otherwise a spike turns every other day into a
- * hairline. Shared by the chart and the card header that names the scale.
- */
-function summaryLogScale(series) {
-    const totals = series.map((d) => d.total);
-    const max = Math.max(0, ...totals);
-    const sorted = totals.filter((t) => t > 0).sort((a, b) => a - b);
-    const median = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
-    return median > 0 && max > median * 10;
-}
-
 function SummaryChart({ series }) {
     const W = 720; const H = 190; const padL = 58; const padB = 22; const padT = 8;
     const totals = series.map((d) => d.total);
     const max = Math.max(0, ...totals);
-    const log = summaryLogScale(series);
+    // Variant B: strictly linear. A spike is allowed to tower; composition
+    const log = false;
     const scale = (v) => (log ? Math.log10(1 + v) : v);
     const top = scale(max) || 1;
     const innerH = H - padB - padT;
@@ -11142,6 +11297,7 @@ function SummaryChart({ series }) {
                     : null);
         }));
 }
+
 
 function SummarySparkline({ values }) {
     const max = Math.max(0, ...values);
@@ -11217,11 +11373,7 @@ function ClusterSummaryPane({ controller }) {
                     React.createElement("span", { title: "The part of the input written to the cache" }, React.createElement("i", { className: "ps-summary-dot is-cache-w" }), "cache write"),
                     React.createElement("span", null, React.createElement("i", { className: "ps-summary-dot is-out" }), "output")),
                 React.createElement("span", { className: "ps-summary__muted" }, `${rangeLabel} · ${summaryTokens(view.windowTotal)} tokens`),
-                // Named here, not painted over the bars: a spike is exactly
-                // when the tallest bar reaches the top-right corner.
-                summaryLogScale(view.series)
-                    ? React.createElement("span", { className: "ps-summary__tag", title: "One day is more than ten times the median, so the axis is log10 — otherwise every other day is a hairline." }, "log scale")
-                    : null),
+                null),
             view.windowTotal > 0 || view.loaded
                 ? React.createElement(SummaryChart, { series: view.series })
                 : null,
@@ -11562,7 +11714,7 @@ function ProviderBudgetView({ controller }) {
         // Two tabs: the per-provider table (meters, people's turns, limits)
         // and the Cluster summary (the ledger, every turn, by model).
         React.createElement("div", { className: "ps-budget-tabs", role: "tablist" },
-            [["providers", "Providers"], ["summary", "Cluster summary"]].map(([id, label]) => React.createElement("button", {
+            [["providers", "Providers"], ["summary", "Cluster summary"], ["agents", "Agents"]].map(([id, label]) => React.createElement("button", {
                 key: id, type: "button", role: "tab",
                 "aria-selected": (controller.getState().budget?.tab || "providers") === id,
                 className: `ps-budget-tab${(controller.getState().budget?.tab || "providers") === id ? " is-on" : ""}`,
@@ -11570,7 +11722,9 @@ function ProviderBudgetView({ controller }) {
             }, label))),
         (controller.getState().budget?.tab || "providers") === "summary"
             ? React.createElement("div", { className: "ps-budget" }, React.createElement(ClusterSummaryPane, { controller }))
-            : React.createElement("div", { className: "ps-budget" }, body),
+            : (controller.getState().budget?.tab === "agents"
+                ? React.createElement("div", { className: "ps-budget" }, React.createElement(AgentUsagePane, { controller }))
+                : React.createElement("div", { className: "ps-budget" }, body)),
         sheetEl);
 }
 

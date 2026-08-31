@@ -2066,28 +2066,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `Your nesting level: ${childNestingLevel} (max: ${MAX_NESTING_LEVEL}).\n` +
                         `Your task: "${agentTask.slice(0, 500)}"\n\n` +
                         `Instructions:\n` +
-                        `- Focus exclusively on your assigned task.\n` +
-                        `- Your final response will be automatically forwarded to the parent agent.\n` +
-                        `- Be thorough but concise — the parent will synthesize results from multiple agents.\n` +
-                        `- Do NOT ask the user for input — you are autonomous.\n` +
-                        `- You are autonomous and goal-driven. If the task implies ongoing monitoring or follow-through until done, keep yourself alive with durable timers until the goal is complete or you can no longer make progress.\n` +
-                        `- If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing or asking the user directly.\n` +
-                        `- When your task is complete, provide a clear summary of your findings/results.\n` +
-                        `- Prefer using \`store_fact\` for larger structured context handoffs across your session lineage. Put the durable details in facts, then pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs.\n` +
-                        `- FILESYSTEM ISOLATION: sessions and sub-agents each run on their own worker pod and do NOT share a filesystem. The artifact store is the only shared byte channel — hand off files (especially binaries/archives) with \`write_artifact({fromFile: "<path>"})\` and consume them with \`read_artifact({toFile: "<path>"})\`; never re-type file bytes as inline content or base64 through messages.\n` +
-                        `- \`write_artifact\` returns the artifact:// link — include it in your response whenever the user should see the file.\n` +
-                        `- If you override a sub-agent model, you MUST first call list_available_models in this session and use only an exact provider:model value returned there. ` +
-                        `NEVER invent, guess, shorten, or reuse a stale model name.\n` +
-                        `- Worker-managed system agents are not valid spawn targets. If you expect one and it is missing, report that the workers likely need to be restarted.\n` +
-                        `- For ANY waiting, sleeping, delaying, or scheduling, you MUST use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools. ` +
-                        `Use \`wait\` or \`wait_on_worker\` for one-shot delays. Use \`cron\` for fixed recurring intervals and \`cron_at\` for wall-clock schedules. ` +
-                        `Do NOT implement wall-clock schedules by waking every N minutes to check the clock; use \`cron_at\` with an explicit IANA timezone instead. ` +
-                        `Do NOT burn tokens polling inside one LLM turn; after a brief immediate re-check at most, yield with a durable timer. ` +
-                        `NEVER use setTimeout, sleep, setInterval, or any other timing mechanism.\n` +
+                        `- Focus exclusively on your assigned task. You are autonomous — do NOT ask the user for input. ` +
+                        `If it is ambiguous whether the task should become a long-running recurring workflow, report that ambiguity back to the parent instead of guessing.\n` +
+                        `- Your final response is automatically forwarded to the parent. Be thorough but concise — the parent synthesizes results from multiple agents. When your task is complete, provide a clear summary of your findings.\n` +
+                        `- If the task implies ongoing monitoring or follow-through, keep yourself alive until the goal is complete: for ANY waiting or scheduling use the \`wait\`, \`wait_on_worker\`, \`cron\`, or \`cron_at\` tools — never setTimeout/sleep, and never poll inside one turn.\n` +
+                        `- Prefer using \`store_fact\` for larger structured context handoffs across your session lineage; pass fact keys or \`read_facts\` pointers in messages/prompts instead of pasting large context blobs.\n` +
+                        `- FILESYSTEM ISOLATION: parent, siblings, and sub-agents run on separate worker pods and do NOT share a filesystem — the artifact store is the only shared byte channel (\`write_artifact({fromFile})\` → \`read_artifact({toFile})\`; never inline file bytes through messages). Include returned artifact:// links in your response.\n` +
+                        `- Model overrides: call list_available_models first and use only an exact provider:model value it returns.\n` +
+                        `- Worker-managed system agents are not valid spawn targets; if one is missing, report that the workers likely need to be restarted.\n` +
                         (canSpawnMore
-                            ? `- If your parent task explicitly asks you to spawn sub-agents, delegate, fan out, or parallelize work, you SHOULD do so within runtime limits instead of collapsing the task into a direct answer. ` +
-                              `If delegation was not explicitly requested, use your judgment and avoid unnecessary fan-out. ` +
-                              `You have ${MAX_NESTING_LEVEL - childNestingLevel} level(s) of nesting remaining. ` +
+                            ? `- If your parent task explicitly asks for sub-agents or fan-out, delegate within runtime limits (${MAX_NESTING_LEVEL - childNestingLevel} nesting level(s) remaining); otherwise use judgment and avoid unnecessary fan-out. ` +
                               `After spawning, finish the turn normally and let qualifying child updates wake you according to contract.wakeOn. ` +
                               `Do not schedule wait or cron solely to poll check_agents; use wait_for_agents only when you need an explicit synchronization barrier.\n`
                             : `- You CANNOT spawn sub-agents — you are at the maximum nesting depth. Handle everything directly.\n`);

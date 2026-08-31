@@ -250,9 +250,18 @@ Two consequences worth designing around:
   needs on *every* turn. If the model can decide when it needs a skill, let it
   load it. Write the `description` for that decision: it is the one line the
   model sees before choosing.
-- **User-scope package skills are private.** They are indexed only for their
-  own package's agents; deployment and shared-package skills are indexed for
-  everyone.
+- **User-scope package skills are private, but still discoverable — by their
+  owner.** Deployment and shared-package skills are indexed in the framework
+  base prompt, which every session reads, and `load_skill` serves them to
+  anyone. A user-scope package's skills are kept out of both. Since 0.5.53
+  they get the same treatment one level down: the worker holds them in a
+  second catalog keyed by owner, and a session owned by the person who
+  published them gets those names listed in its own prompt and can
+  `load_skill` them. Nobody else can — not another person, not a system
+  session, not an ownerless one, and not a session whose owner cannot be
+  read. On a name collision the owner's own copy wins. So a user-scope
+  package does **not** need `skills:` to reach its agents; declaring one
+  still works, and still costs the whole body on every turn.
 
 ### Directory Structure
 

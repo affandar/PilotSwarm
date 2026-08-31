@@ -954,6 +954,7 @@ export class PortalRuntime {
             case "getProviderStatus":
             case "getProviderUsageGrid":
             case "getProviderUsageSummary":
+            case "getProviderUsageAgents":
             case "createProvider":
             case "createMyProvider":
             case "updateMyProviderCredential":
@@ -1408,6 +1409,13 @@ export class PortalRuntime {
                         days: params.days,
                         // One comma-separated query value on the wire; names
                         // never contain commas.
+                        providers: typeof params.providers === "string"
+                            ? params.providers.split(",").map((p) => p.trim()).filter(Boolean)
+                            : (Array.isArray(params.providers) ? params.providers : []),
+                    });
+                case "getProviderUsageAgents":
+                    return await mgmt.getProviderUsageAgents(viewer, {
+                        days: params.days,
                         providers: typeof params.providers === "string"
                             ? params.providers.split(",").map((p) => p.trim()).filter(Boolean)
                             : (Array.isArray(params.providers) ? params.providers : []),

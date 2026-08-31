@@ -62,6 +62,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getOrchestrationStats",
     "getProviderStatus",
     "getProviderUsage",
+    "getProviderUsageAgents",
     "getProviderUsageGrid",
     "getProviderUsageSummary",
     "getSession",
@@ -662,6 +663,15 @@ export interface ManagementOps {
         chargeClass?: string;
         dimension?: string;
         limit?: number;
+    }): Promise<any>;
+
+    /**
+     * The agent pivot from the usage ledger: tokens, turns, sessions and models per agent over the window (with '(none)' for sessions bound to no agent), each with a per-day series, plus a flat day-by-agent series for a stacked chart. Same viewer scoping and `providers` filter as the usage summary.
+     * @remarks `GET /providers/usage-agents` — access: `authed`
+     */
+    getProviderUsageAgents(params: {
+        days?: number;
+        providers?: string;
     }): Promise<any>;
 
     /**
@@ -1638,6 +1648,7 @@ export function createManagementOps(
         getOrchestrationStats: (params: Record<string, unknown> = {}) => callOp("getOrchestrationStats", params),
         getProviderStatus: (params: Record<string, unknown> = {}) => callOp("getProviderStatus", params),
         getProviderUsage: (params: Record<string, unknown> = {}) => callOp("getProviderUsage", params),
+        getProviderUsageAgents: (params: Record<string, unknown> = {}) => callOp("getProviderUsageAgents", params),
         getProviderUsageGrid: (params: Record<string, unknown> = {}) => callOp("getProviderUsageGrid", params),
         getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),

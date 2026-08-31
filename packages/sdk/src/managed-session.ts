@@ -21,17 +21,12 @@ interface TurnState {
     waitThreshold: number;
 }
 
-const DEFAULT_WAIT_TOOL_DESCRIPTION =
-    "REQUIRED: The ONLY way to wait, pause, sleep, or delay inside a turn. " +
-    "You MUST call this tool whenever you need to wait, pause, delay, " +
-    "poll, check back later, or pause before retrying. " +
-    "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
-    "For recurring or periodic schedules, use the cron tool instead. " +
-    "If it is genuinely ambiguous whether the task should become an ongoing monitor, clarify before choosing a recurring schedule. " +
+const DEFAULT_WAIT_TOOL_DESCRIPTION ="The ONLY way to wait, pause, delay, or pause-before-retry inside a turn: a durable timer that survives " +
+    "restarts and may resume on a different worker (set preserveWorkerAffinity=true for node-local work). " +
     "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
-    "This tool enables durable waiting that survives process restarts. " +
-    "Long waits may resume on a different worker unless you set " +
-    "`preserveWorkerAffinity: true` for node-local work.";
+    "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
+    "For recurring or periodic schedules, use the cron tool instead (cron_at for wall-clock schedules); if it is " +
+    "genuinely ambiguous whether the task should become an ongoing monitor, clarify first.";
 
 /**
  * show_artifact — the declaration AND the per-turn handler both build from this

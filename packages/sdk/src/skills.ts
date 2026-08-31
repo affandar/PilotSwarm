@@ -12,6 +12,19 @@
 import fs from "node:fs";
 import path from "node:path";
 
+/**
+ * Cut a one-line description at a word boundary, with an ellipsis, never
+ * mid-word. Shared by the two skills indexes — the fleet-wide one in the base
+ * prompt (worker.ts) and a session owner's private one (session-manager.ts) —
+ * which sit in the same prompt and must look the same.
+ */
+export function clipDescription(text: string, max: number): string {
+    if (text.length <= max) return text;
+    const cut = text.slice(0, max - 1);
+    const at = cut.lastIndexOf(" ");
+    return `${(at > max / 2 ? cut.slice(0, at) : cut).replace(/[\s,;:—-]+$/, "")}…`;
+}
+
 // ─── Types ───────────────────────────────────────────────────────
 
 export interface Skill {

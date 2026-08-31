@@ -729,6 +729,25 @@ export class ProviderStore {
         return summary && typeof summary === "object" ? summary : {};
     }
 
+    /**
+     * The agent pivot over the same ledger rows and viewer scope as
+     * usageSummary: per-agent aggregates (models, per-day sparkline) plus a
+     * flat day×agent series for the stacked chart. '(none)' collects turns
+     * from sessions bound to no agent.
+     */
+    async usageAgents(
+        viewer: number | null, isAdmin: boolean, days = 14, providers: string[] | null = null,
+    ): Promise<Record<string, unknown>> {
+        const names = Array.isArray(providers)
+            ? providers.map((p) => String(p ?? "").trim()).filter(Boolean)
+            : [];
+        const rows = await this.call(
+            `SELECT ${this.fn("cms_provider_usage_agents")}($1,$2,$3,$4) AS agents`,
+            [viewer, isAdmin, days, names.length ? names : null]);
+        const agents = rows[0]?.agents;
+        return agents && typeof agents === "object" ? agents : {};
+    }
+
     // ── management ───────────────────────────────────────────────────
 
     async createProvider(input: {

@@ -867,7 +867,13 @@ frontmatter, it is spliced into that agent's system message on every turn.
 Otherwise it is **discoverable**: the framework base prompt lists every
 registered skill by name and description, and the `load_skill` tool returns
 the body on demand — so a session pays only for the skills it actually pulls
-(the canvas guidance works this way). A skill directory can also include a
+(the canvas guidance works this way). The base prompt is shared by every
+session, so it lists deployment and shared-package skills only. A user-scope
+package's skills are private: the worker keeps them in a second catalog keyed
+by owner, and the session manager adds that owner's own names to their own
+sessions' prompts and to what `load_skill` will serve them. A session that
+cannot be tied to that owner — someone else's, a system session, an ownerless
+one, or one whose owner lookup failed — sees and gets the shared list only. A skill directory can also include a
 `tools.json` file listing tools the skill requires:
 
 ```json

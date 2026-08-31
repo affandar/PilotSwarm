@@ -9,18 +9,11 @@ import {
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles } from "./agent-loader.js";
-import { composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
+import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
-/** Cut a one-line description at a word boundary, with an ellipsis, never mid-word. */
-function clipDescription(text: string, max: number): string {
-    if (text.length <= max) return text;
-    const cut = text.slice(0, max - 1);
-    const at = cut.lastIndexOf(" ");
-    return `${(at > max / 2 ? cut.slice(0, at) : cut).replace(/[\s,;:—-]+$/, "")}…`;
-}
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
@@ -167,6 +160,14 @@ export class PilotSwarmWorker {
     private _loadedSkillsAll: Skill[] = [];
     /** Skills `load_skill` may return: everything but user-scope package skills. Refilled in place. */
     private _loadableSkills: Skill[] = [];
+    /**
+     * A user-scope package's skills, keyed by its owner (`agentOwnerKey`).
+     * They are private, so they are NOT in the fleet-wide `_loadableSkills`
+     * catalog — but a session OWNED BY that person may load them, exactly as
+     * it may already use the private agents from the same package. Held by
+     * reference in workerDefaults; cleared and refilled in place on reload.
+     */
+    private _ownerScopedSkills = new Map<string, Skill[]>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
     private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
@@ -334,6 +335,12 @@ export class PilotSwarmWorker {
                 // The `load_skill` catalog, BY REFERENCE (cleared and refilled
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,
+                // Private, per-owner skills, also by reference. A session
+                // gets the ones its OWNER published, and nobody else's — see
+                // SessionManager._skillCatalogForSession (what load_skill
+                // will serve) and _ownerSkillsIndexSection (what its prompt
+                // says exists).
+                ownerScopedSkills: this._ownerScopedSkills,
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
@@ -1611,17 +1618,43 @@ export class PilotSwarmWorker {
      * base prompt is re-read from disk on every reload, so it never stacks.
      */
     private _composeSkillsIndex(): void {
-        // The LOADABLE catalog (held by reference in workerDefaults.skills):
-        // deployment and shared-package skills only. A user-scope package's
-        // skills are private to its owner and reach a prompt only through
-        // that package's own `skills:` declarations — never through
-        // load_skill, which every session can call. Refilled in place.
+        // Two catalogs, both held by reference in workerDefaults and refilled
+        // in place:
+        //
+        //   _loadableSkills      deployment + shared-package skills. Every
+        //                        session may load these, and they are indexed
+        //                        in the framework base prompt below.
+        //   _ownerScopedSkills   a user-scope package's skills, keyed by its
+        //                        owner. Private: only sessions owned by that
+        //                        person may load them, and only their prompt
+        //                        lists them. session-manager concatenates the
+        //                        right bucket onto the shared list per
+        //                        session (`_skillCatalogForSession`) and adds
+        //                        the matching index lines
+        //                        (`_ownerSkillsIndexSection`).
         this._loadableSkills.length = 0;
+        this._ownerScopedSkills.clear();
         const seen = new Map<string, string>();
+        const ownerSeen = new Map<string, Set<string>>();
         for (const skill of this._loadedSkillsAll) {
-            if (!skill?.name || seen.has(skill.name)) continue;
+            if (!skill?.name) continue;
             const prov = this._skillPackageOwner(skill);
-            if (prov && prov.scope === "user") continue;
+            if (prov && prov.scope === "user") {
+                // Private to its owner: never in the fleet-wide catalog, but
+                // loadable by that person's own sessions. session-manager
+                // concatenates this list onto the shared one per session.
+                const key = agentOwnerKey(prov.owner);
+                if (!key) continue;
+                const names = ownerSeen.get(key) ?? new Set<string>();
+                if (names.has(skill.name)) continue;
+                names.add(skill.name);
+                ownerSeen.set(key, names);
+                const list = this._ownerScopedSkills.get(key) ?? [];
+                list.push(skill);
+                this._ownerScopedSkills.set(key, list);
+                continue;
+            }
+            if (seen.has(skill.name)) continue;
             this._loadableSkills.push(skill);
             const description = clipDescription(String(skill.description || "").replace(/\s+/g, " ").trim(), 240);
             seen.set(skill.name, description);

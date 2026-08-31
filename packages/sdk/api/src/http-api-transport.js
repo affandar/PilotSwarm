@@ -437,6 +437,11 @@ export class HttpApiTransport {
         const list = Array.isArray(providers) ? providers.filter(Boolean).join(",") : (providers || undefined);
         return this.api.call("getProviderUsageSummary", { ...(days ? { days } : {}), ...(list ? { providers: list } : {}) });
     }
+
+    getProviderUsageAgents({ days, providers } = {}) {
+        const list = Array.isArray(providers) && providers.length ? providers.join(",") : null;
+        return this.api.call("getProviderUsageAgents", { ...(days ? { days } : {}), ...(list ? { providers: list } : {}) });
+    }
     createProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createProvider", { name, type, credentials, baseUrl, displayName }); }
     deleteProvider(name) { return this.api.call("deleteProvider", { name }); }
     createMyProvider({ name, type, credentials, baseUrl, displayName } = {}) { return this.api.call("createMyProvider", { name, type, credentials, baseUrl, displayName }); }

@@ -3954,6 +3954,18 @@ export class PilotSwarmManagementClient {
         return await store.usageSummary(actor, isAdmin, days, providers) as unknown as ProviderUsageSummary;
     }
 
+    /**
+     * The agent pivot from the same ledger: tokens, turns and models per
+     * agent (with '(none)' for unbound sessions) plus a day×agent series.
+     * Same viewer scoping as getProviderUsageSummary.
+     */
+    async getProviderUsageAgents(viewer: ProviderViewer, query: ProviderUsageSummaryQuery = {}): Promise<Record<string, unknown>> {
+        const { store, actor, isAdmin } = await this._providerActor(viewer);
+        const days = clampInteger(query.days ?? undefined, 14, 1, 365);
+        const providers = Array.isArray(query.providers) ? query.providers : null;
+        return await store.usageAgents(actor, isAdmin, days, providers) as Record<string, unknown>;
+    }
+
     /** Sessions waiting on a limit right now, with what is holding each one. */
     async listPausedSessions(viewer: ProviderViewer): Promise<{ sessions: PausedSessionRow[] }> {
         const { store, actor, isAdmin } = await this._providerActor(viewer);

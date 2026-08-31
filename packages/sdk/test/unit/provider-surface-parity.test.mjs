@@ -330,6 +330,17 @@ const CAPABILITIES = [
         },
     },
     {
+        n: 29,
+        op: "getProviderUsageAgents",
+        http: { method: "GET", path: "/providers/usage-agents", access: "authed" },
+        mcp: { tool: "get_provider_usage_agents", args: { days: 14, providers: ["team"] } },
+        agent: {
+            tool: "get_provider_usage_agents",
+            args: { days: 14, providers: ["team"] },
+            calls: ["usageAgents"],
+        },
+    },
+    {
         n: 27,
         op: "updateSharedProviderCredential",
         http: { method: "PUT", path: "/management/providers/:name/credential", access: "fleet:admin" },
@@ -416,6 +427,7 @@ function createRecordingProviderTools() {
         updatePersonalCredential: record("updatePersonalCredential", { name: "mine" }),
         updateSharedCredential: record("updateSharedCredential", { name: "team" }),
         usageSummary: record("usageSummary", { days: 14, windows: {}, daily: [], models: [], classes: [] }),
+        usageAgents: record("usageAgents", { days: 14, agents: [], daily: [] }),
         deleteProvider: record("deleteProvider", 0),
         setLimit: record("setLimit", { ruleId: 1, seededTokens: 0 }),
         removeLimit: record("removeLimit", true),
@@ -461,7 +473,7 @@ test("every capability is a method on HttpApiTransport — the browser's and CLI
 });
 
 test("every capability is an operation on the HTTP table", () => {
-    assert.equal(CAPABILITIES.length, 28, "the contract lists twenty-eight capabilities");
+    assert.equal(CAPABILITIES.length, 29, "the contract lists twenty-nine capabilities");
 
     for (const cap of CAPABILITIES) {
         const op = OPERATIONS.find((row) => row.name === cap.op);

@@ -1039,7 +1039,7 @@ export function appReducer(state, action) {
 
         // ── Budget screen: tab + the Cluster summary ─────────────────
         case "budget/tab": {
-            const tab = action.tab === "summary" ? "summary" : "providers";
+            const tab = ["summary", "agents"].includes(action.tab) ? action.tab : "providers";
             if (state.budget.tab === tab) return state;
             return { ...state, budget: { ...state.budget, tab } };
         }
@@ -1067,6 +1067,30 @@ export function appReducer(state, action) {
                         fetchedAt: Number(action.fetchedAt) || Date.now(),
                         data: action.data && typeof action.data === "object" ? action.data : null,
                     },
+                },
+            };
+        case "budget/agents/loading":
+            return { ...state, budget: { ...state.budget, agents: { ...state.budget.agents, loading: true } } };
+        case "budget/agents/loaded":
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    agents: {
+                        ...state.budget.agents,
+                        loading: false,
+                        error: null,
+                        fetchedAt: Number(action.fetchedAt) || Date.now(),
+                        data: action.data && typeof action.data === "object" ? action.data : null,
+                    },
+                },
+            };
+        case "budget/agents/failed":
+            return {
+                ...state,
+                budget: {
+                    ...state.budget,
+                    agents: { ...state.budget.agents, loading: false, error: String(action.error || "The agent pivot could not be read.") },
                 },
             };
         case "budget/summary/failed":

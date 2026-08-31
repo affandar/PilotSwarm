@@ -4,6 +4,7 @@ import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
+import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
@@ -196,6 +197,13 @@ export interface WorkerDefaults {
      * body on demand — nothing is inlined unless an agent declares it.
      */
     skills?: Array<{ name: string; description: string; prompt: string; dir?: string }>;
+    /**
+     * Private skills from USER-scope agent packages, keyed by owner
+     * (`agentOwnerKey`). A session may load the ones its own owner
+     * published; they are never offered to anybody else. Held by reference,
+     * refilled in place on plugin reload.
+     */
+    ownerScopedSkills?: Map<string, Array<{ name: string; description: string; prompt: string; dir?: string }>>;
     /**
      * Deployment MCP catalog (merged `.mcp.json` map). NOT applied to
      * sessions wholesale — a session receives exactly its bound agent's
@@ -1907,8 +1915,9 @@ export class SessionManager {
 
         const managed = new ManagedSession(sessionId, copilotSession, config);
         // The `load_skill` catalog (progressive discovery) — held on the
-        // managed session, NEVER in the CLI's session config.
-        managed.setSkillCatalog(this.workerDefaults.skills ?? []);
+        // managed session, NEVER in the CLI's session config. Shared skills
+        // plus this session owner's own private ones.
+        managed.setSkillCatalog(await this._skillCatalogForSession(sessionId));
         this.sessions.set(sessionId, managed);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
@@ -2035,8 +2044,9 @@ export class SessionManager {
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
         // The `load_skill` catalog (progressive discovery) — held on the
-        // managed session, NEVER in the CLI's session config.
-        managed.setSkillCatalog(this.workerDefaults.skills ?? []);
+        // managed session, NEVER in the CLI's session config. Shared skills
+        // plus this session owner's own private ones.
+        managed.setSkillCatalog(await this._skillCatalogForSession(sessionId));
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry
                             await sleep(500 * attempt);
@@ -2472,9 +2482,19 @@ export class SessionManager {
                 // part of the system message, and a note that changes every
                 // wake-up rewrote the request prefix and lost the provider
                 // cache. ≤1.0.70 turns carry no flag and keep the old path.
+                // The private half of progressive discovery. The fleet-wide
+                // index is baked into the framework base prompt at plugin
+                // load (worker.ts `_composeSkillsIndex`), which is shared by
+                // every session and so cannot name one person's private
+                // skills. Those are listed here instead, for the owner's own
+                // sessions only. Stable for the life of the session — it
+                // changes when its owner republishes a package, not per turn
+                // — so it does not disturb the prompt prefix.
+                const ownSkillsIndex = await this._ownerSkillsIndexSection(sessionId);
                 const overlay = mergePromptSections([
                     activeAgentPrompt,
                     runtimeContext,
+                    ownSkillsIndex,
                     latest.systemContextInPrompt ? undefined : latest.turnSystemPrompt,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
@@ -2623,6 +2643,60 @@ export class SessionManager {
             // A read failure is not evidence of privilege.
             return false;
         }
+    }
+
+    /**
+     * A one-line-per-skill index of the private skills this session's owner
+     * published, or undefined when there are none. Mirrors the wording of the
+     * fleet-wide index so the model treats both the same way.
+     */
+    private async _ownerSkillsIndexSection(sessionId: string): Promise<string | undefined> {
+        const byOwner = this.workerDefaults.ownerScopedSkills;
+        if (!byOwner || byOwner.size === 0) return undefined;
+        let key: string | null = null;
+        try {
+            key = await this._sessionAgentOwnerKey(sessionId);
+        } catch {
+            return undefined;
+        }
+        if (!key) return undefined;
+        const own = byOwner.get(key);
+        if (!own || own.length === 0) return undefined;
+        const lines = [...own]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((s) => {
+                const description = clipDescription(String(s.description || "").replace(/\s+/g, " ").trim(), 240);
+                return `- \`${s.name}\`${description ? ` — ${description}` : ""}`;
+            });
+        return `## Your own skills, available on demand\n\nPublished by you and visible only to your sessions. Call \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
+    }
+
+    /**
+     * The `load_skill` catalog for ONE session: every shared/deployment skill,
+     * plus the private skills from user-scope packages this session's OWNER
+     * published. A person's own package reaches their own sessions and nobody
+     * else's — the same rule agent copies already follow
+     * (`pickAgentCopyForOwner`). Falls back to the shared list alone when the
+     * session is ownerless, system-owned, or the owner cannot be read: a
+     * failure to identify somebody must never hand out their private skills.
+     */
+    private async _skillCatalogForSession(sessionId: string): Promise<Array<{ name: string; description: string; prompt: string; dir?: string }>> {
+        const shared = this.workerDefaults.skills ?? [];
+        const byOwner = this.workerDefaults.ownerScopedSkills;
+        if (!byOwner || byOwner.size === 0) return shared;
+        let key: string | null = null;
+        try {
+            key = await this._sessionAgentOwnerKey(sessionId);
+        } catch {
+            return shared;
+        }
+        if (!key) return shared;
+        const own = byOwner.get(key);
+        if (!own || own.length === 0) return shared;
+        // The owner's own copy wins a name collision with a shared skill:
+        // they published it for their sessions deliberately.
+        const names = new Set(own.map((s) => s.name));
+        return [...own, ...shared.filter((s) => !names.has(s.name))];
     }
 
     private _buildSystemMessage(

@@ -746,6 +746,14 @@ export class WebPilotSwarmManagementClient {
         });
     }
 
+    async getProviderUsageAgents(_viewer: unknown, query: { days?: number; providers?: string[] } = {}): Promise<any> {
+        const list = Array.isArray(query.providers) ? query.providers.filter(Boolean).join(",") : undefined;
+        return this.ops.getProviderUsageAgents({
+            ...(query.days ? { days: query.days } : {}),
+            ...(list ? { providers: list } : {}),
+        });
+    }
+
     async createProvider(_viewer: unknown, input: { name: string; type: string; credentials?: Record<string, unknown> | null; baseUrl?: string | null }): Promise<any> {
         return this.ops.createProvider({ name: input.name, type: input.type, credentials: input.credentials, baseUrl: input.baseUrl });
     }

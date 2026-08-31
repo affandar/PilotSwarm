@@ -384,6 +384,21 @@ export function registerProviderTools(server: McpServer, ctx: ServerContext) {
     );
 
     server.registerTool(
+        "get_provider_usage_agents",
+        {
+            title: "Get Usage By Agent",
+            description:
+                "The agent pivot from the same usage ledger: one row per AGENT that ran the turns — tokens, turns, sessions, the models it ran and its own per-day totals — plus a flat day-by-agent series. Turns from a session bound to no agent report as '(none)'; their tokens are real. Same viewer scoping as the cluster summary: admins see the whole cluster, everyone else their own turns. Use it to find which agent is spending, and its tokens-per-turn average (total / turns; a ledger row is one turn).",
+            inputSchema: {
+                days: z.number().int().min(1).max(365).optional().describe("Days of history (default 14; 14, 30 or 90 are the portal's choices)"),
+                providers: z.array(z.string()).optional().describe("Only these providers, by name; absent means all"),
+            },
+        },
+        withToolErrors(async ({ days, providers }) =>
+            jsonResult(await ctx.mgmt.getProviderUsageAgents(viewer, { days, providers }))),
+    );
+
+    server.registerTool(
         "get_provider_usage",
         {
             title: "Get Provider Usage",

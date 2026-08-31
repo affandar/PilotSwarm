@@ -4,9 +4,14 @@
  * The framework base prompt carries a one-line index of registered skills;
  * `load_skill` returns a body on demand; nothing is inlined unless an agent
  * declares it. Pins: the index exists exactly once (reload safe), lists the
- * bundled canvas skills, excludes private (user-scope package) skills, and
- * the default agent's prompt carries no preloaded bodies. Also pins that the
- * always-on canvas text stayed small.
+ * bundled canvas skills, and the default agent's prompt carries no preloaded
+ * bodies. Also pins that the always-on canvas text stayed small.
+ *
+ * A user-scope package's skills are PRIVATE but still loadable — by their
+ * owner's own sessions only (0.5.53). They are kept out of the fleet-wide
+ * catalog and out of the shared base prompt; the session manager adds the
+ * right owner's bucket per session. The tests at the bottom pin both halves:
+ * the owner sees and can load theirs, and nobody else can.
  *
  * Run: node --test test/unit/skills-index.test.mjs
  */
@@ -17,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PilotSwarmWorker } from "../../dist/worker.js";
+import { SessionManager, agentOwnerKey } from "../../dist/session-manager.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 
 function makeTmpDir(prefix) {
@@ -97,7 +103,7 @@ test("canvas_kv and load_skill are system tools; canvas_kv is stripped from read
     assert.deepEqual(loadSkill.parameters.required, ["name"]);
 });
 
-test("a shared package's skill is indexed; a user-scope package's skill is not", () => {
+test("a shared package's skill is in the fleet-wide index; a user-scope package's is not", () => {
     const shared = writeSkillPackage("team-kit", "release-runbook", "How the team cuts a release.");
     const priv = writeSkillPackage("alice-kit", "alice-secret", "Alice's private notes.");
     const worker = buildWorker();
@@ -109,12 +115,33 @@ test("a shared package's skill is indexed; a user-scope package's skill is not",
     assert.match(prompt, /- `release-runbook` — How the team cuts a release\./);
     assert.doesNotMatch(prompt, /alice-secret/, "a private skill is not deployment-wide knowledge");
     assert.equal(prompt.split(INDEX_HEADING).length - 1, 1);
-    // The load_skill catalog the session manager receives is the SAME filter:
-    // the index hiding a name is worthless if load_skill still serves it.
+    // The fleet-wide load_skill catalog is the SAME filter: the index hiding
+    // a name is worthless if load_skill still serves it to everyone.
     const catalogNames = worker._loadableSkills.map((s) => s.name);
     assert.ok(catalogNames.includes("release-runbook"));
     assert.ok(!catalogNames.includes("alice-secret"), "load_skill must not serve a private skill to every session");
     assert.ok(catalogNames.includes("canvas-apps"));
+    // ...it is parked under its owner instead, for the session manager.
+    const alice = worker._ownerScopedSkills.get(agentOwnerKey({ provider: "dev", subject: "alice" }));
+    assert.equal(alice?.length, 1);
+    assert.equal(alice[0].name, "alice-secret");
+    assert.match(alice[0].prompt, /Body of alice-secret/, "the body travels with it, so load_skill can serve it");
+});
+
+test("both catalogs are refilled IN PLACE on reload — the session manager holds them by reference", () => {
+    const priv = writeSkillPackage("alice-kit", "alice-secret", "Alice's private notes.");
+    const worker = buildWorker();
+    const pkgs = [{ dir: priv, packageId: "pkg-alice", scope: "user", owner: { provider: "dev", subject: "alice" } }];
+    installPackages(worker, [], pkgs);
+    const sharedRef = worker._loadableSkills;
+    const ownerRef = worker._ownerScopedSkills;
+    assert.equal(ownerRef.get(agentOwnerKey({ provider: "dev", subject: "alice" }))?.length, 1);
+    // Alice deletes her package: the reload must EMPTY the same objects the
+    // worker already handed to the session manager, not swap in new ones.
+    installPackages(worker, [], []);
+    assert.equal(worker._loadableSkills, sharedRef, "shared catalog is the same object");
+    assert.equal(worker._ownerScopedSkills, ownerRef, "owner catalog is the same object");
+    assert.equal(ownerRef.size, 0, "her skill is gone from the live map");
 });
 
 test("index descriptions are clipped at a word boundary, never mid-word", () => {
@@ -137,4 +164,94 @@ test("the load_skill handler returns the body once and names the catalog on a mi
     assert.equal(catalog[0].prompt, "BODY");
     session.setSkillCatalog(null);
     assert.deepEqual(session.skillCatalog, [], "a bad catalog degrades to empty, never throws");
+});
+
+// ── The session manager half: who actually gets a private skill ──────────
+//
+// `_skillCatalogForSession` decides what load_skill will serve one session,
+// and `_ownerSkillsIndexSection` decides what its prompt says exists. They
+// must agree, and both must key off the session's OWNER.
+
+const ALICE = agentOwnerKey({ provider: "dev", subject: "alice" });
+const BOB = agentOwnerKey({ provider: "dev", subject: "bob" });
+const SHARED_SKILL = { name: "release-runbook", description: "How the team cuts a release.", prompt: "SHARED BODY" };
+const ALICE_SKILL = { name: "alice-secret", description: "Alice's private notes.", prompt: "ALICE BODY" };
+
+function managerWith(ownerScopedSkills, viewerBySession) {
+    const manager = new SessionManager(undefined, null, {
+        skills: [SHARED_SKILL],
+        ownerScopedSkills,
+    });
+    manager._resolveInspectViewer = async (sessionId) => viewerBySession[sessionId] ?? null;
+    return manager;
+}
+
+const OWNED = {
+    "s-alice": { provider: "dev", subject: "alice" },
+    "s-bob": { provider: "dev", subject: "bob" },
+    "s-system": { provider: "dev", subject: "system", isSystemPrincipal: true },
+    "s-orphan": null,
+};
+
+test("the owner's session can load her private skill, and her prompt says it exists", async () => {
+    const manager = managerWith(new Map([[ALICE, [ALICE_SKILL]]]), OWNED);
+    const catalog = await manager._skillCatalogForSession("s-alice");
+    assert.deepEqual(catalog.map((s) => s.name).sort(), ["alice-secret", "release-runbook"]);
+    assert.equal(catalog.find((s) => s.name === "alice-secret").prompt, "ALICE BODY", "the body is there to serve");
+    const index = await manager._ownerSkillsIndexSection("s-alice");
+    assert.match(index, /- `alice-secret` — Alice's private notes\./);
+    assert.match(index, /load_skill\(name\)/, "the prompt tells her how to get it");
+});
+
+test("nobody else can see or load it — not another person, not a system session, not an ownerless one", async () => {
+    const manager = managerWith(new Map([[ALICE, [ALICE_SKILL]]]), OWNED);
+    for (const sessionId of ["s-bob", "s-system", "s-orphan"]) {
+        const catalog = await manager._skillCatalogForSession(sessionId);
+        assert.deepEqual(catalog.map((s) => s.name), ["release-runbook"], `${sessionId} gets shared only`);
+        assert.equal(await manager._ownerSkillsIndexSection(sessionId), undefined, `${sessionId} gets no private index`);
+    }
+});
+
+test("a session whose owner cannot be read falls back to shared — a failed lookup must not leak", async () => {
+    const manager = managerWith(new Map([[ALICE, [ALICE_SKILL]]]), OWNED);
+    manager._resolveInspectViewer = async () => { throw new Error("CMS down"); };
+    assert.deepEqual((await manager._skillCatalogForSession("s-alice")).map((s) => s.name), ["release-runbook"]);
+    assert.equal(await manager._ownerSkillsIndexSection("s-alice"), undefined);
+});
+
+test("with no user-scope packages at all, the catalog is the shared list untouched", async () => {
+    const manager = managerWith(new Map(), OWNED);
+    const catalog = await manager._skillCatalogForSession("s-alice");
+    assert.deepEqual(catalog, manager.workerDefaults.skills, "same list, not a copy — no needless churn");
+    assert.equal(await manager._ownerSkillsIndexSection("s-alice"), undefined);
+});
+
+test("on a name collision the owner's own copy wins, and the shared one is not listed twice", async () => {
+    const mine = { name: "release-runbook", description: "Alice's own runbook.", prompt: "ALICE BODY" };
+    const manager = managerWith(new Map([[ALICE, [mine]]]), OWNED);
+    const catalog = await manager._skillCatalogForSession("s-alice");
+    assert.equal(catalog.length, 1, "one entry, not two — load_skill takes the first match");
+    assert.equal(catalog[0].prompt, "ALICE BODY");
+    // Bob is unaffected.
+    assert.equal((await manager._skillCatalogForSession("s-bob"))[0].prompt, "SHARED BODY");
+});
+
+test("the private index reads the LIVE map, so a republish reaches open sessions", async () => {
+    const live = new Map();
+    const manager = managerWith(live, OWNED);
+    assert.equal(await manager._ownerSkillsIndexSection("s-alice"), undefined);
+    live.set(ALICE, [ALICE_SKILL]);   // what worker._composeSkillsIndex does on reload
+    assert.match(await manager._ownerSkillsIndexSection("s-alice"), /alice-secret/);
+    assert.equal(await manager._ownerSkillsIndexSection("s-bob"), undefined);
+    assert.ok(!live.has(BOB));
+});
+
+test("the private index sorts by name and clips like the fleet-wide one", async () => {
+    const long = { name: "zeta", description: `${"alpha beta gamma delta ".repeat(20)}END`, prompt: "B" };
+    const manager = managerWith(new Map([[ALICE, [long, ALICE_SKILL]]]), OWNED);
+    const lines = (await manager._ownerSkillsIndexSection("s-alice")).split("\n").filter((l) => l.startsWith("- `"));
+    assert.deepEqual(lines.map((l) => l.match(/^- `([^`]+)`/)[1]), ["alice-secret", "zeta"]);
+    const zeta = lines[1];
+    assert.ok(zeta.length < 300, `clipped: ${zeta.length}`);
+    assert.match(zeta, /(alpha|beta|gamma|delta)…$/, `ends on a whole word: ${zeta.slice(-30)}`);
 });
