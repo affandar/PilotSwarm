@@ -77,6 +77,8 @@ class FakeStore {
     sessions = new Map();
     cycles = [];
     activeDefinitionId = "definition-1";
+    sourceType = "ado_wiql";
+    sourceConfig = {};
     nextCycle = 1;
     nextSession = 1;
 
@@ -99,7 +101,12 @@ class FakeStore {
                 startedAt: now,
                 completedAt: null,
             },
-            definition: { ...definition(), definitionId: this.activeDefinitionId },
+            definition: {
+                ...definition(),
+                definitionId: this.activeDefinitionId,
+                sourceType: this.sourceType,
+                sourceConfig: this.sourceConfig,
+            },
         };
     }
     async reconcileJobGeneratorDiscoveries(cycleId, discoveries) {
@@ -225,6 +232,43 @@ test("repeated reconciliation creates one Job and one initial session", async ()
     assert.deepEqual(createdSessions, ["session-1"]);
     assert.equal(store.sessions.get("job-1").length, 1);
     assert.deepEqual(store.cycles.map((cycle) => cycle.createdCount), [1, 0]);
+});
+
+test("IcM discoveries materialize incident-keyed Jobs and empty results stay healthy", async () => {
+    const store = new FakeStore();
+    store.sourceType = "icm";
+    store.sourceConfig = { incidentIds: [123456789] };
+    let evaluation = 0;
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["icm", {
+            type: "icm",
+            async evaluate() {
+                evaluation += 1;
+                return {
+                    discoveries: evaluation === 1
+                        ? [{ key: "123456789", payload: { id: 123456789 } }]
+                        : [],
+                };
+            },
+        }]]),
+        induceSessions: false,
+        workerId: "icm-worker",
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    await controller.runOnce();
+    await controller.runOnce();
+
+    assert.deepEqual([...store.jobs.keys()], ["123456789"]);
+    assert.deepEqual(store.cycles.map((cycle) => ({
+        status: cycle.status,
+        discoveredCount: cycle.discoveredCount,
+        createdCount: cycle.createdCount,
+    })), [
+        { status: "succeeded", discoveredCount: 1, createdCount: 1 },
+        { status: "succeeded", discoveredCount: 0, createdCount: 0 },
+    ]);
 });
 
 test("a bootstrapped session is deleted when the post-send attachment fence fails", async () => {

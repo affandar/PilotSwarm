@@ -5,10 +5,16 @@ import type {
     JobGeneratorSourceType,
 } from "pilotswarm-sdk";
 import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const AZURE_DEVOPS_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default";
+const ICM_MCP_ENDPOINT = "https://icm-mcp-prod.azure-api.net/v1/";
+const ICM_MCP_SCOPE = "api://icmmcpapi-prod/.default";
+const ICM_MAX_PAGES = 100;
+const ICM_SESSION_CLOSE_TIMEOUT_MS = 10_000;
 const execFileAsync = promisify(execFile);
 
 interface AdoProjectDefaults {
@@ -91,6 +97,13 @@ interface AdoWiqlEvaluatorOptions extends HttpEvaluatorOptions {
     defaultsResolver?: AdoDefaultsResolver;
 }
 
+interface IcmEvaluatorOptions extends HttpEvaluatorOptions {
+    direct?: boolean;
+    credential?: TokenCredential;
+    maxPages?: number;
+    sessionCloseTimeoutMs?: number;
+}
+
 abstract class HttpSourceEvaluator implements SourceEvaluator {
     abstract readonly type: JobGeneratorSourceType;
     protected readonly endpoint?: string;
@@ -164,6 +177,9 @@ export function parseAdoWiqlResponse(body: unknown): EvaluationResult {
 
 export function parseIcmResponse(body: unknown): EvaluationResult {
     const root = record(body);
+    if (root.success === false) {
+        throw new Error(`IcM search failed: ${String(root.error ?? root.message ?? "unknown error")}`);
+    }
     const rows = arrayFrom(root, ["incidents", "value", "items"]);
     return {
         discoveries: rows.map((value) => {
@@ -277,8 +293,237 @@ export class AdoWiqlEvaluator extends HttpSourceEvaluator {
     }
 }
 
+function mcpToolBody(result: Record<string, unknown>): Record<string, unknown> {
+    if (result.isError === true) {
+        const message = Array.isArray(result.content)
+            ? result.content
+                .map((value) => record(value).text)
+                .filter((value): value is string => typeof value === "string")
+                .join("\n")
+            : "";
+        throw new Error(`IcM MCP search_incidents failed: ${message || "tool error"}`);
+    }
+    const structured = record(result.structuredContent);
+    if (Object.keys(structured).length > 0) return structured;
+    if (Array.isArray(result.content)) {
+        for (const value of result.content) {
+            const block = record(value);
+            if (block.type !== "text" || typeof block.text !== "string") continue;
+            try {
+                const parsed = record(JSON.parse(block.text));
+                if (Object.keys(parsed).length > 0) return parsed;
+            } catch {
+                // Continue looking for a structured JSON content block.
+            }
+        }
+    }
+    throw new Error("IcM MCP search_incidents returned no structured response");
+}
+
+function icmSearchRequest(config: Record<string, unknown>): Record<string, unknown> {
+    const nested = record(config.incidentAdvancedSearchRequest);
+    const request = Object.keys(nested).length > 0 ? nested : config;
+    if (Object.keys(request).length === 0) {
+        throw new Error("IcM definition requires sourceConfig search filters");
+    }
+    return { ...request };
+}
+
+async function withTimeout<T>(
+    operation: Promise<T>,
+    timeoutMs: number,
+    label: string,
+    onTimeout?: () => void,
+): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<T>((_resolve, reject) => {
+                timer = setTimeout(() => {
+                    onTimeout?.();
+                    reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+                }, timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 export class IcmEvaluator extends HttpSourceEvaluator {
     readonly type = "icm" as const;
+    private readonly direct: boolean;
+    private readonly credential?: TokenCredential;
+    private readonly mcpEndpoint: string;
+    private readonly maxPages: number;
+    private readonly sessionCloseTimeoutMs: number;
+
+    constructor(options: IcmEvaluatorOptions = {}) {
+        super(options);
+        this.direct = options.direct ?? !this.endpoint;
+        this.credential = options.credential
+            ?? (this.direct && !this.token ? new DefaultAzureCredential() : undefined);
+        this.mcpEndpoint = this.endpoint ?? ICM_MCP_ENDPOINT;
+        this.maxPages = options.maxPages ?? ICM_MAX_PAGES;
+        this.sessionCloseTimeoutMs = options.sessionCloseTimeoutMs
+            ?? ICM_SESSION_CLOSE_TIMEOUT_MS;
+        if (!Number.isInteger(this.maxPages) || this.maxPages <= 0) {
+            throw new Error("IcM maxPages must be a positive integer");
+        }
+        if (!Number.isInteger(this.sessionCloseTimeoutMs) || this.sessionCloseTimeoutMs <= 0) {
+            throw new Error("IcM sessionCloseTimeoutMs must be a positive integer");
+        }
+    }
+
+    override async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
+        if (!this.direct) return super.evaluate(context);
+        const baseRequest = icmSearchRequest(context.definition.sourceConfig);
+        const credentialToken = this.token
+            ? undefined
+            : await this.credential?.getToken(ICM_MCP_SCOPE);
+        const token = this.token ?? credentialToken?.token;
+        if (!token) throw new Error("IcM MCP authentication did not return an access token");
+
+        const headers: Record<string, string> = {
+            accept: "application/json, text/event-stream",
+            authorization: "Bearer ".concat(token),
+            "content-type": "application/json",
+        };
+        let result: EvaluationResult | undefined;
+        let evaluationError: unknown;
+        const transport = new StreamableHTTPClientTransport(new URL(this.mcpEndpoint), {
+            requestInit: { headers },
+            fetch: this.fetchImpl,
+        });
+        const client = new McpClient({
+            name: "PilotSwarm-JobGenerator",
+            version: "0.1.0",
+        });
+        try {
+            await client.connect(transport);
+            const discoveries: JobDiscovery[] = [];
+            const seenTokens = new Set<string>();
+            const configuredMaxItems = Number(
+                context.definition.guardrails.maxItemsPerCycle ?? 0,
+            );
+            const maxItems = Number.isFinite(configuredMaxItems) && configuredMaxItems > 0
+                ? configuredMaxItems
+                : undefined;
+            let nextPageToken = typeof baseRequest.nextPageToken === "string"
+                ? baseRequest.nextPageToken
+                : undefined;
+            if (nextPageToken) seenTokens.add(nextPageToken);
+            let pageCount = 0;
+            do {
+                pageCount += 1;
+                if (pageCount > this.maxPages) {
+                    throw new Error(`IcM search exceeded the ${this.maxPages}-page limit`);
+                }
+                const configuredTop = Number(baseRequest.top);
+                const requestedTop = Number.isInteger(configuredTop) && configuredTop > 0
+                    ? configuredTop
+                    : undefined;
+                const boundedTop = maxItems === undefined
+                    ? requestedTop
+                    : Math.min(
+                        requestedTop ?? maxItems + 1,
+                        maxItems - discoveries.length + 1,
+                    );
+                const request = {
+                    ...baseRequest,
+                    ...(boundedTop ? { top: boundedTop } : {}),
+                    ...(nextPageToken ? { nextPageToken } : {}),
+                };
+                const response = await client.callTool({
+                    name: "search_incidents",
+                    arguments: {
+                        incidentAdvancedSearchRequest: request,
+                    },
+                });
+                const page = mcpToolBody(response as Record<string, unknown>);
+                discoveries.push(...parseIcmResponse(page).discoveries);
+                if (maxItems !== undefined && discoveries.length > maxItems) {
+                    throw new Error(
+                        `IcM query returned more than maxItemsPerCycle=${maxItems}`,
+                    );
+                }
+                const tokenValue = typeof page.nextPageToken === "string" && page.nextPageToken.trim()
+                    ? page.nextPageToken.trim()
+                    : undefined;
+                if (!tokenValue) {
+                    nextPageToken = undefined;
+                    break;
+                }
+                if (seenTokens.has(tokenValue)) {
+                    throw new Error("IcM MCP returned a repeated pagination token");
+                }
+                seenTokens.add(tokenValue);
+                nextPageToken = tokenValue;
+                if (maxItems !== undefined && discoveries.length >= maxItems) {
+                    throw new Error(
+                        `IcM query returned more than maxItemsPerCycle=${maxItems}`,
+                    );
+                }
+            } while (nextPageToken);
+            result = { discoveries };
+        } catch (error) {
+            evaluationError = error;
+        }
+
+        let closeError: unknown;
+        const cleanupErrors: unknown[] = [];
+        const sessionId = transport.sessionId;
+        if (sessionId) {
+            const closeController = new AbortController();
+            try {
+                const closeOperation = (async () => {
+                    const response = await this.fetchImpl(this.mcpEndpoint, {
+                        method: "DELETE",
+                        headers: {
+                            ...headers,
+                            "mcp-session-id": sessionId,
+                            ...(transport.protocolVersion
+                                ? { "mcp-protocol-version": transport.protocolVersion }
+                                : {}),
+                        },
+                        signal: closeController.signal,
+                    });
+                    await response.body?.cancel();
+                    if (!response.ok && response.status !== 405) {
+                        throw new Error(`IcM MCP session close failed: HTTP ${response.status}`);
+                    }
+                })();
+                await withTimeout(
+                    closeOperation,
+                    this.sessionCloseTimeoutMs,
+                    "IcM MCP session close",
+                    () => closeController.abort(),
+                );
+            } catch (error) {
+                cleanupErrors.push(error);
+            }
+        }
+        try {
+            await client.close();
+        } catch (error) {
+            cleanupErrors.push(error);
+        }
+        if (cleanupErrors.length === 1) closeError = cleanupErrors[0];
+        if (cleanupErrors.length > 1) {
+            closeError = new AggregateError(cleanupErrors, "IcM MCP session cleanup failed");
+        }
+        if (evaluationError && closeError) {
+            throw new AggregateError(
+                [evaluationError, closeError],
+                "IcM evaluation and MCP session cleanup both failed",
+            );
+        }
+        if (evaluationError) throw evaluationError;
+        if (closeError) throw closeError;
+        return result!;
+    }
+
     protected parse(body: unknown): EvaluationResult {
         return parseIcmResponse(body);
     }
@@ -314,13 +559,21 @@ export function createEvaluatorsFromEnv(
             : undefined,
         fetch: fetchImpl,
     }));
-    if (env.JOBGEN_ICM_ENDPOINT?.trim()) {
-        evaluators.set("icm", new IcmEvaluator({
-            endpoint: env.JOBGEN_ICM_ENDPOINT,
-            token: env.JOBGEN_ICM_TOKEN,
-            fetch: fetchImpl,
-        }));
-    }
+    const icmEndpoint = env.JOBGEN_ICM_ENDPOINT?.trim() || undefined;
+    const icmDirect = icmEndpoint
+        ? ["1", "true", "yes", "on"].includes(
+            (env.JOBGEN_ICM_DIRECT || "").trim().toLowerCase(),
+        )
+        : true;
+    evaluators.set("icm", new IcmEvaluator({
+        endpoint: icmEndpoint,
+        token: env.JOBGEN_ICM_TOKEN,
+        direct: icmDirect,
+        credential: icmDirect && !env.JOBGEN_ICM_TOKEN?.trim()
+            ? new DefaultAzureCredential()
+            : undefined,
+        fetch: fetchImpl,
+    }));
     if (env.JOBGEN_KUSTO_ENDPOINT?.trim()) {
         evaluators.set("kusto", new KustoEvaluator({
             endpoint: env.JOBGEN_KUSTO_ENDPOINT,

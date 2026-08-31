@@ -194,7 +194,10 @@ const { generator, definition } = await catalog.createJobGenerator({
   cadenceSeconds: 300,
   definition: {
     sourceType: "icm",
-    sourceConfig: { owningTeamId: 12345 },
+    sourceConfig: {
+      incidentIds: [123456789],
+      top: 10,
+    },
     lifecycleDefinition: {
       initialPrompt: "Investigate {job.key}:\n{job.payload}",
       session: { model: "gpt-5.4", repo: "service-repo" },
@@ -205,8 +208,16 @@ const { generator, definition } = await catalog.createJobGenerator({
 });
 ```
 
-The HTTP adapters POST `{generatorId, definitionId, config, watermark}` and
-expect provider results containing stable keys:
+The native IcM provider passes `sourceConfig` to the IcM MCP
+`search_incidents` tool as its `incidentAdvancedSearchRequest`. This supports
+explicit `incidentIds` and narrow filters such as `owningTeamId`, `states`,
+`severity`, `assignedTo`, `tags`, and created-date ranges. The provider follows
+`nextPageToken` internally and uses each returned incident `id` as its stable
+Job key. An empty result is a successful cycle with zero discoveries.
+
+Compatibility HTTP adapters POST
+`{generatorId, definitionId, config, watermark}` and expect provider results
+containing stable keys:
 
 - ADO WIQL: `workItems`, `value`, or `items`; key is `id`/`key`.
 - IcM: `incidents`, `value`, or `items`; key is `incidentId`/`IncidentId`.
@@ -219,17 +230,23 @@ Required:
 
 - `DATABASE_URL` — PilotSwarm Postgres store.
 
-The native `ado_wiql` provider requires no controller endpoint configuration.
-Its generator definition supplies `sourceConfig.wiql`. Optional
+The native `ado_wiql` and `icm` providers require no controller endpoint
+configuration. ADO definitions supply `sourceConfig.wiql`; optional
 `sourceConfig.organization` and `sourceConfig.project` values select a
-different scope; otherwise the controller reads the devbox defaults configured
-by `az devops configure`. It constructs the query endpoint and authenticates
-through `DefaultAzureCredential`.
+different scope, otherwise the controller reads the devbox defaults configured
+by `az devops configure`.
+
+IcM definitions supply a narrow `sourceConfig` accepted by
+`search_incidents`. The controller connects to
+`https://icm-mcp-prod.azure-api.net/v1/`, authenticates through
+`DefaultAzureCredential` using `api://icmmcpapi-prod/.default`, initializes an
+MCP session, drains all result pages, and closes the session. Developer
+credentials are silent-only inside the controller; they never start an
+interactive authentication popup.
 
 Configure endpoints only for adapter-backed provider types used by active
 definitions:
 
-- `JOBGEN_ICM_ENDPOINT`, optional `JOBGEN_ICM_TOKEN`
 - `JOBGEN_KUSTO_ENDPOINT`, optional `JOBGEN_KUSTO_TOKEN`
 
 Optional loop settings are `JOBGEN_POLL_INTERVAL_MS` (15000),
@@ -245,6 +262,10 @@ is disabled by default and delivers completions through the normal durable
 `JOBGEN_ADO_WIQL_ENDPOINT` remains an optional
 compatibility override for a fixed endpoint or normalized adapter; set
 `JOBGEN_ADO_WIQL_DIRECT=true` when the override accepts the native REST shape.
+`JOBGEN_ICM_ENDPOINT` likewise remains an optional normalized-adapter
+override; set `JOBGEN_ICM_DIRECT=true` when that endpoint is an IcM-compatible
+MCP Streamable HTTP endpoint. `JOBGEN_ICM_TOKEN` may supply a static bearer
+token for either mode.
 Without a static token, the native provider uses `DefaultAzureCredential`,
 allowing a signed-in devbox session or workload identity to refresh access
 tokens continuously. PilotSwarm managed-identity variables are honored.
