@@ -21,7 +21,7 @@ This document describes the target lifecycle architecture for durable Jobs
 created by a JobGenerator. The current implementation includes Job discovery,
 exactly-once materialization, definition pinning, state runs, JobSession
 history, Markdown-backed state execution, the Job journal, constrained atomic
-transitions, durable human/system waits, and infrastructure-owned external
+transitions, durable Job waits, and infrastructure-owned external
 operations. Lifecycle policy and semantic whole-graph validation remain future
 work.
 
@@ -47,8 +47,8 @@ or cached normalized graph.
 
 Workers execute state runs, but the catalog remains authoritative for leases,
 allowed transitions, state revisions, idempotency, and history. A worker may
-disappear while a Job is waiting for human input; another worker can later
-resume the same durable state run.
+disappear while a Job is parked on a response, observed-condition, or timer
+wait; another worker can later resume the same durable state run.
 
 ## TL;DR
 
@@ -62,14 +62,13 @@ resume the same durable state run.
 4. Workers execute the concrete state machine autonomously. The catalog, not
    an individual worker, remains authoritative for state and transitions.
 5. Execution alternates between active work, such as LLM prompts and tools,
-   and waits on external systems, timers, or human input.
+   and durable response, observed-condition, or timer waits.
 6. Workflows dehydrate during waits. They do not retain a worker, process, or
    in-memory call stack while waiting, and any eligible worker may resume them
    after the wake condition is satisfied.
-7. Humans participate only when their input is blocking progress. The platform
-   creates an attention request, can notify the responsible humans through
-   configured webhook-backed channels such as email or messaging, and exposes
-   all blocked Jobs in a dashboard for users who prefer to monitor them.
+7. Human participation does not define a wait kind. A response submitted
+   through PilotSwarm satisfies a response wait; a human action recorded in an
+   authoritative provider satisfies an observed-condition wait.
 
 The normal operating mode is autonomous execution. Human interaction is an
 exception represented as durable, observable blocked work rather than a
@@ -84,8 +83,8 @@ required step between every state.
 - Compose user-authored fragments with platform-owned lifecycle profiles.
 - Pin every Job to an immutable effective lifecycle.
 - Execute state runs on any eligible worker without worker affinity.
-- Dehydrate workflows during external-system, timer, and human-input waits.
-- Reuse durable session suspension for human-input gates.
+- Dehydrate workflows during response, observed-condition, and timer waits.
+- Reuse durable session suspension for response waits.
 - Enforce transitions atomically in the catalog.
 - Preserve a durable Job journal between state runs so knowledge learned in one
   state is available to the next.
@@ -122,8 +121,11 @@ required step between every state.
 | JobSession | PilotSwarm session associated with a Job and normally with one state run |
 | Transition | Atomic movement from one official state to another |
 | Job journal | Ordered, append-only history whose state-transition entries carry a concise `summary` and source-session reference |
-| External wait | Dehydrated execution waiting for a system process, event, or timer |
-| Human wait | Dehydrated execution waiting for a person while the Job remains in its current state |
+| Job wait | Durable condition that parks a state run without retaining a worker |
+| Response wait | Job wait satisfied by an authorized response submitted directly through PilotSwarm |
+| Observed-condition wait | Job wait satisfied when PilotSwarm verifies a predicate in another authoritative system |
+| Timer wait | Job wait satisfied when a durable time condition is reached |
+| Detection mode | How PilotSwarm learns a wait may be satisfied: direct submission, polling, provider event, or hybrid |
 | Attention request | Durable indication that named humans or principals are blocking progress |
 
 The state machine belongs to the Job. A session is execution history for a
@@ -201,6 +203,7 @@ User-authored diagnostic fragment:
 
 Platform-owned delivery profile:
   FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+      -> HumanCodeReviewApproved -> Committed
        |
        +-- significant findings --> Diagnosed
 ```
@@ -436,45 +439,68 @@ catalog and pinned graph remain authoritative.
 
 ### 5. Perform active work or wait durably
 
-A state run may alternate between three execution modes:
+A state run may alternate between active execution and three durable Job wait
+kinds. Classify the wait by how completion becomes authoritative, not by
+whether a human or automation performs the surrounding action:
 
-| Mode | Examples | Worker retained? | Human blocking? |
+| Mode | Satisfaction contract | Examples | Worker retained? |
 |---|---|---|---|
-| Active execution | LLM prompt, local tool, short API call | Yes, while the call runs | No |
-| External wait | Build completion, validation completion, port to a branch, deployment completion, timer | No | No |
-| Human wait | Diagnosis confirmation, approval, missing information | No | Yes |
+| Active execution | The current worker completes an LLM, tool, or short API call | Prompt execution, local tool | Yes, while the call runs |
+| Response wait | An authorized response is submitted directly through PilotSwarm | Resolve an ambiguity, select an option | No |
+| Observed-condition wait | PilotSwarm verifies a predicate in another authoritative system | Build, validation, review approval, PR completion, deployment | No |
+| Timer wait | A durable time condition is reached | Retry backoff, scheduled wake-up, deadline | No |
 
-An active LLM or tool call consumes a worker while that call is running. When
-the state must wait for an asynchronous system process, the runtime persists
-the external reference and wake condition, checkpoints the workflow, releases
-the worker, and schedules or subscribes to a durable wake-up. A build or test
-does not require an agent loop to remain alive and poll in memory.
+When a state must wait, the runtime checkpoints the workflow, releases the
+worker, and resumes only through the corresponding durable boundary:
+
+- `ask_user` persists a response wait owned by the JobSession.
+- `start_external_operation` and `system_wait` persist an
+  observed-condition wait whose result and evidence are owned by the state
+  run.
+- The durable scheduler makes a timer wait runnable after its time condition
+  is reached.
+
+Detection mode is separate from wait kind. A response normally arrives by
+direct submission. An observed condition may be detected by polling, a
+provider event, or a hybrid in which events accelerate detection and polling
+guarantees reconciliation. A webhook about PR approval remains an
+observed-condition wait because the repository provider, not the webhook, is
+authoritative.
+
+A person reviewing or completing a PR acts outside the JobSession, so those
+are observed-condition waits rather than response waits. A build, test,
+reviewer, or PR owner does not require an agent loop to remain alive and poll
+in memory.
 
 Examples of durable wake conditions include:
 
 - A submitted build reaches a terminal status.
 - A validation or test suite completes with recorded results.
+- An automated code review finishes.
+- Required human code-review approval appears in the repository provider.
+- An authorized person completes or merges the pull request.
 - A change or fix is present on the required target branch.
 - A deployment containing the change completes in the target environment.
 - A callback or event arrives for a correlation ID.
 - A durable polling timer expires.
 - A retry or deadline timer becomes due.
-- A human submits an answer.
+- An authorized person submits an answer through the session.
+- A person or automation performs the requested action in an external system.
 
-These waits should be expressed as durable predicates over external evidence,
-not as workers sleeping until a command finishes. For example, a port wait may
-track a source commit, target repository, and target branch until the required
-change is observed there. A deployment wait may track an artifact or commit
-through a deployment system until the intended environment reports completion.
+Observed-condition waits should be expressed as durable predicates over
+external evidence, not as workers sleeping until a command finishes. For
+example, a port wait may track a source commit, target repository, and target
+branch until the required change is observed there. A deployment wait may
+track an artifact or commit through a deployment system until the intended
+environment reports completion.
 
 On wake-up, any eligible worker may lease and resume the state run from its
 persisted state.
 
-### 6. Wait for human input and request attention
+### 6. Resolve each Job wait through its authoritative boundary
 
-If state instructions require human input, the agent invokes the existing
-durable `ask_user` tool. This is the explicit human-wait boundary; platform
-events use `system_wait` instead.
+If state instructions require an answer inside the JobSession, the agent
+invokes the existing durable `ask_user` tool. This is a response wait:
 
 ```text
 Job current state: WorkDetailsGathered
@@ -486,17 +512,43 @@ Broad Job status: blocked
 The Job has not transitioned. The worker releases the execution lease and may
 process other work. The pending question remains owned by the durable session.
 
-Entering `input_required` also creates or updates a durable attention request
-for the responsible principals. An attention dispatcher writes notifications
-through configured adapters, such as email or a messaging webhook. Delivery is
-idempotent for the Job, state revision, and pending question so worker retries
-do not repeatedly notify the same person.
+The portal presents the pending question and uses the existing session answer
+path. After the user answers, any worker can lease and resume the same state
+run and session.
 
-The portal displays the blocked Job in an attention queue and uses the existing
-session answer path. A user may act from a notification deep link or discover
-the work by monitoring the dashboard. After the user answers, the attention
-request is resolved and any worker can lease and resume the same state run and
-session.
+For example, the Job owner may need to resolve an ambiguity or select among
+explicit options before work can continue. PilotSwarm validates the submitted
+response against the pending wait identity, responder policy, expected answer
+shape, and Job state revision before making the state run runnable.
+
+For an observed-condition wait, the state records the provider, target
+resource, completion predicate, and polling cursor in its durable context,
+then invokes `system_wait` with the signal key assigned to that observation.
+A PilotSwarm observer claims due checks, polls the provider, persists current
+evidence, and publishes the matching signal only after the predicate is
+satisfied.
+
+Observed-condition waits include:
+
+- Waiting for builds.
+- Waiting for validation.
+- Waiting for automated code review.
+- Waiting for human code review recorded in the repository provider.
+- Waiting for an authorized person to complete or merge a pull request.
+
+The last two remain observed-condition waits because the action occurs outside
+PilotSwarm and a provider observer verifies it. No artificial `ask_user`
+question is created. The portal should label the predicate specifically, such
+as `Awaiting human code review` or `Awaiting PR completion`.
+
+`HumanCodeReviewApproved` is a lifecycle state reached after review approval;
+it is not itself a wait type. A subsequent transition from
+`HumanCodeReviewApproved` to `Committed` uses a separate observed-condition
+wait for PR completion.
+
+A timer wait stores its time condition and deadline in durable state. The
+scheduler, rather than a provider observer or submitted response, makes the
+state run runnable when that condition is reached.
 
 ### 7. Complete a state
 
@@ -543,7 +595,7 @@ history ordered and lets each session retain the exact instructions and tools
 used for that state revision. Before executing the next state's Markdown, the
 runtime injects the ordered Job journal, including each prior transition
 summary and originating session reference. Workers can retrieve additional
-detail from a durable source session when needed. A human wait resumes the
+detail from a durable source session when needed. A response wait resumes the
 existing session for the same state run rather than creating a new one.
 
 This handoff must not depend on an in-memory worker conversation. A different
@@ -587,7 +639,7 @@ Each worker executes the state run it has leased. A worker is responsible for:
 - Loading the pinned instructions and transition contract.
 - Creating or resuming the associated JobSession.
 - Running the agent turn.
-- Surfacing durable external and human-input suspension.
+- Surfacing durable response, observed-condition, and timer waits.
 - Calling catalog operations on behalf of injected tools.
 - Reporting explicit execution failures.
 
@@ -597,7 +649,7 @@ A worker is not responsible for:
 - Accepting arbitrary destination state names.
 - Deciding ownership policy.
 - Keeping state only in memory.
-- Holding a worker slot during an external or human wait.
+- Holding a worker slot during a Job wait.
 - Advancing a state based solely on an agent's final text.
 - Overwriting a transition committed by another worker.
 
@@ -617,13 +669,15 @@ questions.
 | State-run status | `waiting` or `input_required` | Execution status of the current state revision |
 | Session status | `input_required` | Durable orchestration status and pending question |
 
-While a human-input gate blocks `WorkDetailsGathered -> Diagnosed`, the Job
-remains in `WorkDetailsGathered`. `blocked` is an operational status, not an
-official business state. Both human and external-system waits project the
-broad Job lifecycle status as `blocked`, which excludes the Job from runnable
-work. The state-run status distinguishes the reason: `input_required` means the
-Job is parked for a human, while `waiting` means it is frozen for a system
-event. Resuming the same state run returns the Job to `active`.
+While an interactive-input gate blocks `WorkDetailsGathered -> Diagnosed`, the
+Job remains in `WorkDetailsGathered`. `blocked` is an operational status, not
+an official business state. All durable waits project the broad Job lifecycle
+status as `blocked`, which excludes the Job from runnable work.
+`input_required` means the Job is waiting for an answer through the session.
+`waiting` means it is waiting for an observed condition or timer. The matching
+signal may represent either a machine-owned predicate, a human action observed
+in another system, or a durable time condition. Resuming the same state run
+returns the Job to `active`.
 
 ## Persistence model
 
@@ -672,9 +726,10 @@ association. Except for the initial state run,
 `predecessor_journal_entry_id` identifies the journal entry that caused this
 run to be created.
 
-`wait_kind` distinguishes external-system, timer, and human-input waits.
-System-specific correlation data belongs in `external_reference`; credentials
-and secrets do not.
+`wait_kind` distinguishes `response`, `observed_condition`, and `timer` waits.
+Provider-specific correlation data belongs in `external_reference`;
+credentials and secrets do not. Detection mode is recorded separately where
+an observed condition supports polling, events, or hybrid reconciliation.
 
 ### Job journal
 
@@ -885,14 +940,14 @@ When a transition has already committed, the successor run reconstructs its
 input context from the Job journal and referenced source sessions rather than
 from the failed worker's memory.
 
-### Human waits
+### Response waits
 
 The session persists the pending question. No worker lease is held while the
 session is `input_required`. Answering the question makes the same state run
 runnable again. The attention request and notification outbox make the wait
 discoverable without making notification delivery part of session correctness.
 
-### External-system waits
+### Observed-condition waits
 
 The agent starts platform-owned work through `start_external_operation`. The
 catalog creates or returns the idempotent operation for the current state run
@@ -934,6 +989,13 @@ observed by the matching durable wait, and evidence has been persisted:
 `beforeState` names the destination state being protected. The initial
 deterministic `mock` provider supports success and failure outcomes without
 pretending that a real external service was called.
+
+### Timer waits
+
+The scheduler persists the wake time or deadline and makes the state run
+runnable when the time condition is reached. A process does not sleep or
+retain a worker while waiting. Repeated scheduler checks are idempotent and
+cannot resume the same state revision twice.
 
 ### Duplicate tool calls
 
@@ -996,15 +1058,16 @@ platform-owned profile:
 
 ```text
 FixProposed -> AutomatedCodeReviewApproved -> Validated -> PRPublished
+    -> HumanCodeReviewApproved -> Committed
      |
      +-- significant findings --> Diagnosed
 ```
 
 Platform automation starts the configured code-review agent for `FixProposed`.
-The state consumes its result and enters a durable `wait_for_agents` wait while
-the review is running. It does not poll or repeatedly attempt the transition.
 Significant findings return the Job to user-owned `Diagnosed`; otherwise the
-state advances only when the latest review has no blocking findings.
+state advances only when the latest review has no blocking findings. The
+deterministic demonstration represents this review with a mock external
+operation rather than launching a real review.
 
 `AutomatedCodeReviewApproved` submits the reviewed commit to the Private
 Validation Service exactly once through the external-operation interface. The
@@ -1012,9 +1075,17 @@ catalog records the provider correlation and generated signal key. Only the
 matching completion signal thaws that state run, and the transition to
 `Validated` is rejected until successful validation evidence is durable.
 
-`PRPublished` is terminal for the initial platform profile. A later version
-can append policy, merge, deployment, or remediation states without changing
-the user fragment or state loader.
+`Validated` prepares the change, pushes its branch, and publishes the pull
+request before transitioning to `PRPublished`. The deterministic demonstration
+uses a fictional URL and mock publication evidence rather than creating a real
+pull request.
+
+`PRPublished` uses an observed-condition wait for all required reviewers and
+policies to approve the current source commit. It then enters
+`HumanCodeReviewApproved`, which uses a separate observed-condition wait for an
+authorized person to complete the pull request. Approval alone must never
+complete it automatically. `Committed` is the terminal state and preserves the
+pull-request and merge evidence.
 
 The demonstration proves:
 
@@ -1022,7 +1093,7 @@ The demonstration proves:
 - Branch-to-commit pinning.
 - Exactly-once Job materialization.
 - Worker-executed state runs.
-- Durable external and human suspension with cross-worker resumption.
+- Durable response and observed-condition waits with cross-worker resumption.
 - Infrastructure-generated external-operation identity and retryable signal delivery.
 - Evidence-gated transitions that reject prose-only validation.
 - Human-attention notification and dashboard discovery.
@@ -1030,7 +1101,7 @@ The demonstration proves:
 - User-to-platform lifecycle handoff.
 - Terminal Job completion.
 
-### Running the two-Job demo
+### Running the multi-Job demo
 
 With the portal backend, JobGenerator controller, and a matching worker already
 running, the standalone runner acts only as a portal user:
@@ -1043,25 +1114,28 @@ python scripts\job-generator-lifecycle-demo.py `
   --platform-branch <platform-lifecycle-branch> `
   --platform-base-path <platform-lifecycle-directory> `
   --full-run `
-  --human-wait-seconds 2 `
-  --system-wait-seconds 1 `
-  <work-item-id-1> <work-item-id-2>
+  --response-wait-seconds 2 `
+  --operation-delay-seconds 1 `
+  <work-item-id> [<work-item-id> ...]
 ```
 
 It canonicalizes legacy HTTPS or SSH Azure DevOps remotes, resolves both
 lifecycle branches to immutable commits, registers the JobGenerator through
-the portal API, and waits until both Jobs reach the durable
-`WorkDetailsGathered` human-input gate. It does not reset databases, build
+the portal API, and waits until every Job reaches the durable
+`WorkDetailsGathered` response wait. It does not reset databases, build
 components, launch services, control the browser, or stop backend processes.
 Use `--portal-url` or `PILOTSWARM_PORTAL_URL` when the portal is not available
 at `http://localhost:4311`.
 
-During `--full-run`, `--human-wait-seconds` controls how long each Job remains
-at its initial `ask_user` gate before the runner answers it. Jobs are timed and
-answered independently, so one Job does not remain parked merely because its
-sibling has not reached the gate. `--system-wait-seconds` controls the
-`delayMs` requested from each deterministic mock code-review, PVS, and
-pull-request operation. Its accepted range is 0 through 300 seconds.
+During `--full-run`, `--response-wait-seconds` controls how long each Job
+remains at its initial `ask_user` gate before the runner answers it. Jobs are
+timed and answered independently, so one Job does not remain parked merely
+because another has not reached the gate. `--operation-delay-seconds` controls
+the `delayMs` requested from each deterministic mock automated-review, PVS,
+pull-request publication, human-review, and PR-completion operation. Its
+accepted range is 0 through 300 seconds. The previous
+`--human-wait-seconds` and `--system-wait-seconds` names remain accepted as
+hidden compatibility aliases.
 
 Set `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` on the already-running JobGenerator
 controller to enable the deterministic external-operation producer. Optional
