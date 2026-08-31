@@ -13,6 +13,7 @@ import type {
     JobRow,
     JobSessionRow,
     JobStateRunRow,
+    JobWaitRow,
     JobJournalEntryRow,
     WorkerTimelineEntry,
 } from "../cms.js";
@@ -156,6 +157,10 @@ export class WebPilotSwarmManagementClient {
 
     async listJobStateRuns(jobId: string): Promise<JobStateRunRow[]> {
         return this._api.call("listJobStateRuns", { jobId });
+    }
+
+    async listJobWaits(jobId: string): Promise<JobWaitRow[]> {
+        return this._api.call("listJobWaits", { jobId });
     }
 
     async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {

@@ -212,6 +212,10 @@ export class HttpApiTransport {
         return this.api.call("listJobStateRuns", { jobId });
     }
 
+    async listJobWaits(jobId) {
+        return this.api.call("listJobWaits", { jobId });
+    }
+
     async listJobJournal(jobId) {
         return this.api.call("listJobJournal", { jobId });
     }

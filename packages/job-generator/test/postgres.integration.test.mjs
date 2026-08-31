@@ -93,7 +93,7 @@ test("controller materialization and durable Job lifecycle transitions", {
                     name: "Integration validation",
                     beforeState: "Fixed",
                     provider: "mock",
-                    kind: "pvs",
+                    kind: "validation",
                 }],
             },
         });
@@ -104,10 +104,16 @@ test("controller materialization and durable Job lifecycle transitions", {
             lifecycleRegistration.generator.generatorId,
             lifecycleWorker,
         );
-        const [job] = await catalog.reconcileJobGeneratorDiscoveries(cycle.cycleId, [{
-            key: "record-42",
-            payload: { id: 42 },
-        }]);
+        const [job, failingJob] = await catalog.reconcileJobGeneratorDiscoveries(cycle.cycleId, [
+            {
+                key: "record-42",
+                payload: { id: 42 },
+            },
+            {
+                key: "record-failure",
+                payload: { id: "failure" },
+            },
+        ]);
         assert.equal(job.currentState, "Diagnosed");
         assert.equal(job.stateRevision, 1);
 
@@ -183,7 +189,131 @@ test("controller materialization and durable Job lifecycle transitions", {
         await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
         assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "active");
         await catalog.setJobSessionExecutionStatus(firstSession.sessionId, "input_required");
+        assert.equal(
+            await catalog.acceptJobResponse({
+                sessionId: firstSession.sessionId,
+                answer: "Legacy answer",
+            }),
+            null,
+        );
+        await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
+        const supersededResponseWait = await catalog.startJobResponseWait({
+            sessionId: firstSession.sessionId,
+            waitKey: `response:${firstSession.sessionId}:0`,
+            question: "This prompt was superseded by a later turn.",
+        });
+        const responseWait = await catalog.startJobResponseWait({
+            sessionId: firstSession.sessionId,
+            waitKey: `response:${firstSession.sessionId}:1`,
+            question: "Publish the proposed fix?",
+            choices: ["Approved", "Rejected"],
+            allowFreeform: false,
+        });
+        assert.ok(responseWait);
+        assert.equal(responseWait.kind, "response");
+        assert.equal(responseWait.status, "pending");
+        assert.equal(responseWait.expectedStateRevision, 1);
+        assert.deepEqual(responseWait.responderPolicy, { kind: "session_writer" });
+        assert.equal(
+            (await catalog.listJobWaits(job.jobId)).find(
+                (wait) => wait.waitId === supersededResponseWait.waitId,
+            ).status,
+            "cancelled",
+        );
+        assert.equal(
+            (await catalog.startJobResponseWait({
+                sessionId: firstSession.sessionId,
+                waitKey: `response:${firstSession.sessionId}:1`,
+                question: "Publish the proposed fix?",
+                choices: ["Approved", "Rejected"],
+                allowFreeform: false,
+            })).waitId,
+            responseWait.waitId,
+        );
+        await catalog.setJobSessionExecutionStatus(firstSession.sessionId, "input_required");
         assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "blocked");
+        await assert.rejects(
+            catalog.acceptJobResponse({
+                sessionId: firstSession.sessionId,
+                answer: "Maybe",
+            }),
+            /must be one of/,
+        );
+        const concurrentResponses = await Promise.allSettled([
+            catalog.acceptJobResponse({
+                sessionId: firstSession.sessionId,
+                answer: "Approved",
+                respondedBy: {
+                    kind: "user",
+                    provider: "test-identity",
+                    subject: "reviewer-1",
+                    relation: "owner",
+                },
+            }),
+            catalog.acceptJobResponse({
+                sessionId: firstSession.sessionId,
+                answer: "Rejected",
+                respondedBy: {
+                    kind: "user",
+                    provider: "test-identity",
+                    subject: "reviewer-2",
+                    relation: "collaborator",
+                },
+            }),
+        ]);
+        assert.equal(
+            concurrentResponses.filter((result) => result.status === "fulfilled").length,
+            1,
+        );
+        assert.equal(
+            concurrentResponses.filter((result) => result.status === "rejected").length,
+            1,
+        );
+        const acceptedResponse = concurrentResponses.find(
+            (result) => result.status === "fulfilled",
+        ).value;
+        assert.equal(acceptedResponse.status, "satisfied");
+        assert.ok(acceptedResponse.responseId);
+        assert.ok(["Approved", "Rejected"].includes(acceptedResponse.response.answer));
+        assert.equal(acceptedResponse.satisfactionEvidence.source, "direct_submission");
+        await assert.rejects(
+            catalog.acceptJobResponse({
+                sessionId: firstSession.sessionId,
+                answer: "Approved",
+            }),
+            /already satisfied/,
+        );
+        await catalog.reopenJobResponseWait(
+            acceptedResponse.waitId,
+            acceptedResponse.responseId,
+        );
+        assert.equal(
+            (await catalog.listJobWaits(job.jobId)).find(
+                (wait) => wait.waitId === responseWait.waitId,
+            ).status,
+            "pending",
+        );
+        const finalResponse = await catalog.acceptJobResponse({
+            sessionId: firstSession.sessionId,
+            answer: "Approved",
+            respondedBy: {
+                kind: "user",
+                provider: "test-identity",
+                subject: "reviewer-1",
+                relation: "owner",
+            },
+        });
+        assert.equal(finalResponse.status, "satisfied");
+        assert.equal(finalResponse.responseDeliveryStatus, "pending");
+        await catalog.markJobResponseEnqueued(finalResponse.waitId, finalResponse.responseId);
+        const persistedWait = (await catalog.listJobWaits(job.jobId)).find(
+            (wait) => wait.waitId === responseWait.waitId,
+        );
+        assert.equal(persistedWait.waitId, responseWait.waitId);
+        assert.equal(persistedWait.response.answer, "Approved");
+        assert.equal(persistedWait.satisfiedBy.subject, "reviewer-1");
+        assert.equal(persistedWait.responseDeliveryStatus, "enqueued");
+        assert.ok(persistedWait.responseEnqueuedAt);
         await catalog.acknowledgeJobSession(firstSession.sessionId, "git-worker-1");
         assert.equal((await catalog.getJob(job.jobId)).lifecycleState, "active");
         const executionCompletedAt = new Date(Date.now() - 5_000).toISOString();
@@ -212,7 +342,7 @@ test("controller materialization and durable Job lifecycle transitions", {
         const operation = await catalog.startJobExternalOperation({
             sessionId: firstSession.sessionId,
             provider: "mock",
-            kind: "pvs",
+            kind: "validation",
             operationKey: "integration",
             request: { result: { passed: true } },
             nextPollAt: new Date(Date.now() - 1_000),
@@ -220,7 +350,7 @@ test("controller materialization and durable Job lifecycle transitions", {
         const replayedOperation = await catalog.startJobExternalOperation({
             sessionId: firstSession.sessionId,
             provider: "mock",
-            kind: "pvs",
+            kind: "validation",
             operationKey: "integration",
             request: { result: { passed: false }, delayMs: 30_000 },
         });
@@ -229,6 +359,13 @@ test("controller materialization and durable Job lifecycle transitions", {
             (await catalog.getJobExternalOperation(firstSession.sessionId, operation.operationId)).signalKey,
             operation.signalKey,
         );
+        const pendingObservedWait = (await catalog.listJobWaits(job.jobId)).find(
+            (wait) => wait.externalOperationId === operation.operationId,
+        );
+        assert.equal(pendingObservedWait.kind, "observed_condition");
+        assert.equal(pendingObservedWait.status, "pending");
+        assert.equal(pendingObservedWait.provider, "mock");
+        assert.equal(pendingObservedWait.predicate.kind, "validation");
         await assert.rejects(
             catalog.completeJobState({
                 sessionId: firstSession.sessionId,
@@ -247,11 +384,29 @@ test("controller materialization and durable Job lifecycle transitions", {
             workerId: "mock-producer-1",
             status: "succeeded",
             result: { passed: true },
-            evidence: { runId: "pvs-integration-1" },
+            evidence: "validation-integration-1",
         });
+        const satisfiedObservedWait = (await catalog.listJobWaits(job.jobId)).find(
+            (wait) => wait.externalOperationId === operation.operationId,
+        );
+        assert.equal(satisfiedObservedWait.status, "satisfied");
+        assert.deepEqual(satisfiedObservedWait.latestObservation, { passed: true });
+        assert.deepEqual(satisfiedObservedWait.satisfactionEvidence, { value: "validation-integration-1" });
+        const staleResponseWait = await catalog.startJobResponseWait({
+            sessionId: firstSession.sessionId,
+            waitKey: `response:${firstSession.sessionId}:2`,
+            question: "This wait must not survive session replacement.",
+        });
+        await catalog.setJobSessionExecutionStatus(firstSession.sessionId, "input_required");
         const replacementSession = await catalog.replaceJobSession(
             job.jobId,
             "lifecycle-session-1-replacement",
+        );
+        assert.equal(
+            (await catalog.listJobWaits(job.jobId)).find(
+                (wait) => wait.waitId === staleResponseWait.waitId,
+            ).status,
+            "cancelled",
         );
         await assert.rejects(
             catalog.prepareJobStateRun({
@@ -288,13 +443,19 @@ test("controller materialization and durable Job lifecycle transitions", {
         const reboundOperation = await catalog.startJobExternalOperation({
             sessionId: replacementSession.sessionId,
             provider: "mock",
-            kind: "pvs",
+            kind: "validation",
             operationKey: "integration",
             request: {},
         });
         assert.equal(reboundOperation.operationId, operation.operationId);
         assert.equal(reboundOperation.createdSessionId, firstSession.sessionId);
         assert.equal(reboundOperation.sessionId, replacementSession.sessionId);
+        assert.equal(
+            (await catalog.listJobWaits(job.jobId)).find(
+                (wait) => wait.externalOperationId === operation.operationId,
+            ).sessionId,
+            replacementSession.sessionId,
+        );
         assert.equal(
             await catalog.getJobExternalOperation(firstSession.sessionId, operation.operationId),
             null,
@@ -337,6 +498,12 @@ test("controller materialization and durable Job lifecycle transitions", {
             data: { signalKey: operation.signalKey },
         }], "git-worker-2");
         await catalog.acknowledgeJobSession(replacementSession.sessionId, "git-worker-2");
+        const completionCleanupWait = await catalog.startJobResponseWait({
+            sessionId: replacementSession.sessionId,
+            waitKey: `response:${replacementSession.sessionId}:2`,
+            question: "This wait must be cancelled by state completion.",
+        });
+        assert.notEqual(completionCleanupWait.waitKey, staleResponseWait.waitKey);
         const firstEntry = await catalog.completeJobState({
             sessionId: replacementSession.sessionId,
             outcome: "Fixed",
@@ -346,6 +513,12 @@ test("controller materialization and durable Job lifecycle transitions", {
         assert.equal(firstEntry.fromState, "Diagnosed");
         assert.equal(firstEntry.toState, "Fixed");
         assert.equal((await catalog.getJob(job.jobId)).currentState, "Fixed");
+        assert.equal(
+            (await catalog.listJobWaits(job.jobId)).find(
+                (wait) => wait.waitId === completionCleanupWait.waitId,
+            ).status,
+            "cancelled",
+        );
 
         const secondSession = await catalog.reserveJobSession(
             job.jobId,
@@ -466,12 +639,57 @@ test("controller materialization and durable Job lifecycle transitions", {
             [...workerTimeline].map((entry) => entry.at.getTime()).sort((a, b) => a - b),
         );
 
+        const failingSession = await catalog.reserveJobSession(
+            failingJob.jobId,
+            cycle.cycleId,
+            lifecycleWorker,
+            "lifecycle-session-failure",
+        );
+        await catalog.prepareJobStateRun({
+            sessionId: failingSession.sessionId,
+            expectedState: "Diagnosed",
+            expectedRevision: 1,
+            stateOwner: "user",
+            sourceId: "user-lifecycle",
+            sourcePath: "Example.Diagnosed.md",
+            sourceCommit: "failure123",
+            markdownSha256: "d".repeat(64),
+            allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
+            terminal: false,
+        });
+        await catalog.attachJobSession(
+            failingJob.jobId,
+            failingSession.sessionId,
+            cycle.cycleId,
+            lifecycleWorker,
+        );
+        await catalog.acknowledgeJobSession(failingSession.sessionId, "git-worker-failure");
+        const failureCleanupWait = await catalog.startJobResponseWait({
+            sessionId: failingSession.sessionId,
+            waitKey: `response:${failingSession.sessionId}:1`,
+            question: "This wait must be cancelled when the state run fails.",
+        });
+        await catalog.setJobSessionExecutionStatus(failingSession.sessionId, "input_required");
+        await catalog.failJobSession(
+            failingJob.jobId,
+            failingSession.sessionId,
+            cycle.cycleId,
+            lifecycleWorker,
+            "Intentional integration failure",
+        );
+        assert.equal(
+            (await catalog.listJobWaits(failingJob.jobId)).find(
+                (wait) => wait.waitId === failureCleanupWait.waitId,
+            ).status,
+            "cancelled",
+        );
+
         await catalog.completeJobGeneratorCycle({
             cycleId: cycle.cycleId,
             workerId: lifecycleWorker,
             status: "succeeded",
-            discoveredCount: 1,
-            createdCount: 1,
+            discoveredCount: 2,
+            createdCount: 2,
         });
     } finally {
         await catalog.pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

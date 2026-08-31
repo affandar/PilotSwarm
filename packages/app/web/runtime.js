@@ -1108,6 +1108,8 @@ export class PortalRuntime {
                 return this.transport.listJobSessions(safeParams.jobId);
             case "listJobStateRuns":
                 return this.transport.listJobStateRuns(safeParams.jobId);
+            case "listJobWaits":
+                return this.transport.listJobWaits(safeParams.jobId);
             case "listJobJournal":
                 return this.transport.listJobJournal(safeParams.jobId);
             case "listSessions":

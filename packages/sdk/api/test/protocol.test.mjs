@@ -102,6 +102,8 @@ test("JobGenerator operations use resource-shaped REST paths and bodies", () => 
     assert.equal(sessions.path, `${API_PREFIX}/jobs/job-1/sessions`);
     const stateRuns = buildOperationRequest("listJobStateRuns", { jobId: "job-1" });
     assert.equal(stateRuns.path, `${API_PREFIX}/jobs/job-1/state-runs`);
+    const waits = buildOperationRequest("listJobWaits", { jobId: "job-1" });
+    assert.equal(waits.path, `${API_PREFIX}/jobs/job-1/waits`);
     const journal = buildOperationRequest("listJobJournal", { jobId: "job-1" });
     assert.equal(journal.path, `${API_PREFIX}/jobs/job-1/journal`);
     const deleteJob = buildOperationRequest("deleteJob", { jobId: "job/1" });

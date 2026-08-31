@@ -5950,14 +5950,31 @@ function persistedJobStatus(job) {
 
 function persistedStateRunStatus(run) {
     switch (run.status) {
-        case "input_required": return "HUMAN WAIT";
-        case "waiting": return "SYSTEM WAIT";
+        case "input_required": return "AWAITING DECISION";
+        case "waiting": return "AWAITING CONDITION";
         case "active": return "RUNNING";
         case "completed": return "DONE";
         case "failed": return "FAILED";
         case "unacked": return "READY";
         default: return "PREPARING";
     }
+}
+
+function persistedJobWaitLabel(wait) {
+    if (!wait) return null;
+    if (wait.status !== "pending") {
+        return wait.kind === "response" ? "Decision received" : "Condition satisfied";
+    }
+    if (wait.kind === "response") return "Awaiting decision";
+    if (wait.kind === "timer") return "Awaiting scheduled time";
+    const predicateKind = String(wait.predicate?.kind || wait.prompt?.kind || "").toLowerCase();
+    if (predicateKind === "required_reviewers" || predicateKind === "required_reviewer_approval") {
+        return "Awaiting human code review";
+    }
+    if (predicateKind === "pull_request_completion" || predicateKind === "pr_completion") {
+        return "Awaiting PR completion";
+    }
+    return "Awaiting external condition";
 }
 
 function formatJobTimelineTimestamp(value) {
@@ -6077,6 +6094,24 @@ function buildJobTransitionTimeline(transition, events) {
     return withGaps;
 }
 
+async function listJobWaitsWithCompatibility(transport, jobId) {
+    if (typeof transport.listJobWaits !== "function") {
+        if (typeof console !== "undefined") {
+            console.warn("Job wait details are unavailable because this server/client does not support listJobWaits.");
+        }
+        return [];
+    }
+    try {
+        return await transport.listJobWaits(jobId);
+    } catch (error) {
+        if (error?.status !== 404) throw error;
+        if (typeof console !== "undefined") {
+            console.warn("Job wait details are unavailable because this server does not expose the Job waits endpoint.");
+        }
+        return [];
+    }
+}
+
 async function loadPersistedJobGenerators(transport) {
     const generatorRows = await transport.listJobGenerators();
     return Promise.all(generatorRows.map(async (generator) => {
@@ -6087,9 +6122,10 @@ async function loadPersistedJobGenerators(transport) {
             transport.listJobGeneratorJobs(generator.generatorId),
         ]);
         const jobs = await Promise.all(jobRows.map(async (job) => {
-            const [sessions, stateRuns, journal] = await Promise.all([
+            const [sessions, stateRuns, waits, journal] = await Promise.all([
                 transport.listJobSessions(job.jobId),
                 transport.listJobStateRuns(job.jobId),
+                listJobWaitsWithCompatibility(transport, job.jobId),
                 transport.listJobJournal(job.jobId),
             ]);
             const transitions = stateRuns.map((run) => {
@@ -6097,12 +6133,21 @@ async function loadPersistedJobGenerators(transport) {
                 const session = sessions.find((candidate) => candidate.stateRunId === run.stateRunId)
                     || sessions.find((candidate) => candidate.sessionId === run.sessionId)
                     || null;
+                const runWaits = waits.filter((candidate) => candidate.stateRunId === run.stateRunId);
+                const pendingWaits = run.status === "waiting" || run.status === "input_required"
+                    ? runWaits.filter((candidate) => candidate.status === "pending")
+                    : [];
+                const activeWait = pendingWaits.find((candidate) => candidate.kind === "response")
+                    || pendingWaits[0]
+                    || null;
                 return {
                     id: run.stateRunId,
                     stateName: run.stateName,
                     revision: run.stateRevision,
                     status: run.status,
-                    statusLabel: persistedStateRunStatus(run),
+                    statusLabel: persistedJobWaitLabel(activeWait) || persistedStateRunStatus(run),
+                    waits: runWaits,
+                    activeWait,
                     stateOwner: run.stateOwner,
                     sourceId: run.sourceId,
                     sourcePath: run.sourcePath,
@@ -6506,6 +6551,16 @@ function JobTransitionTimeline({ transition, timeline }) {
             ? React.createElement("div", { className: "ps-job-transition-source" },
                 transition.sourcePath,
                 transition.sourceCommit ? ` @ ${transition.sourceCommit.slice(0, 12)}` : "")
+            : null,
+        transition.activeWait
+            ? React.createElement("div", { className: "ps-job-transition-journal" },
+                React.createElement("strong", null, persistedJobWaitLabel(transition.activeWait)),
+                transition.activeWait.prompt?.question
+                    ? React.createElement("span", null, transition.activeWait.prompt.question)
+                    : null,
+                React.createElement("span", null,
+                    `Wait ${transition.activeWait.waitId}`
+                    + ` · ${transition.activeWait.detectionMode.replaceAll("_", " ")}`))
             : null,
         transition.journalEntryId
             ? React.createElement("div", { className: "ps-job-transition-journal" },

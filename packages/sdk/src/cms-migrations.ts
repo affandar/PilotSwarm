@@ -445,6 +445,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_cleanup_tombstones",
             sql: migration_0054_job_cleanup_tombstones(schema),
         },
+        {
+            version: "0055",
+            name: "job_waits",
+            sql: migration_0055_job_waits(schema),
+        },
     ];
 }
 
@@ -15442,5 +15447,71 @@ CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_owner
 
 CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status
     ON ${s}.job_cleanup_tombstones(cleanup_status, updated_at);
+`;
+}
+
+// ─── Migration 0055: canonical durable Job waits ────────────────
+
+function migration_0055_job_waits(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE TABLE IF NOT EXISTS ${s}.job_waits (
+    wait_id                    TEXT PRIMARY KEY,
+    job_id                     TEXT NOT NULL REFERENCES ${s}.jobs(job_id) ON DELETE CASCADE,
+    state_run_id               TEXT NOT NULL REFERENCES ${s}.job_state_runs(state_run_id) ON DELETE CASCADE,
+    definition_id              TEXT NOT NULL REFERENCES ${s}.job_generator_definitions(definition_id),
+    session_id                 TEXT NOT NULL,
+    external_operation_id      TEXT UNIQUE REFERENCES ${s}.job_external_operations(operation_id) ON DELETE CASCADE,
+    wait_key                   TEXT NOT NULL CHECK (BTRIM(wait_key) <> ''),
+    kind                       TEXT NOT NULL
+                               CHECK (kind IN ('response', 'observed_condition', 'timer')),
+    status                     TEXT NOT NULL DEFAULT 'pending'
+                               CHECK (status IN ('pending', 'satisfied', 'failed', 'timed_out', 'cancelled')),
+    detection_mode             TEXT NOT NULL
+                               CHECK (detection_mode IN ('direct_submission', 'poll', 'event', 'hybrid', 'timer')),
+    expected_state_revision    BIGINT NOT NULL CHECK (expected_state_revision > 0),
+    prompt                     JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(prompt) = 'object'),
+    response_schema            JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(response_schema) = 'object'),
+    responder_policy           JSONB NOT NULL DEFAULT '{}'::jsonb
+                               CHECK (jsonb_typeof(responder_policy) = 'object'),
+    provider                   TEXT,
+    target                     JSONB,
+    predicate                  JSONB,
+    provider_cursor            JSONB,
+    latest_observation         JSONB,
+    response_id                TEXT,
+    response                   JSONB,
+    response_delivery_status   TEXT NOT NULL DEFAULT 'none'
+                               CHECK (response_delivery_status IN ('none', 'pending', 'enqueued')),
+    response_enqueued_at       TIMESTAMPTZ,
+    satisfaction_evidence      JSONB,
+    satisfied_by               JSONB,
+    deadline_at                TIMESTAMPTZ,
+    next_check_at              TIMESTAMPTZ,
+    satisfied_at               TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (state_run_id, wait_key),
+    CHECK (provider IS NULL OR BTRIM(provider) <> ''),
+    CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
+    CHECK (predicate IS NULL OR jsonb_typeof(predicate) = 'object'),
+    CHECK (response IS NULL OR jsonb_typeof(response) = 'object'),
+    CHECK (satisfaction_evidence IS NULL OR jsonb_typeof(satisfaction_evidence) = 'object'),
+    CHECK (satisfied_by IS NULL OR jsonb_typeof(satisfied_by) = 'object')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_job_waits_pending_response
+    ON ${s}.job_waits(state_run_id)
+    WHERE kind = 'response' AND status = 'pending';
+CREATE INDEX IF NOT EXISTS ix_job_waits_job
+    ON ${s}.job_waits(job_id, expected_state_revision, created_at);
+CREATE INDEX IF NOT EXISTS ix_job_waits_session_pending
+    ON ${s}.job_waits(session_id, kind, status);
+CREATE INDEX IF NOT EXISTS ix_job_waits_due
+    ON ${s}.job_waits(next_check_at)
+    WHERE status = 'pending'
+      AND kind IN ('observed_condition', 'timer');
 `;
 }

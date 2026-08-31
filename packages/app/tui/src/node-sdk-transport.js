@@ -1144,6 +1144,10 @@ export class NodeSdkTransport {
         return this.mgmt.listJobStateRuns(jobId);
     }
 
+    async listJobWaits(jobId) {
+        return this.mgmt.listJobWaits(jobId);
+    }
+
     async listJobJournal(jobId) {
         return this.mgmt.listJobJournal(jobId);
     }

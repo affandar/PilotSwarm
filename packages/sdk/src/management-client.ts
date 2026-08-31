@@ -82,6 +82,7 @@ import type {
     JobSessionRow,
     JobStateRunRow,
     JobJournalEntryRow,
+    JobWaitRow,
     JobCleanupPlan,
     JobCleanupResult,
 } from "./cms.js";
@@ -1183,6 +1184,11 @@ export class PilotSwarmManagementClient {
     async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {
         this._ensureStarted();
         return this._catalog!.listJobJournal(jobId);
+    }
+
+    async listJobWaits(jobId: string): Promise<JobWaitRow[]> {
+        this._ensureStarted();
+        return this._catalog!.listJobWaits(jobId);
     }
 
     // ─── Session Listing ─────────────────────────────────────
@@ -3360,12 +3366,53 @@ export class PilotSwarmManagementClient {
         const payload: Record<string, unknown> = { answer, wasFreeform: true, expectedQuestion };
         const sender = normalizeMessageSender(options?.sender);
         if (sender) payload.sender = sender;
-        await this._duroxideClient.enqueueEvent(
-            orchId,
-            "messages",
-            JSON.stringify(payload),
-        );
-        await this._recordInputReceived(sessionId, { source: "answer" });
+        const jobWait = await this._catalog!.acceptJobResponse({
+            sessionId,
+            answer,
+            respondedBy: sender ?? null,
+        });
+        if (jobWait?.responseId) {
+            payload.answer = typeof jobWait.response?.answer === "string"
+                ? jobWait.response.answer
+                : answer;
+            payload.jobWaitId = jobWait.waitId;
+            payload.jobWaitResponseId = jobWait.responseId;
+        }
+        try {
+            await this._duroxideClient.enqueueEvent(
+                orchId,
+                "messages",
+                JSON.stringify(payload),
+            );
+        } catch (error) {
+            if (jobWait?.responseId) {
+                try {
+                    await this._catalog!.reopenJobResponseWait(jobWait.waitId, jobWait.responseId);
+                } catch (reopenError) {
+                    throw new AggregateError(
+                        [error, reopenError],
+                        `Failed to enqueue Job response and reopen wait ${jobWait.waitId}`,
+                    );
+                }
+            }
+            throw error;
+        }
+        if (jobWait?.responseId) {
+            try {
+                await this._catalog!.markJobResponseEnqueued(jobWait.waitId, jobWait.responseId);
+            } catch (error) {
+                const message = `[mgmt] failed to mark Job response enqueued for ${jobWait.waitId}: `
+                    + (error instanceof Error ? error.message : String(error));
+                if (this.config.traceWriter) this.config.traceWriter(message);
+                else console.warn(message);
+            }
+        }
+        await this._recordInputReceived(sessionId, {
+            source: "answer",
+            ...(jobWait?.responseId
+                ? { jobWaitId: jobWait.waitId, jobWaitResponseId: jobWait.responseId }
+                : {}),
+        });
     }
 
     /**

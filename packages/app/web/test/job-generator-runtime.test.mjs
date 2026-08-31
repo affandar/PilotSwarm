@@ -102,6 +102,7 @@ function createRuntime() {
         async listJobGeneratorCycles() { return []; },
         async listJobSessions() { return []; },
         async listJobStateRuns() { return []; },
+        async listJobWaits() { return []; },
         async listJobJournal() { return []; },
         async getWorkerTimeline(workerNodeId, options) {
             calls.push({ method: "getWorkerTimeline", workerNodeId, options });
@@ -258,15 +259,23 @@ test("JobGenerator, definition, and Job reads do not expose another owner's reso
         (error) => error.code === "NOT_FOUND",
     );
     await assert.rejects(
+        runtime.call("listJobWaits", { jobId: "j-bob" }, alice),
+        (error) => error.code === "NOT_FOUND",
+    );
+    await assert.rejects(
         runtime.call("listJobJournal", { jobId: "j-bob" }, alice),
         (error) => error.code === "NOT_FOUND",
     );
 });
 
-test("Job state runs and journal are exposed for an owned Job", async () => {
+test("Job state runs, waits, and journal are exposed for an owned Job", async () => {
     const { runtime } = createRuntime();
     assert.deepEqual(
         await runtime.call("listJobStateRuns", { jobId: "j-alice" }, alice),
+        [],
+    );
+    assert.deepEqual(
+        await runtime.call("listJobWaits", { jobId: "j-alice" }, alice),
         [],
     );
     assert.deepEqual(

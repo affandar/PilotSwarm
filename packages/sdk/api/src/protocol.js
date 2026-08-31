@@ -79,6 +79,7 @@ export const OPERATIONS = [
     { name: "deleteJob", access: "job-generator:manage", method: "DELETE", path: "/jobs/:jobId", params: { jobId: path("jobId") }, summary: "Logically delete one owned induced Job and terminate its sessions." },
     { name: "listJobSessions", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/sessions", params: { jobId: path("jobId") }, summary: "List a Job's PilotSwarm session history in ordinal order." },
     { name: "listJobStateRuns", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/state-runs", params: { jobId: path("jobId") }, summary: "List a Job's durable lifecycle state runs in revision order." },
+    { name: "listJobWaits", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/waits", params: { jobId: path("jobId") }, summary: "List a Job's durable response, observed-condition, and timer waits." },
     { name: "listJobJournal", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/journal", params: { jobId: path("jobId") }, summary: "List a Job's append-only state-transition journal." },
 
     // ── Sessions (client surface) ───────────────────────────────────────

@@ -1004,6 +1004,9 @@ export type JobStateRunStatus =
     | "input_required"
     | "completed"
     | "failed";
+export type JobWaitKind = "response" | "observed_condition" | "timer";
+export type JobWaitStatus = "pending" | "satisfied" | "failed" | "timed_out" | "cancelled";
+export type JobWaitDetectionMode = "direct_submission" | "poll" | "event" | "hybrid" | "timer";
 export type JobExternalOperationStatus = "pending" | "succeeded" | "failed";
 export type JobExternalOperationSignalStatus = "blocked" | "pending" | "delivering" | "delivered";
 
@@ -1146,6 +1149,49 @@ export interface JobSourceSessionContext {
     hasMore: boolean;
 }
 
+export interface JobWaitResponder {
+    kind: "user" | "agent" | "system";
+    provider?: string;
+    subject?: string;
+    display?: string;
+    relation?: "owner" | "collaborator" | "admin";
+    sessionId?: string;
+    origin?: "portal" | "tui" | "mcp" | "api";
+}
+
+export interface JobWaitRow {
+    waitId: string;
+    jobId: string;
+    stateRunId: string;
+    definitionId: string;
+    sessionId: string;
+    externalOperationId: string | null;
+    waitKey: string;
+    kind: JobWaitKind;
+    status: JobWaitStatus;
+    detectionMode: JobWaitDetectionMode;
+    expectedStateRevision: number;
+    prompt: Record<string, unknown>;
+    responseSchema: Record<string, unknown>;
+    responderPolicy: Record<string, unknown>;
+    provider: string | null;
+    target: Record<string, unknown> | null;
+    predicate: Record<string, unknown> | null;
+    providerCursor: unknown;
+    latestObservation: unknown;
+    responseId: string | null;
+    response: Record<string, unknown> | null;
+    responseDeliveryStatus: "none" | "pending" | "enqueued";
+    responseEnqueuedAt: Date | null;
+    satisfactionEvidence: Record<string, unknown> | null;
+    satisfiedBy: JobWaitResponder | null;
+    deadlineAt: Date | null;
+    nextCheckAt: Date | null;
+    satisfiedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
+
 export interface JobExternalOperationRow {
     operationId: string;
     jobId: string;
@@ -1190,6 +1236,22 @@ export interface StartJobExternalOperationInput {
     nextPollAt?: Date;
 }
 
+export interface StartJobResponseWaitInput {
+    sessionId: string;
+    waitKey: string;
+    question: string;
+    choices?: string[];
+    allowFreeform?: boolean;
+    responderPolicy?: Record<string, unknown>;
+    deadlineAt?: Date | null;
+}
+
+export interface AcceptJobResponseInput {
+    sessionId: string;
+    answer: string;
+    respondedBy?: JobWaitResponder | null;
+}
+
 export interface CompleteJobExternalOperationInput {
     operationId: string;
     workerId: string;
@@ -1213,6 +1275,25 @@ export interface PrepareJobStateRunInput {
 }
 
 const JOB_STATE_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value) ?? "null";
+}
+
+function jobWaitEvidence(value: unknown): Record<string, unknown> | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "object" && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    return { value };
+}
 
 function jobLifecycleConfig(definition: Record<string, unknown>): Record<string, unknown> {
     const nested = definition.lifecycle;
@@ -1454,6 +1535,11 @@ export interface SessionCatalog {
     listJobStateRuns(jobId: string): Promise<JobStateRunRow[]>;
     listJobSessions(jobId: string): Promise<JobSessionRow[]>;
     listJobJournal(jobId: string): Promise<JobJournalEntryRow[]>;
+    listJobWaits(jobId: string): Promise<JobWaitRow[]>;
+    startJobResponseWait(input: StartJobResponseWaitInput): Promise<JobWaitRow | null>;
+    acceptJobResponse(input: AcceptJobResponseInput): Promise<JobWaitRow | null>;
+    markJobResponseEnqueued(waitId: string, responseId: string): Promise<void>;
+    reopenJobResponseWait(waitId: string, responseId: string): Promise<void>;
     readJobSourceSession(
         currentSessionId: string,
         sourceSessionId: string,
@@ -2678,6 +2764,14 @@ export class PgSessionCatalog implements SessionCatalog {
                      WHERE association_id = $1`,
                     [current.rows[0].association_id],
                 );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_waits
+                     SET status = 'cancelled', updated_at = now()
+                     WHERE state_run_id = $1
+                       AND kind = 'response'
+                       AND status = 'pending'`,
+                    [stateRun.state_run_id],
+                );
             }
             const ordinalResult = await client.query(
                 `SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
@@ -2943,7 +3037,14 @@ export class PgSessionCatalog implements SessionCatalog {
                  FROM failed
                  WHERE sr.state_run_id = failed.state_run_id
                    AND sr.status <> 'completed'
-                 RETURNING sr.job_id
+                 RETURNING sr.job_id, sr.state_run_id
+             ), cancelled_wait AS (
+                 UPDATE "${this.sql.schema}".job_waits wait
+                 SET status = 'cancelled', updated_at = now()
+                 FROM failed_run
+                 WHERE wait.state_run_id = failed_run.state_run_id
+                   AND wait.status = 'pending'
+                 RETURNING wait.wait_id
              )
              UPDATE "${this.sql.schema}".jobs j
              SET lifecycle_state = 'blocked', session_error = $5, updated_at = now()
@@ -2978,6 +3079,282 @@ export class PgSessionCatalog implements SessionCatalog {
             [jobId],
         );
         return rows.map(rowToJobJournalEntry);
+    }
+
+    async listJobWaits(jobId: string): Promise<JobWaitRow[]> {
+        const { rows } = await this.pool.query(
+            `SELECT * FROM "${this.sql.schema}".job_waits
+             WHERE job_id = $1
+             ORDER BY expected_state_revision, created_at, wait_id`,
+            [jobId],
+        );
+        return rows.map(rowToJobWait);
+    }
+
+    async startJobResponseWait(input: StartJobResponseWaitInput): Promise<JobWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const waitKey = input.waitKey.trim();
+        const question = input.question.trim();
+        if (!sessionId || !question) {
+            throw new Error("Response wait requires a sessionId and question");
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(waitKey)) {
+            throw new Error("Response wait key contains unsupported characters");
+        }
+        const choices = (input.choices ?? []).map((choice) => choice.trim());
+        if (choices.some((choice) => !choice) || new Set(choices).size !== choices.length) {
+            throw new Error("Response wait choices must be unique non-empty strings");
+        }
+        const allowFreeform = input.allowFreeform !== false;
+        if (!allowFreeform && choices.length === 0) {
+            throw new Error("A response wait that disallows freeform input requires choices");
+        }
+        const prompt = { question, choices, allowFreeform };
+        const responseSchema = { type: "string", choices, allowFreeform };
+        const responderPolicy = input.responderPolicy ?? { kind: "session_writer" };
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.job_id, sr.definition_id,
+                        sr.state_revision, sr.status AS state_run_status,
+                        j.state_revision AS job_state_revision
+                 FROM "${this.sql.schema}".job_sessions js
+                 JOIN "${this.sql.schema}".job_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".jobs j
+                   ON j.job_id = sr.job_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.job_state_revision)
+                || !["active", "input_required"].includes(context.state_run_status)) {
+                throw new Error("Response waits require the active current Job state run");
+            }
+            const existingResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_waits
+                 WHERE state_run_id = $1 AND wait_key = $2
+                 FOR UPDATE`,
+                [context.state_run_id, waitKey],
+            );
+            if (existingResult.rows[0]) {
+                const existing = rowToJobWait(existingResult.rows[0]);
+                const sameContract = existing.kind === "response"
+                    && existing.sessionId === sessionId
+                    && existing.expectedStateRevision === Number(context.state_revision)
+                    && canonicalJson(existing.prompt) === canonicalJson(prompt)
+                    && canonicalJson(existing.responseSchema) === canonicalJson(responseSchema)
+                    && canonicalJson(existing.responderPolicy) === canonicalJson(responderPolicy);
+                if (!sameContract) {
+                    throw new Error("Response wait key is already bound to a different contract");
+                }
+                await client.query("COMMIT");
+                return existing;
+            }
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = 'cancelled',
+                     updated_at = now()
+                 WHERE state_run_id = $1
+                   AND kind = 'response'
+                   AND status = 'pending'
+                 RETURNING wait_id`,
+                [context.state_run_id],
+            );
+            const { rows } = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_waits (
+                     wait_id, job_id, state_run_id, definition_id, session_id,
+                     wait_key, kind, status, detection_mode, expected_state_revision,
+                     prompt, response_schema, responder_policy, deadline_at
+                 ) VALUES ($1,$2,$3,$4,$5,$6,'response','pending','direct_submission',$7,$8,$9,$10,$11)
+                 RETURNING *`,
+                [
+                    randomUUID(),
+                    context.job_id,
+                    context.state_run_id,
+                    context.definition_id,
+                    sessionId,
+                    waitKey,
+                    Number(context.state_revision),
+                    JSON.stringify(prompt),
+                    JSON.stringify(responseSchema),
+                    JSON.stringify(responderPolicy),
+                    input.deadlineAt ?? null,
+                ],
+            );
+            await client.query("COMMIT");
+            return rowToJobWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async acceptJobResponse(input: AcceptJobResponseInput): Promise<JobWaitRow | null> {
+        const sessionId = input.sessionId.trim();
+        const answer = input.answer.trim();
+        if (!sessionId) throw new Error("Job response requires a sessionId");
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const contextResult = await client.query(
+                `SELECT js.is_current, sr.state_run_id, sr.state_revision,
+                        sr.status AS state_run_status,
+                        j.state_revision AS job_state_revision
+                 FROM "${this.sql.schema}".job_sessions js
+                 JOIN "${this.sql.schema}".job_state_runs sr
+                   ON sr.state_run_id = js.state_run_id
+                 JOIN "${this.sql.schema}".jobs j
+                   ON j.job_id = sr.job_id
+                 WHERE js.session_id = $1
+                 FOR UPDATE OF js, sr, j`,
+                [sessionId],
+            );
+            const context = contextResult.rows[0];
+            if (!context) {
+                await client.query("COMMIT");
+                return null;
+            }
+            if (!context.is_current
+                || Number(context.state_revision) !== Number(context.job_state_revision)
+                || !["active", "input_required"].includes(context.state_run_status)) {
+                throw new Error("Job response does not target the active current state revision");
+            }
+            const waitResult = await client.query(
+                `SELECT * FROM "${this.sql.schema}".job_waits
+                 WHERE state_run_id = $1
+                   AND kind = 'response'
+                   AND status = 'pending'
+                 LIMIT 1
+                 FOR UPDATE`,
+                [context.state_run_id],
+            );
+            const wait = waitResult.rows[0] ? rowToJobWait(waitResult.rows[0]) : null;
+            if (!wait) {
+                const latestResult = await client.query(
+                    `SELECT * FROM "${this.sql.schema}".job_waits
+                     WHERE state_run_id = $1
+                       AND kind = 'response'
+                     ORDER BY created_at DESC, wait_id DESC
+                     LIMIT 1
+                     FOR UPDATE`,
+                    [context.state_run_id],
+                );
+                const latest = latestResult.rows[0] ? rowToJobWait(latestResult.rows[0]) : null;
+                if (latest?.status === "satisfied") {
+                    throw new Error("Job response wait is already satisfied");
+                }
+                if (context.state_run_status === "input_required") {
+                    await client.query("COMMIT");
+                    return null;
+                }
+                throw new Error("The current Job state run has no response wait");
+            }
+            if (!answer) throw new Error("Job response requires a non-empty answer");
+            if (wait.expectedStateRevision !== Number(context.state_revision)) {
+                throw new Error("Job response wait targets a stale state revision");
+            }
+            const choices = Array.isArray(wait.responseSchema.choices)
+                ? wait.responseSchema.choices.filter((choice): choice is string => typeof choice === "string")
+                : [];
+            const allowFreeform = wait.responseSchema.allowFreeform !== false;
+            if (!allowFreeform && !choices.includes(answer)) {
+                throw new Error(`Job response must be one of: ${choices.join(", ")}`);
+            }
+            const responseId = randomUUID();
+            const { rows } = await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = 'satisfied',
+                     response_id = $2,
+                     response = $3,
+                     response_delivery_status = 'pending',
+                     response_enqueued_at = NULL,
+                     satisfaction_evidence = $4,
+                     satisfied_by = $5,
+                     satisfied_at = now(),
+                     updated_at = now()
+                 WHERE wait_id = $1
+                   AND status = 'pending'
+                   AND expected_state_revision = $6
+                 RETURNING *`,
+                [
+                    wait.waitId,
+                    responseId,
+                    JSON.stringify({ answer }),
+                    JSON.stringify({ source: "direct_submission", sessionId }),
+                    input.respondedBy ? JSON.stringify(input.respondedBy) : null,
+                    Number(context.state_revision),
+                ],
+            );
+            if (!rows[0]) throw new Error("Job response wait was satisfied concurrently");
+            await client.query("COMMIT");
+            return rowToJobWait(rows[0]);
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async markJobResponseEnqueued(waitId: string, responseId: string): Promise<void> {
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_waits
+             SET response_delivery_status = 'enqueued',
+                 response_enqueued_at = COALESCE(response_enqueued_at, now()),
+                 updated_at = now()
+             WHERE wait_id = $1
+               AND response_id = $2
+               AND status = 'satisfied'
+               AND response_delivery_status IN ('pending', 'enqueued')`,
+            [waitId.trim(), responseId.trim()],
+        );
+        if ((result.rowCount ?? 0) !== 1) {
+            throw new Error("Job response wait enqueue acknowledgement is stale");
+        }
+    }
+
+    async reopenJobResponseWait(waitId: string, responseId: string): Promise<void> {
+        const normalizedWaitId = waitId.trim();
+        const normalizedResponseId = responseId.trim();
+        if (!normalizedWaitId || !normalizedResponseId) {
+            throw new Error("Reopening a Job response wait requires waitId and responseId");
+        }
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_waits wait
+             SET status = 'pending',
+                 response_id = NULL,
+                 response = NULL,
+                 response_delivery_status = 'none',
+                 response_enqueued_at = NULL,
+                 satisfaction_evidence = NULL,
+                 satisfied_by = NULL,
+                 satisfied_at = NULL,
+                 updated_at = now()
+             FROM "${this.sql.schema}".job_state_runs state_run,
+                  "${this.sql.schema}".jobs job
+             WHERE wait.wait_id = $1
+               AND wait.response_id = $2
+               AND wait.status = 'satisfied'
+               AND wait.response_delivery_status = 'pending'
+               AND state_run.state_run_id = wait.state_run_id
+               AND job.job_id = wait.job_id
+               AND state_run.state_revision = job.state_revision
+               AND state_run.status IN ('active', 'input_required')`,
+            [normalizedWaitId, normalizedResponseId],
+        );
+        if ((result.rowCount ?? 0) !== 1) {
+            throw new Error("Job response wait cannot be reopened");
+        }
     }
 
     async readJobSourceSession(
@@ -3038,7 +3415,7 @@ export class PgSessionCatalog implements SessionCatalog {
         try {
             await client.query("BEGIN");
             const contextResult = await client.query(
-                `SELECT sr.state_run_id, sr.job_id, sr.definition_id, sr.status,
+                `SELECT sr.state_run_id, sr.job_id, sr.definition_id, sr.state_revision, sr.status,
                         js.is_current
                  FROM "${this.sql.schema}".job_sessions js
                  JOIN "${this.sql.schema}".job_state_runs sr
@@ -3052,6 +3429,60 @@ export class PgSessionCatalog implements SessionCatalog {
             if (!context.is_current || context.status !== "active") {
                 throw new Error("External operations require the active current Job state run");
             }
+            const ensureObservedConditionWait = async (operation: any): Promise<void> => {
+                const waitStatus = operation.status === "succeeded"
+                    ? "satisfied"
+                    : operation.status === "failed"
+                        ? "failed"
+                        : "pending";
+                await client.query(
+                    `INSERT INTO "${this.sql.schema}".job_waits (
+                         wait_id, job_id, state_run_id, definition_id, session_id,
+                         external_operation_id, wait_key, kind, status, detection_mode,
+                         expected_state_revision, prompt, response_schema, responder_policy,
+                         provider, target, predicate, latest_observation,
+                         satisfaction_evidence, next_check_at, satisfied_at
+                     ) VALUES (
+                         $1,$2,$3,$4,$5,$6,$7,'observed_condition',$8,'poll',
+                         $9,$10,'{}'::jsonb,'{}'::jsonb,$11,$12,$13,$14,$15,$16,$17
+                     )
+                     ON CONFLICT (state_run_id, wait_key) DO UPDATE
+                     SET session_id = EXCLUDED.session_id,
+                         external_operation_id = EXCLUDED.external_operation_id,
+                         status = EXCLUDED.status,
+                         provider = EXCLUDED.provider,
+                         target = EXCLUDED.target,
+                         predicate = EXCLUDED.predicate,
+                         latest_observation = EXCLUDED.latest_observation,
+                         satisfaction_evidence = EXCLUDED.satisfaction_evidence,
+                         next_check_at = EXCLUDED.next_check_at,
+                         satisfied_at = EXCLUDED.satisfied_at,
+                         updated_at = now()`,
+                    [
+                        randomUUID(),
+                        context.job_id,
+                        context.state_run_id,
+                        context.definition_id,
+                        operation.session_id,
+                        operation.operation_id,
+                        `observed:${provider}:${kind}:${operationKey}`,
+                        waitStatus,
+                        Number(context.state_revision),
+                        JSON.stringify({ provider, kind, operationKey }),
+                        provider,
+                        JSON.stringify(operation.request ?? {}),
+                        JSON.stringify({ kind }),
+                        operation.result === null || operation.result === undefined
+                            ? null
+                            : JSON.stringify(operation.result),
+                        operation.evidence === null || operation.evidence === undefined
+                            ? null
+                            : JSON.stringify(jobWaitEvidence(operation.evidence)),
+                        waitStatus === "pending" ? operation.next_poll_at : null,
+                        waitStatus === "pending" ? null : operation.completed_at,
+                    ],
+                );
+            };
             const idempotencyKey = [
                 "job-state-run",
                 context.state_run_id,
@@ -3091,9 +3522,11 @@ export class PgSessionCatalog implements SessionCatalog {
                          RETURNING *`,
                         [existingOperation.operation_id, input.sessionId],
                     );
+                    await ensureObservedConditionWait(rebound.rows[0]);
                     await client.query("COMMIT");
                     return rowToJobExternalOperation(rebound.rows[0]);
                 }
+                await ensureObservedConditionWait(existingOperation);
                 await client.query("COMMIT");
                 return rowToJobExternalOperation(existingOperation);
             }
@@ -3121,6 +3554,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     input.nextPollAt ?? new Date(),
                 ],
             );
+            await ensureObservedConditionWait(result.rows[0]);
             await client.query("COMMIT");
             return rowToJobExternalOperation(result.rows[0]);
         } catch (error) {
@@ -3205,22 +3639,40 @@ export class PgSessionCatalog implements SessionCatalog {
         input: CompleteJobExternalOperationInput,
     ): Promise<JobExternalOperationRow> {
         const { rows } = await this.pool.query(
-            `UPDATE "${this.sql.schema}".job_external_operations
-             SET status = $3,
-                 result = $4,
-                 evidence = $5,
-                 error = $6,
-                 completed_at = now(),
-                 poll_lease_owner = NULL,
-                 poll_lease_expires_at = NULL,
-                 signal_status = 'pending',
-                 next_signal_at = now(),
-                 updated_at = now()
-             WHERE operation_id = $1
-               AND poll_lease_owner = $2
-               AND poll_lease_expires_at > now()
-               AND status = 'pending'
-             RETURNING *`,
+            `WITH completed_operation AS (
+                 UPDATE "${this.sql.schema}".job_external_operations
+                 SET status = $3,
+                     result = $4,
+                     evidence = $5,
+                     error = $6,
+                     completed_at = now(),
+                     poll_lease_owner = NULL,
+                     poll_lease_expires_at = NULL,
+                     signal_status = 'pending',
+                     next_signal_at = now(),
+                     updated_at = now()
+                 WHERE operation_id = $1
+                   AND poll_lease_owner = $2
+                   AND poll_lease_expires_at > now()
+                   AND status = 'pending'
+                 RETURNING *
+             ), completed_wait AS (
+                 UPDATE "${this.sql.schema}".job_waits wait
+                 SET status = CASE WHEN operation.status = 'succeeded' THEN 'satisfied' ELSE 'failed' END,
+                     latest_observation = operation.result,
+                     satisfaction_evidence = CASE
+                         WHEN operation.evidence IS NULL THEN NULL
+                         WHEN jsonb_typeof(operation.evidence) = 'object' THEN operation.evidence
+                         ELSE jsonb_build_object('value', operation.evidence)
+                     END,
+                     next_check_at = NULL,
+                     satisfied_at = operation.completed_at,
+                     updated_at = now()
+                 FROM completed_operation operation
+                 WHERE wait.external_operation_id = operation.operation_id
+                 RETURNING wait.wait_id
+             )
+             SELECT * FROM completed_operation`,
             [
                 input.operationId,
                 input.workerId,
@@ -3470,6 +3922,13 @@ export class PgSessionCatalog implements SessionCatalog {
                  SET status = 'completed', completed_at = now(), lease_owner = NULL,
                      lease_expires_at = NULL, updated_at = now()
                  WHERE state_run_id = $1`,
+                [context.state_run_id],
+            );
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_waits
+                 SET status = 'cancelled', updated_at = now()
+                 WHERE state_run_id = $1
+                   AND status = 'pending'`,
                 [context.state_run_id],
             );
             await client.query(
@@ -6336,6 +6795,41 @@ function rowToJobJournalEntry(row: any): JobJournalEntryRow {
         summary: row.summary,
         idempotencyKey: row.idempotency_key,
         transitionedAt: row.transitioned_at,
+    };
+}
+
+function rowToJobWait(row: any): JobWaitRow {
+    return {
+        waitId: row.wait_id,
+        jobId: row.job_id,
+        stateRunId: row.state_run_id,
+        definitionId: row.definition_id,
+        sessionId: row.session_id,
+        externalOperationId: row.external_operation_id ?? null,
+        waitKey: row.wait_key,
+        kind: row.kind,
+        status: row.status,
+        detectionMode: row.detection_mode,
+        expectedStateRevision: Number(row.expected_state_revision),
+        prompt: row.prompt ?? {},
+        responseSchema: row.response_schema ?? {},
+        responderPolicy: row.responder_policy ?? {},
+        provider: row.provider ?? null,
+        target: row.target ?? null,
+        predicate: row.predicate ?? null,
+        providerCursor: row.provider_cursor ?? null,
+        latestObservation: row.latest_observation ?? null,
+        responseId: row.response_id ?? null,
+        response: row.response ?? null,
+        responseDeliveryStatus: row.response_delivery_status ?? "none",
+        responseEnqueuedAt: row.response_enqueued_at ?? null,
+        satisfactionEvidence: row.satisfaction_evidence ?? null,
+        satisfiedBy: row.satisfied_by ?? null,
+        deadlineAt: row.deadline_at ?? null,
+        nextCheckAt: row.next_check_at ?? null,
+        satisfiedAt: row.satisfied_at ?? null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
     };
 }
 

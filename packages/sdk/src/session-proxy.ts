@@ -4013,6 +4013,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ? "waiting"
                         : null;
                 if (jobExecutionStatus) {
+                    if (result.type === "input_required") {
+                            await cmsRetryCritical(
+                            `runTurn.postTurn startJobResponseWait session=${input.sessionId}`,
+                            () => catalog!.startJobResponseWait({
+                                sessionId: input.sessionId,
+                                waitKey: `response:${input.sessionId}:${input.turnIndex ?? 0}`,
+                                question: result.question,
+                                choices: result.choices,
+                                allowFreeform: result.allowFreeform,
+                            }),
+                            (msg) => activityCtx.traceInfo(msg),
+                        );
+                    }
                     await cmsRetryBestEffort(
                         `runTurn.postTurn setJobSessionExecutionStatus status=${jobExecutionStatus} session=${input.sessionId}`,
                         () => catalog!.setJobSessionExecutionStatus(input.sessionId, jobExecutionStatus),

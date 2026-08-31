@@ -109,3 +109,19 @@ test("0054: Jobs use logical deletion with durable cleanup tombstones", () => {
     assert.match(migration.sql, /PRIMARY KEY \(aggregate_type, aggregate_id\)/i);
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status/i);
 });
+
+test("0055: Job waits use one durable taxonomy with response fencing", () => {
+    const migration = migrations.find((m) => m.version === "0055");
+    assert.ok(migration, "migration 0055 must be registered");
+    assert.equal(migration.name, "job_waits");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.job_waits/i);
+    assert.match(migration.sql, /kind IN \('response', 'observed_condition', 'timer'\)/i);
+    assert.match(migration.sql, /detection_mode IN \('direct_submission', 'poll', 'event', 'hybrid', 'timer'\)/i);
+    assert.match(migration.sql, /expected_state_revision\s+BIGINT NOT NULL/i);
+    assert.match(migration.sql, /response_schema\s+JSONB NOT NULL/i);
+    assert.match(migration.sql, /responder_policy\s+JSONB NOT NULL/i);
+    assert.match(migration.sql, /satisfaction_evidence\s+JSONB/i);
+    assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_job_waits_pending_response/i);
+    assert.match(migration.sql, /WHERE kind = 'response' AND status = 'pending'/i);
+    assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_waits_due/i);
+});

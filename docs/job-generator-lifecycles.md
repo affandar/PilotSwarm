@@ -573,6 +573,25 @@ A timer wait stores its time condition and deadline in durable state. The
 scheduler, rather than a provider observer or submitted response, makes the
 state run runnable when that condition is reached.
 
+#### Current implementation status
+
+Response waits are projected into the canonical durable `JobWait` model when a
+JobSession invokes `ask_user`. The wait records the owning Job and state run,
+expected state revision, question, allowed choices, responder policy, and
+direct-submission detection mode. Answer submission satisfies that record
+before resuming the durable session; stale, invalid, or duplicate submissions
+are rejected, and a failed queue delivery reopens the same wait. Delivery state
+is recorded as `pending` or `enqueued` so the acceptance-to-enqueue boundary is
+observable. A process crash or ambiguous queue acknowledgement can still leave
+a satisfied response in `pending`; a future scheduler/outbox recovery pass must
+redrive that state before the platform can claim exactly-once response delivery.
+
+The same model reserves `observed_condition` and `timer` kinds so portal and API
+consumers use one taxonomy. The deterministic `mock` external-operation
+provider remains the only implemented observed-condition producer today.
+Provider-specific Azure DevOps observers and the durable due-work scheduler are
+the next implementation slices.
+
 ### 7. Complete a state
 
 The runtime generates an internal tool contract from the current state's

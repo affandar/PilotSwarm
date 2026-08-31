@@ -114,6 +114,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listJobJournal",
     "listJobSessions",
     "listJobStateRuns",
+    "listJobWaits",
     "listKnownUsers",
     "listModels",
     "listPausedSessions",
@@ -1119,6 +1120,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * List a Job's durable response, observed-condition, and timer waits.
+     * @remarks `GET /jobs/:jobId/waits` — access: `job-generator:read`
+     */
+    listJobWaits(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
      * Member directory (provider/subject/email/displayName) for share autocomplete; excludes synthetic principals.
      * @remarks `GET /management/users` — access: `authed`
      */
@@ -1838,6 +1847,7 @@ export function createManagementOps(
         listJobJournal: (params: Record<string, unknown> = {}) => callOp("listJobJournal", params),
         listJobSessions: (params: Record<string, unknown> = {}) => callOp("listJobSessions", params),
         listJobStateRuns: (params: Record<string, unknown> = {}) => callOp("listJobStateRuns", params),
+        listJobWaits: (params: Record<string, unknown> = {}) => callOp("listJobWaits", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
