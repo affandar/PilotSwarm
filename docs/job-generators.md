@@ -65,7 +65,6 @@ and stamps the authenticated principal.
       "repo": "service-repo",
       "gitRef": "main",
       "compute": ["devbox"],
-      "user": null,
       "model": "gpt-5.4"
     },
     "validationGates": [],
@@ -120,6 +119,23 @@ Jobs remain pinned to their original definition.
 The registration portal preselects `devbox` as the compute affinity. This is a
 UI default, not a server policy: REST callers may omit compute affinity or
 provide another supported value.
+
+User affinity is not a definition field. The server derives it from the
+authenticated `JobGenerator` owner and stamps every induced root and child
+session with that owner boundary. Duroxide combines the owner and repository
+constraints into one exact `runTurn` routing tag, so a personal worker must
+match both. Configure a personal worker with
+`PILOTSWARM_WORKER_OWNER_PROVIDER`, `PILOTSWARM_WORKER_OWNER_SUBJECT`, and its
+normal `PILOTSWARM_WORKER_TAGS` repo or `generic` tags. Partial owner
+configuration and an owner-affined worker using the unrestricted `any` tag
+filter fail at startup.
+
+Owner-scoped workers intentionally do not accept legacy unowned `repo:*` or
+`generic` work. Before converting an existing repository worker into a
+personal worker, drain its pre-owner-affinity sessions or retain a legacy
+global worker for those sessions until they complete. Do not advertise both
+legacy and owner-scoped tags on a personal worker: that would let it dequeue
+another user's unowned work during the compatibility window.
 
 Session induction reserves the concrete session ID before creating the
 PilotSwarm session, so `job_sessions` durably records the concrete

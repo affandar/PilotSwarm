@@ -123,6 +123,83 @@ test("JobGenerator registration stamps the authenticated owner", async () => {
     const create = calls.find((call) => call.method === "createJobGenerator");
     assert.deepEqual(create.input.owner, alice.principal);
     assert.equal(create.input.definition.createdBy, "alice");
+    assert.deepEqual(create.input.definition.affinities, { repo: "sample-repo" });
+});
+
+test("JobGenerator registration rejects caller-selected user affinity", async () => {
+    const { runtime } = createRuntime();
+    await assert.rejects(
+        runtime.call("createJobGenerator", {
+            name: "Spoofed",
+            cadenceSeconds: 300,
+            definition: {
+                sourceType: "kusto",
+                sourceConfig: {},
+                affinities: { repo: "sample-repo", user: "bob" },
+            },
+        }, alice),
+        (error) => (
+            error.code === "INVALID_REQUEST"
+            && error.message.includes("server-derived")
+        ),
+    );
+});
+
+test("legacy null user affinity is ignored instead of persisted", async () => {
+    const { runtime, calls } = createRuntime();
+    await runtime.call("createJobGenerator", {
+        name: "Legacy",
+        cadenceSeconds: 300,
+        definition: {
+            sourceType: "kusto",
+            sourceConfig: {},
+            affinities: { repo: "sample-repo", user: null },
+        },
+    }, alice);
+
+    const create = calls.find((call) => call.method === "createJobGenerator");
+    assert.deepEqual(create.input.definition.affinities, { repo: "sample-repo" });
+});
+
+test("JobGenerator repository affinity uses the canonical routing name", async () => {
+    const { runtime, calls } = createRuntime();
+    await runtime.call("createJobGenerator", {
+        name: "Canonical Repo",
+        cadenceSeconds: 300,
+        definition: {
+            sourceType: "kusto",
+            sourceConfig: {},
+            affinities: { repo: " DsMainDev " },
+            lifecycleDefinition: {
+                session: { repo: " PilotSwarm " },
+                lifecycle: { session: { repo: " SQL-AI-Marketplace " } },
+            },
+        },
+    }, alice);
+
+    const definition = calls.find((call) => call.method === "createJobGenerator").input.definition;
+    assert.equal(definition.affinities.repo, "dsmaindev");
+    assert.equal(definition.lifecycleDefinition.session.repo, "pilotswarm");
+    assert.equal(
+        definition.lifecycleDefinition.lifecycle.session.repo,
+        "sql-ai-marketplace",
+    );
+});
+
+test("JobGenerator registration rejects malformed repository affinity", async () => {
+    const { runtime } = createRuntime();
+    await assert.rejects(
+        runtime.call("createJobGenerator", {
+            name: "Bad Repo",
+            cadenceSeconds: 300,
+            definition: {
+                sourceType: "kusto",
+                sourceConfig: {},
+                affinities: { repo: "../DsMainDev" },
+            },
+        }, alice),
+        (error) => error.code === "INVALID_REQUEST" && error.message.includes("DNS-safe"),
+    );
 });
 
 test("JobGenerator listing is owner-scoped for users", async () => {

@@ -191,6 +191,14 @@ export type {
 /** Duroxide activity routing filter — re-exported for worker `workerTagFilter`. */
 export type { TagFilter } from "duroxide";
 export {
+    isOwnerScopedRoutingTag,
+    ownerAffinityKey,
+    repoFromRoutingTag,
+    runTurnRoutingTag,
+    scopeWorkerTagFilter,
+    workerOwnerFromEnv,
+} from "./activity-routing.js";
+export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
     ATTACHMENT_MAX_BYTES,
     ATTACHMENTS_MAX_COUNT,

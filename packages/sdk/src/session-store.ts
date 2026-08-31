@@ -124,7 +124,7 @@ export function getBinaryArtifactMaxBytes(): number {
     return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_BINARY_ARTIFACT_MAX_BYTES;
 }
 
-function createArtifactError(code: string, message: string, extra: Record<string, unknown> = {}): Error & Record<string, unknown> {
+export function createArtifactError(code: string, message: string, extra: Record<string, unknown> = {}): Error & Record<string, unknown> {
     const error = new Error(message) as Error & Record<string, unknown>;
     error.code = code;
     Object.assign(error, extra);
@@ -1066,6 +1066,17 @@ export interface ArtifactStore {
         contentType?: string,
         opts?: ArtifactUploadOptions,
     ): Promise<ArtifactMetadata>;
+    /**
+     * Atomically create an artifact without replacing an existing value.
+     * Returns true for the winning create and false when the name already exists.
+     */
+    uploadArtifactIfAbsent?(
+        sessionId: string,
+        filename: string,
+        content: string | Buffer,
+        contentType?: string,
+        opts?: ArtifactUploadOptions,
+    ): Promise<boolean>;
     /** Data-plane write: stream a local file into the store without buffering the whole body. */
     uploadArtifactFromFile(
         sessionId: string,
@@ -1182,6 +1193,47 @@ export class FilesystemArtifactStore implements ArtifactStore {
             uploadedAt,
             ...metadata,
         };
+    }
+
+    async uploadArtifactIfAbsent(
+        sessionId: string,
+        filename: string,
+        content: string | Buffer,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<boolean> {
+        const safeFilename = path.basename(String(filename || "").trim());
+        if (!safeFilename) {
+            throw createArtifactError("ARTIFACT_FILENAME_REQUIRED", "Artifact filename is required.");
+        }
+        const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
+        const filePath = this.safePath(sessionId, filename);
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+        const stagingPath = path.join(
+            path.dirname(filePath),
+            `.pilotswarm-upload-${process.pid}-${crypto.randomUUID()}.tmp`,
+        );
+        let fd: number | undefined;
+        try {
+            fd = fs.openSync(stagingPath, "wx");
+            fs.writeFileSync(fd, body);
+            fs.fsyncSync(fd);
+            fs.closeSync(fd);
+            fd = undefined;
+            fs.linkSync(stagingPath, filePath);
+        } catch (error: any) {
+            if (error?.code === "EEXIST") return false;
+            throw error;
+        } finally {
+            if (fd !== undefined) fs.closeSync(fd);
+            fs.rmSync(stagingPath, { force: true });
+        }
+        const uploadedAt = new Date().toISOString();
+        this.writeFileAtomic(
+            this.metadataPath(sessionId, filename),
+            JSON.stringify({ filename: safeFilename, uploadedAt, ...metadata }, null, 2),
+        );
+        return true;
     }
 
     async downloadArtifact(sessionId: string, filename: string): Promise<ArtifactDownloadResult> {

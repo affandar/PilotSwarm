@@ -28,6 +28,12 @@ import { createJobLifecycleTools } from "./job-lifecycle-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, DEFAULT_TURN_INACTIVITY_TIMEOUT_MS } from "./managed-session.js";
+import {
+    isOwnerScopedRoutingTag,
+    repoFromRoutingTag,
+    scopeWorkerTagFilter,
+    workerOwnerFromEnv,
+} from "./activity-routing.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
@@ -86,20 +92,21 @@ function parseNonNegativeInt(raw: unknown): number | undefined {
  *   - `"tags"` -> `{ tags: [...] }` — strictly the listed tags (e.g. a
  *     dedicated GPU pool that runs nothing untagged).
  */
-function resolveWorkerTagFilter(
+export function resolveWorkerTagFilter(
     explicit: PilotSwarmWorkerOptions["workerTagFilter"],
     envRaw: unknown,
     modeRaw: unknown = process.env.PILOTSWARM_WORKER_TAG_MODE,
+    workerOwner: PilotSwarmWorkerOptions["workerOwner"] = undefined,
 ): PilotSwarmWorkerOptions["workerTagFilter"] | undefined {
-    if (explicit !== undefined) return explicit;
-    if (typeof envRaw !== "string") return undefined;
-    const tags = envRaw.split(",").map((t) => t.trim()).filter(Boolean);
-    if (tags.length === 0) return undefined;
-    const mode = (typeof modeRaw === "string" ? modeRaw : "").trim().toLowerCase();
-    if (mode === "tags") return { tags };
-    // Default: repo-affinity mode — untagged support activities plus the
-    // repo's tagged runTurn, still rejecting other repos' tagged turns.
-    return { defaultAnd: tags };
+    let filter = explicit;
+    if (filter === undefined && typeof envRaw === "string") {
+        const tags = envRaw.split(",").map((t) => t.trim()).filter(Boolean);
+        if (tags.length > 0) {
+            const mode = (typeof modeRaw === "string" ? modeRaw : "").trim().toLowerCase();
+            filter = mode === "tags" ? { tags } : { defaultAnd: tags };
+        }
+    }
+    return scopeWorkerTagFilter(filter, workerOwner);
 }
 
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
@@ -325,6 +332,9 @@ export class PilotSwarmWorker {
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
             ...options,
+            workerOwner: options.workerOwner !== undefined
+                ? options.workerOwner
+                : workerOwnerFromEnv(process.env),
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
             turnInactivityTimeoutMs: resolveWorkerTurnInactivityTimeoutMs(options.turnInactivityTimeoutMs),
@@ -816,19 +826,21 @@ export class PilotSwarmWorker {
 
         // Resolve this worker's activity-routing tag filter BEFORE the first
         // heartbeat below, because refreshAgentPackages({force}) triggers the
-        // write-once registrar info build — which advertises repo affinity
+        // process-stable registrar info build — which advertises repo affinity
         // (info.repos / info.routingTags) derived from this filter. Resolving
         // it afterwards permanently locks repos:null into the registry row.
         const workerTagFilter = resolveWorkerTagFilter(
             this.config.workerTagFilter,
             process.env.PILOTSWARM_WORKER_TAGS,
+            process.env.PILOTSWARM_WORKER_TAG_MODE,
+            this.config.workerOwner,
         );
         // Remember the resolved filter so the heartbeat can surface repo
         // affinity into the workers row (see _buildRegistrarInfo -> info.repos).
         this._workerTagFilter = workerTagFilter;
 
         // ── Agent packages: initial install AFTER the stores settle (the
-        //    first heartbeat writes the worker's write-once capability info,
+        //    first heartbeat writes the worker's process registration info,
         //    which reads factStore/graphStore) but BEFORE the runtime exists
         //    so the first session on a fresh pod already sees registry
         //    agents. A registry problem degrades to zero packages, never a
@@ -1400,7 +1412,7 @@ export class PilotSwarmWorker {
             || (process.env.KUBERNETES_SERVICE_HOST ? "aks-default" : "default");
     }
 
-    /** Write-once identity/build/capability record for the workers row. */
+    /** Process-stable identity/build/capability record refreshed on each heartbeat. */
     private _buildRegistrarInfo(): Record<string, unknown> {
         if (this._registrarInfo) return this._registrarInfo;
         let sdkVersion = "unknown";
@@ -1434,9 +1446,13 @@ export class PilotSwarmWorker {
                 ]
                 : [];
         const repos = routingTags
-            .filter((t) => t.startsWith("repo:"))
-            .map((t) => t.slice("repo:".length))
-            .filter(Boolean);
+            .filter((tag) => !isOwnerScopedRoutingTag(tag))
+            .map(repoFromRoutingTag)
+            .filter((repo): repo is string => Boolean(repo));
+        const ownerScopedRepos = routingTags
+            .filter(isOwnerScopedRoutingTag)
+            .map(repoFromRoutingTag)
+            .filter((repo): repo is string => Boolean(repo));
         this._registrarInfo = {
             sdkVersion,
             authz: { adminScope: loadAdminScope(), policyVersion: ADMIN_SCOPE_POLICY_VERSION },
@@ -1444,6 +1460,7 @@ export class PilotSwarmWorker {
             consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
             ...(routingTags.length ? { routingTags } : {}),
             ...(repos.length ? { repos } : {}),
+            ...(ownerScopedRepos.length ? { ownerScopedRepos } : {}),
             capabilities: {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),

@@ -13,7 +13,7 @@ The fleet will span **AKS clusters, VMs, and users' laptops**. That forces four 
 3. **Desired state differs by segment, and so does what a worker can consume.** Every worker should serve the same agent-package catalog, but laptops don't share AKS's model-provider keys, and a `worker-image` instruction is meaningless to a VM. Directives need scoping, and each worker declares which domains it consumes — variation lives in that declaration and in the metadata blob, both of which are expected to differ per deployment technology.
 4. **Some directives can't be self-actuated.** A worker can install an agent package; it cannot replace its own container image. The channel must distinguish *worker-actuated* domains from *externally-actuated* ones where the worker only reports the actual.
 
-Two principles carry over unchanged from rev 1: this is **not session leasing** — duroxide keeps all work arbitration (affinity, claiming, crash reclaim; `workerTagFilter` remains the routing mechanism, the registry only *describes*) — and the heartbeat pattern proven live by 0038/0039 (wholesale row upsert, recency-window liveness, self-prune, epoch doorbells) is the foundation, not something new.
+Two principles carry over unchanged from rev 1: this is **not session leasing** — duroxide keeps all work arbitration (affinity, claiming, crash reclaim; `workerTagFilter` remains the routing mechanism, the registry only *describes*) — and the heartbeat pattern proven live by 0038/0039 (wholesale row upsert, recency-window liveness, self-prune, epoch doorbells) is the foundation, not something new. Worker owner and registration info refresh on every heartbeat so a stable devbox identity cannot retain stale routing or build metadata after restart.
 
 ## Design
 
@@ -30,7 +30,7 @@ workers (
     owner_subject  TEXT,
     registered_at  TIMESTAMPTZ NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL, -- the heartbeat; liveness = recency, uniformly
-    info           JSONB NOT NULL,       -- identity, build, consumed domains (write-once)
+    info           JSONB NOT NULL,       -- current process identity, build, consumed domains
     health         JSONB NOT NULL,       -- standard metrics, replaced every beat
     state          JSONB NOT NULL        -- actual-state per directive domain, replaced every beat
 )
@@ -76,7 +76,7 @@ cms_worker_heartbeat(p_worker_node_id, p_pool, p_phase,
     RETURNS TABLE(domain TEXT, pool TEXT, epoch BIGINT, actuation TEXT, desired JSONB)
 ```
 
-Upserts the row (info/owner on insert; pool/phase/health/state/updated_at every beat — pool follows declared config so re-targeting is just the next beat), applies the uniform prune, and returns the worker's effective directive set — the merged fleet/pool/worker resolution above, one row per domain. Worker-side, a small `WorkerRegistrar` owned by `PilotSwarmWorker` runs register → initial converge-all → `ready` → beat loop, dispatching changed epochs to pluggable domain handlers; `gracefulShutdown` sends a final `draining` beat. The protocol is **transport-neutral by shape**: v1 rides the proc (workers hold store creds today — and near-term remote/laptop workers will simply run with real credentials too), and the same operation lands verbatim as a portal op (`POST /api/v1/workers/heartbeat`) when credential-less remote workers arrive.
+Upserts the row (owner/info/pool/phase/health/state/updated_at every beat — stable worker IDs therefore refresh their routing and build registration after restart), applies the uniform prune, and returns the worker's effective directive set — the merged fleet/pool/worker resolution above, one row per domain. Worker-side, a small `WorkerRegistrar` owned by `PilotSwarmWorker` runs register → initial converge-all → `ready` → beat loop, dispatching changed epochs to pluggable domain handlers; `gracefulShutdown` sends a final `draining` beat. The protocol is **transport-neutral by shape**: v1 rides the proc (workers hold store creds today — and near-term remote/laptop workers will simply run with real credentials too), and the same operation lands verbatim as a portal op (`POST /api/v1/workers/heartbeat`) when credential-less remote workers arrive.
 
 **Filed for later — the credential-less remote worker:** the clean end-state is a **duroxide proxy provider that rides the Web API** — an implementation of the existing duroxide storage-provider seam (`duroxideStorageProviders` is already a registry) whose backend is authenticated portal endpoints instead of Postgres: work-item fetch/ack, timers, and history proxied over HTTP, with CMS/facts/blob access riding the Web surfaces that already exist for clients. Duroxide's poll-based dispatch tolerates the added latency, the provider interface is the narrow waist that makes it a drop-in, and the missing piece is worker identity tokens (the same auth track the heartbeat op needs). Nothing to build now; the seam is named so nothing grows across it.
 
@@ -147,7 +147,7 @@ Layers map onto the existing suites: `packages/sdk/test/unit/*.test.mjs` (node:t
 ### 1. Migration 0040 + heartbeat proc (local, PG) — phase 1
 
 - Shape/idempotency via the `cms-migrations-shape` / `pg-migrator` patterns (all-new tables → single `sql` entry, re-runs clean).
-- `cms_worker_heartbeat` upsert split: `info`/`pool`/`owner` written on insert only; `health`/`state`/`phase`/`updated_at` replaced every beat — assert a second beat with different info does NOT overwrite it, and re-registration after a prune DOES (write-once resets with the row).
+- `cms_worker_heartbeat` refreshes `owner`/`info`/`pool`/`health`/`state`/`phase`/`updated_at` every beat — assert a stable worker ID immediately replaces stale owner, routing, and build registration after restart.
 - **Uniform prune**: rows with `updated_at` backdated > 1h (direct SQL, no clock mocking) vanish on the next heartbeat; fresh rows survive; the pruned worker's re-registration under the same id is clean.
 - Seeding + shims: `('agent-packages','*','*')` carries the 0038 epoch forward; `cms_agent_registry_bump`/`_epoch` re-pointed. **The ship gate for the shims is the existing agent-package registry suite passing verbatim on a 0040 database** — publish/pin/scope/delete still bump what workers observe, zero edits to those tests.
 
@@ -182,7 +182,7 @@ Extends `agent-package-worker-install.test.js` rather than replacing it:
 
 ### 5. Invariant guards (cheap, permanent)
 
-Small tests that pin the capability-placement guarantees so refactors can't erode them silently: every heartbeat row carries a non-empty `pool`; `info.capabilities` and `info.consumes` survive the write-once path; the registry exposes no proc that assigns work (grep-level guard on the proc list — the describes-not-enforces boundary).
+Small tests that pin the capability-placement guarantees so refactors can't erode them silently: every heartbeat row carries a non-empty `pool`; `info.capabilities` and `info.consumes` refresh with the current worker process; the registry exposes no proc that assigns work (grep-level guard on the proc list — the describes-not-enforces boundary).
 
 ### 6. End-to-end smoke — ship gate
 

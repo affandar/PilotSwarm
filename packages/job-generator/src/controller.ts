@@ -54,6 +54,15 @@ function stringValue(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function repoAffinityValue(value: unknown): string | undefined {
+    const repo = stringValue(value)?.toLowerCase();
+    if (!repo) return undefined;
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(repo)) {
+        throw new Error(`Unsupported repository affinity: ${repo}`);
+    }
+    return repo;
+}
+
 function reasoningEffortValue(value: unknown): ReasoningEffort | undefined {
     const normalized = stringValue(value);
     if (!normalized) return undefined;
@@ -277,10 +286,11 @@ export class PilotSwarmInitialSessionFactory implements InitialSessionFactory {
             agentId: stringValue(sessionConfig.agentName),
             boundAgentName: stringValue(sessionConfig.agentName),
             promptLayering: stringValue(sessionConfig.agentName) ? { kind: "app-agent" } : undefined,
-            repo: stringValue(sessionConfig.repo) ?? stringValue(affinities.repo),
+            repo: repoAffinityValue(sessionConfig.repo) ?? repoAffinityValue(affinities.repo),
             gitRef: stringValue(sessionConfig.gitRef) ?? stringValue(affinities.gitRef),
             toolNames: toolNames.length > 0 ? toolNames : undefined,
             owner: input.generator.owner,
+            requireOwnerAffinity: true,
         });
         await session.send(prompt, {
             bootstrap: true,

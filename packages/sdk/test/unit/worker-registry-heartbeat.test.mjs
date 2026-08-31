@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PilotSwarmWorker } from "../../dist/worker.js";
+import { runTurnRoutingTag } from "../../dist/activity-routing.js";
 
 function worker() {
     return new PilotSwarmWorker({
@@ -53,4 +54,24 @@ test("graceful shutdown publishes draining whenever a registry catalog exists", 
 
     assert.deepEqual(phases, ["draining"]);
     assert.equal(instance._catalog, null);
+});
+
+test("owner-scoped repo workers do not advertise global repo serviceability", () => {
+    const instance = new PilotSwarmWorker({
+        store: "sqlite::memory:",
+        blobUseManagedIdentity: false,
+        workerOwner: { provider: "dev", subject: "alice" },
+    });
+    instance._workerTagFilter = {
+        defaultAnd: [
+            runTurnRoutingTag({
+                repo: "sample-repo",
+                ownerAffinity: { provider: "dev", subject: "alice" },
+            }),
+        ],
+    };
+
+    const info = instance._buildRegistrarInfo();
+    assert.equal(info.repos, undefined);
+    assert.deepEqual(info.ownerScopedRepos, ["sample-repo"]);
 });

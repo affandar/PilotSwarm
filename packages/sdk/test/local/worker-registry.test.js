@@ -4,7 +4,7 @@
  * The subtle logic gets exhaustive coverage: three-level shallow-merge union
  * with worker > pool > fleet precedence, epoch = SUM (including the
  * coincidentally-equal case where max would miss a bump), uniform prune,
- * write-once vs per-beat fields, canonical worker-row and actuation-uniformity
+ * restart-safe registration refresh, canonical worker-row and actuation-uniformity
  * enforcement, and the agent-packages fold-in shims staying continuous.
  *
  * Run: npx vitest run test/local/worker-registry.test.js
@@ -42,7 +42,7 @@ function beat(catalog, workerNodeId, overrides = {}) {
 }
 
 describe("worker registry", () => {
-    it("heartbeat upsert: info/owner write-once, pool/phase/health per beat", { timeout: TIMEOUT }, async () => {
+    it("heartbeat upsert refreshes owner, routing info, pool, phase, and health", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
@@ -59,7 +59,8 @@ describe("worker registry", () => {
             assertEqual(row.owner.subject, "laptop-owner");
             assertEqual(row.info.sdkVersion, "1.0.0");
 
-            // Second beat: info/owner ignored, pool/phase/health replaced.
+            // A stable worker id may restart under a new owner or routing
+            // contract; every heartbeat refreshes the registration snapshot.
             await beat(catalog, id, {
                 pool: "moved-pool",
                 phase: "ready",
@@ -70,8 +71,8 @@ describe("worker registry", () => {
             row = (await catalog.listWorkers()).find((w) => w.workerNodeId === id);
             assertEqual(row.phase, "ready");
             assertEqual(row.pool, "moved-pool", "pool follows the beat (re-targeting)");
-            assertEqual(row.owner.subject, "laptop-owner", "owner is write-once");
-            assertEqual(row.info.sdkVersion, "1.0.0", "info is write-once");
+            assertEqual(row.owner.subject, "SOMEONE-ELSE", "owner follows the current worker registration");
+            assertEqual(row.info.sdkVersion, "9.9.9", "routing/build info follows the current worker registration");
             assertEqual(row.health.rssBytes, 123, "health replaced every beat");
         } finally {
             await catalog.close();

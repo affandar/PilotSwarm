@@ -430,6 +430,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "worker_timeline_index",
             sql: migration_0051_worker_timeline_index(schema),
         },
+        {
+            version: "0052",
+            name: "worker_registration_refresh",
+            sql: migration_0052_worker_registration_refresh(schema),
+        },
+        {
+            version: "0053",
+            name: "session_routing_contract",
+            sql: migration_0053_session_routing_contract(schema),
+        },
     ];
 }
 
@@ -15300,5 +15310,81 @@ function migration_0051_worker_timeline_index(schema: string): string {
 CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
     ON ${s}.session_events(worker_node_id, created_at DESC)
     WHERE worker_node_id IS NOT NULL;
+`;
+}
+
+// ─── Migration 0052: refresh worker registration identity ───────
+
+function migration_0052_worker_registration_refresh(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
+    p_worker_node_id TEXT, p_pool TEXT, p_phase TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT,
+    p_info JSONB, p_health JSONB, p_state JSONB
+) RETURNS TABLE(domain TEXT, epoch BIGINT, actuation TEXT, desired JSONB) AS $$
+DECLARE
+    v_pool TEXT := COALESCE(NULLIF(BTRIM(p_pool), ''), 'default');
+    v_phase TEXT := CASE WHEN p_phase IN ('starting', 'ready', 'draining') THEN p_phase ELSE 'starting' END;
+BEGIN
+    IF p_worker_node_id IS NULL OR BTRIM(p_worker_node_id) = '' OR p_worker_node_id = '*' THEN
+        RAISE EXCEPTION 'WORKER_ID_INVALID: worker_node_id must be a non-empty identifier';
+    END IF;
+    INSERT INTO ${s}.workers (worker_node_id, pool, phase, owner_provider, owner_subject,
+                              registered_at, updated_at, info, health, state)
+    VALUES (p_worker_node_id, v_pool, v_phase,
+            NULLIF(BTRIM(p_owner_provider), ''), NULLIF(BTRIM(p_owner_subject), ''),
+            now(), now(),
+            COALESCE(p_info, '{}'::jsonb), COALESCE(p_health, '{}'::jsonb), COALESCE(p_state, '{}'::jsonb))
+    ON CONFLICT (worker_node_id) DO UPDATE
+        SET pool = EXCLUDED.pool,
+            phase = EXCLUDED.phase,
+            owner_provider = EXCLUDED.owner_provider,
+            owner_subject = EXCLUDED.owner_subject,
+            info = EXCLUDED.info,
+            health = EXCLUDED.health,
+            state = EXCLUDED.state,
+            updated_at = now();
+
+    DELETE FROM ${s}.workers w WHERE w.updated_at < now() - interval '1 hour';
+
+    RETURN QUERY
+    WITH contrib AS (
+        SELECT d.domain AS c_domain, d.epoch AS c_epoch,
+               d.actuation AS c_actuation, d.desired AS c_desired,
+               CASE WHEN d.worker_node_id = p_worker_node_id THEN 3
+                    WHEN d.pool = v_pool THEN 2
+                    ELSE 1 END AS specificity
+          FROM ${s}.fleet_directives d
+         WHERE (d.pool = '*' AND d.worker_node_id = '*')
+            OR (d.pool = v_pool AND d.worker_node_id = '*')
+            OR (d.worker_node_id = p_worker_node_id)
+    )
+    SELECT c.c_domain,
+           SUM(c.c_epoch)::BIGINT,
+           (array_agg(c.c_actuation ORDER BY c.specificity DESC))[1],
+           COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[1], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[2], '{}'::jsonb)
+           || COALESCE((array_agg(c.c_desired ORDER BY c.specificity ASC))[3], '{}'::jsonb)
+      FROM contrib c
+     GROUP BY c.c_domain;
+END;
+$$ LANGUAGE plpgsql;
+`;
+}
+
+// ─── Migration 0053: immutable session routing contract ─────────
+
+function migration_0053_session_routing_contract(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS routing_config JSONB;
+
+ALTER TABLE ${s}.sessions
+    DROP CONSTRAINT IF EXISTS sessions_routing_config_object;
+ALTER TABLE ${s}.sessions
+    ADD CONSTRAINT sessions_routing_config_object
+    CHECK (routing_config IS NULL OR jsonb_typeof(routing_config) = 'object');
 `;
 }

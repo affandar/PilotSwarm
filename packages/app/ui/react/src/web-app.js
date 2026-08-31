@@ -6152,6 +6152,10 @@ async function loadPersistedJobGenerators(transport) {
         return {
             id: generator.generatorId,
             name: generator.name,
+            ownerLabel: generator.owner?.displayName
+                || generator.owner?.email
+                || generator.owner?.subject
+                || "Unknown owner",
             repo: activeDefinition?.affinities?.repo || "Any repo",
             cadenceSeconds: generator.cadenceSeconds,
             status: persistedGeneratorStatus(generator),
@@ -6202,7 +6206,7 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
     {
         id: "affinities",
         title: "Inherited affinities",
-        description: "Placement and execution settings inherited by every Job pinned to this definition.",
+        description: "Placement settings inherited by every Job. User affinity is assigned from the signed-in owner.",
         fields: [
             { key: "repoAffinity", label: "Repository affinity", kind: "text", placeholder: "DsMainDev" },
             { key: "gitRef", label: "Git ref", kind: "text", placeholder: "dev/<you>/job-generator" },
@@ -6216,7 +6220,6 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
                     { value: "devbox,cluster", label: "Devbox and cluster" },
                 ],
             },
-            { key: "userAffinity", label: "User affinity", kind: "text", placeholder: "Optional user or group" },
             { key: "modelAffinity", label: "Model affinity", kind: "text", placeholder: "Optional model" },
         ],
     },
@@ -6277,7 +6280,6 @@ const JOB_GENERATOR_CREATE_DEFAULTS = {
     repoAffinity: "DsMainDev",
     gitRef: "",
     computeAffinity: "devbox",
-    userAffinity: "",
     modelAffinity: "",
     states: '{\n  "Work Details Gathered": {\n    "kind": "prompt",\n    "prompt": "job/work-details"\n  },\n  "Done": {\n    "kind": "auto"\n  }\n}',
     blockingPrincipals: "jobCreator",
@@ -6400,7 +6402,6 @@ function JobGeneratorCreateModal({ onCreate, onClose }) {
                         repo: draft.repoAffinity.trim() || null,
                         gitRef: draft.gitRef.trim() || null,
                         compute: draft.computeAffinity.split(","),
-                        user: draft.userAffinity.trim() || null,
                         model: draft.modelAffinity.trim() || null,
                     },
                     lifecycleDefinition: {
@@ -6729,7 +6730,7 @@ function JobGeneratorPane({
         : selectedJob
             ? `${selectedJob.lifecycleState} · ${selectedJob.status} · ${selectedJob.sessions.length} session${selectedJob.sessions.length === 1 ? "" : "s"}`
             : selectedGenerator
-                ? `${selectedGenerator.status} · definition v${selectedGenerator.definitionVersion} · ${selectedGenerator.definition?.sourceType || "preview source"} · ${selectedGenerator.jobs.length} job${selectedGenerator.jobs.length === 1 ? "" : "s"}`
+                ? `${selectedGenerator.status} · owner-affined to ${selectedGenerator.ownerLabel} · definition v${selectedGenerator.definitionVersion} · ${selectedGenerator.definition?.sourceType || "preview source"} · ${selectedGenerator.jobs.length} job${selectedGenerator.jobs.length === 1 ? "" : "s"}`
                 : "";
 
     const actions = React.createElement(IconButton, {

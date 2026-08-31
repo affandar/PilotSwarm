@@ -19,6 +19,45 @@ const PNG_BYTES = Buffer.from([
 ]);
 
 describe("binary artifact store", () => {
+    it("publishes create-if-absent content once without replacing the winner", async () => {
+        const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-"));
+        const store = new FilesystemArtifactStore(artifactDir);
+
+        try {
+            const created = await store.uploadArtifactIfAbsent(
+                "session-create-once",
+                "seed.md",
+                "first seed",
+            );
+            const replaced = await store.uploadArtifactIfAbsent(
+                "session-create-once",
+                "seed.md",
+                "second seed",
+            );
+
+            assertEqual(created, true, "the first create-if-absent call should win");
+            assertEqual(replaced, false, "the second create-if-absent call should lose");
+            assertEqual(
+                await store.downloadArtifactText("session-create-once", "seed.md"),
+                "first seed",
+                "the losing call must not replace the published winner",
+            );
+            fs.writeFileSync(
+                path.join(
+                    artifactDir,
+                    "session-create-once",
+                    ".pilotswarm-upload-crashed.tmp",
+                ),
+                "partial",
+            );
+            const listed = await store.listArtifacts("session-create-once");
+            assertEqual(listed.length, 1, "internal staging remnants must not be listed as artifacts");
+            assertEqual(listed[0].filename, "seed.md", "only the committed artifact should be visible");
+        } finally {
+            fs.rmSync(artifactDir, { recursive: true, force: true });
+        }
+    });
+
     it("round-trips binary artifacts with metadata and blocks text reads", async () => {
         const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "pilotswarm-artifacts-"));
         const store = new FilesystemArtifactStore(artifactDir);

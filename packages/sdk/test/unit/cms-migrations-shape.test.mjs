@@ -72,3 +72,20 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     const code = sql.split("\n").filter((ln) => !ln.trimStart().startsWith("--")).join("\n");
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
+
+test("0052: stable worker identities refresh owner and routing registration", () => {
+    const migration = migrations.find((m) => m.version === "0052");
+    assert.ok(migration, "migration 0052 must be registered");
+    assert.equal(migration.name, "worker_registration_refresh");
+    assert.match(migration.sql, /owner_provider = EXCLUDED\.owner_provider/);
+    assert.match(migration.sql, /owner_subject = EXCLUDED\.owner_subject/);
+    assert.match(migration.sql, /info = EXCLUDED\.info/);
+});
+
+test("0053: sessions persist an immutable routing contract", () => {
+    const migration = migrations.find((m) => m.version === "0053");
+    assert.ok(migration, "migration 0053 must be registered");
+    assert.equal(migration.name, "session_routing_contract");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS routing_config JSONB/);
+    assert.match(migration.sql, /jsonb_typeof\(routing_config\) = 'object'/);
+});

@@ -51,6 +51,7 @@ import {
 } from "./snapshot-protocol.js";
 import {
     DEFAULT_SESSION_STATE_DIR,
+    createArtifactError,
     type ArtifactDownloadResult,
     type ArtifactMetadata,
     type SessionMetadata,
@@ -934,6 +935,41 @@ export class SessionBlobStore implements SessionStateStore, ArtifactStore, Versi
             uploadedAt,
             ...metadata,
         };
+    }
+
+    async uploadArtifactIfAbsent(
+        sessionId: string,
+        filename: string,
+        content: string | Buffer,
+        contentType?: string,
+        opts: ArtifactUploadOptions = {},
+    ): Promise<boolean> {
+        const safeFilename = path.basename(String(filename || "").trim());
+        if (!safeFilename) {
+            throw createArtifactError("ARTIFACT_FILENAME_REQUIRED", "Artifact filename is required.");
+        }
+        const { body, metadata } = await resolveArtifactUpload(content, contentType, opts);
+        const blobPath = this.artifactBlobPath(sessionId, filename);
+        const blob = this.containerClient.getBlockBlobClient(blobPath);
+        const uploadedAt = new Date().toISOString();
+        try {
+            await blob.upload(body, body.length, {
+                conditions: { ifNoneMatch: "*" },
+                blobHTTPHeaders: { blobContentType: metadata.contentType },
+                metadata: artifactBlobMetadata(uploadedAt, metadata),
+            });
+            return true;
+        } catch (error: any) {
+            if (
+                error?.code === "BlobAlreadyExists"
+                || error?.code === "ConditionNotMet"
+                || error?.details?.errorCode === "BlobAlreadyExists"
+                || error?.details?.errorCode === "ConditionNotMet"
+            ) {
+                return false;
+            }
+            throw error;
+        }
     }
 
     /**

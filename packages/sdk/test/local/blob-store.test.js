@@ -15,6 +15,43 @@ function makeConnectionString() {
 }
 
 describe("SessionBlobStore", () => {
+    it("uses an atomic blob precondition and only treats create conflicts as an existing winner", async () => {
+        const store = new SessionBlobStore(makeConnectionString(), "test-container", os.tmpdir());
+        const uploads = [];
+        store.containerClient = {
+            getBlockBlobClient(name) {
+                return {
+                    async upload(body, length, options) {
+                        uploads.push({ name, body: String(body), length, options });
+                    },
+                };
+            },
+        };
+
+        await expect(store.uploadArtifactIfAbsent("session", "seed.md", "seed")).resolves.toBe(true);
+        expect(uploads[0].options.conditions).toEqual({ ifNoneMatch: "*" });
+
+        for (const code of ["BlobAlreadyExists", "ConditionNotMet"]) {
+            store.containerClient.getBlockBlobClient = () => ({
+                async upload() {
+                    throw Object.assign(new Error(code), { code });
+                },
+            });
+            await expect(store.uploadArtifactIfAbsent("session", "seed.md", "seed")).resolves.toBe(false);
+        }
+
+        store.containerClient.getBlockBlobClient = () => ({
+            async upload() {
+                throw Object.assign(new Error("container deleting"), {
+                    statusCode: 409,
+                    code: "ContainerBeingDeleted",
+                });
+            },
+        });
+        await expect(store.uploadArtifactIfAbsent("session", "seed.md", "seed"))
+            .rejects.toMatchObject({ code: "ContainerBeingDeleted" });
+    });
+
     it("archives the current session snapshot layout on dehydrate", async () => {
         // The post-disconnect contract: by the time we call dehydrate, the SDK
         // has either flushed durably or it never will. There is no race to

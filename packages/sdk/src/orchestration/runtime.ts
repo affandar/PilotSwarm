@@ -150,7 +150,7 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx);
+    const manager = createSessionManagerProxy(ctx, { ownerAwareRouting: true });
     const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config);
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };

@@ -198,6 +198,75 @@ test("repeated reconciliation creates one Job and one initial session", async ()
     assert.deepEqual(store.cycles.map((cycle) => cycle.createdCount), [1, 0]);
 });
 
+test("induced sessions require the authenticated JobGenerator owner affinity", async () => {
+    const creates = [];
+    const sends = [];
+    const factory = new PilotSwarmInitialSessionFactory({
+        async createSession(config) {
+            creates.push(config);
+            return {
+                async send(prompt, options) {
+                    sends.push({ prompt, options });
+                },
+            };
+        },
+    });
+    const association = {
+        associationId: "association-owned",
+        jobId: "job-owned",
+        sessionId: "session-owned",
+        ordinal: 1,
+        isCurrent: true,
+        status: "reserved",
+        error: null,
+        reservedAt: now,
+        attachedAt: null,
+        endedAt: null,
+    };
+    const ownedDefinition = {
+        ...definition(),
+        lifecycleDefinition: {
+            initialPrompt: "Handle {job.key}",
+            session: { repo: " Sample-Repo ", gitRef: "main" },
+        },
+        affinities: { user: "spoofed-user" },
+    };
+    const job = {
+        jobId: "job-owned",
+        generatorId: "generator-1",
+        definitionId: "definition-1",
+        jobKey: "owned-1",
+        sourcePayload: { id: 1 },
+        lifecycleState: "pending_session",
+        currentState: "Initial",
+        stateRevision: 1,
+        currentStateEnteredAt: now,
+        firstSeenCycleId: "cycle-1",
+        lastSeenCycleId: "cycle-1",
+        firstDiscoveredAt: now,
+        lastDiscoveredAt: now,
+        sessionAttempts: 0,
+        sessionError: null,
+        createdAt: now,
+        updatedAt: now,
+    };
+
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: ownedDefinition,
+        job,
+        association,
+    });
+
+    assert.equal(creates.length, 1);
+    assert.deepEqual(creates[0].owner, generator().owner);
+    assert.equal(creates[0].requireOwnerAffinity, true);
+    assert.equal(creates[0].repo, "sample-repo");
+    assert.equal(creates[0].gitRef, "main");
+    assert.equal("userAffinity" in creates[0], false);
+    assert.equal(sends.length, 1);
+});
+
 test("materialization-only mode does not reserve sessions when explicitly selected", async () => {
     const store = new FakeStore();
     const messages = [];

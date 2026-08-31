@@ -44,6 +44,47 @@ function objectParam(value, label) {
     return value;
 }
 
+function normalizeJobGeneratorRepo(raw, label) {
+    if (raw == null || raw === "") return raw;
+    const repo = String(raw).trim().toLowerCase();
+    if (!REPO_NAME_RE.test(repo)) {
+        throw invalidRequest(`${label} must be a DNS-safe short name ([a-z0-9-], <=63 chars).`);
+    }
+    return repo;
+}
+
+function normalizeLifecycleSessionRepo(lifecycleDefinition) {
+    const normalizeSession = (container, label) => {
+        const session = container?.session;
+        if (session == null) return container;
+        const normalizedSession = objectParam(session, label);
+        return {
+            ...container,
+            session: {
+                ...normalizedSession,
+                ...(Object.hasOwn(normalizedSession, "repo")
+                    ? { repo: normalizeJobGeneratorRepo(normalizedSession.repo, `${label}.repo`) }
+                    : {}),
+            },
+        };
+    };
+    let normalized = normalizeSession(lifecycleDefinition, "definition.lifecycleDefinition.session");
+    if (normalized.lifecycle != null) {
+        const lifecycle = objectParam(
+            normalized.lifecycle,
+            "definition.lifecycleDefinition.lifecycle",
+        );
+        normalized = {
+            ...normalized,
+            lifecycle: normalizeSession(
+                lifecycle,
+                "definition.lifecycleDefinition.lifecycle.session",
+            ),
+        };
+    }
+    return normalized;
+}
+
 function normalizeJobGeneratorDefinition(definitionParam, createdBy) {
     const definition = objectParam(definitionParam, "definition");
     const sourceType = String(definition.sourceType || "").trim();
@@ -51,11 +92,25 @@ function normalizeJobGeneratorDefinition(definitionParam, createdBy) {
         throw invalidRequest("definition.sourceType must be ado_wiql, icm, or kusto.");
     }
     const sourceConfig = objectParam(definition.sourceConfig ?? {}, "definition.sourceConfig");
-    const lifecycleDefinition = objectParam(
-        definition.lifecycleDefinition ?? {},
-        "definition.lifecycleDefinition",
+    const lifecycleDefinition = normalizeLifecycleSessionRepo(
+        objectParam(
+            definition.lifecycleDefinition ?? {},
+            "definition.lifecycleDefinition",
+        ),
     );
     const affinities = objectParam(definition.affinities ?? {}, "definition.affinities");
+    if (affinities.user != null && String(affinities.user).trim()) {
+        throw invalidRequest(
+            "definition.affinities.user is server-derived from the authenticated JobGenerator owner.",
+        );
+    }
+    const { user: _ignoredUserAffinity, ...placementAffinities } = affinities;
+    if (Object.hasOwn(placementAffinities, "repo")) {
+        placementAffinities.repo = normalizeJobGeneratorRepo(
+            placementAffinities.repo,
+            "definition.affinities.repo",
+        );
+    }
     const validationGates = definition.validationGates ?? [];
     if (!Array.isArray(validationGates)) {
         throw invalidRequest("definition.validationGates must be an array.");
@@ -65,7 +120,7 @@ function normalizeJobGeneratorDefinition(definitionParam, createdBy) {
         sourceType,
         sourceConfig,
         lifecycleDefinition,
-        affinities,
+        affinities: placementAffinities,
         validationGates,
         guardrails,
         createdBy,

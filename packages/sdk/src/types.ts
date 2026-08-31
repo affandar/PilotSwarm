@@ -216,6 +216,12 @@ export interface SerializableSessionConfig {
      */
     repo?: string;
     /**
+     * Internal authenticated-owner routing boundary. The client derives this
+     * from the session owner when requireOwnerAffinity is requested; callers
+     * must not accept an arbitrary user-supplied value.
+     */
+    ownerAffinity?: Pick<SessionOwnerInfo, "provider" | "subject">;
+    /**
      * Non-default branch this session's agent lives on (git-hydration). When
      * set, turn-0 pins the git-workspace base to THIS branch's tip instead of
      * the repo's default branch (origin/HEAD). Accepts a bare branch name
@@ -904,13 +910,12 @@ export interface PilotSwarmWorkerOptions {
      */
     afterRunTurn?: AfterRunTurnHook;
     /**
-     * Activity routing filter (git-hydration repo affinity). Restricts which
-     * duroxide activities this worker will dequeue. The git-repo-worker sets
-     * `{ tags: ["repo:<name>"] }` so it ONLY serves turns for its enlisted
-     * repo — a hard scheduling guarantee that a repo-scoped worker never
-     * picks up a job for a different repo. When omitted the worker falls back
-     * to the env var `PILOTSWARM_WORKER_TAGS` (comma-separated tags →
-     * `{ tags: [...] }`); when neither is set duroxide's default
+     * Activity routing filter (repo and owner affinity). Restricts which
+     * duroxide activities this worker will dequeue. A workerOwner scopes each
+     * repo/generic tag to that owner before the runtime starts, so repo and
+     * individual-user constraints compose as one exact tag. When omitted the
+     * worker falls back to `PILOTSWARM_WORKER_TAGS`; when neither is set,
+     * duroxide's default
      * `"defaultOnly"` applies (untagged activities only), so a plain worker
      * will NOT accidentally serve a repo-tagged turn.
      */
@@ -937,7 +942,10 @@ export interface PilotSwarmWorkerOptions {
      * targeting + operator grouping. Default "default".
      */
     workerPool?: string;
-    /** Worker-registry owner principal — user-owned workers (laptops). */
+    /**
+     * Worker-registry and activity-routing owner principal for a personal
+     * worker. Defaults to PILOTSWARM_WORKER_OWNER_PROVIDER/SUBJECT when set.
+     */
     workerOwner?: { provider: string; subject: string } | null;
     /** Azure Blob Storage connection string for the built-in blob-backed session store. */
     blobConnectionString?: string;
