@@ -13,6 +13,7 @@ import {
     navigateJobGeneratorTree,
 } from "./job-generator-tree-navigation.js";
 import { persistedStateRunLabel } from "./job-generator-state-run-label.js";
+import { describeJobWait, jobWaitGlossaryEntry, persistedJobWaitLabel } from "./job-generator-wait-label.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
     reconcileWorkerTimelineLaneOrder,
@@ -5960,23 +5961,6 @@ function persistedStateRunStatus(run) {
     }
 }
 
-function persistedJobWaitLabel(wait) {
-    if (!wait) return null;
-    if (wait.status !== "pending") {
-        return wait.kind === "response" ? "Decision received" : "Condition satisfied";
-    }
-    if (wait.kind === "response") return "Awaiting decision";
-    if (wait.kind === "timer") return "Awaiting scheduled time";
-    const predicateKind = String(wait.predicate?.kind || wait.prompt?.kind || "").toLowerCase();
-    if (predicateKind === "required_reviewers" || predicateKind === "required_reviewer_approval") {
-        return "Awaiting human code review";
-    }
-    if (predicateKind === "pull_request_completion" || predicateKind === "pr_completion") {
-        return "Awaiting PR completion";
-    }
-    return "Awaiting external condition";
-}
-
 function formatJobTimelineTimestamp(value) {
     if (!value) return "";
     const date = value instanceof Date ? value : new Date(value);
@@ -6042,12 +6026,11 @@ function buildJobTransitionTimeline(transition, events) {
         );
     }
     if (transition.status === "waiting" || transition.status === "input_required") {
+        const waitDescription = describeJobWait(transition.activeWait, transition.status);
         add(
             transition.updatedAt,
-            transition.status === "input_required" ? "Human wait parked" : "System wait frozen",
-            transition.status === "input_required"
-                ? "No worker is runnable until a human answer arrives."
-                : "No worker is runnable until the matching system signal arrives.",
+            waitDescription.timelineLabel,
+            waitDescription.timelineDetail,
             "wait",
         );
     }
@@ -6540,6 +6523,19 @@ function JobGeneratorCreateModal({ onCreate, onClose }) {
 function JobTransitionTimeline({ transition, timeline }) {
     if (!transition) return null;
     const entries = buildJobTransitionTimeline(transition, timeline.events);
+    const activeWaitInfo = transition.activeWait
+        ? describeJobWait(transition.activeWait, transition.status)
+        : null;
+    const activeWaitAffordance = activeWaitInfo
+        ? (activeWaitInfo.kind === "response"
+            ? "Response wait · answer in the session to continue"
+            : activeWaitInfo.kind === "timer"
+                ? "Scheduled wait · resumes automatically at the scheduled time · no worker retained"
+                : (activeWaitInfo.providerLabel
+                    ? `Observed-condition wait · ${activeWaitInfo.providerLabel} state authoritative`
+                    : "Observed-condition wait")
+                    + ` · awaiting ${activeWaitInfo.predicateLabel || "external condition"} · no worker retained`)
+        : null;
     return React.createElement("div", { className: "ps-job-transition-timeline" },
         React.createElement("div", { className: "ps-job-transition-timeline-header" },
             React.createElement("strong", null,
@@ -6553,10 +6549,19 @@ function JobTransitionTimeline({ transition, timeline }) {
                 transition.sourceCommit ? ` @ ${transition.sourceCommit.slice(0, 12)}` : "")
             : null,
         transition.activeWait
-            ? React.createElement("div", { className: "ps-job-transition-journal" },
-                React.createElement("strong", null, persistedJobWaitLabel(transition.activeWait)),
+            ? React.createElement("div", {
+                className: `ps-job-transition-journal ps-job-wait is-${activeWaitInfo.kind.replaceAll("_", "-")}-wait`,
+            },
+                React.createElement("strong", null, activeWaitInfo.reason),
                 transition.activeWait.prompt?.question
                     ? React.createElement("span", null, transition.activeWait.prompt.question)
+                    : null,
+                React.createElement("span", { className: "ps-job-wait-affordance" }, activeWaitAffordance),
+                activeWaitInfo.glossary
+                    ? React.createElement("span", {
+                        className: "ps-job-wait-help",
+                        title: activeWaitInfo.glossary.rationale,
+                    }, `How this wait resumes: ${activeWaitInfo.glossary.rationale}`)
                     : null,
                 React.createElement("span", null,
                     `Wait ${transition.activeWait.waitId}`
@@ -10268,10 +10273,10 @@ export function WorkerTimelineSwimlane({
                         title: `Total runnable queue time: ${formatTimelineDuration(lane.queuedMs)}`,
                     }, `Queued ${formatTimelineDuration(lane.queuedMs)}`),
                     React.createElement("span", {
-                        title: `Human wait ${formatTimelineDuration(lane.humanWaitMs)} + system wait ${formatTimelineDuration(lane.systemWaitMs)} = ${formatTimelineDuration(lane.waitMs)}; waits are excluded from efficiency.`,
+                        title: `Response wait ${formatTimelineDuration(lane.humanWaitMs)} + observed-condition wait ${formatTimelineDuration(lane.systemWaitMs)} = ${formatTimelineDuration(lane.waitMs)}; waits are excluded from efficiency.`,
                     }, `Waits ${formatTimelineDuration(lane.waitMs)}`),
                     React.createElement("span", {
-                        title: `Efficiency = active / (active + attributable platform overhead + queued): ${formatTimelineDuration(lane.activeMs)} / (${formatTimelineDuration(lane.activeMs)} + ${formatTimelineDuration(lane.overheadMs)} + ${formatTimelineDuration(lane.queuedMs)}) = ${lane.efficiencyPercent}%. Human and system waits are excluded.`,
+                        title: `Efficiency = active / (active + attributable platform overhead + queued): ${formatTimelineDuration(lane.activeMs)} / (${formatTimelineDuration(lane.activeMs)} + ${formatTimelineDuration(lane.overheadMs)} + ${formatTimelineDuration(lane.queuedMs)}) = ${lane.efficiencyPercent}%. Response and observed-condition waits are excluded.`,
                     }, `Efficiency ${lane.efficiencyPercent}%`)))
                 : React.createElement("span", null,
                     lane.kind === "overhead" ? "recorded bookkeeping" : "no active Job turn")))),
@@ -10398,11 +10403,11 @@ export function WorkerTimelineSwimlane({
             React.createElement("span", {
                 className: "is-human-wait",
                 style: { "--ps-wait-color": resolveColor(theme, "yellow") },
-            }, "Yellow dotted = human wait, no active compute"),
+            }, "Yellow dotted = response wait, no active compute"),
             React.createElement("span", {
                 className: "is-system-wait",
                 style: { "--ps-wait-color": resolveColor(theme, "magenta") },
-            }, "Purple dotted = system wait, no active compute"),
+            }, "Purple dotted = observed-condition wait, no active compute"),
             React.createElement("span", {
                 className: "is-capacity-wait",
                 style: { "--ps-capacity-wait-color": resolveColor(theme, "red") },

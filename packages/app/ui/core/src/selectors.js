@@ -3529,9 +3529,9 @@ const WORKER_TIMELINE_LABELS = Object.freeze({
     "session.input_required_started": "Human input requested",
     "session.wait_started": "Durable timer started",
     "session.wait_completed": "Durable timer completed",
-    "session.system_wait_requested": "System wait requested",
-    "session.system_wait_started": "System wait parked",
-    "session.system_wait_completed": "System wait resumed",
+    "session.system_wait_requested": "Observed-condition wait requested",
+    "session.system_wait_started": "Observed-condition wait parked",
+    "session.system_wait_completed": "Observed-condition wait resumed",
     "session.system_signal_ignored": "Unmatched system signal ignored",
     "session.command_received": "Session command received",
     "session.command_completed": "Session command completed",
@@ -3950,13 +3950,13 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
             startMs,
             endMs: boundedEndMs,
             durationMs: Math.max(0, boundedEndMs - startMs),
-            label: isHuman ? "Human wait" : `System wait${source ? ` · ${source}` : ""}`,
+            label: isHuman ? "Response wait" : `Observed-condition wait${source ? ` · ${source}` : ""}`,
             activity: [
                 isHuman
-                    ? "Waiting for human input"
+                    ? "Awaiting a human response"
                     : source
                         ? `Waiting for ${source}`
-                        : "Waiting for a system signal",
+                        : "Waiting for an observed condition",
                 detail,
                 "No active Job compute",
             ].filter(Boolean).join(" · "),

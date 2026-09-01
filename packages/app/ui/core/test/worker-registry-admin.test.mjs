@@ -1165,14 +1165,14 @@ test("worker timeline swimlanes render human and system waits as non-compute spa
     })), [
         {
             kind: "human_wait",
-            label: "Human wait",
+            label: "Response wait",
             color: "yellow",
             durationMs: 25_000,
             sessionId: "session-1",
         },
         {
             kind: "system_wait",
-            label: "System wait · Mock Automated Code Review",
+            label: "Observed-condition wait · Mock Automated Code Review",
             color: "magenta",
             durationMs: 33_000,
             sessionId: "session-1",

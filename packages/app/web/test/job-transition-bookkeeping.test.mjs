@@ -5,7 +5,7 @@ import { describeJobTransitionBookkeepingEvent } from "../../ui/react/src/job-tr
 test("transition bookkeeping keeps lifecycle durability events", () => {
     assert.deepEqual(
         describeJobTransitionBookkeepingEvent("session.system_wait_started"),
-        { label: "System wait frozen", kind: "wait" },
+        { label: "Observed-condition wait parked", kind: "wait" },
     );
     assert.deepEqual(
         describeJobTransitionBookkeepingEvent("session.dehydrated"),
