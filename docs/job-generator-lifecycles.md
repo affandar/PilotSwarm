@@ -1215,6 +1215,36 @@ accepted range is 0 through 300 seconds. The previous
 `--human-wait-seconds` and `--system-wait-seconds` names remain accepted as
 hidden compatibility aliases.
 
+#### Real Azure DevOps provider mode (observe-existing-PR)
+
+`--provider-mode azure_devops` (or `JOBGEN_E2E_PROVIDER_MODE=azure_devops`)
+swaps the two human-facing gates from the deterministic mock to the production
+Azure DevOps observers: the transition into `HumanCodeReviewApproved` is gated
+by a real `pull_request_approval` observation and the transition into
+`Committed` by a real `pull_request_completion` observation. The automated
+review, PVS, and pull-request-publication gates stay deterministic mocks —
+lifecycle-driven publication of a real branch and pull request is out of scope
+for this harness.
+
+Because both observers are strictly read-only, real-provider confidence is
+obtained by attaching the demo to a genuine, externally-managed pull request
+rather than by publishing a throwaway PR. Supply the pull request with
+`--observe-pull-request-url` (its organization, project, repository, and ID seed
+the durable target) plus `--observe-source-commit` (the 40-character head the PR
+must still point at). Individual fields can be overridden or supplied directly
+with `--observe-organization`, `--observe-project`, `--observe-repository-id`,
+and `--observe-pull-request-id`; matching `JOBGEN_E2E_OBSERVE_*` variables are
+also honored. The runner never publishes, approves, completes, abandons, or
+otherwise mutates the observed pull request.
+
+The observed target's organization, project, and repository must match the Job
+`affinities.repo` entry in the server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS`
+array so the observers authorize the target before using any credential. A
+convenient live proof points at a recently-completed pull request already
+signed off by all required reviewers (for example a DsMainDev pull request), so
+a single `--full-run` observes real reviewer, policy, and completion state —
+including the real merge commit — with no mutation.
+
 The JobWait scheduler runs with the JobGenerator by default. Set
 `JOBGEN_WAIT_SCHEDULER_ENABLED=false` to disable it. Optional tuning variables
 are `JOBGEN_WAIT_POLL_INTERVAL_MS`, `JOBGEN_WAIT_DEFAULT_CHECK_INTERVAL_MS`,
