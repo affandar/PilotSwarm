@@ -12,7 +12,6 @@
     "build": "tsc",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:integration": "npm run build && node --env-file=../../.env.remote --test test/postgres.integration.test.mjs",
-    "test:e2e:hello-world": "npm run build --workspace=pilotswarm-sdk && npm run build && node --env-file=../../.env.remote test/hello-world-lifecycle.e2e.mjs",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
