@@ -212,6 +212,12 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets Duroxide orchestration concurrency. Default: `2`.
 - `PILOTSWARM_WORKER_CONCURRENCY`
   Sets Duroxide activity/worker concurrency. Default: `2`.
+- `PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS`
+  How often the runtime polls Postgres for ready orchestration/work items.
+  Default: `10` (100 polls/sec), tuned for a co-located in-cluster database.
+  Off-cluster workers (e.g. a remote devbox with tens of ms of DB round-trip)
+  should raise this to relieve connection-pool acquire contention. An explicit
+  `PilotSwarmWorker({ dispatcherPollIntervalMs })` option takes precedence.
 - `PILOTSWARM_TURN_TIMEOUT_MS`
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
@@ -225,6 +231,7 @@ PILOTSWARM_CMS_PG_POOL_MAX=3
 PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
+PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS=10
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
 ```
 

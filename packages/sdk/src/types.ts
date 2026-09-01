@@ -913,6 +913,15 @@ export interface PilotSwarmWorkerOptions {
      * exposed and remains the reclaim floor for session-pinned work.)
      */
     workerLockTimeoutMs?: number;
+    /**
+     * Dispatcher poll interval (ms) — how often the runtime polls Postgres
+     * for ready orchestration/work items. Default 10 (100 polls/sec), tuned
+     * for a co-located in-cluster database. Off-cluster workers (e.g. a
+     * remote devbox with tens of ms of DB round-trip) should raise this to
+     * relieve connection-pool acquire contention. Env:
+     * PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS.
+     */
+    dispatcherPollIntervalMs?: number;
     workerNodeId?: string;
     /**
      * Pre-turn reconcile hook (git-hydration MVP). See {@link BeforeRunTurnHook}.

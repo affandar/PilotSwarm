@@ -868,7 +868,9 @@ export class PilotSwarmWorker {
         const runtimeOptions = {
             orchestrationConcurrency,
             workerConcurrency,
-            dispatcherPollIntervalMs: 10,
+            dispatcherPollIntervalMs: this.config.dispatcherPollIntervalMs
+                ?? parsePositiveInt(process.env.PILOTSWARM_DISPATCHER_POLL_INTERVAL_MS)
+                ?? 10,
             workerLockTimeoutMs: this.config.workerLockTimeoutMs
                 ?? parsePositiveInt(process.env.PILOTSWARM_WORKER_LOCK_TIMEOUT_MS)
                 ?? 10_000,
