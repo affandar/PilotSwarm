@@ -6969,7 +6969,7 @@ function JobGeneratorPane({
                         className: "ps-job-tree-row is-generator",
                         role: "treeitem",
                         "aria-level": 1,
-                        "aria-expanded": generator.jobs.length > 0 ? generatorExpanded : undefined,
+                        "aria-expanded": generatorExpanded,
                         "aria-selected": generatorSelected,
                     },
                         React.createElement("button", {
@@ -7005,7 +7005,7 @@ function JobGeneratorPane({
                                         className: "ps-job-tree-row is-job",
                                         role: "treeitem",
                                         "aria-level": 2,
-                                        "aria-expanded": job.transitions.length > 0 ? jobExpanded : undefined,
+                                        "aria-expanded": jobExpanded,
                                         "aria-selected": jobSelected,
                                     },
                                         React.createElement("button", {

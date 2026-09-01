@@ -119,6 +119,62 @@ test("right expands or enters children and left collapses or returns to parent",
     );
 });
 
+test("right expands containers with no children so their empty state is reachable", () => {
+    const collapsedRows = buildVisibleJobGeneratorTreeRows(
+        generators,
+        new Set(),
+        new Set(),
+    );
+    // Generator with zero materialized jobs still expands (reveals the
+    // "No materialized jobs" empty state) instead of being a dead leaf.
+    assert.equal(
+        navigateJobGeneratorTree(
+            collapsedRows,
+            "generator:generator-2",
+            "ArrowRight",
+        ).type,
+        "expand",
+    );
+
+    // Once expanded, an empty generator has no child to descend into.
+    const expandedEmptyGenerator = buildVisibleJobGeneratorTreeRows(
+        generators,
+        new Set(["generator-2"]),
+        new Set(),
+    );
+    assert.equal(
+        navigateJobGeneratorTree(
+            expandedEmptyGenerator,
+            "generator:generator-2",
+            "ArrowRight",
+        ),
+        null,
+    );
+    assert.equal(
+        navigateJobGeneratorTree(
+            expandedEmptyGenerator,
+            "generator:generator-2",
+            "ArrowLeft",
+        ).type,
+        "collapse",
+    );
+
+    // A job with zero lifecycle state runs is likewise expandable.
+    const expandedGenerator = buildVisibleJobGeneratorTreeRows(
+        generators,
+        new Set(["generator-1"]),
+        new Set(),
+    );
+    assert.equal(
+        navigateJobGeneratorTree(
+            expandedGenerator,
+            "job:generator-1:job-2",
+            "ArrowRight",
+        ).type,
+        "expand",
+    );
+});
+
 test("selection keys match each tree level", () => {
     assert.equal(
         jobGeneratorTreeSelectionKey({ kind: "generator", generatorId: "g1" }),

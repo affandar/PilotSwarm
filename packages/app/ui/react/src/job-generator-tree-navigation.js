@@ -95,14 +95,19 @@ export function navigateJobGeneratorTree(rows, selectedKey, key) {
             : null;
     }
     if (key === "ArrowRight") {
-        if (current.hasChildren && !current.expanded) {
+        // Generators and Jobs are always-expandable containers: even with zero
+        // children they expand to reveal an empty-state row ("No materialized
+        // jobs" / "No lifecycle state runs"), matching what the mouse toggle
+        // already does. Only transitions are leaves.
+        const expandable = current.kind === "generator" || current.kind === "job";
+        if (expandable && !current.expanded) {
             return { type: "expand", row: current };
         }
         const child = rows[currentIndex + 1];
         return child?.parentKey === current.key ? { type: "select", row: child } : null;
     }
     if (key === "ArrowLeft") {
-        if (current.hasChildren && current.expanded) {
+        if (current.expanded) {
             return { type: "collapse", row: current };
         }
         const parent = rows.find((row) => row.key === current.parentKey);
