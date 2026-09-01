@@ -1829,7 +1829,7 @@ function buildLiveProgressState(session, history, chat = [], outboxItems = []) {
         };
     }
 
-    if (status === "running") {
+    if (status === "running" && (waitingOnAssistantFromChat || waitingOnAssistantFromEvents)) {
         return {
             kind: "working",
             label: "Working",
@@ -2918,6 +2918,17 @@ export function selectLiveActivityLines(state, options = {}) {
         }
     }
     const activity = Array.isArray(history?.activity) ? history.activity : [];
+    const events = Array.isArray(history?.events) ? history.events : [];
+    // A running session with no conversational transcript AND no recorded
+    // activity is a durable orchestration instance (e.g. a Job lifecycle state
+    // run) that never emits chat turns — not an agent mid-reply. Surfacing a
+    // perpetual "Working" strip there strands the pane on a fake spinner, so
+    // report nothing until there is an actual turn to report. Real chat turns
+    // always carry at least the optimistic user prompt in `chat`, so this never
+    // hides a genuine in-flight reply.
+    if (chat.length === 0 && events.length === 0 && activity.length === 0) {
+        return [];
+    }
     // Current-turn boundaries. When a new turn starts, status flips to
     // "running" BEFORE fresh history lands; anchoring the clock on stale
     // data flashes a huge elapsed (the whole idle gap) that then snaps to

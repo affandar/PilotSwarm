@@ -195,3 +195,28 @@ test("hides when the session is no longer running", () => {
     // (The 5s post-turn linger is host-side — useLingeringLines in the portal —
     // so the selector itself must go empty immediately.)
 });
+
+test("running session with an empty transcript shows no Working strip (durable orchestration, not a chat turn)", () => {
+    // A Job lifecycle state run is a durable orchestration instance with a
+    // running status but NO chat/events/activity — it never emits chat turns.
+    // The old bug stranded such a session on a perpetual "Working" spinner.
+    let state = createInitialState();
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [{
+            sessionId: "state-run-1",
+            title: "WorkDetailsGathered",
+            status: "running",
+            updatedAt: 1_700_000_001_000,
+        }],
+    });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "state-run-1" });
+    state = appReducer(state, {
+        type: "history/set",
+        sessionId: "state-run-1",
+        history: { chat: [], events: [], activity: [] },
+    });
+
+    const lines = selectLiveActivityLines(state, { spinnerFrame: "*", now: 1_700_000_014_000, maxWidth: 72 });
+    assert.equal(lines.length, 0, "no Working strip when there is nothing conversational to report");
+});
