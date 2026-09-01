@@ -59,6 +59,17 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
         `PILOTSWARM_BUILD_ID=${imageTag}`,
       ]
     : [];
+  // Forward the npm registry so in-image `npm ci` works on corporate networks
+  // that block registry.npmjs.org. The Dockerfiles declare `ARG NPM_REGISTRY`
+  // (default = public registry) and npm rewrites the lockfile's resolved URLs
+  // onto it, so the image stays reproducible. Prefer an explicit NPM_REGISTRY
+  // override, else inherit the host's configured registry when it is a
+  // non-default mirror — zero operator action on an already-configured host.
+  const npmRegistry = resolveNpmRegistry();
+  const registryBuildArgs = npmRegistry
+    ? ["--build-arg", `NPM_REGISTRY=${npmRegistry}`]
+    : [];
+  if (npmRegistry) log("info", `NPM_REGISTRY=${npmRegistry} (in-image npm ci)`);
   log("info", `docker buildx build → ${localTag}`);
   await runForeground("docker", [
     "buildx",
@@ -67,6 +78,7 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
     "linux/amd64",
     "--load",
     ...workerBuildArgs,
+    ...registryBuildArgs,
     "-t",
     localTag,
     "-f",
@@ -79,6 +91,21 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
   log("info", `docker save | zlib gzip → ${outPath}`);
   await pipedSaveToGzip(localTag, outPath);
   return outPath;
+}
+
+// resolveNpmRegistry: pick the npm registry to bake into in-image `npm ci`.
+// Explicit NPM_REGISTRY wins; otherwise inherit the host's configured registry
+// when it is a non-default mirror (corporate networks that block npmjs.org are
+// usually already pointed at one). Returns null to leave the Dockerfile default.
+function resolveNpmRegistry() {
+  if (process.env.NPM_REGISTRY) return process.env.NPM_REGISTRY;
+  try {
+    const r = run("npm", ["config", "get", "registry"], { capture: true }).stdout.trim();
+    if (r && r !== "undefined" && !/registry\.npmjs\.org/i.test(r)) return r;
+  } catch {
+    // npm not resolvable here — fall back to the Dockerfile's public default.
+  }
+  return null;
 }
 
 // runForeground: spawn with inherited stdio, no shell, no batch-file weirdness
