@@ -1385,6 +1385,7 @@ export class PilotSwarmManagementClient {
         let customStatus: any = {};
         let statusVersion = 0;
         let latestResponse: SessionResponsePayload | null = null;
+        let orchError: string | undefined;
 
         const [infoResult, statusResult] = await Promise.allSettled([
             this._duroxideClient.getInstanceInfo(orchId),
@@ -1402,6 +1403,9 @@ export class PilotSwarmManagementClient {
         if (statusResult.status === "fulfilled") {
             const status = statusResult.value;
             statusVersion = status?.customStatusVersion || 0;
+            if (typeof status?.error === "string" && status.error.trim()) {
+                orchError = status.error.trim();
+            }
             if (status?.customStatus) {
                 try {
                     customStatus = typeof status.customStatus === "string"
@@ -1476,11 +1480,13 @@ export class PilotSwarmManagementClient {
             }).catch(() => {});
         } else if (shouldSyncFailedStatus(terminalStatusInput)) {
             const failureMessage =
-                (typeof customStatus?.error === "string" && customStatus.error.trim())
-                    ? customStatus.error.trim()
-                    : (typeof row.lastError === "string" && row.lastError.trim())
-                        ? row.lastError.trim()
-                        : null;
+                (typeof orchError === "string" && orchError.trim())
+                    ? orchError.trim()
+                    : (typeof customStatus?.error === "string" && customStatus.error.trim())
+                        ? customStatus.error.trim()
+                        : (typeof row.lastError === "string" && row.lastError.trim())
+                            ? row.lastError.trim()
+                            : null;
             await this._catalog!.updateSession(sessionId, {
                 state: "failed",
                 waitReason: null,
@@ -1504,7 +1510,7 @@ export class PilotSwarmManagementClient {
         }
 
         const effectiveError = (liveStatus === "error" || liveStatus === "failed")
-            ? (customStatus.error ?? row.lastError ?? undefined)
+            ? (orchError ?? customStatus.error ?? row.lastError ?? undefined)
             : undefined;
 
         return {
