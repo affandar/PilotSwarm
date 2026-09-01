@@ -273,8 +273,14 @@ default with the scheduler. It uses `JOBGEN_ADO_TOKEN`, then
 observer verifies the persisted PR source commit and uses Azure DevOps's current
 enabled, blocking policy evaluations as the approval authority. Provider events
 only accelerate a matching `pull_request_approval` check; reconciliation
-polling remains authoritative. Before using the shared credential, the observer
-requires the Job definition's `affinities.repo` value to match a server-owned
+polling remains authoritative. A companion `pull_request_completion` observer is
+registered alongside it and shares the same credential precedence and repository
+authorization. It verifies the persisted source commit, treats a completed PR as
+the satisfying condition, an abandoned or otherwise incompatible PR as a terminal
+disposition, and preserves the merge commit, completion actor, completion time,
+and target branch as evidence. It never completes, abandons, or otherwise mutates
+the pull request. Before using the shared credential, both observers require the
+Job definition's `affinities.repo` value to match a server-owned
 entry in `JOBGEN_ADO_REPOSITORY_BINDINGS`. The value is a JSON array such as
 `[{"repo":"service-repo","organization":"contoso","project":"Project","repositoryId":"repository-guid"}]`.
 An unbound affinity or mismatched target is rejected before any Azure DevOps

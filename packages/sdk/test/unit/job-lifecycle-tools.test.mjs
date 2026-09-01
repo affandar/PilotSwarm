@@ -3,6 +3,7 @@ import test from "node:test";
 import { createJobLifecycleTools } from "../../dist/job-lifecycle-tools.js";
 import {
     azureDevOpsPullRequestApprovalOperationKey,
+    azureDevOpsPullRequestCompletionOperationKey,
     azureDevOpsPullRequestResourceKey,
 } from "../../dist/azure-devops-job-waits.js";
 
@@ -391,13 +392,74 @@ test("start_external_operation rejects unsupported Azure DevOps predicates", asy
         tool.handler(
             {
                 provider: "azure_devops",
-                kind: "pull_request_completion",
+                kind: "deployment",
                 request: {},
             },
             { durableSessionId: "session-1" },
         ),
         /currently supports only pull_request_approval/,
     );
+});
+
+test("start_external_operation validates Azure DevOps completion targets", async () => {
+    const calls = [];
+    const sourceCommit = "a".repeat(40);
+    const tools = createJobLifecycleTools({
+        async startJobExternalOperation(input) {
+            calls.push(input);
+            return {
+                operationId: "operation-ado-completion-1",
+                correlationId: "azure_devops:operation-ado-completion-1",
+                signalKey: "job-operation:operation-ado-completion-1",
+                provider: "azure_devops",
+                kind: "pull_request_completion",
+                status: "pending",
+                signalStatus: "blocked",
+            };
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "start_external_operation");
+    await tool.handler(
+        {
+            provider: "azure_devops",
+            kind: "pull_request_completion",
+            request: {
+                organization: "https://dev.azure.com/Contoso/",
+                project: "Project",
+                repositoryId: "repo-1",
+                pullRequestId: 42,
+                expectedSourceCommit: sourceCommit.toUpperCase(),
+            },
+        },
+        { durableSessionId: "session-1" },
+    );
+
+    const expectedIdentity = {
+        organization: "Contoso",
+        project: "Project",
+        repositoryId: "repo-1",
+        pullRequestId: 42,
+    };
+    assert.equal(calls[0].kind, "pull_request_completion");
+    assert.equal(
+        calls[0].operationKey,
+        azureDevOpsPullRequestCompletionOperationKey(calls[0].request),
+    );
+    assert.notEqual(
+        azureDevOpsPullRequestCompletionOperationKey(calls[0].request),
+        azureDevOpsPullRequestApprovalOperationKey(calls[0].request),
+    );
+    assert.deepEqual(calls[0].request, {
+        ...expectedIdentity,
+        expectedSourceCommit: sourceCommit,
+        resourceKey: azureDevOpsPullRequestResourceKey(expectedIdentity),
+    });
 });
 
 test("get_external_operation is scoped to the durable session", async () => {

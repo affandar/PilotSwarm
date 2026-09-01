@@ -18,6 +18,7 @@ import { createEvaluatorsFromEnv } from "./providers.js";
 import {
     AzureDevOpsPullRequestApprovalObserver,
     AzureDevOpsPullRequestClient,
+    AzureDevOpsPullRequestCompletionObserver,
     JobDefinitionAzureDevOpsTargetAuthorizer,
     parseAzureDevOpsRepositoryBindings,
 } from "./azure-devops-job-waits.js";
@@ -81,16 +82,22 @@ export async function runJobGenerator(): Promise<void> {
             aadDbUser,
         });
         await managementClient.start();
+        const azureDevOpsClient = new AzureDevOpsPullRequestClient({
+            token: process.env.JOBGEN_ADO_TOKEN,
+            pat: process.env.JOBGEN_ADO_PAT || process.env.AZURE_DEVOPS_EXT_PAT,
+        });
+        const azureDevOpsAuthorizer = new JobDefinitionAzureDevOpsTargetAuthorizer(
+            catalog,
+            azureDevOpsRepositoryBindings,
+        );
         const observers = [
             new AzureDevOpsPullRequestApprovalObserver(
-                new AzureDevOpsPullRequestClient({
-                    token: process.env.JOBGEN_ADO_TOKEN,
-                    pat: process.env.JOBGEN_ADO_PAT || process.env.AZURE_DEVOPS_EXT_PAT,
-                }),
-                new JobDefinitionAzureDevOpsTargetAuthorizer(
-                    catalog,
-                    azureDevOpsRepositoryBindings,
-                ),
+                azureDevOpsClient,
+                azureDevOpsAuthorizer,
+            ),
+            new AzureDevOpsPullRequestCompletionObserver(
+                azureDevOpsClient,
+                azureDevOpsAuthorizer,
             ),
             ...(mockOperationsEnabled ? [new MockJobWaitObserver()] : []),
         ];
@@ -109,7 +116,8 @@ export async function runJobGenerator(): Promise<void> {
             leaseSeconds: Number(process.env.JOBGEN_WAIT_LEASE_SECONDS || 30),
         });
         console.info(
-            `[job-generator] JobWait scheduler ready observers=azure_devops/pull_request_approval`
+            `[job-generator] JobWait scheduler ready observers=azure_devops/pull_request_approval,`
+            + `azure_devops/pull_request_completion`
             + `${mockOperationsEnabled ? ",mock/*" : ""}`,
             `adoRepositoryBindings=${azureDevOpsRepositoryBindings.size}`,
         );

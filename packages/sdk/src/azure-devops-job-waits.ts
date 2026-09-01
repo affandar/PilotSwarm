@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 export const AZURE_DEVOPS_JOB_WAIT_PROVIDER = "azure_devops";
 export const AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND = "pull_request_approval";
+export const AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND = "pull_request_completion";
 
 export interface AzureDevOpsPullRequestIdentity {
     organization: string;
@@ -104,11 +105,20 @@ export function parseAzureDevOpsPullRequestApprovalTarget(
 export function azureDevOpsPullRequestApprovalOperationKey(
     target: AzureDevOpsPullRequestApprovalTarget,
 ): string {
-    const targetHash = createHash("sha256")
+    return `approval:pull-request:${target.pullRequestId}:${pullRequestTargetHash(target)}`;
+}
+
+export function azureDevOpsPullRequestCompletionOperationKey(
+    target: AzureDevOpsPullRequestApprovalTarget,
+): string {
+    return `completion:pull-request:${target.pullRequestId}:${pullRequestTargetHash(target)}`;
+}
+
+function pullRequestTargetHash(target: AzureDevOpsPullRequestApprovalTarget): string {
+    return createHash("sha256")
         .update(target.resourceKey)
         .update("\0")
         .update(target.expectedSourceCommit)
         .digest("hex")
         .slice(0, 24);
-    return `approval:pull-request:${target.pullRequestId}:${targetHash}`;
 }

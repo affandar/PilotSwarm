@@ -97,7 +97,9 @@ export type { SessionCatalog, SessionCatalogProvider, SessionRow, SessionRowUpda
 export {
     AZURE_DEVOPS_JOB_WAIT_PROVIDER,
     AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
     azureDevOpsPullRequestApprovalOperationKey,
+    azureDevOpsPullRequestCompletionOperationKey,
     azureDevOpsPullRequestResourceKey,
     normalizeAzureDevOpsOrganization,
     parseAzureDevOpsPullRequestIdentity,

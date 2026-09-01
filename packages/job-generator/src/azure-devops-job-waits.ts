@@ -2,6 +2,7 @@ import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
 import {
     AZURE_DEVOPS_JOB_WAIT_PROVIDER,
     AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
     azureDevOpsPullRequestResourceKey,
     parseAzureDevOpsPullRequestApprovalTarget,
     parseAzureDevOpsPullRequestIdentity,
@@ -25,6 +26,12 @@ interface AzureDevOpsPullRequest {
     targetRefName: string | null;
     lastContentUpdatedDate: string | null;
     sourceCommit: string;
+    mergeCommit: string | null;
+    closedByDisplayName: string | null;
+    closedByUniqueName: string | null;
+    closedById: string | null;
+    closedDate: string | null;
+    mergeStatus: string | null;
     projectId: string;
 }
 
@@ -52,6 +59,10 @@ export interface AzureDevOpsPullRequestApprovalSnapshot {
     pullRequest: AzureDevOpsPullRequest;
     reviewers: AzureDevOpsReviewer[];
     policies: AzureDevOpsPolicyEvaluation[];
+}
+
+export interface AzureDevOpsPullRequestCompletionSnapshot {
+    pullRequest: AzureDevOpsPullRequest;
 }
 
 export interface AzureDevOpsPullRequestClientOptions {
@@ -262,6 +273,12 @@ function parsePullRequest(
     if (!/^[0-9a-f]{40}$/.test(sourceCommit)) {
         throw new Error("Azure DevOps pull-request response returned an invalid source commit");
     }
+    const mergeCommitId = optionalString(record(pullRequest.lastMergeCommit).commitId);
+    const mergeCommit = mergeCommitId ? mergeCommitId.toLowerCase() : null;
+    if (mergeCommit !== null && !/^[0-9a-f]{40}$/.test(mergeCommit)) {
+        throw new Error("Azure DevOps pull-request response returned an invalid merge commit");
+    }
+    const closedBy = record(pullRequest.closedBy);
     return {
         pullRequestId,
         status: requiredString(pullRequest.status, "pull-request status").toLowerCase(),
@@ -269,6 +286,12 @@ function parsePullRequest(
         targetRefName: optionalString(pullRequest.targetRefName),
         lastContentUpdatedDate: optionalString(pullRequest.lastContentUpdatedDate),
         sourceCommit,
+        mergeCommit,
+        closedByDisplayName: optionalString(closedBy.displayName),
+        closedByUniqueName: optionalString(closedBy.uniqueName),
+        closedById: optionalString(closedBy.id),
+        closedDate: optionalString(pullRequest.closedDate),
+        mergeStatus: optionalString(pullRequest.mergeStatus),
         projectId: requiredString(project.id, "pull-request project ID"),
     };
 }
@@ -418,6 +441,21 @@ export class AzureDevOpsPullRequestClient {
             reviewers: parseReviewers(reviewersBody),
             policies: parsePolicyEvaluations(policiesBody),
         };
+    }
+
+    async observePullRequestCompletion(
+        rawTarget: unknown,
+    ): Promise<AzureDevOpsPullRequestCompletionSnapshot | null> {
+        const target = parseAzureDevOpsPullRequestApprovalTarget(rawTarget);
+        const authorization = await this.authorization();
+        const pullRequestBody = await this.getJson(
+            pullRequestEndpoint(target),
+            authorization,
+            "pull-request",
+            true,
+        );
+        if (pullRequestBody === null) return null;
+        return { pullRequest: parsePullRequest(pullRequestBody, target) };
     }
 }
 
@@ -599,6 +637,154 @@ export type AzureDevOpsPullRequestEventStore = Pick<
     "accelerateJobWaitChecksByTarget"
 >;
 
+function completionCursor(snapshot: AzureDevOpsPullRequestCompletionSnapshot): string {
+    return JSON.stringify({
+        status: snapshot.pullRequest.status,
+        sourceCommit: snapshot.pullRequest.sourceCommit,
+        mergeCommit: snapshot.pullRequest.mergeCommit,
+        closedDate: snapshot.pullRequest.closedDate,
+    });
+}
+
+function completionEvidence(
+    target: AzureDevOpsPullRequestApprovalTarget,
+    snapshot: AzureDevOpsPullRequestCompletionSnapshot,
+    observedAt: string,
+): Record<string, unknown> {
+    const pullRequest = snapshot.pullRequest;
+    const completedBy = pullRequest.closedById
+        || pullRequest.closedByUniqueName
+        || pullRequest.closedByDisplayName
+        ? {
+            id: pullRequest.closedById,
+            displayName: pullRequest.closedByDisplayName,
+            uniqueName: pullRequest.closedByUniqueName,
+        }
+        : null;
+    return {
+        provider: AZURE_DEVOPS_JOB_WAIT_PROVIDER,
+        kind: AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
+        organization: target.organization,
+        project: target.project,
+        repositoryId: target.repositoryId,
+        pullRequestId: target.pullRequestId,
+        pullRequestStatus: pullRequest.status,
+        sourceRefName: pullRequest.sourceRefName,
+        targetRefName: pullRequest.targetRefName,
+        expectedSourceCommit: target.expectedSourceCommit,
+        sourceCommit: pullRequest.sourceCommit,
+        mergeCommit: pullRequest.mergeCommit,
+        mergeStatus: pullRequest.mergeStatus,
+        completedBy,
+        completedDate: pullRequest.closedDate,
+        observedAt,
+    };
+}
+
+export class AzureDevOpsPullRequestCompletionObserver implements JobWaitObserver {
+    readonly provider = AZURE_DEVOPS_JOB_WAIT_PROVIDER;
+    readonly kind = AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND;
+
+    constructor(
+        private readonly client: Pick<
+            AzureDevOpsPullRequestClient,
+            "observePullRequestCompletion"
+        >,
+        private readonly authorizer: AzureDevOpsPullRequestTargetAuthorizer,
+    ) {}
+
+    async observe(input: {
+        wait: JobWaitRow;
+        operation: JobExternalOperationRow;
+    }): Promise<JobWaitObservation> {
+        const target = parseAzureDevOpsPullRequestApprovalTarget(input.operation.request);
+        await this.authorizer.authorize({ ...input, target });
+        const snapshot = await this.client.observePullRequestCompletion(target);
+        const observedAt = new Date().toISOString();
+        if (!snapshot) {
+            const evidence = { ...target, observedAt, reason: "pull_request_not_found" };
+            return {
+                disposition: "failed",
+                observation: evidence,
+                evidence,
+                result: { completed: false, reason: "pull_request_not_found" },
+                error: "Azure DevOps pull request was not found",
+            };
+        }
+
+        const evidence = completionEvidence(target, snapshot, observedAt);
+        const cursor = completionCursor(snapshot);
+        const status = snapshot.pullRequest.status;
+        if (status === "abandoned") {
+            return {
+                disposition: "failed",
+                observation: { ...evidence, reason: "pull_request_abandoned" },
+                cursor,
+                evidence,
+                result: { completed: false, reason: "pull_request_abandoned" },
+                error: "Azure DevOps pull request was abandoned",
+            };
+        }
+        if (status !== "active" && status !== "completed") {
+            return {
+                disposition: "failed",
+                observation: { ...evidence, reason: "unsupported_pull_request_status" },
+                cursor,
+                evidence,
+                result: {
+                    completed: false,
+                    reason: "unsupported_pull_request_status",
+                    status,
+                },
+                error: `Azure DevOps pull request has unsupported status: ${status}`,
+            };
+        }
+        if (snapshot.pullRequest.sourceCommit !== target.expectedSourceCommit) {
+            return {
+                disposition: "failed",
+                observation: { ...evidence, reason: "source_commit_changed" },
+                cursor,
+                evidence,
+                result: {
+                    completed: false,
+                    reason: "source_commit_changed",
+                    expectedSourceCommit: target.expectedSourceCommit,
+                    sourceCommit: snapshot.pullRequest.sourceCommit,
+                },
+                error: "Azure DevOps pull request source commit changed",
+            };
+        }
+        if (status === "active") {
+            return {
+                disposition: "pending",
+                observation: { ...evidence, completed: false },
+                cursor,
+            };
+        }
+
+        const result = {
+            completed: true,
+            organization: target.organization,
+            project: target.project,
+            repositoryId: target.repositoryId,
+            pullRequestId: target.pullRequestId,
+            sourceCommit: snapshot.pullRequest.sourceCommit,
+            mergeCommit: snapshot.pullRequest.mergeCommit,
+            targetRefName: snapshot.pullRequest.targetRefName,
+            completedDate: snapshot.pullRequest.closedDate,
+            observedAt,
+        };
+        return {
+            disposition: "satisfied",
+            observation: { ...evidence, completed: true },
+            cursor,
+            evidence,
+            result,
+            error: null,
+        };
+    }
+}
+
 export async function accelerateAzureDevOpsPullRequestApprovalWaits(
     store: AzureDevOpsPullRequestEventStore,
     rawIdentity: unknown,
@@ -608,6 +794,20 @@ export async function accelerateAzureDevOpsPullRequestApprovalWaits(
     return store.accelerateJobWaitChecksByTarget(
         AZURE_DEVOPS_JOB_WAIT_PROVIDER,
         AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+        azureDevOpsPullRequestResourceKey(identity),
+        checkAt,
+    );
+}
+
+export async function accelerateAzureDevOpsPullRequestCompletionWaits(
+    store: AzureDevOpsPullRequestEventStore,
+    rawIdentity: unknown,
+    checkAt = new Date(),
+): Promise<number> {
+    const identity = parseAzureDevOpsPullRequestIdentity(rawIdentity);
+    return store.accelerateJobWaitChecksByTarget(
+        AZURE_DEVOPS_JOB_WAIT_PROVIDER,
+        AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
         azureDevOpsPullRequestResourceKey(identity),
         checkAt,
     );

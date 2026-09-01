@@ -3,7 +3,9 @@ import type { SessionCatalog, SessionEvent } from "./cms.js";
 import {
     AZURE_DEVOPS_JOB_WAIT_PROVIDER,
     AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+    AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND,
     azureDevOpsPullRequestApprovalOperationKey,
+    azureDevOpsPullRequestCompletionOperationKey,
     parseAzureDevOpsPullRequestApprovalTarget,
 } from "./azure-devops-job-waits.js";
 
@@ -206,7 +208,7 @@ export function createJobLifecycleTools(
                         type: "object",
                         description:
                             "Provider request. For mock: delayMs, outcome, result, evidence, and error. "
-                            + "For Azure DevOps pull-request approval: organization, project, repositoryId, "
+                            + "For Azure DevOps pull-request approval or completion: organization, project, repositoryId, "
                             + "pullRequestId, and expectedSourceCommit.",
                         additionalProperties: true,
                     },
@@ -253,14 +255,18 @@ export function createJobLifecycleTools(
                     }
                     nextPollAt = new Date(Date.now() + rawDelay);
                 } else {
-                    if (params.kind !== AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND) {
+                    if (params.kind !== AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND
+                        && params.kind !== AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND) {
                         throw new Error(
-                            "Azure DevOps currently supports only pull_request_approval operations",
+                            "Azure DevOps currently supports only pull_request_approval "
+                            + "and pull_request_completion operations",
                         );
                     }
                     const target = parseAzureDevOpsPullRequestApprovalTarget(params.request);
                     request = { ...target };
-                    operationKey ??= azureDevOpsPullRequestApprovalOperationKey(target);
+                    operationKey ??= params.kind === AZURE_DEVOPS_PULL_REQUEST_COMPLETION_KIND
+                        ? azureDevOpsPullRequestCompletionOperationKey(target)
+                        : azureDevOpsPullRequestApprovalOperationKey(target);
                 }
                 const operation = await catalog.startJobExternalOperation({
                     sessionId,

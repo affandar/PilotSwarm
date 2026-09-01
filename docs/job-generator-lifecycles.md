@@ -605,9 +605,16 @@ are retained as evidence. Provider events can accelerate the matching PR check,
 but only a fresh authoritative read can satisfy it. The observer also binds the
 target repository to the immutable Job definition's repository affinity through
 the server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS` map before it acquires or uses
-an Azure DevOps credential. Pull-request completion observation and
-response-delivery recovery remain separate implementation slices. When approval
-must be renewed after each source push, the repository's Azure DevOps branch
+an Azure DevOps credential. A companion `pull_request_completion` observer shares
+that client and repository authorization. It verifies the persisted source
+commit, satisfies the wait once the PR is `completed`, records an abandoned or
+incompatible PR as a terminal disposition, and preserves the merge commit,
+completion actor, completion time, and target branch as evidence. Provider events
+only accelerate its check; authoritative polling still recovers missed, stale,
+reordered, and duplicate events, and the observer never completes, abandons, or
+otherwise mutates the pull request. Generic response-delivery recovery remains a
+separate implementation slice. When approval must be renewed after each source
+push, the repository's Azure DevOps branch
 policy must enable vote reset; the observer does not reinterpret a current
 policy evaluation that Azure DevOps reports as approved.
 
@@ -1224,7 +1231,11 @@ token, `JOBGEN_ADO_PAT` or `AZURE_DEVOPS_EXT_PAT` as a PAT, and otherwise
 value bound to the same organization, project, and repository ID in the
 server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS` JSON array. The default durable
 operation key includes a hash of that canonical repository, pull request, and
-expected commit, so a new PR head creates a distinct wait.
+expected commit, so a new PR head creates a distinct wait. A
+`pull_request_completion` observer is registered alongside it with the same
+credential precedence, target shape, and repository authorization; its default
+operation key uses a distinct prefix so completion waits never collide with the
+approval wait for the same PR.
 
 ## Implementation sequence
 
