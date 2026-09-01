@@ -175,6 +175,63 @@ test("scheduler persists pending observations and schedules the next check", asy
     assert.ok(completions[0].nextCheckAt.getTime() >= before + 250);
 });
 
+test("scheduler routes observers by provider and operation kind", async () => {
+    const claims = [];
+    const completions = [];
+    const scheduler = new JobWaitScheduler({
+        workerId: "scheduler-1",
+        observers: [
+            {
+                provider: "example",
+                kind: "approval",
+                async observe() {
+                    return { disposition: "satisfied", result: { kind: "approval" } };
+                },
+            },
+            {
+                provider: "example",
+                kind: "completion",
+                async observe() {
+                    return { disposition: "satisfied", result: { kind: "completion" } };
+                },
+            },
+        ],
+        store: store({
+            async claimDueJobWaits(workerId, limit, leaseSeconds, observers) {
+                claims.push({ workerId, limit, leaseSeconds, observers });
+                return [
+                    wait({ waitId: "wait-approval", externalOperationId: "operation-approval" }),
+                    wait({ waitId: "wait-completion", externalOperationId: "operation-completion" }),
+                ];
+            },
+            async getJobExternalOperation(_sessionId, operationId) {
+                return operation({
+                    operationId,
+                    provider: "example",
+                    kind: operationId === "operation-approval" ? "approval" : "completion",
+                });
+            },
+            async completeJobWaitCheck(input) {
+                completions.push(input);
+            },
+        }),
+        signalSender: { async sendSystemSignal() {} },
+        logger: quietLogger,
+    });
+
+    const result = await scheduler.runOnce();
+
+    assert.deepEqual(claims[0].observers, [
+        { provider: "example", kind: "approval" },
+        { provider: "example", kind: "completion" },
+    ]);
+    assert.equal(result.satisfied, 2);
+    assert.deepEqual(
+        completions.map((completion) => completion.result),
+        [{ kind: "approval" }, { kind: "completion" }],
+    );
+});
+
 test("scheduler records observer failures with bounded retry backoff", async () => {
     const completions = [];
     const scheduler = new JobWaitScheduler({

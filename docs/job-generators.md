@@ -267,6 +267,20 @@ The canonical JobWait scheduler is enabled by default. Set
 `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` registers the deterministic mock
 observer used by lifecycle demos; it is disabled by default and delivers
 completions through the normal durable `sendSystemSignal` path.
+The production Azure DevOps pull-request approval observer is registered by
+default with the scheduler. It uses `JOBGEN_ADO_TOKEN`, then
+`JOBGEN_ADO_PAT`/`AZURE_DEVOPS_EXT_PAT`, then `DefaultAzureCredential`. The
+observer verifies the persisted PR source commit and uses Azure DevOps's current
+enabled, blocking policy evaluations as the approval authority. Provider events
+only accelerate a matching `pull_request_approval` check; reconciliation
+polling remains authoritative. Before using the shared credential, the observer
+requires the Job definition's `affinities.repo` value to match a server-owned
+entry in `JOBGEN_ADO_REPOSITORY_BINDINGS`. The value is a JSON array such as
+`[{"repo":"service-repo","organization":"contoso","project":"Project","repositoryId":"repository-guid"}]`.
+An unbound affinity or mismatched target is rejected before any Azure DevOps
+request. Repositories that require fresh approval after every source update
+must configure their Azure DevOps branch policies to reset votes on source push;
+the observer intentionally follows Azure DevOps's reported current policy state.
 `JOBGEN_ADO_WIQL_ENDPOINT` remains an optional
 compatibility override for a fixed endpoint or normalized adapter; set
 `JOBGEN_ADO_WIQL_DIRECT=true` when the override accepts the native REST shape.

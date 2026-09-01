@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
     JobExternalOperationRow,
+    JobWaitObserverSelector,
     JobWaitRow,
     SessionCatalog,
 } from "./cms.js";
@@ -31,6 +32,7 @@ export interface JobWaitObservation {
 
 export interface JobWaitObserver {
     readonly provider: string;
+    readonly kind?: string;
     observe(input: {
         wait: JobWaitRow;
         operation: JobExternalOperationRow;
@@ -86,10 +88,20 @@ function waitForPoll(intervalMs: number, signal?: AbortSignal): Promise<void> {
     });
 }
 
-function providerKey(provider: string): string {
-    const normalized = provider.trim().toLowerCase();
-    if (!normalized) throw new Error("JobWait observer provider is required");
+function observerIdentifier(value: string, label: string): string {
+    const normalized = value.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9_.-]*$/.test(normalized)) {
+        throw new Error(`JobWait observer ${label} must be a lowercase identifier`);
+    }
     return normalized;
+}
+
+function observerKey(provider: string, kind?: string): string {
+    const normalizedProvider = observerIdentifier(provider, "provider");
+    const normalizedKind = kind === undefined
+        ? "*"
+        : observerIdentifier(kind, "kind");
+    return `${normalizedProvider}:${normalizedKind}`;
 }
 
 export class MockJobWaitObserver implements JobWaitObserver {
@@ -155,7 +167,7 @@ export class JobWaitScheduler {
     private readonly store: JobWaitSchedulerStore;
     private readonly signalSender: JobWaitSignalSender;
     private readonly observers = new Map<string, JobWaitObserver>();
-    private readonly observerProviders: string[];
+    private readonly observerSelectors: JobWaitObserverSelector[];
     private readonly workerId: string;
     private readonly pollIntervalMs: number;
     private readonly defaultCheckIntervalMs: number;
@@ -186,13 +198,22 @@ export class JobWaitScheduler {
         this.leaseSeconds = positiveInteger(options.leaseSeconds ?? 30, "leaseSeconds");
         this.logger = options.logger ?? console;
         for (const observer of options.observers ?? []) {
-            const key = providerKey(observer.provider);
+            const provider = observerIdentifier(observer.provider, "provider");
+            const kind = observer.kind === undefined
+                ? undefined
+                : observerIdentifier(observer.kind, "kind");
+            const key = observerKey(provider, kind);
             if (this.observers.has(key)) {
-                throw new Error(`Duplicate JobWait observer provider: ${key}`);
+                throw new Error(`Duplicate JobWait observer: ${key}`);
             }
             this.observers.set(key, observer);
         }
-        this.observerProviders = [...this.observers.keys()];
+        this.observerSelectors = [...this.observers.values()].map((observer) => ({
+            provider: observerIdentifier(observer.provider, "provider"),
+            ...(observer.kind === undefined
+                ? {}
+                : { kind: observerIdentifier(observer.kind, "kind") }),
+        }));
     }
 
     private retryAt(attempt: number): Date {
@@ -222,9 +243,13 @@ export class JobWaitScheduler {
         if (!operation) {
             throw new Error(`External operation not found: ${wait.externalOperationId}`);
         }
-        const observer = this.observers.get(providerKey(operation.provider));
+        const observer = this.observers.get(observerKey(operation.provider, operation.kind))
+            ?? this.observers.get(observerKey(operation.provider));
         if (!observer) {
-            throw new Error(`No JobWait observer registered for provider: ${operation.provider}`);
+            throw new Error(
+                `No JobWait observer registered for provider/kind: `
+                + `${operation.provider}/${operation.kind}`,
+            );
         }
         const observation = await observer.observe({ wait, operation });
         if (
@@ -267,7 +292,7 @@ export class JobWaitScheduler {
             this.workerId,
             this.claimLimit,
             this.leaseSeconds,
-            this.observerProviders,
+            this.observerSelectors,
         );
         for (const wait of waits) {
             try {

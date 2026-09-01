@@ -2,6 +2,7 @@
 
 export * from "./providers.js";
 export * from "./controller.js";
+export * from "./azure-devops-job-waits.js";
 
 import { hostname } from "node:os";
 import {
@@ -14,6 +15,12 @@ import {
 } from "pilotswarm-sdk";
 import { JobGeneratorController, PilotSwarmInitialSessionFactory } from "./controller.js";
 import { createEvaluatorsFromEnv } from "./providers.js";
+import {
+    AzureDevOpsPullRequestApprovalObserver,
+    AzureDevOpsPullRequestClient,
+    JobDefinitionAzureDevOpsTargetAuthorizer,
+    parseAzureDevOpsRepositoryBindings,
+} from "./azure-devops-job-waits.js";
 
 export async function runJobGenerator(): Promise<void> {
     const databaseUrl = process.env.DATABASE_URL?.trim();
@@ -63,6 +70,9 @@ export async function runJobGenerator(): Promise<void> {
     let managementClient: PilotSwarmManagementClient | undefined;
     let waitScheduler: JobWaitScheduler | undefined;
     if (waitSchedulerEnabled) {
+        const azureDevOpsRepositoryBindings = parseAzureDevOpsRepositoryBindings(
+            process.env.JOBGEN_ADO_REPOSITORY_BINDINGS,
+        );
         managementClient = new PilotSwarmManagementClient({
             store: databaseUrl,
             cmsSchema,
@@ -71,10 +81,23 @@ export async function runJobGenerator(): Promise<void> {
             aadDbUser,
         });
         await managementClient.start();
+        const observers = [
+            new AzureDevOpsPullRequestApprovalObserver(
+                new AzureDevOpsPullRequestClient({
+                    token: process.env.JOBGEN_ADO_TOKEN,
+                    pat: process.env.JOBGEN_ADO_PAT || process.env.AZURE_DEVOPS_EXT_PAT,
+                }),
+                new JobDefinitionAzureDevOpsTargetAuthorizer(
+                    catalog,
+                    azureDevOpsRepositoryBindings,
+                ),
+            ),
+            ...(mockOperationsEnabled ? [new MockJobWaitObserver()] : []),
+        ];
         waitScheduler = new JobWaitScheduler({
             store: catalog,
             signalSender: managementClient,
-            observers: mockOperationsEnabled ? [new MockJobWaitObserver()] : [],
+            observers,
             workerId: `${workerId}-job-waits`,
             pollIntervalMs: Number(process.env.JOBGEN_WAIT_POLL_INTERVAL_MS || 500),
             defaultCheckIntervalMs: Number(
@@ -86,7 +109,9 @@ export async function runJobGenerator(): Promise<void> {
             leaseSeconds: Number(process.env.JOBGEN_WAIT_LEASE_SECONDS || 30),
         });
         console.info(
-            `[job-generator] JobWait scheduler ready observers=${mockOperationsEnabled ? "mock" : "none"}`,
+            `[job-generator] JobWait scheduler ready observers=azure_devops/pull_request_approval`
+            + `${mockOperationsEnabled ? ",mock/*" : ""}`,
+            `adoRepositoryBindings=${azureDevOpsRepositoryBindings.size}`,
         );
     }
 

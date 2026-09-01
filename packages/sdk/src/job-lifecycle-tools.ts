@@ -1,5 +1,11 @@
 import { defineTool, type Tool } from "@github/copilot-sdk";
 import type { SessionCatalog, SessionEvent } from "./cms.js";
+import {
+    AZURE_DEVOPS_JOB_WAIT_PROVIDER,
+    AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND,
+    azureDevOpsPullRequestApprovalOperationKey,
+    parseAzureDevOpsPullRequestApprovalTarget,
+} from "./azure-devops-job-waits.js";
 
 const MAX_EVENT_DATA_BYTES = 4 * 1024;
 const MAX_CONTEXT_BYTES = 64 * 1024;
@@ -172,8 +178,10 @@ export function createJobLifecycleTools(
                 properties: {
                     provider: {
                         type: "string",
-                        enum: ["mock"],
-                        description: "External operation provider. The deterministic demonstration provider is mock.",
+                        enum: ["mock", AZURE_DEVOPS_JOB_WAIT_PROVIDER],
+                        description:
+                            "External operation provider. Use mock for deterministic demonstrations "
+                            + "or azure_devops for production pull-request observation.",
                     },
                     kind: {
                         type: "string",
@@ -197,7 +205,9 @@ export function createJobLifecycleTools(
                     request: {
                         type: "object",
                         description:
-                            "Provider request. For mock: delayMs, outcome (succeeded or failed), result, evidence, and error are supported.",
+                            "Provider request. For mock: delayMs, outcome, result, evidence, and error. "
+                            + "For Azure DevOps pull-request approval: organization, project, repositoryId, "
+                            + "pullRequestId, and expectedSourceCommit.",
                         additionalProperties: true,
                     },
                 },
@@ -218,16 +228,9 @@ export function createJobLifecycleTools(
                 if (!sessionId) {
                     throw new Error("start_external_operation requires a durable session context");
                 }
-                if (params.provider !== "mock") {
+                if (params.provider !== "mock"
+                    && params.provider !== AZURE_DEVOPS_JOB_WAIT_PROVIDER) {
                     throw new Error(`Unsupported external operation provider: ${params.provider}`);
-                }
-                const rawDelay = Number(params.request?.delayMs ?? 1_000);
-                if (!Number.isFinite(rawDelay) || rawDelay < 0 || rawDelay > 300_000) {
-                    throw new Error("Mock external operation delayMs must be between 0 and 300000");
-                }
-                const outcome = params.request?.outcome;
-                if (outcome !== undefined && outcome !== "succeeded" && outcome !== "failed") {
-                    throw new Error("Mock external operation outcome must be succeeded or failed");
                 }
                 const deadlineSeconds = params.deadlineSeconds;
                 if (deadlineSeconds !== undefined
@@ -236,13 +239,36 @@ export function createJobLifecycleTools(
                         || deadlineSeconds > 604_800)) {
                     throw new Error("External operation deadlineSeconds must be between 1 and 604800");
                 }
+                let request = params.request;
+                let operationKey = params.operationKey;
+                let nextPollAt = new Date();
+                if (params.provider === "mock") {
+                    const rawDelay = Number(params.request?.delayMs ?? 1_000);
+                    if (!Number.isFinite(rawDelay) || rawDelay < 0 || rawDelay > 300_000) {
+                        throw new Error("Mock external operation delayMs must be between 0 and 300000");
+                    }
+                    const outcome = params.request?.outcome;
+                    if (outcome !== undefined && outcome !== "succeeded" && outcome !== "failed") {
+                        throw new Error("Mock external operation outcome must be succeeded or failed");
+                    }
+                    nextPollAt = new Date(Date.now() + rawDelay);
+                } else {
+                    if (params.kind !== AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND) {
+                        throw new Error(
+                            "Azure DevOps currently supports only pull_request_approval operations",
+                        );
+                    }
+                    const target = parseAzureDevOpsPullRequestApprovalTarget(params.request);
+                    request = { ...target };
+                    operationKey ??= azureDevOpsPullRequestApprovalOperationKey(target);
+                }
                 const operation = await catalog.startJobExternalOperation({
                     sessionId,
                     provider: params.provider,
                     kind: params.kind,
-                    operationKey: params.operationKey,
-                    request: params.request,
-                    nextPollAt: new Date(Date.now() + rawDelay),
+                    operationKey,
+                    request,
+                    nextPollAt,
                     detectionMode: params.detectionMode,
                     deadlineAt: deadlineSeconds === undefined
                         ? undefined

@@ -1248,6 +1248,11 @@ export interface StartJobExternalOperationInput {
     detectionMode?: Extract<JobWaitDetectionMode, "poll" | "event" | "hybrid">;
 }
 
+export interface JobWaitObserverSelector {
+    provider: string;
+    kind?: string;
+}
+
 export interface StartJobResponseWaitInput {
     sessionId: string;
     waitKey: string;
@@ -1578,10 +1583,16 @@ export interface SessionCatalog {
         workerId: string,
         limit?: number,
         leaseSeconds?: number,
-        providers?: readonly string[],
+        observers?: readonly (string | JobWaitObserverSelector)[],
     ): Promise<JobWaitRow[]>;
     completeJobWaitCheck(input: CompleteJobWaitCheckInput): Promise<JobWaitRow>;
     accelerateJobWaitCheck(waitId: string, expectedStateRevision: number, checkAt?: Date): Promise<boolean>;
+    accelerateJobWaitChecksByTarget(
+        provider: string,
+        kind: string,
+        resourceKey: string,
+        checkAt?: Date,
+    ): Promise<number>;
     recordJobWaitBoundary(
         sessionId: string,
         signalKey: string,
@@ -3612,7 +3623,7 @@ export class PgSessionCatalog implements SessionCatalog {
         workerId: string,
         limit = 25,
         leaseSeconds = 30,
-        providers?: readonly string[],
+        observers?: readonly (string | JobWaitObserverSelector)[],
     ): Promise<JobWaitRow[]> {
         const normalizedWorkerId = workerId.trim();
         if (!normalizedWorkerId) throw new Error("Job wait claim requires workerId");
@@ -3620,9 +3631,23 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!Number.isInteger(leaseSeconds) || leaseSeconds <= 0) {
             throw new Error("Job wait leaseSeconds must be positive");
         }
-        const normalizedProviders = providers === undefined
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        const normalizedObservers = observers === undefined
             ? null
-            : [...new Set(providers.map((provider) => provider.trim().toLowerCase()).filter(Boolean))];
+            : [...new Map(observers.map((observer) => {
+                const selector = typeof observer === "string"
+                    ? { provider: observer }
+                    : observer;
+                const provider = selector.provider.trim().toLowerCase();
+                const kind = selector.kind?.trim().toLowerCase() || undefined;
+                if (!identifierPattern.test(provider)) {
+                    throw new Error("Job wait observer provider must be a lowercase identifier");
+                }
+                if (kind !== undefined && !identifierPattern.test(kind)) {
+                    throw new Error("Job wait observer kind must be a lowercase identifier");
+                }
+                return [`${provider}\0${kind ?? "*"}`, { provider, ...(kind ? { kind } : {}) }];
+            })).values()];
         const { rows } = await this.pool.query(
             `WITH due AS (
                  SELECT wait.wait_id
@@ -3642,8 +3667,16 @@ export class PgSessionCatalog implements SessionCatalog {
                    AND wait.status = 'pending'
                    AND wait.signal_key IS NOT NULL
                    AND (
-                       $4::text[] IS NULL
-                       OR wait.provider = ANY($4::text[])
+                       $4::jsonb IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements($4::jsonb) observer
+                           WHERE wait.provider = observer->>'provider'
+                             AND (
+                                 NOT (observer ? 'kind')
+                                 OR wait.predicate->>'kind' = observer->>'kind'
+                             )
+                       )
                        OR (wait.deadline_at IS NOT NULL AND wait.deadline_at <= now())
                    )
                    AND (
@@ -3683,7 +3716,12 @@ export class PgSessionCatalog implements SessionCatalog {
              FROM due
              WHERE wait.wait_id = due.wait_id
              RETURNING wait.*`,
-            [normalizedWorkerId, limit, leaseSeconds, normalizedProviders],
+            [
+                normalizedWorkerId,
+                limit,
+                leaseSeconds,
+                normalizedObservers === null ? null : JSON.stringify(normalizedObservers),
+            ],
         );
         return rows.map(rowToJobWait);
     }
@@ -3895,6 +3933,48 @@ export class PgSessionCatalog implements SessionCatalog {
             [waitId.trim(), expectedStateRevision, checkAt],
         );
         return (result.rowCount ?? 0) === 1;
+    }
+
+    async accelerateJobWaitChecksByTarget(
+        provider: string,
+        kind: string,
+        resourceKey: string,
+        checkAt = new Date(),
+    ): Promise<number> {
+        const normalizedProvider = provider.trim().toLowerCase();
+        const normalizedKind = kind.trim().toLowerCase();
+        const normalizedResourceKey = resourceKey.trim();
+        const identifierPattern = /^[a-z][a-z0-9_.-]*$/;
+        if (!identifierPattern.test(normalizedProvider) || !identifierPattern.test(normalizedKind)) {
+            throw new Error("Job wait acceleration requires valid provider and kind identifiers");
+        }
+        if (!normalizedResourceKey || normalizedResourceKey.length > 2048) {
+            throw new Error("Job wait acceleration requires a valid resourceKey");
+        }
+        if (!Number.isFinite(checkAt.getTime())) {
+            throw new Error("Job wait acceleration requires valid checkAt");
+        }
+        const result = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_waits wait
+             SET next_check_at = LEAST(COALESCE(wait.next_check_at, $4), $4),
+                 updated_at = now()
+             FROM "${this.sql.schema}".job_state_runs state_run,
+                  "${this.sql.schema}".jobs job
+             WHERE wait.provider = $1
+               AND wait.predicate->>'kind' = $2
+               AND wait.target->>'resourceKey' = $3
+               AND wait.kind = 'observed_condition'
+               AND wait.status = 'pending'
+               AND wait.detection_mode IN ('event', 'hybrid')
+               AND state_run.state_run_id = wait.state_run_id
+               AND state_run.status IN ('active', 'waiting', 'input_required')
+               AND job.job_id = wait.job_id
+               AND job.state_revision = wait.expected_state_revision
+               AND job.current_state = state_run.state_name
+               AND job.lifecycle_state NOT IN ('completed', 'cancelled')`,
+            [normalizedProvider, normalizedKind, normalizedResourceKey, checkAt],
+        );
+        return result.rowCount ?? 0;
     }
 
     async recordJobWaitBoundary(

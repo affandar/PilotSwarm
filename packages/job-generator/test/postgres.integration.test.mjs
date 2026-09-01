@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { PgSessionCatalog } from "pilotswarm-sdk";
+import { PgSessionCatalog, azureDevOpsPullRequestResourceKey } from "pilotswarm-sdk";
 import { JobGeneratorController } from "../dist/controller.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -726,6 +726,87 @@ test("controller materialization and durable Job lifecycle transitions", {
             )).status,
             "succeeded",
         );
+
+        const approvalIdentity = {
+            organization: "contoso",
+            project: "project",
+            repositoryId: "repo-1",
+            pullRequestId: 42,
+        };
+        const approvalResourceKey = azureDevOpsPullRequestResourceKey(approvalIdentity);
+        const approvalOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "azure_devops",
+            kind: "pull_request_approval",
+            operationKey: "approval-selector",
+            detectionMode: "hybrid",
+            request: {
+                ...approvalIdentity,
+                expectedSourceCommit: "a".repeat(40),
+                resourceKey: approvalResourceKey,
+            },
+            nextPollAt: new Date(Date.now() + 60_000),
+        });
+        const completionOperation = await catalog.startJobExternalOperation({
+            sessionId: failingSession.sessionId,
+            provider: "azure_devops",
+            kind: "pull_request_completion",
+            operationKey: "completion-selector",
+            detectionMode: "hybrid",
+            request: {
+                ...approvalIdentity,
+                expectedSourceCommit: "a".repeat(40),
+                resourceKey: approvalResourceKey,
+            },
+            nextPollAt: new Date(Date.now() - 1_000),
+        });
+        const providerEventAt = new Date(Date.now() - 500);
+        assert.equal(
+            await catalog.accelerateJobWaitChecksByTarget(
+                "azure_devops",
+                "pull_request_approval",
+                approvalResourceKey,
+                providerEventAt,
+            ),
+            1,
+        );
+        const [approvalClaim] = await catalog.claimDueJobWaits(
+            "wait-scheduler-approval-selector",
+            1,
+            30,
+            [{ provider: "azure_devops", kind: "pull_request_approval" }],
+        );
+        assert.equal(approvalClaim.externalOperationId, approvalOperation.operationId);
+        await catalog.completeJobWaitCheck({
+            waitId: approvalClaim.waitId,
+            workerId: "wait-scheduler-approval-selector",
+            disposition: "pending",
+            observation: { state: "waiting-for-approval" },
+            nextCheckAt: new Date(Date.now() + 60_000),
+        });
+        assert.deepEqual(
+            await catalog.claimDueJobWaits(
+                "wait-scheduler-approval-selector-empty",
+                1,
+                30,
+                [{ provider: "azure_devops", kind: "pull_request_approval" }],
+            ),
+            [],
+        );
+        const [completionClaim] = await catalog.claimDueJobWaits(
+            "wait-scheduler-completion-selector",
+            1,
+            30,
+            ["azure_devops"],
+        );
+        assert.equal(completionClaim.externalOperationId, completionOperation.operationId);
+        await catalog.completeJobWaitCheck({
+            waitId: completionClaim.waitId,
+            workerId: "wait-scheduler-completion-selector",
+            disposition: "pending",
+            observation: { state: "waiting-for-completion" },
+            nextCheckAt: new Date(Date.now() + 60_000),
+        });
 
         const deadlineOperation = await catalog.startJobExternalOperation({
             sessionId: failingSession.sessionId,

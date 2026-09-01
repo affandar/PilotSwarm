@@ -596,9 +596,20 @@ are reclaimable after process loss, and state-revision fencing prevents a late
 check from reviving a cancelled or superseded wait. Provider events can
 accelerate `event` or `hybrid` waits without replacing polling reconciliation.
 
-The deterministic `mock` observer is the only provider implementation today.
-Provider-specific Azure DevOps observers and response-delivery recovery remain
-separate implementation slices.
+The deterministic `mock` observer remains available for demonstrations. The
+JobGenerator also registers a production Azure DevOps pull-request approval
+observer. It verifies that the PR still targets the source commit persisted by
+the JobWait, then treats Azure DevOps's current enabled, blocking policy
+evaluations as authoritative. Required reviewer identities and effective votes
+are retained as evidence. Provider events can accelerate the matching PR check,
+but only a fresh authoritative read can satisfy it. The observer also binds the
+target repository to the immutable Job definition's repository affinity through
+the server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS` map before it acquires or uses
+an Azure DevOps credential. Pull-request completion observation and
+response-delivery recovery remain separate implementation slices. When approval
+must be renewed after each source push, the repository's Azure DevOps branch
+policy must enable vote reset; the observer does not reinterpret a current
+policy evaluation that Azure DevOps reports as approved.
 
 Timer waits are now projected into the same model for catalog and portal
 observability. Duroxide remains authoritative for durable timer scheduling and
@@ -1204,6 +1215,16 @@ are `JOBGEN_WAIT_POLL_INTERVAL_MS`, `JOBGEN_WAIT_DEFAULT_CHECK_INTERVAL_MS`,
 `JOBGEN_WAIT_CLAIM_LIMIT`, and `JOBGEN_WAIT_LEASE_SECONDS`.
 Set `JOBGEN_MOCK_EXTERNAL_OPERATIONS=true` to register the deterministic mock
 observer used by lifecycle demos.
+The Azure DevOps pull-request approval observer is registered whenever the
+JobWait scheduler is enabled. It uses `JOBGEN_ADO_TOKEN` as an explicit bearer
+token, `JOBGEN_ADO_PAT` or `AZURE_DEVOPS_EXT_PAT` as a PAT, and otherwise
+`DefaultAzureCredential`. Its `pull_request_approval` target requires
+`organization`, `project`, `repositoryId`, `pullRequestId`, and the exact
+`expectedSourceCommit`. The Job definition must also have an `affinities.repo`
+value bound to the same organization, project, and repository ID in the
+server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS` JSON array. The default durable
+operation key includes a hash of that canonical repository, pull request, and
+expected commit, so a new PR head creates a distinct wait.
 
 ## Implementation sequence
 

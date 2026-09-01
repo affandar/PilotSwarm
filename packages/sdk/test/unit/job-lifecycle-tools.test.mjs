@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createJobLifecycleTools } from "../../dist/job-lifecycle-tools.js";
+import {
+    azureDevOpsPullRequestApprovalOperationKey,
+    azureDevOpsPullRequestResourceKey,
+} from "../../dist/azure-devops-job-waits.js";
 
 test("read_job_source_session is scoped by the durable current JobSession", async () => {
     const calls = [];
@@ -252,6 +256,148 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
         signalStatus: "blocked",
         resumed: false,
     });
+});
+
+test("start_external_operation validates and normalizes Azure DevOps approval targets", async () => {
+    const calls = [];
+    const sourceCommit = "a".repeat(40);
+    const tools = createJobLifecycleTools({
+        async startJobExternalOperation(input) {
+            calls.push(input);
+            return {
+                operationId: "operation-ado-1",
+                correlationId: "azure_devops:operation-ado-1",
+                signalKey: "job-operation:operation-ado-1",
+                provider: "azure_devops",
+                kind: "pull_request_approval",
+                status: "pending",
+                signalStatus: "blocked",
+            };
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "start_external_operation");
+    await tool.handler(
+        {
+            provider: "azure_devops",
+            kind: "pull_request_approval",
+            detectionMode: "hybrid",
+            request: {
+                organization: "https://dev.azure.com/Contoso/",
+                project: "Project",
+                repositoryId: "repo-1",
+                pullRequestId: 42,
+                expectedSourceCommit: sourceCommit.toUpperCase(),
+                resourceKey: "caller-controlled-value",
+            },
+        },
+        { durableSessionId: "session-1" },
+    );
+
+    const expectedIdentity = {
+        organization: "Contoso",
+        project: "Project",
+        repositoryId: "repo-1",
+        pullRequestId: 42,
+    };
+    assert.equal(calls[0].provider, "azure_devops");
+    assert.equal(calls[0].kind, "pull_request_approval");
+    assert.equal(
+        calls[0].operationKey,
+        azureDevOpsPullRequestApprovalOperationKey(calls[0].request),
+    );
+    assert.equal(calls[0].detectionMode, "hybrid");
+    assert.deepEqual(calls[0].request, {
+        ...expectedIdentity,
+        expectedSourceCommit: sourceCommit,
+        resourceKey: azureDevOpsPullRequestResourceKey(expectedIdentity),
+    });
+    assert.ok(calls[0].nextPollAt instanceof Date);
+});
+
+test("start_external_operation keys Azure DevOps approval waits by repository and commit", async () => {
+    const calls = [];
+    const tools = createJobLifecycleTools({
+        async startJobExternalOperation(input) {
+            calls.push(input);
+            return {
+                operationId: `operation-${calls.length}`,
+                correlationId: `azure_devops:operation-${calls.length}`,
+                signalKey: `job-operation:operation-${calls.length}`,
+                provider: "azure_devops",
+                kind: "pull_request_approval",
+                status: "pending",
+                signalStatus: "blocked",
+            };
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "start_external_operation");
+    const request = {
+        organization: "Contoso",
+        project: "Project",
+        repositoryId: "repo-1",
+        pullRequestId: 42,
+        expectedSourceCommit: "a".repeat(40),
+    };
+    await tool.handler(
+        { provider: "azure_devops", kind: "pull_request_approval", request },
+        { durableSessionId: "session-1" },
+    );
+    await tool.handler(
+        {
+            provider: "azure_devops",
+            kind: "pull_request_approval",
+            request: { ...request, expectedSourceCommit: "b".repeat(40) },
+        },
+        { durableSessionId: "session-1" },
+    );
+    await tool.handler(
+        {
+            provider: "azure_devops",
+            kind: "pull_request_approval",
+            request: { ...request, repositoryId: "repo-2" },
+        },
+        { durableSessionId: "session-1" },
+    );
+
+    assert.equal(new Set(calls.map((call) => call.operationKey)).size, 3);
+});
+
+test("start_external_operation rejects unsupported Azure DevOps predicates", async () => {
+    const tools = createJobLifecycleTools({
+        async startJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async getJobExternalOperation() {
+            throw new Error("must not be called");
+        },
+        async completeJobState() {
+            throw new Error("must not be called");
+        },
+    });
+    const tool = tools.find((entry) => entry.name === "start_external_operation");
+    await assert.rejects(
+        tool.handler(
+            {
+                provider: "azure_devops",
+                kind: "pull_request_completion",
+                request: {},
+            },
+            { durableSessionId: "session-1" },
+        ),
+        /currently supports only pull_request_approval/,
+    );
 });
 
 test("get_external_operation is scoped to the durable session", async () => {
