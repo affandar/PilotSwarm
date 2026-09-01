@@ -2846,10 +2846,24 @@ export class PgSessionCatalog implements SessionCatalog {
                 [randomUUID(), jobId, sessionId, stateRun.state_run_id, Number(ordinalResult.rows[0].ordinal)],
             );
             await client.query(
+                // Re-activating a state (a new session taking over a run that a
+                // prior session already owned) mints a fresh attempt: clear the
+                // durable Markdown snapshot so the controller re-resolves the
+                // source branch ref to its latest commit instead of reusing the
+                // commit pinned by the prior session. A same-session resume never
+                // passes through here (the reconcile loop reuses its association),
+                // so an in-flight run keeps its pin for intra-run consistency.
                 `UPDATE "${this.sql.schema}".job_state_runs
                  SET attempt = CASE WHEN session_id IS NULL THEN attempt ELSE attempt + 1 END,
                      session_id = $2, status = 'reserved', lease_owner = NULL,
-                     lease_expires_at = NULL, error = NULL, updated_at = now()
+                     lease_expires_at = NULL, error = NULL, updated_at = now(),
+                     state_owner      = CASE WHEN session_id IS NULL THEN state_owner      ELSE NULL END,
+                     source_id        = CASE WHEN session_id IS NULL THEN source_id        ELSE NULL END,
+                     source_path      = CASE WHEN session_id IS NULL THEN source_path      ELSE NULL END,
+                     source_commit    = CASE WHEN session_id IS NULL THEN source_commit    ELSE NULL END,
+                     markdown_sha256  = CASE WHEN session_id IS NULL THEN markdown_sha256  ELSE NULL END,
+                     allowed_outcomes = CASE WHEN session_id IS NULL THEN allowed_outcomes ELSE '[]'::jsonb END,
+                     terminal         = CASE WHEN session_id IS NULL THEN terminal         ELSE NULL END
                  WHERE state_run_id = $1`,
                 [stateRun.state_run_id, sessionId],
             );

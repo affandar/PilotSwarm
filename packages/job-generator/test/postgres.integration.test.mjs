@@ -408,20 +408,17 @@ test("controller materialization and durable Job lifecycle transitions", {
             ).status,
             "cancelled",
         );
-        await assert.rejects(
-            catalog.prepareJobStateRun({
-                sessionId: replacementSession.sessionId,
-                expectedState: "Diagnosed",
-                expectedRevision: 1,
-                stateOwner: "user",
-                sourceId: "user-lifecycle",
-                sourcePath: "Example.Diagnosed.md",
-                ...conflictingSnapshot,
-                allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
-                terminal: false,
-            }),
-            /durable Markdown snapshot differs/,
-        );
+        // Re-activation (A'): replacing the session clears the durable Markdown
+        // snapshot so the state re-resolves its source branch ref. The prior pin
+        // is dropped and the replacement can adopt a newly pushed commit without
+        // the Job (or its PR) being re-created.
+        const clearedRun = (await catalog.listJobStateRuns(job.jobId))[0];
+        assert.equal(clearedRun.sourceCommit, null);
+        assert.equal(clearedRun.markdownSha256, null);
+        assert.equal(clearedRun.terminal, null);
+        assert.equal(clearedRun.attempt, durableRun.attempt + 1);
+        // The replacement adopts the moved-branch snapshot that the first session
+        // had rejected as conflicting; on a cleared run it is now accepted.
         await catalog.prepareJobStateRun({
             sessionId: replacementSession.sessionId,
             expectedState: "Diagnosed",
@@ -429,10 +426,13 @@ test("controller materialization and durable Job lifecycle transitions", {
             stateOwner: "user",
             sourceId: "user-lifecycle",
             sourcePath: "Example.Diagnosed.md",
-            ...durableSnapshot,
+            ...conflictingSnapshot,
             allowedOutcomes: [{ outcome: "Fixed", toState: "Fixed" }],
             terminal: false,
         });
+        const reactivatedRun = (await catalog.listJobStateRuns(job.jobId))[0];
+        assert.equal(reactivatedRun.sourceCommit, conflictingSnapshot.sourceCommit);
+        assert.equal(reactivatedRun.markdownSha256, conflictingSnapshot.markdownSha256);
         await catalog.attachJobSession(
             job.jobId,
             replacementSession.sessionId,

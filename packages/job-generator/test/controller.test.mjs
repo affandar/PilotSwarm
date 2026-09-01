@@ -793,7 +793,7 @@ test("lifecycle session loads exact state Markdown, journal, and completion tool
     assert.deepEqual(sent[0].options.clientMessageIds, ["job-generator:job-1:state:2"]);
 });
 
-test("new state runs resolve the latest Markdown while retries reuse the durable snapshot", async () => {
+test("re-activating a state resolves the latest Markdown while same-session resume reuses the durable snapshot", async () => {
     const prepared = [];
     const resolvedCommits = [];
     const readCommits = [];
@@ -909,7 +909,42 @@ test("new state runs resolve the latest Markdown while retries reuse the durable
         },
     });
 
+    // Same-session resume: the run is still prepared, so the pinned commit is
+    // reused for intra-run consistency even though the branch has moved on.
     latestCommit = "commit-two";
+    await factory.createInitialSession({
+        generator: generator(),
+        definition: definitionWithLifecycle,
+        job: baseJob,
+        association: {
+            associationId: "association-1",
+            jobId: "job-1",
+            sessionId: "session-1",
+            stateRunId: "state-run-1",
+            ordinal: 1,
+            isCurrent: true,
+            status: "reserved",
+            error: null,
+            reservedAt: now,
+            attachedAt: null,
+            endedAt: null,
+        },
+    });
+
+    // Re-activation: a new session takes over the state run. The store clears the
+    // durable Markdown snapshot on reservation (simulated here), so the controller
+    // re-resolves the branch ref and picks up the newly pushed commit without the
+    // Job (or its PR) being re-created.
+    const reactivatedRun = runs.find((candidate) => candidate.stateRunId === "state-run-1");
+    Object.assign(reactivatedRun, {
+        stateOwner: null,
+        sourceId: null,
+        sourcePath: null,
+        sourceCommit: null,
+        markdownSha256: null,
+        allowedOutcomes: [],
+        terminal: null,
+    });
     await factory.createInitialSession({
         generator: generator(),
         definition: definitionWithLifecycle,
@@ -951,16 +986,17 @@ test("new state runs resolve the latest Markdown while retries reuse the durable
         },
     });
 
-    assert.deepEqual(resolvedCommits, ["main", "main"]);
+    assert.deepEqual(resolvedCommits, ["main", "main", "main"]);
     assert.deepEqual(readCommits, [
         ["commit-one", "Example.Diagnosed.md"],
         ["commit-one", "Example.Diagnosed.md"],
+        ["commit-two", "Example.Diagnosed.md"],
         ["commit-two", "Example.Fixed.md"],
     ]);
     assert.deepEqual(
         prepared.map((entry) => entry.sourceCommit),
-        ["commit-one", "commit-one", "commit-two"],
+        ["commit-one", "commit-one", "commit-two", "commit-two"],
     );
     assert.deepEqual(prepared[1].allowedOutcomes, [{ outcome: "Fixed", toState: "Fixed" }]);
-    assert.equal(prepared[2].terminal, true);
+    assert.equal(prepared[3].terminal, true);
 });
