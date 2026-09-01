@@ -6095,6 +6095,82 @@ async function listJobWaitsWithCompatibility(transport, jobId) {
     }
 }
 
+const JOB_GENERATOR_SOURCE_TYPE_LABELS = {
+    ado_wiql: "Work item query (Azure DevOps WIQL)",
+    icm: "IcM incident query",
+    kusto: "Kusto query",
+};
+
+function jobGeneratorSourceTypeLabel(sourceType) {
+    if (!sourceType) return "Preview source";
+    return JOB_GENERATOR_SOURCE_TYPE_LABELS[sourceType] || sourceType;
+}
+
+function jobGeneratorSourceQueryText(definition) {
+    const config = definition && typeof definition.sourceConfig === "object"
+        ? definition.sourceConfig
+        : null;
+    if (!config) return "";
+    const direct = config.wiql || config.query || config.kql || config.filter;
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+    try {
+        return JSON.stringify(config, null, 2);
+    } catch {
+        return "";
+    }
+}
+
+function formatJobGeneratorCadence(cadenceSeconds) {
+    const seconds = Number(cadenceSeconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    if (seconds < 60) return `Every ${seconds}s`;
+    const minutes = seconds / 60;
+    if (Number.isInteger(minutes) && seconds < 3600) return `Every ${minutes} min`;
+    if (seconds < 3600) return `Every ~${Math.round(minutes)} min`;
+    const hours = Math.floor(seconds / 3600);
+    const remMinutes = Math.round((seconds % 3600) / 60);
+    return remMinutes ? `Every ${hours}h ${remMinutes}m` : `Every ${hours}h`;
+}
+
+function renderJobGeneratorDetailFields(generator) {
+    if (!generator) return null;
+    const cadence = formatJobGeneratorCadence(generator.cadenceSeconds);
+    const cadenceSuffix = Number(generator.cadenceSeconds) > 0
+        ? `${generator.cadenceSeconds}s`
+        : "";
+    const cadenceValue = cadence && cadenceSuffix
+        ? `${cadence} · ${cadenceSuffix}`
+        : cadence || cadenceSuffix;
+    const rows = [
+        ["Created", formatJobTimelineTimestamp(generator.createdAt)],
+        ["Cadence", cadenceValue],
+        ["Last run", generator.lastCycleAt
+            ? formatJobTimelineTimestamp(generator.lastCycleAt)
+            : "Never run"],
+        ["Next run", formatJobTimelineTimestamp(generator.nextRunAt)],
+        ["Source type", jobGeneratorSourceTypeLabel(generator.definition?.sourceType)],
+    ].filter(([, value]) => typeof value === "string" && value.length > 0);
+    const query = jobGeneratorSourceQueryText(generator.definition);
+    return React.createElement("dl", { className: "ps-job-generator-detail-fields" },
+        ...rows.map(([label, value]) => React.createElement("div", {
+            key: label,
+            className: "ps-job-generator-detail-field",
+        },
+            React.createElement("dt", null, label),
+            React.createElement("dd", { title: value }, value))),
+        query
+            ? React.createElement("div", {
+                key: "source-query",
+                className: "ps-job-generator-detail-field is-query",
+            },
+                React.createElement("dt", null, "Source query"),
+                React.createElement("dd", null,
+                    React.createElement("code", {
+                        className: "ps-job-generator-source-query",
+                    }, query)))
+            : null);
+}
+
 async function loadPersistedJobGenerators(transport) {
     const generatorRows = await transport.listJobGenerators();
     return Promise.all(generatorRows.map(async (generator) => {
@@ -6188,6 +6264,9 @@ async function loadPersistedJobGenerators(transport) {
             repo: activeDefinition?.affinities?.repo || "Any repo",
             cadenceSeconds: generator.cadenceSeconds,
             status: persistedGeneratorStatus(generator),
+            createdAt: generator.createdAt,
+            lastCycleAt: generator.lastCycleAt,
+            nextRunAt: generator.nextRunAt,
             definitionVersion: activeDefinition?.version ?? 0,
             definition: activeDefinition,
             jobs,
@@ -6994,6 +7073,9 @@ function JobGeneratorPane({
             ? React.createElement("div", { className: "ps-job-generator-detail" },
                 React.createElement("strong", null, selectionTitle),
                 React.createElement("span", null, selectionMeta),
+                selectedGenerator && !selectedJob && !selectedTransition
+                    ? renderJobGeneratorDetailFields(selectedGenerator)
+                    : null,
                 selectedTransition
                     ? React.createElement(JobTransitionTimeline, {
                         transition: selectedTransition,
