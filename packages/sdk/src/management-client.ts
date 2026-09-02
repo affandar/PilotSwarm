@@ -92,7 +92,7 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
-import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -1197,23 +1197,21 @@ export class PilotSwarmManagementClient {
                 waitReason: null,
                 ...(failureMessage ? { lastError: failureMessage } : {}),
             }).catch(() => {});
-        } else if (
-            orchStatus === "Running"
-            && (row.state === "error" || row.state === "failed")
-        ) {
-            const recoveredState =
-                typeof customStatus?.status === "string"
-                    && customStatus.status !== "error"
-                    && customStatus.status !== "failed"
-                    ? customStatus.status
-                    : "running";
-            await this._catalog!.updateSession(sessionId, {
-                state: recoveredState,
-                lastError: null,
-                ...(recoveredState === "waiting" || recoveredState === "input_required"
-                    ? {}
-                    : { waitReason: null }),
-            }).catch(() => {});
+        } else {
+            const recoveredState = resolveStaleRunningRowRecovery({
+                rowState: row.state,
+                status: customStatus?.status,
+                orchestrationStatus: orchStatus,
+            });
+            if (recoveredState) {
+                await this._catalog!.updateSession(sessionId, {
+                    state: recoveredState,
+                    lastError: null,
+                    ...(recoveredState === "waiting" || recoveredState === "input_required"
+                        ? {}
+                        : { waitReason: null }),
+                }).catch(() => {});
+            }
         }
 
         const effectiveError = (liveStatus === "error" || liveStatus === "failed")

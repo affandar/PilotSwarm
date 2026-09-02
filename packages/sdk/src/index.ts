@@ -341,3 +341,6 @@ export type {
 
 // Re-export defineTool from Copilot SDK for convenience
 export { defineTool } from "@github/copilot-sdk";
+export { createToolFactsAccessor, TOOL_PRIVATE_FACT_PREFIX } from "./tool-facts-accessor.js";
+export type { ToolFactsAccessor, ToolFactsScope, ToolFactsScopeOptions } from "./tool-facts-accessor.js";
+export { normalizeToolOnlyPrefixes, isToolOnlyFactKey } from "./facts-tools.js";

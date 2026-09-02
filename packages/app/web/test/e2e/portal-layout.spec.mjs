@@ -282,3 +282,36 @@ test("pane header controls never wrap out of the header", async ({ page }) => {
     }));
     expect(escaped, `controls wrapped outside their header: ${escaped.join(", ")}`).toEqual([]);
 });
+
+test("a long header status ellipsizes in the right rail instead of running under the toolbar buttons", async ({ page }) => {
+    // The regression: the version/status meta is portalled into a span in the
+    // toolbar's right rail. That span is a flex item, and a flex item's default
+    // minimum width is its content, so a long status line could never shrink.
+    // The rail is right-aligned, so the excess ran LEFT — drawn straight under
+    // the centred action buttons. Seen on a 2000px-wide window with the
+    // deep-link notice ("Showing linked session outside your current filters.")
+    // prefixed to the connection status.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openPortal(page);
+    const status = page.locator(".ps-toolbar-meta-slot .portal-header-status");
+    await expect(status, "the connection status should be parked in the toolbar meta slot").toHaveCount(1);
+    // Put the real deep-link notice in front of whatever the stub reports, the
+    // way derivePortalStatusText composes it.
+    await status.evaluate((el) => {
+        el.textContent = `Showing linked session outside your current filters. · ${el.textContent || "Connected"}`;
+    });
+    const geometry = await page.evaluate(() => {
+        const rect = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const el = document.querySelector(".ps-toolbar-meta-slot .portal-header-status");
+        return {
+            centreRight: rect(".ps-toolbar > .ps-toolbar-actions").right,
+            railLeft: rect(".ps-toolbar-side.is-right").left,
+            statusLeft: el.getBoundingClientRect().left,
+            ellipsized: el.scrollWidth > el.clientWidth,
+        };
+    });
+    expect(geometry.statusLeft, `status text starts at ${geometry.statusLeft} but the centre buttons end at ${geometry.centreRight}`)
+        .toBeGreaterThanOrEqual(geometry.centreRight);
+    expect(geometry.statusLeft, "status text spilled out of its own rail").toBeGreaterThanOrEqual(geometry.railLeft - 0.5);
+    expect(geometry.ellipsized, "the status should be clipped with an ellipsis at this width").toBe(true);
+});

@@ -389,6 +389,23 @@ function dailyFixture(provider, days, nowMs, model = null) {
  * exactly the models' sum. `days` and `providers` are echoed back so a
  * test can see the filter took.
  */
+/**
+ * What GET /providers/usage-agents answers: three agents over the window,
+ * one of them '(none)', each with a per-day series, and the flat day-by-agent
+ * rows the stacked chart reads. Enough rows for a test to tick and untick.
+ */
+function agentsFixture(query, { nowMs }) {
+    const today = new Date(nowMs).toISOString().slice(0, 10);
+    const dayKey = (back) => new Date(nowMs - back * 86_400_000).toISOString().slice(0, 10);
+    const agents = [
+        { agent: "sweeper", models: ["gpt-5.4"], turns: 40, sessions: 4, input: 20_000_000, output: 400_000, cacheRead: 4_000_000, cacheWrite: 0, total: 20_400_000, daily: [{ day: dayKey(6), total: 15_000_000 }, { day: dayKey(3), total: 5_400_000 }] },
+        { agent: "researcher", models: ["gpt-5.4", "claude-sonnet-5"], turns: 20, sessions: 2, input: 8_000_000, output: 200_000, cacheRead: 1_000_000, cacheWrite: 0, total: 8_200_000, daily: [{ day: dayKey(6), total: 8_200_000 }] },
+        { agent: "(none)", models: ["gpt-5.4-nano"], turns: 11, sessions: 3, input: 2_000_000, output: 2_610, cacheRead: 600_000, cacheWrite: 0, total: 2_002_610, daily: [{ day: dayKey(0), total: 2_002_610 }] },
+    ];
+    const daily = agents.flatMap((a) => a.daily.map((d) => ({ day: d.day, agent: a.agent, total: d.total })));
+    return { days: Number(query.days) || 14, today, agents, daily };
+}
+
 function summaryFixture(query, { nowMs, admin }) {
     const days = [14, 30, 90].includes(Number(query.days)) ? Number(query.days) : 14;
     const today = new Date(nowMs).toISOString().slice(0, 10);
@@ -574,6 +591,9 @@ export async function startProviderBudgetStub({
         // cms_provider_usage_summary builds it, so a test can check the tab
         // against known arithmetic. The query is recorded so a test can prove
         // what the picker and the range buttons asked for.
+        if (method === "GET" && /\/providers\/usage-agents$/.test(p)) {
+            return answer(res, "getProviderUsageAgents", agentsFixture(query, { nowMs }));
+        }
         if (method === "GET" && /\/providers\/usage-summary$/.test(p)) {
             summaryQueries.push(query);
             return answer(res, "getProviderUsageSummary", summaryFixture(query, { nowMs, admin }));

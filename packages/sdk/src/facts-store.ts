@@ -421,7 +421,7 @@ function sqlForSchema(schema: string) {
     };
 }
 
-function computeScopeKey(key: string, shared: boolean, sessionId?: string | null): string {
+export function computeScopeKey(key: string, shared: boolean, sessionId?: string | null): string {
     if (shared) return `shared:${key}`;
     if (!sessionId) throw new Error("Session-scoped facts require a sessionId.");
     return `session:${sessionId}:${key}`;

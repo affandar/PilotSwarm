@@ -727,6 +727,12 @@ export interface SessionPolicy {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /**
+     * Fact key prefixes reserved for tools, in addition to the built-in
+     * `tools/`. No agent can read, write, delete or search under them; a
+     * worker-registered tool reaches them through `invocation.facts`.
+     */
+    reservedFactPrefixes?: string[];
     /** GitHub token. Required unless a custom `provider` is specified. */
     githubToken?: string;
     logLevel?: "none" | "error" | "warning" | "info" | "debug" | "all";

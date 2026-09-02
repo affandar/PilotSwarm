@@ -1,5 +1,5 @@
 import { describe, it } from "vitest";
-import { deriveStatusFromCmsAndRuntime, shouldSyncFailedStatus } from "../../src/session-status.ts";
+import { deriveStatusFromCmsAndRuntime, resolveStaleRunningRowRecovery, shouldSyncFailedStatus } from "../../src/session-status.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("Failed runtime status sync", () => {
@@ -82,3 +82,41 @@ describe("Failed runtime status sync", () => {
         assertEqual(status, "running", "live running runtime should override stale CMS error");
     });
 });
+
+describe("Stale error row recovery on a running orchestration", () => {
+    it("recovers a stale error row when the runtime reports no status", () => {
+        assertEqual(
+            resolveStaleRunningRowRecovery({ rowState: "error", status: undefined, orchestrationStatus: "Running" }),
+            "running",
+            "no runtime status: the row is stale and should be recovered",
+        );
+    });
+
+    it("recovers to the runtime's own non-error status", () => {
+        assertEqual(
+            resolveStaleRunningRowRecovery({ rowState: "failed", status: "waiting", orchestrationStatus: "Running" }),
+            "waiting",
+        );
+    });
+
+    it("leaves the row alone when the runtime itself reports the error", () => {
+        // The worker just wrote this row for a turn that ended in error while
+        // the orchestration keeps running (retries pending). The detail read
+        // reports "error" to the caller; rewriting the row to "running" made
+        // the row-based list disagree with it on every poll.
+        assertEqual(
+            resolveStaleRunningRowRecovery({ rowState: "error", status: "error", orchestrationStatus: "Running" }),
+            null,
+        );
+        assertEqual(
+            resolveStaleRunningRowRecovery({ rowState: "error", status: "failed", orchestrationStatus: "Running" }),
+            null,
+        );
+    });
+
+    it("never touches a row that is not parked on error/failed, or a non-running orchestration", () => {
+        assertEqual(resolveStaleRunningRowRecovery({ rowState: "idle", status: undefined, orchestrationStatus: "Running" }), null);
+        assertEqual(resolveStaleRunningRowRecovery({ rowState: "error", status: undefined, orchestrationStatus: "Completed" }), null);
+    });
+});
+
