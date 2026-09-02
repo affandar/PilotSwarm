@@ -10242,6 +10242,7 @@ export function WorkerTimelineSwimlane({
     const canZoomOut = zoomIndex > 0;
     const canZoomIn = zoomIndex < WORKER_TIMELINE_ZOOM_LEVELS.length - 1;
     const workerName = String(timeline?.workerName || timeline?.workerNodeId || "").trim();
+    const workerHostname = String(timeline?.hostname || "").trim();
     const positionPercent = (atMs) => (
         Math.max(0, Math.min(100, ((atMs - startMs) / displayDurationMs) * 100))
     );
@@ -10255,6 +10256,12 @@ export function WorkerTimelineSwimlane({
                         className: "ps-worker-swimlane__worker-name",
                         title: timeline?.workerNodeId || workerName,
                     }, ` · ${workerName}`)
+                    : null,
+                workerHostname && workerHostname !== workerName
+                    ? React.createElement("span", {
+                        className: "ps-worker-swimlane__worker-host",
+                        title: `Host: ${workerHostname}`,
+                    }, ` · ${workerHostname}`)
                     : null),
             React.createElement("div", { className: "ps-worker-swimlane__heading-controls" },
                 React.createElement("span", null,

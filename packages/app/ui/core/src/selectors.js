@@ -3758,6 +3758,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
             idleMs: 0,
             workerName: options.workerName || options.workerNodeId || null,
             workerNodeId: options.workerNodeId || null,
+            hostname: options.hostname || null,
             lanes: [],
             segments: [],
             markers: [],
@@ -4440,6 +4441,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
         idleMs: Math.max(0, durationMs - busyMs - overheadMs),
         workerName: options.workerName || options.workerNodeId || null,
         workerNodeId: options.workerNodeId || null,
+        hostname: options.hostname || null,
         lanes: lanesWithMetrics,
         segments: [
             ...idleSegments,
@@ -4578,8 +4580,9 @@ export function selectWorkerDetailsPane(state) {
         detailsLines,
         timelineSwimlane: buildWorkerTimelineSwimlane(entries, {
             workerConcurrency: node.workerConcurrency,
-            workerName: node.workerName,
+            workerName: node.workerName && node.workerName !== WORKER_UNKNOWN ? node.workerName : null,
             workerNodeId: node.workerNodeId,
+            hostname: node.hostname && node.hostname !== WORKER_UNKNOWN ? node.hostname : null,
         }),
         timelineTable: {
             loading: Boolean(timeline?.loading),
