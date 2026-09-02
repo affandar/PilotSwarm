@@ -310,3 +310,19 @@ That command builds the SDK and controller, loads `.env.remote`, then runs the
 continuous reconciliation loop. One controller instance claims due generators
 without owner filtering, so it can materialize Jobs for all platform users
 whose registrations share the configured PostgreSQL catalog.
+
+When the build is already current (for example when only `.env.remote` changed),
+skip the rebuild and launch the built CLI directly from the repo root:
+
+```text
+node --env-file=.env.remote packages/job-generator/dist/cli.js
+```
+
+This is the exact command `npm run job-generator` runs after its build steps.
+The controller reads all `JOBGEN_*` settings — including
+`JOBGEN_ADO_REPOSITORY_BINDINGS` — only at startup, so restart it after editing
+`.env.remote`. On a devbox the Azure DevOps observers authenticate through the
+signed-in `az login` identity via `DefaultAzureCredential`, so no PAT is
+required. A successful start logs `adoRepositoryBindings=<n>` in the
+`JobWait scheduler ready` line; confirm `<n>` matches the number of configured
+bindings.
