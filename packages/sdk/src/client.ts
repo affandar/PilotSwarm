@@ -816,14 +816,43 @@ export class PilotSwarmClient {
             }
         }
 
+        // A brand-new orchestration's first bootstrap turn rides the durable
+        // start input instead of a separate "messages" event. Starting the
+        // orchestration and delivering its first turn as two non-atomic
+        // duroxide operations (startOrchestrationVersioned, then enqueueEvent)
+        // left the orchestration parked forever whenever the caller died
+        // between them — e.g. a job-generator controller restart mid-bootstrap.
+        // The orchestration subscribed to "messages" but the kickoff event was
+        // never enqueued, the reserved JobSession stayed `unacked`, and the
+        // controller's compensating cleanup never ran, so the Job wedged with
+        // no way to be re-dispatched. Folding the first turn into the start
+        // input makes bootstrap a single durable step: once the orchestration
+        // exists, its first turn is guaranteed. This mirrors how continue-as-new
+        // already carries prompt + bootstrapPrompt in the orchestration input
+        // (see buildContinueInput / state.ts pendingPrompt: input.prompt).
+        const foldFirstTurnIntoStart = !this.activeOrchestrations.has(sessionId)
+            && opts?.bootstrap === true;
+
         if (!this.activeOrchestrations.has(sessionId)) {
             const parentSessionId = this.parentSessionIds.get(sessionId);
             const nestingLevel = this.nestingLevels.get(sessionId);
+            const bootstrapAttachments = sanitizePromptAttachmentRefs(opts?.attachments);
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,
                 sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
                 iteration: 0,
+                ...(foldFirstTurnIntoStart
+                    ? {
+                        prompt,
+                        bootstrapPrompt: true,
+                        ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+                        ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                            ? { recentClientMessageIds: opts.clientMessageIds }
+                            : {}),
+                        ...(bootstrapAttachments.length > 0 ? { attachments: bootstrapAttachments } : {}),
+                    }
+                    : {}),
                 // Client-created sessions are always durable. The worker's
                 // configured session store determines how that durability is
                 // backed (blob storage or local filesystem state).
@@ -864,6 +893,7 @@ export class PilotSwarmClient {
         });
         trace(`[client] updateSession running done (${Date.now() - updateAt}ms)`);
 
+        if (!foldFirstTurnIntoStart) {
         const enqueueAt = Date.now();
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
@@ -894,6 +924,9 @@ export class PilotSwarmClient {
             });
         }
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
+        } else {
+            trace("[client] first bootstrap turn folded into durable start input; skipping messages enqueue");
+        }
         trace("[client] ensureOrchestrationAndSend complete");
 
         return orchestrationId;
