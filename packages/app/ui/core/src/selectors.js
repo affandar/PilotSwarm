@@ -3739,7 +3739,8 @@ function workerTimelineSupportsJobLane(entry) {
     );
 }
 
-function buildWorkerTimelineSwimlane(entries, options = {}) {
+export function buildWorkerTimelineSwimlane(entries, options = {}) {
+    const nowMs = Number.isFinite(options.now) ? options.now : Date.now();
     const allTimedEntries = entries
         .map((entry) => ({ entry, atMs: new Date(entry?.at).getTime() }))
         .filter(({ atMs }) => Number.isFinite(atMs))
@@ -3802,7 +3803,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
                 .map(({ atMs }) => atMs),
         )
         : null;
-    const rangeEndMs = Math.max(
+    let rangeEndMs = Math.max(
         lastJobCompletionMs ?? allTimedEntries[allTimedEntries.length - 1].atMs,
         rangeStartMs + 1_000,
     );
@@ -3927,7 +3928,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
     const waitSegments = [];
     const activeHumanWaits = new Map();
     const activeSystemWaits = new Map();
-    const appendWait = (active, endMs, kind) => {
+    const appendWait = (active, endMs, kind, ongoing = false) => {
         if (!active?.entry?.jobId) return;
         const startMs = Math.max(active.atMs, active.computeReleasedAtMs || active.atMs);
         const isHuman = kind === "human_wait";
@@ -3963,6 +3964,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
             startMs,
             endMs: boundedEndMs,
             durationMs: Math.max(0, boundedEndMs - startMs),
+            ongoing: Boolean(ongoing),
             label: isHuman ? "Response wait" : `Observed-condition wait${source ? ` · ${source}` : ""}`,
             activity: [
                 isHuman
@@ -3971,7 +3973,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
                         ? `Waiting for ${source}`
                         : "Waiting for an observed condition",
                 detail,
-                "No active Job compute",
+                ongoing ? "Still parked \u2014 no Job compute in use" : "No active Job compute",
             ].filter(Boolean).join(" · "),
         });
     };
@@ -4061,11 +4063,30 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
             }
         }
     }
+    // A wait with no terminating event is still open at the end of the observed
+    // history. The timeline is event-bounded, so such a wait would otherwise
+    // collapse to a zero-width span (its only event is the one that opened it),
+    // making a long-parked Job look like it is doing nothing on the swimlane.
+    // Extend the range to the wall clock so an ongoing wait renders as a growing
+    // span — surfacing that the Job has been parked, using no compute, the whole
+    // time. A system wait whose signal already completed (resume not yet observed)
+    // is bounded at the completion instant, not now.
+    const hasOngoingWait = activeHumanWaits.size > 0
+        || [...activeSystemWaits.values()].some((active) => !active.signalCompletedAtMs);
+    if (hasOngoingWait && !allJobsCompleted && nowMs > rangeEndMs) {
+        rangeEndMs = nowMs;
+    }
     for (const active of activeHumanWaits.values()) {
-        appendWait(active, rangeEndMs, "human_wait");
+        appendWait(active, rangeEndMs, "human_wait", !allJobsCompleted);
     }
     for (const active of activeSystemWaits.values()) {
-        appendWait(active, rangeEndMs, "system_wait");
+        const openEndMs = active.signalCompletedAtMs ?? rangeEndMs;
+        appendWait(
+            active,
+            openEndMs,
+            "system_wait",
+            !active.signalCompletedAtMs && !allJobsCompleted,
+        );
     }
     waitSegments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 
