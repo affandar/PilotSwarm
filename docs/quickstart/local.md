@@ -48,7 +48,7 @@ install the `pilotswarm` package globally:
 ```bash
 npm install -g pilotswarm
 
-pilotswarm --version
+pilotswarm --help
 pilotswarm auth login --api-url https://<your-portal>
 pilotswarm agents list
 ```
@@ -99,6 +99,24 @@ air-gapped machine. `npm install -g ./file.tgz` still resolves that package's
 **dependencies** from your configured registry; on a fully offline host, use
 `npm pack` on a connected machine and copy the whole `node_modules` tree, or
 run from a clone as below.
+
+**3. Use the release-tarball install script.** Every GitHub Release attaches
+the three package tarballs `npm publish` produced. The script below resolves
+the latest release (or the version you name), downloads them, checks each
+declares the expected version, and installs all three in one `npm install -g`
+so the app's same-version dependencies come from the files:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/affandar/PilotSwarm/main/scripts/install-from-release.sh | bash -s -- 0.5.57
+# or, from a clone:
+scripts/install-from-release.sh                 # latest release
+scripts/install-from-release.sh 0.5.57 --registry https://<your-npm-mirror>/
+```
+
+`--prefix <dir>` installs under a prefix instead of npm's global one,
+`--keep` leaves the tarballs in `./dist-tarballs`, and `--dry-run` stops
+before installing. Transitive dependencies still resolve from your registry
+or the `--registry` you pass.
 
 #### Running from a clone (unreleased changes)
 
