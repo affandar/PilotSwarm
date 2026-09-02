@@ -932,6 +932,35 @@ export class SessionManager {
         }
     }
 
+    /**
+     * True when a Copilot user is already signed in under this worker's
+     * COPILOT_HOME (i.e. `<sessionStateDir>/../config.json` has a non-empty
+     * `copilotTokens` map). On a devbox this is the interactive `copilot`
+     * login; the tokenless CopilotClient (ensureClient with no token) reuses
+     * it via COPILOT_HOME. Fleet/CI pods have no such login, so this returns
+     * false and the GHCP_KEY_MISSING guard still fires with a clear error.
+     */
+    private _hasSignedInCopilotUser(): boolean {
+        let raw: string;
+        try {
+            const copilotHome = path.dirname(this.sessionStateDir);
+            raw = fs.readFileSync(path.join(copilotHome, "config.json"), "utf8");
+        } catch {
+            return false;
+        }
+        try {
+            const tokens = (JSON.parse(raw) as { copilotTokens?: unknown })?.copilotTokens;
+            return !!tokens && typeof tokens === "object" && Object.keys(tokens as object).length > 0;
+        } catch {
+            // The @github/copilot config.json is JSONC (it carries leading `//`
+            // comments), which strict JSON.parse rejects. We only need to know
+            // whether a Copilot user is signed in, i.e. `copilotTokens` maps to a
+            // non-empty object, so fall back to detecting the key followed by an
+            // object with at least one quoted member.
+            return /"copilotTokens"\s*:\s*\{\s*"/.test(raw);
+        }
+    }
+
     /** Ensure the CopilotClient is started. */
     private async ensureClient(tokenOverride?: string, byokOpenAi = false): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
@@ -1552,12 +1581,26 @@ export class SessionManager {
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
-            throw Object.assign(
-                new Error(
-                    "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
-                ),
-                { code: "GHCP_KEY_MISSING", status: 400 },
-            );
+            if (this._hasSignedInCopilotUser()) {
+                // No explicit token, but a Copilot user is signed in under this
+                // worker's COPILOT_HOME. Fall through to the tokenless
+                // CopilotClient (ensureClient below builds it with no token but
+                // exports COPILOT_HOME), which authenticates as that signed-in
+                // user. This is the devbox path; fleet/CI pods have no login and
+                // take the throw below.
+                emitSessionManagerTrace(
+                    sessionId,
+                    `no explicit GitHub Copilot token; using signed-in Copilot user under COPILOT_HOME`,
+                    { trace },
+                );
+            } else {
+                throw Object.assign(
+                    new Error(
+                        "GitHub Copilot key missing or invalid. Set GITHUB_TOKEN on the worker, set your per-user GitHub Copilot key in Admin, or (for system sessions) have an admin store a System key in the Admin Console before using GitHub Copilot models.",
+                    ),
+                    { code: "GHCP_KEY_MISSING", status: 400 },
+                );
+            }
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "");

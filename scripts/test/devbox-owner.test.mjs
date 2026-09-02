@@ -8,14 +8,15 @@
 // does — `node --import ./scripts/devbox-owner.mjs` — in a child process with
 // stubbed `gh`/`az` on PATH, then read back the resulting environment.
 //
-// The behavior under test is the devbox credential model: on a devbox with a
-// signed-in Copilot user (the `copilot` CLI login under COPILOT_HOME) and no
-// GITHUB_TOKEN, the SDK authenticates as that signed-in user when the worker
-// resolves NO token — the tokenless CopilotClient path. If the preload instead
-// injects a `gh auth token` into GITHUB_TOKEN, the worker stops using the
-// signed-in user and hands the child a `gh` OAuth token, which GitHub does NOT
-// accept for the Copilot exchange (HTTP 403) — turning a clean auth into a
-// poisoned session. So the preload MUST NOT populate GITHUB_TOKEN from `gh`.
+// The behavior under test is narrow: the preload's SIDE EFFECT on process.env.
+// It must NOT inject GITHUB_TOKEN from `gh auth token`, because a gh-CLI OAuth
+// token is not Copilot-capable and GitHub rejects it for the Copilot exchange
+// (HTTP 403), poisoning the session. This test asserts only that env contract
+// (GITHUB_TOKEN stays unset; owner/POD_NAME get set) — it does NOT exercise a
+// real runTurn. NOTE: leaving GITHUB_TOKEN unset is fine for github-copilot
+// models on a devbox — SessionManager falls through to the tokenless CopilotClient
+// when a Copilot user is signed in under COPILOT_HOME (guard GHCP_KEY_MISSING only
+// throws when there is neither a signed-in user nor an explicit token).
 //
 // Timeline this test pins:
 //   - Before commit f3055c6b: the preload never touched GITHUB_TOKEN  -> PASS

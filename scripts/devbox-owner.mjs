@@ -23,14 +23,24 @@
 //     leaving a duplicate row (one live, one aging to `stale`) for a single
 //     machine. Skipped if POD_NAME is already set.
 //
-// It deliberately does NOT set GITHUB_TOKEN. On a devbox the model credential
-// is the signed-in Copilot user from the `copilot` CLI login (COPILOT_HOME):
-// when no GITHUB_TOKEN is set the worker resolves NO token and the SDK builds a
-// tokenless client that authenticates as that signed-in user. A `gh auth token`
-// is an unrelated gh-CLI OAuth token that GitHub rejects for the Copilot
-// exchange (HTTP 403), so injecting it here would REPLACE working signed-in-user
-// auth with a poisoned session. Fleet/CI still pass an explicit GITHUB_TOKEN via
-// the environment, which is honored unchanged.
+// It deliberately does NOT set GITHUB_TOKEN from `gh auth token`. A gh-CLI OAuth
+// token (`gho_…`) is NOT Copilot-capable — GitHub rejects it for the Copilot
+// exchange with HTTP 403 — so injecting it here poisons every session with a
+// "key missing or invalid" failure. (A reverted regression, f3055c6b, did this.)
+//
+// NOTE — the model credential is a SEPARATE concern this preload does NOT solve.
+// For `github-copilot:*` models the worker's SessionManager needs a Copilot
+// credential (see session-manager.ts, error code GHCP_KEY_MISSING). On a devbox
+// the simplest source is the interactively signed-in Copilot user: if
+// ~/.copilot/config.json has a non-empty `copilotTokens` map (run the Copilot
+// login once), SessionManager falls through to the tokenless CopilotClient,
+// which authenticates as that user via COPILOT_HOME — no token needed here.
+// Alternatively supply an explicit credential: a per-user GitHub Copilot key in
+// Admin, or a Copilot-capable GITHUB_TOKEN (mint via the editor/Copilot
+// device-flow, NOT `gh auth token`). Fleet/CI have no signed-in user, so they
+// pass that explicit GITHUB_TOKEN via the environment; it is honored unchanged.
+// See docs/SDLC_ORCHESTRATION_TESTING.md → "Devbox worker: startup, identity,
+// and the Copilot credential".
 
 import { execFileSync } from "node:child_process";
 import os from "node:os";
