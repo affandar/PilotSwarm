@@ -53,8 +53,8 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Runtime, Client } = require("duroxide");
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
-const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
-const DEFAULT_WORKER_CONCURRENCY = 2;
+const DEFAULT_ORCHESTRATION_CONCURRENCY = 1;
+const DEFAULT_WORKER_CONCURRENCY = 1;
 const DEFAULT_DUROXIDE_PG_POOL_MAX = 10;
 
 function normalizeAgentIdentity(value: unknown): string {
@@ -1558,10 +1558,10 @@ export class PilotSwarmWorker {
             heapUsedBytes: memory.heapUsed,
             eventLoopDelayP99Ms,
             activeSessions: this.sessionManager.activeSessionCount,
-            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, 2) },
+            orchestrationSlots: { total: slotTotal(process.env.PILOTSWARM_ORCHESTRATION_CONCURRENCY, DEFAULT_ORCHESTRATION_CONCURRENCY) },
             workerSlots: {
                 busy: this.sessionManager.busyWorkerSlotCount,
-                total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, 2),
+                total: slotTotal(process.env.PILOTSWARM_WORKER_CONCURRENCY, DEFAULT_WORKER_CONCURRENCY),
             },
         };
     }
