@@ -3,6 +3,7 @@ import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-sco
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
+import { processIdentity } from "./diagnostics.js";
 import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
@@ -892,6 +893,27 @@ export class PilotSwarmWorker {
             `workerNodeId=${runtimeOptions.workerNodeId ?? "(unset)"}, ` +
             `workerTagFilter=${workerTagFilter ? JSON.stringify(workerTagFilter) : "(defaultOnly)"}`,
         );
+        // Always-on identity banner. Unlike the trace() above — a no-op unless a
+        // traceWriter is configured — this line is unconditional, so every poison
+        // investigation can answer its first questions (which process/host, which
+        // duroxide build, and the lease/timeout economics that decide whether a
+        // slow turn commit poisons) from the worker log, not by decoding duroxide
+        // history JSON.
+        console.log(
+            "[PilotSwarmWorker] identity " + JSON.stringify(processIdentity({
+                workerNodeId: runtimeOptions.workerNodeId ?? "(unset)",
+                workerOwner: this.config.workerOwner ?? "(unset)",
+                workerTagFilter: workerTagFilter ?? "(defaultOnly)",
+                workerLockTimeoutMs: runtimeOptions.workerLockTimeoutMs,
+                orchestrationConcurrency: runtimeOptions.orchestrationConcurrency,
+                workerConcurrency: runtimeOptions.workerConcurrency,
+                dispatcherPollIntervalMs: runtimeOptions.dispatcherPollIntervalMs,
+                pgConnectionTimeoutMs: process.env.PILOTSWARM_PG_CONNECTION_TIMEOUT_MS ?? "(default)",
+                duroxidePgPoolMax: process.env.DUROXIDE_PG_POOL_MAX ?? "(default)",
+                duroxidePgAcquireTimeoutMs: process.env.DUROXIDE_PG_ACQUIRE_TIMEOUT_MS ?? "(default)",
+            })),
+        );
+
         if (!runtimeOptions.workerNodeId) {
             // Without a stable process-level session identity, duroxide
             // serializes same-session activities, so the stop-turn fast path

@@ -24,6 +24,7 @@ import type { SessionCatalog, SessionEvent, SessionVisibility } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
+import { logPoisonOnce } from "./diagnostics.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
 import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
@@ -1107,6 +1108,7 @@ export class PilotSwarmClient {
                     : (typeof cmsRow.lastError === "string" && cmsRow.lastError.trim())
                         ? cmsRow.lastError.trim()
                         : null;
+            logPoisonOnce(sessionId, failureMessage, "PilotSwarmClient");
             await this._catalog.updateSession(sessionId, {
                 state: "failed",
                 waitReason: null,

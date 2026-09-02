@@ -44,6 +44,7 @@ import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import type { MessageSender } from "./message-sender.js";
+import { logPoisonOnce } from "./diagnostics.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type {
     SessionMetricSummary,
@@ -1497,6 +1498,7 @@ export class PilotSwarmManagementClient {
                         : (typeof row.lastError === "string" && row.lastError.trim())
                             ? row.lastError.trim()
                             : null;
+            logPoisonOnce(sessionId, failureMessage, "ManagementClient");
             await this._catalog!.updateSession(sessionId, {
                 state: "failed",
                 waitReason: null,

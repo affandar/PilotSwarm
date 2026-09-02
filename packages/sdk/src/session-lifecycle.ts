@@ -36,6 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { faultPoint } from "./fault-injection.js";
+import { duroxideVersion } from "./diagnostics.js";
 import {
     SnapshotConflictError,
     clearTurnSentinel,
@@ -389,6 +390,7 @@ export async function runTurnCommit(
     faultPoint("turn.commit.before-cas");
 
     let lastError: unknown;
+    const commitStartedAt = Date.now();
     for (let attempt = 1; attempt <= COMMIT_TRANSIENT_RETRIES; attempt++) {
         try {
             const committed = await ctx.store.commitSnapshot(ctx.sessionId, {
@@ -474,6 +476,24 @@ export async function runTurnCommit(
             }
         }
     }
+    // A turn whose snapshot commit never lands is the seed of duroxide poison:
+    // the orchestration turn is redelivered, and after >10 redeliveries duroxide
+    // hard-fails the session with `poison: ... exceeded 11 attempts`. Emit an
+    // always-on banner here (ctx.trace is a no-op without a traceWriter) so the
+    // FIRST failed commit — and how slow it was relative to the queue lease — is
+    // visible long before the poison verdict, stamped with the duroxide build.
+    const finalMessage = lastError instanceof Error ? lastError.message : String(lastError);
+    console.warn(
+        "[session-lifecycle] turn commit FAILED (all retries exhausted) " + JSON.stringify({
+            session: ctx.sessionId,
+            turnKey: ctx.turnKey,
+            baseVersion,
+            attempts: COMMIT_TRANSIENT_RETRIES,
+            elapsedMs: Date.now() - commitStartedAt,
+            duroxideVersion: duroxideVersion(),
+            error: finalMessage,
+        }),
+    );
     throw lastError instanceof Error
         ? lastError
         : new Error(`Turn commit failed for ${ctx.sessionId}: ${String(lastError)}`);
