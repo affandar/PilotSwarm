@@ -1110,6 +1110,13 @@ export class PortalRuntime {
                 return this.transport.listJobStateRuns(safeParams.jobId);
             case "listJobWaits":
                 return this.transport.listJobWaits(safeParams.jobId);
+            case "setJobWaitConditionOverride":
+                return this.transport.setJobWaitConditionOverride(
+                    safeParams.jobId,
+                    safeParams.waitId,
+                    safeParams.conditionKey,
+                    Boolean(safeParams.overridden),
+                );
             case "listJobJournal":
                 return this.transport.listJobJournal(safeParams.jobId);
             case "listSessions":

@@ -455,6 +455,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_wait_scheduling",
             sql: migration_0056_job_wait_scheduling(schema),
         },
+        {
+            version: "0057",
+            name: "job_wait_condition_overrides",
+            sql: migration_0057_job_wait_condition_overrides(schema),
+        },
     ];
 }
 
@@ -15560,5 +15565,20 @@ CREATE INDEX IF NOT EXISTS ix_job_waits_check_lease
     ON ${s}.job_waits(check_lease_expires_at)
     WHERE status = 'pending'
       AND kind = 'observed_condition';
+`;
+}
+
+// ─── Migration 0057: operator condition overrides ───────────────
+//
+// Lets an operator "mock" an individual observed condition as satisfied. The
+// override is a set of opaque condition keys (e.g. "policy:<configId>",
+// "reviewer:<id>") the observer honors by treating the matching condition as
+// satisfied when it rebuilds its live snapshot. Additive and inert by default:
+// an empty array changes nothing for any existing wait.
+function migration_0057_job_wait_condition_overrides(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.job_waits
+    ADD COLUMN IF NOT EXISTS condition_overrides JSONB NOT NULL DEFAULT '[]'::jsonb;
 `;
 }

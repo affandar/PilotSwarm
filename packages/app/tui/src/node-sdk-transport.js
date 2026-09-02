@@ -1148,6 +1148,10 @@ export class NodeSdkTransport {
         return this.mgmt.listJobWaits(jobId);
     }
 
+    async setJobWaitConditionOverride(jobId, waitId, conditionKey, overridden) {
+        return this.mgmt.setJobWaitConditionOverride(jobId, waitId, conditionKey, overridden);
+    }
+
     async listJobJournal(jobId) {
         return this.mgmt.listJobJournal(jobId);
     }

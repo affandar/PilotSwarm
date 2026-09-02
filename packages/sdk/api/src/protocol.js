@@ -81,6 +81,7 @@ export const OPERATIONS = [
     { name: "listJobStateRuns", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/state-runs", params: { jobId: path("jobId") }, summary: "List a Job's durable lifecycle state runs in revision order." },
     { name: "listJobWaits", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/waits", params: { jobId: path("jobId") }, summary: "List a Job's durable response, observed-condition, and timer waits." },
     { name: "listJobJournal", access: "job-generator:read", method: "GET", path: "/jobs/:jobId/journal", params: { jobId: path("jobId") }, summary: "List a Job's append-only state-transition journal." },
+    { name: "setJobWaitConditionOverride", access: "job-generator:manage", method: "POST", path: "/jobs/:jobId/waits/:waitId/condition-overrides", params: { jobId: path("jobId"), waitId: path("waitId"), conditionKey: body(), overridden: body() }, summary: "Set or clear an operator override that mocks a single observed-condition check as satisfied so the wait can resume." },
 
     // ── Sessions (client surface) ───────────────────────────────────────
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },

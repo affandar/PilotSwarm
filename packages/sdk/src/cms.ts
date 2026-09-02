@@ -1180,6 +1180,7 @@ export interface JobWaitRow {
     predicate: Record<string, unknown> | null;
     providerCursor: unknown;
     latestObservation: unknown;
+    conditionOverrides: string[];
     signalKey: string | null;
     checkAttempts: number;
     consecutiveCheckFailures: number;
@@ -1586,6 +1587,12 @@ export interface SessionCatalog {
         observers?: readonly (string | JobWaitObserverSelector)[],
     ): Promise<JobWaitRow[]>;
     completeJobWaitCheck(input: CompleteJobWaitCheckInput): Promise<JobWaitRow>;
+    setJobWaitConditionOverride(
+        jobId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<JobWaitRow>;
     accelerateJobWaitCheck(waitId: string, expectedStateRevision: number, checkAt?: Date): Promise<boolean>;
     accelerateJobWaitChecksByTarget(
         provider: string,
@@ -3168,6 +3175,48 @@ export class PgSessionCatalog implements SessionCatalog {
             [jobId],
         );
         return rows.map(rowToJobWait);
+    }
+
+    async setJobWaitConditionOverride(
+        jobId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<JobWaitRow> {
+        const job = jobId.trim();
+        const id = waitId.trim();
+        const key = conditionKey.trim();
+        if (!job || !id || !key) {
+            throw new Error("Setting a Job wait condition override requires jobId, waitId, and conditionKey");
+        }
+        const { rows } = await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_waits
+             SET condition_overrides = CASE
+                     WHEN $3::boolean THEN (
+                         SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
+                         FROM jsonb_array_elements_text(
+                             COALESCE(condition_overrides, '[]'::jsonb) || to_jsonb($2::text)
+                         ) AS elem
+                     )
+                     ELSE (
+                         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+                         FROM jsonb_array_elements_text(COALESCE(condition_overrides, '[]'::jsonb)) AS elem
+                         WHERE elem <> $2::text
+                     )
+                 END,
+                 next_check_at = now(),
+                 updated_at = now()
+             WHERE wait_id = $1
+               AND job_id = $4
+               AND kind = 'observed_condition'
+             RETURNING *`,
+            [id, key, overridden, job],
+        );
+        const row = rows[0];
+        if (!row) {
+            throw new Error(`Observed-condition Job wait not found: ${id}`);
+        }
+        return rowToJobWait(row);
     }
 
     async startJobResponseWait(input: StartJobResponseWaitInput): Promise<JobWaitRow | null> {
@@ -7600,6 +7649,9 @@ function rowToJobWait(row: any): JobWaitRow {
         predicate: row.predicate ?? null,
         providerCursor: row.provider_cursor ?? null,
         latestObservation: row.latest_observation ?? null,
+        conditionOverrides: Array.isArray(row.condition_overrides)
+            ? (row.condition_overrides as string[])
+            : [],
         responseId: row.response_id ?? null,
         response: row.response ?? null,
         responseDeliveryStatus: row.response_delivery_status ?? "none",

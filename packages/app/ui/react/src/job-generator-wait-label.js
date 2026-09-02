@@ -63,6 +63,81 @@ export function describeObservedConditionPredicate(wait) {
     };
 }
 
+function normalizeConditionState(value) {
+    const token = String(value ?? "").trim().toLowerCase();
+    if (["satisfied", "approved", "notapplicable", "not_applicable", "success", "succeeded",
+        "passed", "completed", "true", "done", "ready"].includes(token)) {
+        return "satisfied";
+    }
+    if (["failed", "rejected", "broken", "error", "false", "cancelled", "canceled"].includes(token)) {
+        return "failed";
+    }
+    return "pending";
+}
+
+// Normalize an observed-condition wait's latest observation into a flat list of
+// the individual conditions the platform is evaluating, each tagged with whether
+// it is satisfied, still pending, or failed. The portal renders one row per
+// condition with a status glyph. This is observer-agnostic: an observer may emit
+// an explicit `conditions` array (preferred going forward), otherwise the
+// conditions are derived from the stock pull-request-approval evidence shape
+// (required reviewers + blocking branch policies).
+export function describeObservedConditionChecks(wait) {
+    if (!wait || wait.kind !== "observed_condition") return [];
+    const observation = wait.latestObservation;
+    if (!observation || typeof observation !== "object") return [];
+
+    const overrides = new Set(
+        Array.isArray(wait.conditionOverrides) ? wait.conditionOverrides : [],
+    );
+    const finalize = (check) => {
+        const overridden = overrides.has(check.key);
+        return {
+            ...check,
+            overridden,
+            state: overridden ? "satisfied" : check.state,
+        };
+    };
+
+    if (Array.isArray(observation.conditions)) {
+        return observation.conditions.map((condition, index) => {
+            const rawState = condition.state
+                ?? (condition.satisfied === true ? "satisfied"
+                    : condition.satisfied === false ? "pending" : condition.status);
+            return finalize({
+                key: String(condition.key ?? condition.id ?? condition.label ?? index),
+                label: String(condition.label ?? condition.name ?? `Condition ${index + 1}`),
+                state: normalizeConditionState(rawState),
+                detail: condition.detail ? String(condition.detail) : null,
+            });
+        });
+    }
+
+    const checks = [];
+    const reviewers = Array.isArray(observation.requiredReviewers) ? observation.requiredReviewers : [];
+    for (const reviewer of reviewers) {
+        const name = reviewer.displayName || reviewer.uniqueName || "required reviewer";
+        checks.push(finalize({
+            key: `reviewer:${reviewer.id ?? reviewer.uniqueName ?? name}`,
+            label: `Review · ${name}`,
+            state: reviewer.approved === true || Number(reviewer.vote) >= 5 ? "satisfied" : "pending",
+            detail: null,
+        }));
+    }
+    const policies = Array.isArray(observation.policies) ? observation.policies : [];
+    for (const policy of policies) {
+        if (policy.isEnabled === false || policy.isBlocking === false) continue;
+        const name = policy.displayName || policy.typeName || "policy";
+        checks.push(finalize({
+            key: `policy:${policy.configurationId ?? policy.evaluationId ?? name}`,
+            label: `Policy · ${name}`,
+            state: normalizeConditionState(policy.status),
+            detail: policy.status ? String(policy.status) : null,
+        }));
+    }
+    return checks;
+}
+
 // Short badge label for a Job wait (used for state-run status chips and the
 // transition inspector heading). Preserves the historical outputs so existing
 // callers keep their exact copy.

@@ -2523,6 +2523,89 @@ body.is-resizing-pane-y iframe {
   overflow-wrap: anywhere;
 }
 
+.ps-job-wait-conditions {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ps-job-wait-condition {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ps-job-wait-condition-icon {
+  flex: none;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.ps-job-wait-condition.is-satisfied .ps-job-wait-condition-icon {
+  color: #3fb950;
+}
+
+.ps-job-wait-condition.is-pending .ps-job-wait-condition-icon {
+  color: var(--ps-muted, #8b949e);
+}
+
+.ps-job-wait-condition.is-failed .ps-job-wait-condition-icon {
+  color: #f85149;
+}
+
+.ps-job-wait-condition.is-pending .ps-job-wait-condition-label {
+  color: var(--ps-muted, #8b949e);
+}
+
+.ps-job-wait-condition-label {
+  flex: 1 1 auto;
+}
+
+.ps-job-wait-condition-override-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.14);
+  border: 1px solid rgba(210, 153, 34, 0.4);
+  vertical-align: middle;
+}
+
+.ps-job-wait-condition-override {
+  flex: none;
+  cursor: pointer;
+  font-size: 0.75em;
+  line-height: 1.4;
+  padding: 1px 8px;
+  border-radius: 6px;
+  color: var(--ps-muted, #8b949e);
+  background: transparent;
+  border: 1px solid var(--ps-border, #30363d);
+}
+
+.ps-job-wait-condition-override:hover:not(:disabled) {
+  color: var(--ps-fg, #c9d1d9);
+  border-color: var(--ps-muted, #8b949e);
+}
+
+.ps-job-wait-condition-override:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ps-job-wait-condition-override.is-overridden {
+  color: #d29922;
+  border-color: rgba(210, 153, 34, 0.5);
+}
+
 @media (max-width: 700px) {
   .ps-job-transition-event {
     grid-template-columns: 1fr;

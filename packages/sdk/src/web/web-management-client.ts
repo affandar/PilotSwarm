@@ -163,6 +163,15 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("listJobWaits", { jobId });
     }
 
+    async setJobWaitConditionOverride(
+        jobId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<JobWaitRow> {
+        return this._api.call("setJobWaitConditionOverride", { jobId, waitId, conditionKey, overridden });
+    }
+
     async listJobJournal(jobId: string): Promise<JobJournalEntryRow[]> {
         return this._api.call("listJobJournal", { jobId });
     }

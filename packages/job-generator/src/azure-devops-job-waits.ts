@@ -48,6 +48,7 @@ interface AzureDevOpsPolicyEvaluation {
     configurationId: number | null;
     typeId: string | null;
     typeName: string | null;
+    displayName: string | null;
     isEnabled: boolean;
     isBlocking: boolean;
     status: "queued" | "running" | "approved" | "rejected" | "notApplicable" | "broken";
@@ -338,6 +339,7 @@ function parsePolicyEvaluations(value: unknown): AzureDevOpsPolicyEvaluation[] {
             throw new Error(`Azure DevOps policy evaluation ${index} has invalid configuration`);
         }
         const configurationId = Number(configuration.id);
+        const settings = record(configuration.settings);
         return {
             evaluationId: requiredString(
                 evaluation.evaluationId,
@@ -346,6 +348,7 @@ function parsePolicyEvaluations(value: unknown): AzureDevOpsPolicyEvaluation[] {
             configurationId: Number.isInteger(configurationId) ? configurationId : null,
             typeId: optionalString(type.id),
             typeName: optionalString(type.displayName),
+            displayName: optionalString(settings.displayName),
             isEnabled: configuration.isEnabled,
             isBlocking: configuration.isBlocking,
             status: status as AzureDevOpsPolicyEvaluation["status"],
@@ -472,6 +475,24 @@ function approvalCursor(snapshot: AzureDevOpsPullRequestApprovalSnapshot): strin
     });
 }
 
+function applyConditionOverrides(
+    snapshot: AzureDevOpsPullRequestApprovalSnapshot,
+    overrides: readonly string[] | undefined,
+): void {
+    if (!overrides || overrides.length === 0) return;
+    const keys = new Set(overrides);
+    for (const policy of snapshot.policies) {
+        if (policy.configurationId !== null && keys.has(`policy:${policy.configurationId}`)) {
+            policy.status = "approved";
+        }
+    }
+    for (const reviewer of snapshot.reviewers) {
+        if (keys.has(`reviewer:${reviewer.id}`)) {
+            reviewer.vote = 10;
+        }
+    }
+}
+
 function observationEvidence(
     target: AzureDevOpsPullRequestApprovalTarget,
     snapshot: AzureDevOpsPullRequestApprovalSnapshot,
@@ -491,6 +512,7 @@ function observationEvidence(
         configurationId: policy.configurationId,
         typeId: policy.typeId,
         typeName: policy.typeName,
+        displayName: policy.displayName,
         isEnabled: policy.isEnabled,
         isBlocking: policy.isBlocking,
         status: policy.status,
@@ -543,6 +565,7 @@ export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
             };
         }
 
+        applyConditionOverrides(snapshot, input.wait.conditionOverrides);
         const evidence = observationEvidence(target, snapshot, observedAt);
         const cursor = approvalCursor(snapshot);
         if (snapshot.pullRequest.sourceCommit !== target.expectedSourceCommit) {

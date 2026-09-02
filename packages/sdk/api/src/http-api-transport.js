@@ -220,6 +220,10 @@ export class HttpApiTransport {
         return this.api.call("listJobJournal", { jobId });
     }
 
+    async setJobWaitConditionOverride(jobId, waitId, conditionKey, overridden) {
+        return this.api.call("setJobWaitConditionOverride", { jobId, waitId, conditionKey, overridden });
+    }
+
     // ── Sessions ────────────────────────────────────────────────────────
 
     async listSessions() {

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
     JOB_WAIT_GLOSSARY,
     describeJobWait,
+    describeObservedConditionChecks,
     describeObservedConditionPredicate,
     jobWaitGlossaryEntry,
     persistedJobWaitLabel,
@@ -126,6 +127,97 @@ test("describeObservedConditionPredicate falls back to a readable predicate labe
         describeObservedConditionPredicate({ predicate: { kind: "pipeline_success" } }),
         { reason: "Awaiting external condition", predicateLabel: "pipeline success" },
     );
+});
+
+test("describeObservedConditionChecks returns nothing without an observed-condition observation", () => {
+    assert.deepEqual(describeObservedConditionChecks(null), []);
+    assert.deepEqual(describeObservedConditionChecks({ kind: "response", status: "pending" }), []);
+    assert.deepEqual(
+        describeObservedConditionChecks({ kind: "observed_condition", latestObservation: null }),
+        [],
+    );
+});
+
+test("describeObservedConditionChecks derives conditions from blocking policies and required reviewers", () => {
+    const checks = describeObservedConditionChecks({
+        kind: "observed_condition",
+        latestObservation: {
+            requiredReviewers: [
+                { id: "r1", displayName: "Alice", vote: 10, approved: true },
+                { id: "r2", displayName: "Bob", vote: 0, approved: false },
+            ],
+            policies: [
+                { evaluationId: "p1", typeName: "Build", status: "approved", isEnabled: true, isBlocking: true },
+                { evaluationId: "p2", typeName: "Build", status: "queued", isEnabled: true, isBlocking: true },
+                { evaluationId: "p3", typeName: "Build", status: "rejected", isEnabled: true, isBlocking: true },
+                { evaluationId: "p4", typeName: "Build", status: "queued", isEnabled: true, isBlocking: false },
+                { evaluationId: "p5", typeName: "Build", status: "queued", isEnabled: false, isBlocking: true },
+            ],
+        },
+    });
+    assert.deepEqual(checks.map((check) => [check.label, check.state]), [
+        ["Review · Alice", "satisfied"],
+        ["Review · Bob", "pending"],
+        ["Policy · Build", "satisfied"],
+        ["Policy · Build", "pending"],
+        ["Policy · Build", "failed"],
+    ]);
+});
+
+test("describeObservedConditionChecks prefers an explicit conditions list from the observer", () => {
+    const checks = describeObservedConditionChecks({
+        kind: "observed_condition",
+        latestObservation: {
+            conditions: [
+                { key: "review-agent", label: "Code Review Agent recommendation", satisfied: true },
+                { key: "build-gate", label: "Required validation build", satisfied: false },
+                { key: "broken", label: "Custom gate", state: "failed" },
+            ],
+        },
+    });
+    assert.deepEqual(checks.map((check) => [check.label, check.state]), [
+        ["Code Review Agent recommendation", "satisfied"],
+        ["Required validation build", "pending"],
+        ["Custom gate", "failed"],
+    ]);
+});
+
+test("describeObservedConditionChecks keys policies by configurationId for override stability", () => {
+    const checks = describeObservedConditionChecks({
+        kind: "observed_condition",
+        latestObservation: {
+            requiredReviewers: [{ id: "r2", displayName: "Bob", vote: 0, approved: false }],
+            policies: [
+                { configurationId: 4001, evaluationId: "eval-changes", displayName: "Required validation build", status: "queued", isEnabled: true, isBlocking: true },
+            ],
+        },
+    });
+    assert.deepEqual(checks.map((check) => check.key), [
+        "reviewer:r2",
+        "policy:4001",
+    ]);
+    assert.equal(checks.every((check) => check.overridden === false), true);
+});
+
+test("describeObservedConditionChecks reports and forces overridden conditions to satisfied", () => {
+    const checks = describeObservedConditionChecks({
+        kind: "observed_condition",
+        conditionOverrides: ["policy:4001", "reviewer:r2"],
+        latestObservation: {
+            requiredReviewers: [{ id: "r2", displayName: "Bob", vote: 0, approved: false }],
+            policies: [
+                { configurationId: 4001, displayName: "Required validation build", status: "queued", isEnabled: true, isBlocking: true },
+                { configurationId: 4002, displayName: "Secondary validation build", status: "queued", isEnabled: true, isBlocking: true },
+            ],
+        },
+    });
+    const byKey = Object.fromEntries(checks.map((check) => [check.key, check]));
+    assert.equal(byKey["reviewer:r2"].overridden, true);
+    assert.equal(byKey["reviewer:r2"].state, "satisfied");
+    assert.equal(byKey["policy:4001"].overridden, true);
+    assert.equal(byKey["policy:4001"].state, "satisfied");
+    assert.equal(byKey["policy:4002"].overridden, false);
+    assert.equal(byKey["policy:4002"].state, "pending");
 });
 
 test("the wait glossary covers every durable wait kind with a resume rationale", () => {

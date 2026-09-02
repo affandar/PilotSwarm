@@ -1191,6 +1191,16 @@ export class PilotSwarmManagementClient {
         return this._catalog!.listJobWaits(jobId);
     }
 
+    async setJobWaitConditionOverride(
+        jobId: string,
+        waitId: string,
+        conditionKey: string,
+        overridden: boolean,
+    ): Promise<JobWaitRow> {
+        this._ensureStarted();
+        return this._catalog!.setJobWaitConditionOverride(jobId, waitId, conditionKey, overridden);
+    }
+
     // ─── Session Listing ─────────────────────────────────────
 
     /**

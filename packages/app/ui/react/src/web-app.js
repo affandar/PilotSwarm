@@ -13,7 +13,7 @@ import {
     navigateJobGeneratorTree,
 } from "./job-generator-tree-navigation.js";
 import { persistedStateRunLabel } from "./job-generator-state-run-label.js";
-import { describeJobWait, jobWaitGlossaryEntry, persistedJobWaitLabel } from "./job-generator-wait-label.js";
+import { describeJobWait, describeObservedConditionChecks, jobWaitGlossaryEntry, persistedJobWaitLabel } from "./job-generator-wait-label.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
     reconcileWorkerTimelineLaneOrder,
@@ -6599,8 +6599,19 @@ function JobGeneratorCreateModal({ onCreate, onClose }) {
                 }, submitting ? "Registering..." : "Register Job Generator"))));
 }
 
-function JobTransitionTimeline({ transition, timeline }) {
+function JobTransitionTimeline({ transition, timeline, onOverrideCondition }) {
+    const [overridePending, setOverridePending] = React.useState(null);
     if (!transition) return null;
+    const handleOverrideCondition = async (conditionKey, nextOverridden) => {
+        if (!onOverrideCondition || !transition.activeWait) return;
+        const { jobId, waitId } = transition.activeWait;
+        setOverridePending(conditionKey);
+        try {
+            await onOverrideCondition(jobId, waitId, conditionKey, nextOverridden);
+        } finally {
+            setOverridePending(null);
+        }
+    };
     const entries = buildJobTransitionTimeline(transition, timeline.events);
     const activeWaitInfo = transition.activeWait
         ? describeJobWait(transition.activeWait, transition.status)
@@ -6635,6 +6646,42 @@ function JobTransitionTimeline({ transition, timeline }) {
                 transition.activeWait.prompt?.question
                     ? React.createElement("span", null, transition.activeWait.prompt.question)
                     : null,
+                (() => {
+                    const checks = describeObservedConditionChecks(transition.activeWait);
+                    if (!checks.length) return null;
+                    return React.createElement("ul", { className: "ps-job-wait-conditions" },
+                        checks.map((check) => React.createElement("li", {
+                            key: check.key,
+                            className: `ps-job-wait-condition is-${check.state}`
+                                + (check.overridden ? " is-overridden" : ""),
+                            title: check.detail ? `${check.label}: ${check.detail}` : check.label,
+                        },
+                            React.createElement("span", {
+                                className: "ps-job-wait-condition-icon",
+                                "aria-hidden": "true",
+                            }, check.state === "satisfied" ? "✔" : check.state === "failed" ? "✖" : "⌛"),
+                            React.createElement("span", { className: "ps-job-wait-condition-label" },
+                                check.label,
+                                check.overridden
+                                    ? React.createElement("span", {
+                                        className: "ps-job-wait-condition-override-tag",
+                                    }, "overridden")
+                                    : null),
+                            onOverrideCondition
+                                ? React.createElement("button", {
+                                    type: "button",
+                                    className: "ps-job-wait-condition-override"
+                                        + (check.overridden ? " is-overridden" : ""),
+                                    disabled: overridePending === check.key,
+                                    onClick: () => handleOverrideCondition(check.key, !check.overridden),
+                                    title: check.overridden
+                                        ? "Clear the operator override and let the real condition apply"
+                                        : "Mock this condition as satisfied so the wait can resume",
+                                }, overridePending === check.key
+                                    ? "…"
+                                    : check.overridden ? "Clear" : "Override")
+                                : null)));
+                })(),
                 React.createElement("span", { className: "ps-job-wait-affordance" }, activeWaitAffordance),
                 activeWaitInfo.glossary
                     ? React.createElement("span", {
@@ -6698,6 +6745,7 @@ function JobGeneratorPane({
     onCreateGenerator,
     onDeleteGenerator,
     onDeleteJob,
+    onOverrideCondition,
 }) {
     const viewState = useControllerSelector(controller, (state) => ({
         focused: state.ui.focusRegion === "sessions",
@@ -7082,6 +7130,7 @@ function JobGeneratorPane({
                         timeline: timeline.transitionId === selectedTransition.id
                             ? timeline
                             : { transitionId: selectedTransition.id, loading: true, error: "", events: [] },
+                        onOverrideCondition,
                     })
                     : selectedJob
                     ? React.createElement("span", null,
@@ -7189,6 +7238,10 @@ function WorkIndexPane({
         await refreshJobGenerators();
         return result;
     }, [controller, refreshJobGenerators]);
+    const overrideCondition = React.useCallback(async (jobId, waitId, conditionKey, overridden) => {
+        await controller.transport.setJobWaitConditionOverride(jobId, waitId, conditionKey, overridden);
+        await refreshJobGenerators();
+    }, [controller, refreshJobGenerators]);
     const panelId = "ps-work-index-panel";
     const title = React.createElement(WorkIndexTabs, {
         activeTab,
@@ -7207,6 +7260,7 @@ function WorkIndexPane({
             onCreateGenerator: createJobGenerator,
             onDeleteGenerator: deleteJobGenerator,
             onDeleteJob: deleteJob,
+            onOverrideCondition: overrideCondition,
         })
         : React.createElement(SessionPane, {
             controller,
