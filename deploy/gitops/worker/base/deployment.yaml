@@ -66,6 +66,23 @@ spec:
               value: "info"
             - name: PS_MODEL_PROVIDERS_PATH
               value: "/app/config/model_providers.json"
+            # Duroxide orchestration lease + Postgres connection tuning.
+            # The shared control-plane Postgres is a small 2-vCore instance;
+            # under load a single orchestration turn's history-append cannot
+            # commit-and-ack within duroxide's default 10s lease, so the item
+            # is redelivered until it exceeds max_attempts and the session is
+            # poisoned (OrchestrationFailed{Poison}). Raising the lease to 90s
+            # and the pg connect timeout to 45s (with a larger, longer-waiting
+            # pool) lets the turn commit before the lease expires. These are
+            # static tuning constants, safe across all stamps.
+            - name: PILOTSWARM_WORKER_LOCK_TIMEOUT_MS
+              value: "90000"
+            - name: PILOTSWARM_PG_CONNECTION_TIMEOUT_MS
+              value: "45000"
+            - name: DUROXIDE_PG_POOL_MAX
+              value: "8"
+            - name: DUROXIDE_PG_ACQUIRE_TIMEOUT_MS
+              value: "60000"
           envFrom:
             - configMapRef:
                 name: worker-env
