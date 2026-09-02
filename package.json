@@ -41,6 +41,7 @@
     "docker:local:stop": "bash ./scripts/docker-local-stop.sh",
     "docker:local:reset": "bash ./scripts/docker-local-reset.sh",
     "worker": "node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js",
+    "worker:dev": "node --env-file=.env.remote --import ./scripts/devbox-owner.mjs --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
     "postinstall": "node scripts/postinstall.js"
   },
