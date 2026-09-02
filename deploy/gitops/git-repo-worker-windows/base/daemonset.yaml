@@ -124,6 +124,25 @@ spec:
             # Repo-affinity routing: this fleet serves only repo:<name> runTurns.
             - name: PILOTSWARM_WORKER_TAGS
               value: "repo:__REPO_NAME__"
+            # Duroxide orchestration lease + Postgres connection tuning. This
+            # fleet also dispatches durable-session-v2 orchestrations (2
+            # orchestration slots) for repo:<name>-tagged sessions, not just
+            # runTurn activities. The shared control-plane Postgres is a small
+            # 2-vCore instance; under load an orchestration turn's history-append
+            # cannot commit-and-ack within duroxide's default 10s lease, so the
+            # queue item is redelivered until it exceeds max_attempts and the
+            # session is poisoned (OrchestrationFailed{Poison}). Raising the
+            # lease to 90s and pg connect timeout to 45s (with a larger,
+            # longer-waiting pool) lets the turn commit before the lease expires.
+            # Mirrors the Linux worker deployment; static tuning constants.
+            - name: PILOTSWARM_WORKER_LOCK_TIMEOUT_MS
+              value: "90000"
+            - name: PILOTSWARM_PG_CONNECTION_TIMEOUT_MS
+              value: "45000"
+            - name: DUROXIDE_PG_POOL_MAX
+              value: "8"
+            - name: DUROXIDE_PG_ACQUIRE_TIMEOUT_MS
+              value: "60000"
             # git-cache collocation (node-local mirror; read-only mount below).
             - name: GIT_CACHE_ROOT
               value: "C:\\git-cache"
