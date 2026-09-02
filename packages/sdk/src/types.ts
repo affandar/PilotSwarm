@@ -73,7 +73,7 @@ type TurnResultVariant =
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
-    | { type: "error"; message: string; events?: CapturedEvent[] };
+    | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
 
 /** A raw event captured from CopilotSession.on() during a turn. */
 export interface CapturedEvent {
@@ -94,7 +94,7 @@ export interface TurnOptions {
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
     bootstrap?: boolean;
-    /** Require the Copilot SDK to use a specific tool during this turn. */
+    /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";
@@ -196,6 +196,8 @@ export interface SerializableSessionConfig {
     waitThreshold?: number;
     /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
     boundAgentName?: string;
+    /** Internal one-shot requirement resolved from a top-level named agent and consumed by its bootstrap turn. */
+    initialRequiredTool?: string;
     /** Internal: selects how framework, app, and agent prompts compose for this session. */
     promptLayering?: {
         kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";

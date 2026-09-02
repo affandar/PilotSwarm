@@ -165,6 +165,7 @@ Agents are defined as Markdown files with YAML frontmatter. The frontmatter decl
 | `parent` | string | No | Parent system agent's `id`. Makes this agent a child spawned by the parent. |
 | `splash` | string | No | Blessed markup banner shown in the TUI when the session is selected. |
 | `initialPrompt` | string | No | First prompt sent when a system agent is created. |
+| `initialRequiredTool` | string | No | Schema-v3 contract requiring this declared tool to execute during the initial turn. PilotSwarm corrects once, then fails closed. |
 
 ### Example Agent File
 

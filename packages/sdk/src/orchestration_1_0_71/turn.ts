@@ -187,7 +187,6 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
     if (rc.phase === "turn.result.error") {
         return {
             prompt: rc.sourcePrompt,
-            ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
             ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
             retryCount: state.retryCount,
             needsHydration: state.needsHydration,
@@ -228,36 +227,6 @@ export function* projectAuthFailure(
         content: blockedDetail,
     });
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null);
-    runtime.state.retryCount = 0;
-}
-
-function* projectNonRetryableTurnFailure(
-    runtime: DurableSessionRuntime,
-    errorMessage: string,
-): Generator<any, void, any> {
-    runtime.state.blockedError = { message: errorMessage };
-    publishStatus(runtime, "error", {
-        error: errorMessage,
-        retriesExhausted: true,
-        nonRetryable: true,
-    });
-    yield* writeLatestResponse(runtime, {
-        iteration: runtime.state.iteration,
-        type: "error",
-        content: errorMessage,
-    });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null);
-    if (runtime.options.parentSessionId && !runtime.state.reportedFirstCompletionToParent) {
-        try {
-            yield runtime.manager.sendToSession(
-                runtime.options.parentSessionId,
-                `[CHILD_UPDATE from=${runtime.input.sessionId} type=failed iter=${runtime.state.iteration} verdict=failed]\n${errorMessage.slice(0, 2000)}`,
-            );
-            runtime.state.reportedFirstCompletionToParent = true;
-        } catch (err: any) {
-            runtime.ctx.traceInfo(`[orch] sendToSession(parent) non-retryable failure failed: ${err.message} (non-fatal)`);
-        }
-    }
     runtime.state.retryCount = 0;
 }
 
@@ -619,7 +588,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap, requiredTool);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap);
 }
 
 // ─── Stop-turn race support ─────────────────────────────────
@@ -1062,7 +1031,6 @@ export function* handleTurnResult(
     // words. Only the budget stash below needs it, and only to attribute the
     // durable record it writes.
     isBootstrap?: boolean,
-    requiredTool?: string,
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
@@ -1372,19 +1340,12 @@ export function* handleTurnResult(
                 return;
             }
 
-            if (result.retryable === false) {
-                ctx.traceInfo(`[orch] turn returned non-retryable error: ${result.message}`);
-                yield* projectNonRetryableTurnFailure(runtime, result.message);
-                return;
-            }
-
             state.retryCount++;
             ctx.traceInfo(`[orch] turn returned error (attempt ${state.retryCount}/${MAX_RETRIES}): ${result.message}`);
 
             const rc: RetryContext = {
                 sourcePrompt,
                 systemOnlyTurn: false,
-                requiredTool,
                 cycleOrigin,
                 phase: "turn.result.error",
             };

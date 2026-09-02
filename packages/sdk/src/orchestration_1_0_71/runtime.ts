@@ -1,7 +1,6 @@
 import type { OrchestrationInput } from "../types.js";
 import { COMMAND_VERSION_KEY, RESPONSE_VERSION_KEY, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionManagerProxy, createSessionProxy } from "../session-proxy.js";
-import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 import { advanceRegenPipeline,
     continueInput,
     publishStatus,
@@ -18,7 +17,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.71";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -91,7 +90,7 @@ function* enforceCreationPolicy(runtime: DurableSessionRuntime): Generator<any, 
 }
 
 /** For top-level named-agent sessions, merge the agent definition's tools into the session config. */
-export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Generator<any, void, any> {
+function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { state, options, input } = runtime;
     if (state.iteration !== 0 || options.parentSessionId || !input.agentId || options.isSystem) return;
 
@@ -114,9 +113,6 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         if (mergedToolNames.length > 0) {
             state.config.toolNames = mergedToolNames;
             runtime.ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
-        }
-        if (agentDef.initialRequiredTool) {
-            state.config.initialRequiredTool = agentDef.initialRequiredTool;
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;

@@ -38,9 +38,10 @@ function makeRuntime({ isSystem, agentDef = null }) {
         input: { sessionId: "parent-session" },
         manager: {
             resolveAgentConfig: (name) => ({ __activity: "resolveAgentConfig", name }),
-            // Signature: (parentSessionId, config, task, nestingLevel, isSystem, ...)
-            spawnChildSession: (_parentId, _config, _task, _nesting, spawnIsSystem) => {
+            // Signature: (parentSessionId, config, task, nestingLevel, isSystem, ..., initialRequiredTool)
+            spawnChildSession: (_parentId, _config, _task, _nesting, spawnIsSystem, _title, _agentId, _splash, _titleIsExplicit, initialRequiredTool) => {
                 captured.isSystem = spawnIsSystem;
+                captured.initialRequiredTool = initialRequiredTool;
                 return { __activity: "spawnChildSession" };
             },
             recordSessionEvent: () => ({ __activity: "recordSessionEvent" }),
@@ -91,5 +92,22 @@ describe("sub-agent isSystem contract", () => {
         const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "helper" });
         pump(gen, responders, () => captured.isSystem !== undefined);
         assertEqual(captured.isSystem, false, "parent system-ness must not leak into definition-driven children");
+    });
+
+    it("passes a named agent's initial required tool to its bootstrap activity", () => {
+        const { runtime, captured, responders } = makeRuntime({
+            isSystem: false,
+            agentDef: {
+                name: "catalog-analyst",
+                id: "catalog-analyst",
+                system: false,
+                initialPrompt: "Inspect the catalog.",
+                tools: ["package_catalog"],
+                initialRequiredTool: "package_catalog",
+            },
+        });
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "catalog-analyst" });
+        pump(gen, responders, () => captured.isSystem !== undefined);
+        assertEqual(captured.initialRequiredTool, "package_catalog");
     });
 });

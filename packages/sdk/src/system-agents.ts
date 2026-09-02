@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, type AgentConfig } from "./agent-loader.js";
+import { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
     DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -53,6 +53,7 @@ export function buildSystemAgentBootstrapPayload(
             kind: agent.promptLayerKind ?? (agent.namespace === "pilotswarm" ? "pilotswarm-system-agent" : "app-system-agent"),
         },
         toolNames: agent.tools ?? undefined,
+        ...(agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
     };
 
     const input: OrchestrationInput = {
@@ -115,7 +116,12 @@ export function loadSystemAgentConfigs(opts: {
         agents.push(...loadSystemAgentsFromPluginDir(absDir, "app"));
     }
     for (const agent of opts.systemAgents ?? []) {
-        if (agent.system && agent.id) agents.push(agent);
+        if (!agent.system || !agent.id) continue;
+        const issues = validateAgentDefinition(agent);
+        if (issues.length > 0) {
+            throw new Error(`Invalid system agent "${agent.name}": ${issues.map((issue) => issue.message).join("; ")}`);
+        }
+        agents.push(agent);
     }
 
     const byId = new Map<string, AgentConfig>();

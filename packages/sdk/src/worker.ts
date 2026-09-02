@@ -8,7 +8,7 @@ import {
 } from "./orchestration-registry.js";
 import { PgSessionCatalog } from "./cms.js";
 import type { SessionCatalog } from "./cms.js";
-import { loadAgentFiles } from "./agent-loader.js";
+import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
@@ -1364,6 +1364,10 @@ export class PilotSwarmWorker {
         }
         if (this.config.customAgents?.length) {
             for (const agent of this.config.customAgents) {
+                const issues = validateAgentDefinition(agent);
+                if (issues.length > 0) {
+                    throw new Error(`Invalid custom agent "${agent.name}": ${issues.map((issue) => issue.message).join("; ")}`);
+                }
                 const descriptor = this._buildLayerDescriptor(agent as any, "app", "inline");
                 this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent", layerDescriptor: descriptor } as any);
                 this._agentPromptLookup[agent.name] = {

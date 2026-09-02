@@ -214,7 +214,7 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 ### `*.agent.md`
 
 - frontmatter declares metadata
-- frontmatter should include `schemaVersion: 1` and a `version` string; new agents should usually start at `version: 1.0.0`
+- frontmatter should include `schemaVersion: 1` and a `version` string; new agents should usually start at `version: 1.0.0`; use schema 3 only with `initialRequiredTool` when the first turn must execute one of the agent's declared tools
 - body is the agent prompt
 - `tools` is a filter, not a tool implementation
 

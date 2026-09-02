@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Enforced named-agent startup tools.** Schema-v3 agent definitions may set
+  `initialRequiredTool` to one of their declared tools. PilotSwarm verifies a
+  real execution event on the initial turn, fails immediately when the handler
+  is unavailable, issues one bounded same-turn correction when the model
+  answers from memory, and then fails closed without entering the generic
+  retry loop. The contract applies to direct starts, worker-managed system
+  agents, Agent Manager verification sessions, and both inline and durable
+  child-spawn paths. Orchestration `1.0.71` is frozen and new sessions use
+  `1.0.72`.
+
 ## 0.5.56 — 2026-08-31
 
 A resume override becomes field-level, completing 0.5.55.

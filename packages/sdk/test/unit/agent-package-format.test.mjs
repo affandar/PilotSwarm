@@ -372,12 +372,12 @@ test("agent skip reasons are named honestly", async () => {
         "---", "name: empty", "description: no body", "schemaVersion: 1", "version: 1.0.0", "---", "",
     ].join("\n"));
     fs.writeFileSync(path.join(dir, "agents", "future.agent.md"), [
-        "---", "name: future", "description: v3", "schemaVersion: 3", "version: 1.0.0", "---", "", "Body.",
+        "---", "name: future", "description: v4", "schemaVersion: 4", "version: 1.0.0", "---", "", "Body.",
     ].join("\n"));
     const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
     assert.deepEqual(errorCodes(result), ["empty_agent_body", "unsupported_agent_schema_version"]);
     assert.match(result.errors.find((e) => e.code === "empty_agent_body").message, /cannot be blank/);
-    assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1 or 2/);
+    assert.match(result.errors.find((e) => e.code === "unsupported_agent_schema_version").message, /use 1, 2, or 3/);
 });
 
 test("session-policy.json is forbidden in packages", async () => {

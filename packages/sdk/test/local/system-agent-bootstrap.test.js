@@ -4,7 +4,7 @@ import {
     PilotSwarmWorker,
     resolveWorkerTurnTimeoutMs,
 } from "../../src/worker.ts";
-import { startSystemAgents } from "../../src/system-agents.ts";
+import { loadSystemAgentConfigs, startSystemAgents } from "../../src/system-agents.ts";
 import { DEFAULT_TURN_TIMEOUT_MS } from "../../src/managed-session.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
@@ -15,6 +15,7 @@ describe("System agent bootstrap payload", () => {
             name: "facts-manager",
             namespace: "mgmt",
             tools: ["store_fact", "read_facts", "delete_fact"],
+            initialRequiredTool: "read_facts",
             system: true,
             parent: "pilotswarm",
         };
@@ -29,6 +30,8 @@ describe("System agent bootstrap payload", () => {
         assertEqual(serializableConfig.agentIdentity, "facts-manager", "config should carry agent identity");
         assertEqual(input.agentId, "facts-manager", "orchestration input should carry agent id");
         assertEqual(input.config.agentIdentity, "facts-manager", "embedded config should carry agent identity");
+        assertEqual(serializableConfig.initialRequiredTool, "read_facts", "config should carry initial tool enforcement");
+        assertEqual(input.config.initialRequiredTool, "read_facts", "orchestration input should carry initial tool enforcement");
         assertEqual(input.parentSessionId, "session-parent", "child parentSessionId should be preserved");
         assertEqual(input.isSystem, true, "system bootstrap input should mark system sessions");
     });
@@ -40,6 +43,26 @@ describe("System agent bootstrap payload", () => {
         });
 
         assertEqual(worker.blobEnabled, true, "workers should default to durable local session state");
+    });
+
+    it("rejects invalid enforcement metadata from direct agent config", () => {
+        const invalid = {
+            name: "invalid",
+            id: "invalid",
+            system: true,
+            prompt: "Invalid.",
+            schemaVersion: 2,
+            tools: ["package_catalog"],
+            initialRequiredTool: "package_catalog",
+        };
+
+        expect(() => loadSystemAgentConfigs({ disableManagementAgents: true, systemAgents: [invalid] }))
+            .toThrow(/initialRequiredTool requires schemaVersion 3/);
+        expect(() => new PilotSwarmWorker({
+            store: "sqlite::memory:",
+            disableManagementAgents: true,
+            customAgents: [{ ...invalid, system: false }],
+        })).toThrow(/Invalid custom agent/);
     });
 
     it("resolves the deployment turn timeout with explicit option precedence", () => {

@@ -30,7 +30,7 @@ import * as zlib from "zlib";
 import * as os from "os";
 import * as crypto from "crypto";
 import { spawn } from "child_process";
-import { loadAgentFiles, type AgentConfig } from "./agent-loader.js";
+import { loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
 import { loadSkillsSync, type Skill } from "./skills.js";
 
 // ─── Reserved artifact identity ──────────────────────────────────
@@ -627,6 +627,7 @@ export interface AgentPackageManifest {
         splash?: string;
         splashMobile?: string;
         initialPrompt?: string;
+        initialRequiredTool?: string;
         // Composition. `startedBy` names the agents that spawn this one, which
         // is what lets the picker nest a package's sub-agents under their entry
         // point instead of listing every agent flat. Both ride the manifest for
@@ -784,7 +785,7 @@ export async function validateAgentPackageDir(
     let agents: AgentConfig[] = [];
     if (fs.existsSync(agentsDir)) {
         const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".agent.md")).sort();
-        agents = loadAgentFiles(agentsDir);
+        agents = loadAgentFiles(agentsDir, { includeInvalid: true });
         if (agents.length < agentFiles.length) {
             // Name the ACTUAL skip reason — these messages are contractual UX
             // and "failed to parse" for an empty body sends users editing the
@@ -796,9 +797,9 @@ export async function validateAgentPackageDir(
                 try { raw = fs.readFileSync(path.join(agentsDir, f), "utf8"); } catch { /* fallthrough */ }
                 const schemaMatch = /(?:^|\n)schemaVersion:\s*(\S+)/.exec(raw);
                 const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-                if (schemaMatch && !["1", "2"].includes(schemaMatch[1])) {
+                if (schemaMatch && !["1", "2", "3"].includes(schemaMatch[1])) {
                     err(errors, "unsupported_agent_schema_version",
-                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1 or 2)`, `agents/${f}`);
+                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, or 3)`, `agents/${f}`);
                 } else if (!body) {
                     err(errors, "empty_agent_body",
                         `agents/${f}: the markdown body is empty — it becomes the agent's prompt and cannot be blank`, `agents/${f}`);
@@ -819,6 +820,9 @@ export async function validateAgentPackageDir(
             if (agent.name === "default") {
                 err(errors, "default_agent_forbidden",
                     `${file}: an agent named "default" is a prompt overlay, not a selectable agent, and is not allowed in packages`, file);
+            }
+            for (const issue of validateAgentDefinition(agent)) {
+                err(errors, issue.code, `${file}: ${issue.message}`, file);
             }
             // Collision checks use the RESOLVER's normalization: the runtime
             // matches case/punctuation-insensitively with an "agent"-suffix
@@ -1002,6 +1006,7 @@ export async function validateAgentPackageDir(
                 splash: a.splash,
                 splashMobile: a.splashMobile,
                 initialPrompt: a.initialPrompt,
+                initialRequiredTool: a.initialRequiredTool,
                 startedBy: a.startedBy,
                 supportsDirectStart: a.supportsDirectStart,
             })),

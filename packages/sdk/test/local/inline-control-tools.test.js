@@ -58,7 +58,9 @@ class FakeCopilotSession {
                 if (this.aborted) break;
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error(`Missing fake tool: ${call.name}`);
-                await tool.handler(call.args ?? {});
+                this.emit("tool.execution_start", { data: { toolName: call.name, arguments: call.args ?? {} } });
+                const result = await tool.handler(call.args ?? {});
+                this.emit("tool.execution_complete", { data: { toolName: call.name, arguments: call.args ?? {}, result } });
             }
             if (!this.aborted && scriptedSend.assistantContent != null) {
                 this.emit("assistant.message", { data: { content: scriptedSend.assistantContent } });
@@ -76,6 +78,63 @@ class FakeCopilotSession {
 }
 
 describe("inline control tool execution", () => {
+    it("fails before the model turn when a required tool handler is unavailable", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const managed = new ManagedSession("required-tool-unavailable", fakeSession, {});
+
+        const result = await managed.runTurn("Verify the package catalog.", { requiredTool: "package_catalog" });
+
+        expect(result).toMatchObject({
+            type: "error",
+            retryable: false,
+            message: 'Required tool "package_catalog" is not available in this session.',
+        });
+        expect(fakeSession.sentPrompts).toHaveLength(0);
+    });
+
+    it("retries once when a required tool was claimed but not invoked", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const catalog = vi.fn(async () => ({ commands: 71 }));
+        fakeSession.scriptedSends = [
+            { assistantContent: "The catalog has 71 commands." },
+            { toolCalls: [{ name: "package_catalog", args: { arguments: ["catalog"] } }], assistantContent: "Catalog verified." },
+        ];
+
+        const managed = new ManagedSession("required-tool-correction", fakeSession, {
+            tools: [{ name: "package_catalog", parameters: { type: "object", properties: {} }, handler: catalog }],
+        });
+        const result = await managed.runTurn("Verify the package catalog.", { requiredTool: "package_catalog" });
+
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Catalog verified.");
+        expect(catalog).toHaveBeenCalledOnce();
+        expect(fakeSession.sentPrompts).toHaveLength(2);
+        expect(fakeSession.sentPrompts[1]).toContain("Required-tool contract violation");
+        expect(result.events).toEqual(expect.arrayContaining([
+            expect.objectContaining({ eventType: "runtime.required_tool_not_invoked" }),
+            expect.objectContaining({ eventType: "tool.execution_start", data: expect.objectContaining({ toolName: "package_catalog" }) }),
+        ]));
+    });
+
+    it("fails closed when a required tool is omitted again after correction", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedSends = [
+            { assistantContent: "The catalog has 71 commands." },
+            { assistantContent: "I confirm the same result." },
+        ];
+
+        const managed = new ManagedSession("required-tool-fail-closed", fakeSession, {
+            tools: [{ name: "package_catalog", parameters: { type: "object", properties: {} }, handler: vi.fn() }],
+        });
+        const result = await managed.runTurn("Verify the package catalog.", { requiredTool: "package_catalog" });
+
+        expect(result.type).toBe("error");
+        expect(result.retryable).toBe(false);
+        expect(result.message).toContain('Required tool "package_catalog" was not invoked');
+        expect(fakeSession.sentPrompts).toHaveLength(2);
+        expect(result.events.filter((event) => event.eventType === "runtime.required_tool_not_invoked")).toHaveLength(2);
+    });
+
     it("keeps spawn_agent inline when a control bridge is provided", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [

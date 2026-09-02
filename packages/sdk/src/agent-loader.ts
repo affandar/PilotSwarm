@@ -106,6 +106,8 @@ export interface AgentConfig {
     splashMobile?: string;
     /** Initial prompt to send when the system agent is first created. */
     initialPrompt?: string;
+    /** Declared tool with a registered handler that must run during the named agent's initial prompt turn. */
+    initialRequiredTool?: string;
     /** Source plugin namespace (e.g. "pilotswarm", "smelter"). Set by the worker during plugin loading. */
     namespace?: string;
     /** Internal: identifies which prompt layering path this agent should use. */
@@ -154,6 +156,40 @@ export interface AgentConfig {
     sourcePath?: string;
 }
 
+export interface AgentDefinitionIssue {
+    code: "initial_required_tool_schema" | "initial_required_tool_not_declared";
+    message: string;
+}
+
+export function validateAgentDefinition(
+    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool">,
+): AgentDefinitionIssue[] {
+    const requiredTool = typeof agent.initialRequiredTool === "string"
+        ? agent.initialRequiredTool.trim()
+        : "";
+    if (!requiredTool) return [];
+
+    const issues: AgentDefinitionIssue[] = [];
+    if (agent.schemaVersion !== 3) {
+        issues.push({
+            code: "initial_required_tool_schema",
+            message: "initialRequiredTool requires schemaVersion 3 so older workers skip rather than silently ignore the contract",
+        });
+    }
+    if (!agent.tools?.includes(requiredTool)) {
+        issues.push({
+            code: "initial_required_tool_not_declared",
+            message: `initialRequiredTool "${requiredTool}" must also appear in tools`,
+        });
+    }
+    return issues;
+}
+
+export interface LoadAgentFilesOptions {
+    /** Package validation keeps invalid definitions long enough to report structured issue codes. */
+    includeInvalid?: boolean;
+}
+
 /**
  * `supportsDirectStart` with its default applied. The default is the inverse
  * of "is a sub-agent", so a package that declares neither field behaves
@@ -184,10 +220,10 @@ const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "d
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
+    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
+    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -337,6 +373,8 @@ function parseAgentFrontmatter(content: string): {
             meta.splashMobile = value;
         } else if (key === "initialPrompt") {
             meta.initialPrompt = value;
+        } else if (key === "initialRequiredTool") {
+            meta.initialRequiredTool = value || undefined;
         }
     }
 
@@ -354,7 +392,7 @@ function parseAgentFrontmatter(content: string): {
  * @param agentsDir - Path to the agents directory.
  * @returns Array of agent configs. Files that fail to parse are skipped with a warning.
  */
-export function loadAgentFiles(agentsDir: string): AgentConfig[] {
+export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions = {}): AgentConfig[] {
     const absDir = path.resolve(agentsDir);
 
     if (!fs.existsSync(absDir)) {
@@ -383,8 +421,8 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 continue;
             }
 
-            if (meta.schemaVersion !== undefined && meta.schemaVersion !== 1 && meta.schemaVersion !== 2) {
-                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1 or 2`);
+            if (meta.schemaVersion !== undefined && ![1, 2, 3].includes(meta.schemaVersion)) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, or 3`);
                 continue;
             }
 
@@ -398,7 +436,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
             }
 
             const crawler = meta.crawler === true || meta.harvester === true;
-            agents.push({
+            const agent: AgentConfig = {
                 name: meta.name,
                 description: meta.description,
                 prompt: body,
@@ -413,6 +451,7 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 splash: meta.splash,
                 splashMobile: meta.splashMobile,
                 initialPrompt: meta.initialPrompt,
+                initialRequiredTool: meta.initialRequiredTool,
                 crawler,
                 harvester: crawler,
                 schemaVersion: meta.schemaVersion,
@@ -420,7 +459,13 @@ export function loadAgentFiles(agentsDir: string): AgentConfig[] {
                 startedBy: meta.startedBy && meta.startedBy.length > 0 ? meta.startedBy : undefined,
                 supportsDirectStart: meta.supportsDirectStart,
                 sourcePath: filePath,
-            });
+            };
+            const definitionIssues = validateAgentDefinition(agent);
+            if (definitionIssues.length > 0 && !options.includeInvalid) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: ${definitionIssues.map((issue) => issue.message).join("; ")}`);
+                continue;
+            }
+            agents.push(agent);
             if (meta.schemaVersion === undefined) {
                 console.warn(`[agent-loader] ${entry.name}: missing frontmatter 'schemaVersion'. Defaulting to 1; add 'schemaVersion: 1' to silence this warning.`);
             }

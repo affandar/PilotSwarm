@@ -20,7 +20,9 @@ description: Example agent.
 ---
 ```
 
-- `schemaVersion` is the PilotSwarm agent schema version. Use `1` until the schema changes.
+- `schemaVersion` is the PilotSwarm agent schema version. Use `1` by default.
+	Use `3` only when the agent declares `initialRequiredTool`; that tool must
+	also appear in `tools`.
 - `version` is a string. SemVer is recommended because it is easy for operators and agents to compare, but app authors may use another non-empty label.
 
 ## Creating Agents
@@ -43,6 +45,18 @@ Use SemVer intent when the app uses SemVer:
 - Major: changed role semantics, removed expectations, or incompatible output/contract changes.
 
 If the existing app uses non-SemVer version labels, preserve that style unless the user asks to migrate.
+
+When the first turn must execute a real tool before answering, use:
+
+```yaml
+schemaVersion: 3
+tools:
+	- package_catalog
+initialRequiredTool: package_catalog
+```
+
+PilotSwarm corrects one prose-only response, then fails the turn if the tool is
+still not invoked. Do not simulate this contract with prompt wording alone.
 
 ## Prompt Layer Visibility
 
