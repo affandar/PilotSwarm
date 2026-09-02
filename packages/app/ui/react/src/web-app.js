@@ -6877,8 +6877,19 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     // the policy, so the control is disabled for everyone else rather than
     // letting them pick a value and then showing a refusal.
     const [kvMe, setKvMe] = React.useState(null);
+    // Off by default: every link this dialog has ever produced opened the full
+    // workspace, and a share option that silently changed that for existing
+    // habits would be a surprise. Checked, the link carries `show_chrome=false`
+    // and lands on the canvas alone.
+    //
+    // Presentation only. It hides the portal header; it does NOT make the
+    // canvas read-only, because a query parameter is not a permission — the
+    // recipient can simply delete it. What a viewer may change inside the app
+    // stays governed by the KV policy below, and the strip is worded so it
+    // never implies otherwise.
+    const [hideChrome, setHideChrome] = React.useState(false);
     const transport = controller.transport;
-    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1`;
+    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1${hideChrome ? "&show_chrome=false" : ""}`;
     // The token variants all resolve the same hashed row: one token, N doors,
     // single-switch revocation whichever door the bearer uses.
     const linkRows = (url, keyPrefix) => React.createElement(MultiOriginLinkRows, {
@@ -6965,6 +6976,13 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                 },
                     React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
                     linkRows(sessionLink, "session"),
+                    React.createElement("label", { className: "ps-canvas-share-check" },
+                        React.createElement("input", {
+                            type: "checkbox",
+                            checked: hideChrome,
+                            onChange: (event) => setHideChrome(event.target.checked),
+                        }),
+                        "Hide page chrome"),
                     // Who may WRITE the app's shared state. Stated in words:
                     // "readers" reaches everyone the session is read-shared
                     // with, which a dialog that only says "link" hides.

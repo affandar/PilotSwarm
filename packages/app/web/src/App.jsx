@@ -7,6 +7,12 @@ import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
+import {
+    DEEP_LINK_SESSION_STORAGE_KEY,
+    parseStashedDeepLinkTarget,
+    readDeepLinkTargetFromUrl,
+    writeShowChromeParam,
+} from "./lib/deep-link.js";
 
 const DEFAULT_PORTAL_LOGO_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
@@ -27,38 +33,6 @@ const DEFAULT_PORTAL_LOGO_SVG = `
 
 const DEFAULT_PORTAL_FAVICON_URL = `data:image/svg+xml,${encodeURIComponent(DEFAULT_PORTAL_LOGO_SVG)}`;
 const GENERIC_SIGN_IN_MESSAGE = "Use your organization's identity provider to open the browser-native PilotSwarm workspace.";
-// Deep links stash ?session= in sessionStorage before sign-in because the
-// redirect-based sign-in path (mobile Entra loginRedirect) returns to the bare
-// redirectUri and drops the query string; popup/dev sign-ins never navigate,
-// so the URL param survives those on its own.
-const DEEP_LINK_SESSION_STORAGE_KEY = "pilotswarm.portal.deepLinkSession";
-
-/**
- * A deep-link target: `?session=<id>[&artifact=<filename>][&view=full|canvas]`.
- *
- * The artifact form is what the agent's show_artifact tool hands back and what
- * the Files "copy link" button produces, so a link pasted into chat, mailed to
- * a colleague, or opened in a new tab all land on the same preview.
- * `view=canvas` opens the session with its canvas up — the shareable "look at
- * the dashboard" link.
- */
-function readDeepLinkTargetFromUrl() {
-    if (typeof window === "undefined" || !window.location) return null;
-    const params = new URLSearchParams(window.location.search);
-    const sessionId = (params.get("session") || "").trim();
-    if (!sessionId) return null;
-    const artifact = (params.get("artifact") || "").trim();
-    const view = (params.get("view") || "").trim().toLowerCase();
-    return {
-        sessionId,
-        artifact: artifact || null,
-        fullscreen: view === "full",
-        canvas: view === "canvas",
-        // ?max=1 with view=canvas: arrive with the canvas COVERING the
-        // workspace — the share-link landing experience.
-        max: params.get("max") === "1",
-    };
-}
 
 function stashDeepLinkTarget() {
     const target = readDeepLinkTargetFromUrl();
@@ -67,27 +41,6 @@ function stashDeepLinkTarget() {
         window.sessionStorage.setItem(DEEP_LINK_SESSION_STORAGE_KEY, JSON.stringify(target));
     } catch {
         // Session storage unavailable; the URL params still cover non-redirect sign-ins.
-    }
-}
-
-function parseStashedDeepLinkTarget(raw) {
-    if (!raw) return null;
-    // Older builds stashed a bare session id string. A stash written before an
-    // upgrade can still be sitting in this tab when the new bundle loads.
-    if (!raw.startsWith("{")) return { sessionId: raw, artifact: null, fullscreen: false };
-    try {
-        const parsed = JSON.parse(raw);
-        const sessionId = String(parsed?.sessionId || "").trim();
-        if (!sessionId) return null;
-        return {
-            sessionId,
-            artifact: parsed?.artifact ? String(parsed.artifact) : null,
-            canvas: Boolean(parsed?.canvas),
-            fullscreen: Boolean(parsed?.fullscreen),
-            max: Boolean(parsed?.max),
-        };
-    } catch {
-        return null;
     }
 }
 
@@ -620,6 +573,31 @@ function PortalMobileStatus({ statusText, onDismiss }) {
         }, "✕"));
 }
 
+/**
+ * The bare strip that stands in for the portal header when a link asked for
+ * `show_chrome=false`.
+ *
+ * It names the deployment through the SAME `getWorkspaceTitle` the real header
+ * kicker uses, so the two can never disagree: a stock deployment reads
+ * "PilotSwarm", and one whose plugin sets `portal.title` reads that instead.
+ *
+ * The restore control is deliberately recessed — near-invisible until hovered
+ * or focused — because the whole point of this mode is that nothing competes
+ * with the canvas. It stays a real <button> with a visible focus ring so
+ * keyboard users can still reach it.
+ */
+function PortalChromelessStrip({ branding, onShowChrome }) {
+    return React.createElement("div", { className: "portal-chromeless-strip" },
+        React.createElement("span", { className: "portal-chromeless-strip-label" },
+            `${getWorkspaceTitle(branding)} · Live canvas`),
+        React.createElement("button", {
+            type: "button",
+            className: "portal-chromeless-strip-restore",
+            onClick: onShowChrome,
+            title: "Show the header and workspace chrome",
+        }, "Show chrome"));
+}
+
 function PortalWorkspace({ auth, portal, shellStyle }) {
     const transport = React.useMemo(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken,
@@ -647,6 +625,10 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
     const mobileStatusText = statusText && statusText !== dismissedStatus ? statusText : "";
     const deepLinkTarget = React.useMemo(() => consumeDeepLinkTarget(), []);
     const initialSessionId = deepLinkTarget?.sessionId || null;
+    // State rather than a bare read of the target, so "Show chrome" can put the
+    // header back without a reload (which would re-consume nothing — the deep
+    // link is consumed once per page load — and lose the open canvas).
+    const [chromeHidden, setChromeHidden] = React.useState(() => Boolean(deepLinkTarget?.hideChrome));
 
     React.useEffect(() => {
         let active = true;
@@ -665,7 +647,14 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 // right column; the phone follows the flip tick into its
                 // canvas tab (the same path an agent-driven flip takes).
                 if (deepLinkTarget?.canvas) {
-                    controller.dispatch({ type: "canvas/flip", sessionId: initialSessionId });
+                    controller.dispatch({
+                        type: "canvas/flip",
+                        sessionId: initialSessionId,
+                        // Undefined/invalid falls back to slot 1 inside the
+                        // reducer, which is the behavior every link had before
+                        // this value was read at all.
+                        slot: deepLinkTarget?.slot ?? undefined,
+                    });
                     if (deepLinkTarget?.max) {
                         controller.dispatch({ type: "ui/canvasMaximized", on: true });
                     }
@@ -694,25 +683,42 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         };
     }, [controller, deepLinkTarget, initialSessionId, transport]);
 
-    return React.createElement("div", { className: "portal-app-shell", style: shellStyle },
+    return React.createElement("div", { className: `portal-app-shell${chromeHidden ? " is-chromeless" : ""}`, style: shellStyle },
+        // The dev-auth banner survives chrome hiding on purpose: it warns that
+        // the deployment is running an auth mode with no real identity behind
+        // it, and a cosmetic display option is not a reason to suppress a
+        // security notice.
         auth.provider === "dev"
             ? React.createElement("div", { className: "portal-dev-banner is-fixed" },
                 `${auth.config?.banner || "DEV AUTH — not for production"} · signed in as ${auth.account?.name || "?"}`)
             : null,
-        React.createElement(PortalHeader, {
-            account: auth.account,
-            authEnabled: auth.authEnabled,
-            isAdmin: auth.authorization?.role === "admin",
-            branding: portal?.branding,
-            onSignOut: auth.signOut,
-            versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
-            statusText,
-            themeIcon,
-        }),
-        React.createElement(PortalMobileStatus, {
-            statusText: mobileStatusText,
-            onDismiss: () => setDismissedStatus(statusText),
-        }),
+        chromeHidden
+            ? React.createElement(PortalChromelessStrip, {
+                branding: portal?.branding,
+                onShowChrome: () => {
+                    setChromeHidden(false);
+                    // Keep the address bar honest: a reload, or the URL copied
+                    // out of the bar and passed on, must reproduce the view the
+                    // person is actually looking at — not the one they left.
+                    writeShowChromeParam(true);
+                },
+            })
+            : React.createElement(PortalHeader, {
+                account: auth.account,
+                authEnabled: auth.authEnabled,
+                isAdmin: auth.authorization?.role === "admin",
+                branding: portal?.branding,
+                onSignOut: auth.signOut,
+                versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
+                statusText,
+                themeIcon,
+            }),
+        chromeHidden
+            ? null
+            : React.createElement(PortalMobileStatus, {
+                statusText: mobileStatusText,
+                onDismiss: () => setDismissedStatus(statusText),
+            }),
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller })),
     );

@@ -186,6 +186,19 @@ changes anywhere, your browser reflects it within a poll cycle.
   If the linked session is outside your current filters, it is shown
   anyway with a "Showing linked session outside your current filters"
   notice until you navigate or change filters.
+- A canvas has its own **Share canvas** dialog with two audiences. Its
+  **Session access** tab produces a normal deep link — the recipient signs
+  in and the usual visibility rules decide whether they get in — and offers
+  a **Hide page chrome** checkbox (off by default). Checked, the link gains
+  `show_chrome=false` and lands on the canvas alone: no portal header, no
+  workspace around it, just a thin strip naming the deployment and a
+  deliberately faint **Show chrome** button that brings the header back
+  without reloading. This is presentation only. It changes nothing about
+  access — a parameter in a URL is not a permission, and the recipient can
+  simply delete it — so who may edit inside the app is still decided by
+  "Who can edit inside this app" in the same dialog. The **Anyone with
+  link** tab is the different thing: a token that needs no sign-in at all
+  and is always read-only.
 
 ---
 
