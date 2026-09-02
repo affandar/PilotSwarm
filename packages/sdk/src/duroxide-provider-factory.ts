@@ -26,6 +26,64 @@ export interface DuroxideProviderFactoryOptions {
     useManagedIdentity?: boolean;
     /** UAMI display name when the URL doesn't carry the AAD principal. */
     aadUser?: string;
+    /**
+     * Pool/timeout resiliency options threaded into the duroxide-native
+     * Entra path. Defaults to {@link duroxidePgResiliencyConfig}. Only
+     * consulted on the MI (`useManagedIdentity: true`) branch.
+     */
+    entraOptions?: DuroxidePgEntraOptions;
+}
+
+/**
+ * Subset of duroxide's `PostgresEntraOptions` we tune for connection
+ * resiliency. All fields optional; omitted fields fall back to the
+ * native defaults (maxConnections 10 / `$DUROXIDE_PG_POOL_MAX`,
+ * acquireTimeoutMs 30 000, refreshIntervalMs 300 000).
+ */
+export interface DuroxidePgEntraOptions {
+    maxConnections?: number;
+    acquireTimeoutMs?: number;
+    refreshIntervalMs?: number;
+}
+
+/**
+ * Resolve duroxide Postgres pool/timeout options from the environment.
+ *
+ * The duroxide orchestration pool is a Rust/sqlx pool configured
+ * *separately* from the node-pg pools in `pg-pool-factory.ts` — the
+ * warm-pool `min` / idle knobs there do NOT apply here (the native
+ * provider exposes no pool floor). What it does expose is the acquire
+ * timeout and the Entra token refresh lead, plus the pool ceiling.
+ *
+ * On a remote devbox each cold authenticated connect costs ~14s, so a
+ * turn-commit under pool contention can blow past the native 30s
+ * acquire timeout and get its orchestrator-queue message redelivered —
+ * which burns duroxide's (non-configurable, hard-coded max 10) poison
+ * attempts and fails the session. Raising the ceiling and the acquire
+ * timeout gives commits room to land before redelivery.
+ *
+ * Env knobs (blank / non-positive → native default):
+ *   DUROXIDE_PG_POOL_MAX          → maxConnections
+ *   DUROXIDE_PG_ACQUIRE_TIMEOUT_MS → acquireTimeoutMs (default 60 000)
+ *   DUROXIDE_PG_TOKEN_REFRESH_MS   → refreshIntervalMs
+ */
+export function duroxidePgResiliencyConfig(
+    env: NodeJS.ProcessEnv = process.env,
+): DuroxidePgEntraOptions {
+    const posInt = (name: string): number | undefined => {
+        const raw = env[name];
+        if (raw === undefined || raw.trim() === "") return undefined;
+        const n = Number.parseInt(raw, 10);
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+    };
+    const opts: DuroxidePgEntraOptions = {
+        acquireTimeoutMs: posInt("DUROXIDE_PG_ACQUIRE_TIMEOUT_MS") ?? 60_000,
+    };
+    const maxConnections = posInt("DUROXIDE_PG_POOL_MAX");
+    if (maxConnections !== undefined) opts.maxConnections = maxConnections;
+    const refreshIntervalMs = posInt("DUROXIDE_PG_TOKEN_REFRESH_MS");
+    if (refreshIntervalMs !== undefined) opts.refreshIntervalMs = refreshIntervalMs;
+    return opts;
 }
 
 /**
@@ -40,7 +98,7 @@ export interface DuroxidePostgresProviderModule {
         database: string,
         user: string,
         schema: string,
-        options?: unknown,
+        options?: DuroxidePgEntraOptions,
     ): Promise<unknown>;
 }
 
@@ -63,11 +121,13 @@ export async function createDuroxidePostgresProvider(
 
     const parsed = parsePostgresUrl(store);
     const user = resolveAadPostgresUser(parsed, opts.aadUser);
+    const entraOptions = opts.entraOptions ?? duroxidePgResiliencyConfig();
     return PostgresProvider.connectWithSchemaAndEntra(
         parsed.host,
         parsed.port,
         parsed.database,
         user,
         schema,
+        entraOptions,
     );
 }
