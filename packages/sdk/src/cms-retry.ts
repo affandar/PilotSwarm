@@ -105,6 +105,21 @@ const TRANSIENT_CATEGORIES: readonly TransientCategory[] = [
             /timeout exceeded when trying to connect/i,
         ],
     },
+    {
+        // Client-side timeouts we deliberately impose in the pg-pool factory
+        // (`connectionTimeoutMillis` / `query_timeout`). These convert a silent
+        // half-open-socket HANG into a fast throw so this retry can ride out a
+        // transient blip instead of the pool wedging forever. They are codeless
+        // (raised by pg-pool / node-pg, not the server), so they match by
+        // message only. Kept as their own bucket so a spike is alertable as
+        // `category=client_timeout` (chronic timeouts => raise the pool bound or
+        // fix the network path) rather than hiding inside connection_exception.
+        tag: "client_timeout",
+        messagePatterns: [
+            /Connection terminated due to connection timeout/i,
+            /Query read timeout/i,
+        ],
+    },
     { tag: "serialization_failure", sqlStates: new Set(["40001"]) },
     { tag: "deadlock_detected", sqlStates: new Set(["40P01"]) },
     { tag: "query_canceled", sqlStates: new Set(["57014"]) },
@@ -172,8 +187,9 @@ async function runWithRetry<T>(fn: () => Promise<T>, opts: RetryRunOptions): Pro
             const code = cmsErrorCode(err);
             const codeTag = code ? ` sqlstate=${code}` : "";
             // Generic, greppable category marker so any transient bucket (today:
-            // connection_saturation, connection_exception, serialization_failure,
-            // deadlock_detected, query_canceled, server_unavailable) can be
+            // connection_saturation, connection_exception, client_timeout,
+            // serialization_failure, deadlock_detected, query_canceled,
+            // server_unavailable) can be
             // analyzed/alerted on its own without a bespoke code path.
             const catTag = category ? ` [category=${category}]` : "";
 

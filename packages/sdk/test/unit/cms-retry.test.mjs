@@ -33,6 +33,13 @@ test("errors are classified into a transient category, or undefined when not tra
     assert.equal(classifyCmsError({ code: "40001" }), "serialization_failure");
     assert.equal(classifyCmsError({ code: "40P01" }), "deadlock_detected");
     assert.equal(classifyCmsError({ code: "57P03" }), "server_unavailable");
+    // Client-side timeouts we impose via the pg-pool factory (codeless, thrown
+    // by pg-pool / node-pg). These convert a half-open-socket HANG into a fast
+    // throw so the boot preflight + steady-state work self-heal instead of
+    // wedging. Regression: the pg-POOL acquire timeout message differs from the
+    // client CONNECT timeout, so it was not covered by connection_exception.
+    assert.equal(classifyCmsError({ message: "Connection terminated due to connection timeout" }), "client_timeout");
+    assert.equal(classifyCmsError({ message: "Query read timeout" }), "client_timeout");
     // Non-transient → no category.
     assert.equal(classifyCmsError({ code: "23505" }), undefined); // unique_violation
     assert.equal(classifyCmsError({ message: "syntax error" }), undefined);
@@ -95,4 +102,26 @@ test("critical re-throws a non-transient error", async () => {
         }),
         /boom/,
     );
+});
+
+test("critical retries a pg-pool connection-timeout (the boot-preflight self-heal path), then returns", async () => {
+    // Simulates the startup preflight hitting a devbox->PG blip: the first
+    // acquire times out (our connectionTimeoutMillis, surfaced by pg-pool as
+    // "Connection terminated due to connection timeout"), the next succeeds.
+    const logs = [];
+    let calls = 0;
+    const result = await cmsRetryCritical(
+        "unit.critical.preflight",
+        async () => {
+            calls++;
+            if (calls === 1) throw new Error("Connection terminated due to connection timeout");
+            return { rows: [{ legacy_exists: false }] };
+        },
+        (m) => logs.push(m),
+    );
+    assert.equal(calls, 2);
+    assert.deepEqual(result, { rows: [{ legacy_exists: false }] });
+    const retryLog = logs.find((m) => m.includes("transient failure"));
+    assert.ok(retryLog, "the timeout must be retried, not thrown");
+    assert.ok(retryLog.includes("[category=client_timeout]"), "must tag category=client_timeout");
 });

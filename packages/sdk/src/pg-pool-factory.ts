@@ -141,6 +141,82 @@ export function resolveAadPostgresUser(parsed: ParsedPgUrl, aadUser?: string): s
 }
 
 /**
+ * Connection-resiliency defaults applied to every `pg.Pool` built here
+ * (CMS, facts, and the duroxide schema-preflight pool).
+ *
+ * Without these, a transient loss of connectivity to Postgres (failover,
+ * a NAT/gateway idle-timeout, a network blip) leaves the pool holding
+ * half-open sockets, and pg's defaults turn that into a PERMANENT wedge:
+ *
+ *   - `connectionTimeoutMillis` defaults to 0 → a client acquire (new
+ *     connection, or a queued request against an exhausted pool) waits
+ *     FOREVER.
+ *   - there is no client-side `query_timeout` → a `pool.query` issued on
+ *     a half-open socket waits FOREVER for a reply that never comes.
+ *   - `keepAlive` is off → the dead peer is never detected at the TCP
+ *     layer, so pg keeps handing the broken client back out.
+ *
+ * Because those calls HANG rather than throw, the worker's heartbeat /
+ * CMS work never surfaces an error for the classified retry in
+ * `cms-retry.ts` to catch, and only a process restart clears it. Bounding
+ * every acquire and query makes the failure a fast REJECT instead, so the
+ * retry layer rides out the blip and the worker self-heals once
+ * connectivity returns. (The duroxide Rust/sqlx pool already behaves this
+ * way via its own acquire timeout + retry; this brings the JS pools in
+ * line.)
+ *
+ * We also keep the pool WARM. Establishing a fresh authenticated
+ * connection to an Entra-auth Postgres is expensive (measured ~3-11s for
+ * the TLS + server-side token validation, plus token minting), so paying
+ * that cost on every query is what turns a brief connectivity blip into a
+ * user-visible stall. pg's defaults work against us here: `min` is 0 and
+ * `idleTimeoutMillis` is 10s, so a pool drains to zero after 10s idle and
+ * the next query eats the full cold-connect tax. We therefore keep a
+ * floor of `min` warm connections (never idle-reaped — see pg-pool
+ * `_isAboveMin`) and hold burst connections longer via a larger
+ * `idleTimeoutMillis`. `keepAlive` keeps those warm sockets from being
+ * culled by a NAT/gateway idle-timeout. This does NOT reduce the cost of
+ * a cold connect (the first connection, and any opened above `min` during
+ * a burst, still pay it) — it just makes us pay it far less often.
+ *
+ * Every bound is env-overridable; set any to 0 to disable it (`min` 0
+ * restores the drain-to-zero behaviour, `idleTimeoutMillis` 0 disables
+ * idle reaping entirely). Note the query/statement timeouts also apply to
+ * schema migrations run through the pool — raise them (or set 0) if a
+ * one-off migration legitimately needs longer than the default.
+ *
+ * @internal
+ */
+export function pgResiliencyConfig(
+    env: NodeJS.ProcessEnv = process.env,
+): Pick<
+    PoolConfig,
+    | "keepAlive"
+    | "keepAliveInitialDelayMillis"
+    | "connectionTimeoutMillis"
+    | "query_timeout"
+    | "statement_timeout"
+    | "min"
+    | "idleTimeoutMillis"
+> {
+    const intMs = (name: string, fallback: number): number => {
+        const raw = env[name];
+        if (raw === undefined || raw.trim() === "") return fallback;
+        const n = Number.parseInt(raw, 10);
+        return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    return {
+        keepAlive: true,
+        keepAliveInitialDelayMillis: intMs("PILOTSWARM_PG_KEEPALIVE_INITIAL_DELAY_MS", 10_000),
+        connectionTimeoutMillis: intMs("PILOTSWARM_PG_CONNECTION_TIMEOUT_MS", 15_000),
+        query_timeout: intMs("PILOTSWARM_PG_QUERY_TIMEOUT_MS", 60_000),
+        statement_timeout: intMs("PILOTSWARM_PG_STATEMENT_TIMEOUT_MS", 60_000),
+        min: intMs("PILOTSWARM_PG_POOL_MIN", 1),
+        idleTimeoutMillis: intMs("PILOTSWARM_PG_IDLE_TIMEOUT_MS", 60_000),
+    };
+}
+
+/**
  * Build a `pg.PoolConfig` honouring the MI feature switch.
  *
  * Implementation note: pg accepts `password` as either `string` or a
@@ -160,6 +236,7 @@ export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
         return {
             connectionString: parsed.sanitizedConnectionString,
             max,
+            ...pgResiliencyConfig(),
             ...sslConfig,
         };
     }
@@ -188,6 +265,7 @@ export function buildPgPoolConfig(opts: PgPoolFactoryOptions): PoolConfig {
             return token.token;
         },
         max,
+        ...pgResiliencyConfig(),
         ...sslConfig,
     };
 }
