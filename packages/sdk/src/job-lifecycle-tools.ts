@@ -209,7 +209,12 @@ export function createJobLifecycleTools(
                         description:
                             "Provider request. For mock: delayMs, outcome, result, evidence, and error. "
                             + "For Azure DevOps pull-request approval or completion: organization, project, repositoryId, "
-                            + "pullRequestId, and expectedSourceCommit.",
+                            + "pullRequestId, and expectedSourceCommit. For pull_request_approval, an optional "
+                            + "conditions object narrows the gate to a heterogeneous set that must all hold on the "
+                            + "current source commit: requiredReviewers (bool), requireAllBlockingPolicies (bool), "
+                            + "requiredPolicyDisplayNames (string[], e.g. [\"PVS/Smart Test Selection (git)\"]), and "
+                            + "codeReviewRecommendation (string[] of \"approve\"/\"approve with comments\"). When "
+                            + "conditions is omitted the gate requires every required reviewer and every blocking policy.",
                         additionalProperties: true,
                     },
                 },

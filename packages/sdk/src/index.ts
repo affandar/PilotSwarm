@@ -104,8 +104,11 @@ export {
     normalizeAzureDevOpsOrganization,
     parseAzureDevOpsPullRequestIdentity,
     parseAzureDevOpsPullRequestApprovalTarget,
+    parseAzureDevOpsApprovalConditions,
     type AzureDevOpsPullRequestIdentity,
     type AzureDevOpsPullRequestApprovalTarget,
+    type AzureDevOpsApprovalConditions,
+    type AzureDevOpsCodeReviewRecommendation,
 } from "./azure-devops-job-waits.js";
 export { createJobLifecycleTools } from "./job-lifecycle-tools.js";
 export {

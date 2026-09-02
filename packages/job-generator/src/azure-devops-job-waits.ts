@@ -56,10 +56,26 @@ interface AzureDevOpsPolicyEvaluation {
     completedDate: string | null;
 }
 
+interface AzureDevOpsIteration {
+    id: number;
+    createdDate: string | null;
+    sourceCommit: string | null;
+}
+
+interface AzureDevOpsCodeReviewAssessment {
+    threadId: number | null;
+    commentId: number | null;
+    publishedDate: string | null;
+    recommendation: "approve" | "approve_with_comments" | "other" | null;
+    iterationCurrent: boolean;
+}
+
 export interface AzureDevOpsPullRequestApprovalSnapshot {
     pullRequest: AzureDevOpsPullRequest;
     reviewers: AzureDevOpsReviewer[];
     policies: AzureDevOpsPolicyEvaluation[];
+    iterations: AzureDevOpsIteration[];
+    codeReview: AzureDevOpsCodeReviewAssessment | null;
 }
 
 export interface AzureDevOpsPullRequestCompletionSnapshot {
@@ -358,6 +374,88 @@ function parsePolicyEvaluations(value: unknown): AzureDevOpsPolicyEvaluation[] {
     });
 }
 
+function parseIterations(value: unknown): AzureDevOpsIteration[] {
+    return jsonCollection(value, "pull-request iterations").map((entry) => {
+        const iteration = record(entry);
+        const commit = optionalString(record(iteration.sourceRefCommit).commitId);
+        return {
+            id: Number(iteration.id),
+            createdDate: optionalString(iteration.createdDate),
+            sourceCommit: commit ? commit.toLowerCase() : null,
+        };
+    });
+}
+
+function latestIteration(iterations: readonly AzureDevOpsIteration[]): AzureDevOpsIteration | null {
+    let latest: AzureDevOpsIteration | null = null;
+    for (const iteration of iterations) {
+        if (!Number.isInteger(iteration.id)) continue;
+        if (!latest || iteration.id > latest.id) latest = iteration;
+    }
+    return latest;
+}
+
+const CODE_REVIEW_FOOTER = /_posted by code review agent_/i;
+const CODE_REVIEW_HEADING = /code review\s*[\u2014\u2013-]\s*overall assessment/i;
+
+function extractCodeReviewRecommendation(
+    content: string,
+): AzureDevOpsCodeReviewAssessment["recommendation"] {
+    const normalized = content.replace(/[`*]/g, "");
+    const approve = normalized.match(
+        /approval recommendation\s*:?\s*(approve with comments|approve)\b/i,
+    );
+    if (approve) {
+        return /with comments/i.test(approve[1]) ? "approve_with_comments" : "approve";
+    }
+    if (/approval recommendation\s*:?\s*\S+/i.test(normalized)) return "other";
+    return null;
+}
+
+function matchCodeReviewAssessment(
+    threadsBody: unknown,
+    current: AzureDevOpsIteration | null,
+): AzureDevOpsCodeReviewAssessment | null {
+    let best: { threadId: number | null; commentId: number | null; publishedDate: string | null; content: string } | null = null;
+    for (const entry of jsonCollection(threadsBody, "pull-request threads")) {
+        const thread = record(entry);
+        const comments = Array.isArray(thread.comments) ? thread.comments : [];
+        for (const rawComment of comments) {
+            const comment = record(rawComment);
+            const content = typeof comment.content === "string" ? comment.content : "";
+            if (!content) continue;
+            if (!CODE_REVIEW_FOOTER.test(content) && !CODE_REVIEW_HEADING.test(content)) continue;
+            const publishedDate = optionalString(comment.publishedDate);
+            const bestTime = best?.publishedDate ? Date.parse(best.publishedDate) : -Infinity;
+            const thisTime = publishedDate ? Date.parse(publishedDate) : -Infinity;
+            if (!best || thisTime >= bestTime) {
+                const threadId = Number(thread.id);
+                const commentId = Number(comment.id);
+                best = {
+                    threadId: Number.isInteger(threadId) ? threadId : null,
+                    commentId: Number.isInteger(commentId) ? commentId : null,
+                    publishedDate,
+                    content,
+                };
+            }
+        }
+    }
+    if (!best) return null;
+    const iterationCurrent = Boolean(
+        current
+        && current.createdDate
+        && best.publishedDate
+        && Date.parse(best.publishedDate) >= Date.parse(current.createdDate),
+    );
+    return {
+        threadId: best.threadId,
+        commentId: best.commentId,
+        publishedDate: best.publishedDate,
+        recommendation: extractCodeReviewRecommendation(best.content),
+        iterationCurrent,
+    };
+}
+
 export class AzureDevOpsPullRequestClient {
     private readonly token?: string;
     private readonly pat?: string;
@@ -420,7 +518,8 @@ export class AzureDevOpsPullRequestClient {
         );
         if (pullRequestBody === null) return null;
         const pullRequest = parsePullRequest(pullRequestBody, target);
-        const [reviewersBody, policiesBody] = await Promise.all([
+        const wantsCodeReview = target.conditions.codeReviewRecommendation !== null;
+        const [reviewersBody, policiesBody, threadsBody, iterationsBody] = await Promise.all([
             this.getJson(
                 pullRequestEndpoint(target, "/reviewers"),
                 authorization,
@@ -431,6 +530,20 @@ export class AzureDevOpsPullRequestClient {
                 authorization,
                 "policy evaluations",
             ),
+            wantsCodeReview
+                ? this.getJson(
+                    pullRequestEndpoint(target, "/threads"),
+                    authorization,
+                    "pull-request threads",
+                )
+                : Promise.resolve(null),
+            wantsCodeReview
+                ? this.getJson(
+                    pullRequestEndpoint(target, "/iterations"),
+                    authorization,
+                    "pull-request iterations",
+                )
+                : Promise.resolve(null),
         ]);
         const currentPullRequestBody = await this.getJson(
             pullRequestEndpoint(target),
@@ -439,10 +552,16 @@ export class AzureDevOpsPullRequestClient {
             true,
         );
         if (currentPullRequestBody === null) return null;
+        const iterations = iterationsBody ? parseIterations(iterationsBody) : [];
+        const codeReview = wantsCodeReview
+            ? matchCodeReviewAssessment(threadsBody, latestIteration(iterations))
+            : null;
         return {
             pullRequest: parsePullRequest(currentPullRequestBody, target),
             reviewers: parseReviewers(reviewersBody),
             policies: parsePolicyEvaluations(policiesBody),
+            iterations,
+            codeReview,
         };
     }
 
@@ -472,6 +591,14 @@ function approvalCursor(snapshot: AzureDevOpsPullRequestApprovalSnapshot): strin
         policies: snapshot.policies
             .map((policy) => [policy.evaluationId, policy.status])
             .sort(([left], [right]) => String(left).localeCompare(String(right))),
+        codeReview: snapshot.codeReview
+            ? [
+                snapshot.codeReview.commentId,
+                snapshot.codeReview.publishedDate,
+                snapshot.codeReview.recommendation,
+                snapshot.codeReview.iterationCurrent,
+            ]
+            : null,
     });
 }
 
@@ -533,6 +660,7 @@ function observationEvidence(
         sourceCommit: snapshot.pullRequest.sourceCommit,
         requiredReviewers,
         policies,
+        codeReview: snapshot.codeReview,
         observedAt,
     };
 }
@@ -608,27 +736,71 @@ export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
             };
         }
 
-        const pendingReviewers = snapshot.reviewers.filter(
-            (reviewer) => reviewer.isRequired && reviewer.vote < 5,
-        );
-        const pendingPolicies = snapshot.policies.filter(
-            (policy) => (
-                policy.isEnabled
-                && policy.isBlocking
-                && policy.status !== "approved"
-                && policy.status !== "notApplicable"
-            ),
-        );
-        if (pendingReviewers.length > 0 || pendingPolicies.length > 0) {
+        const conditions = target.conditions;
+        const unmet: string[] = [];
+        const pendingReviewerIds: string[] = [];
+        const pendingPolicyEvaluationIds: string[] = [];
+
+        if (conditions.requiredReviewers) {
+            const pending = snapshot.reviewers.filter(
+                (reviewer) => reviewer.isRequired && reviewer.vote < 5,
+            );
+            if (pending.length > 0) {
+                unmet.push("required_reviewers");
+                pendingReviewerIds.push(...pending.map((reviewer) => reviewer.id));
+            }
+        }
+
+        if (conditions.requireAllBlockingPolicies) {
+            const pending = snapshot.policies.filter(
+                (policy) => (
+                    policy.isEnabled
+                    && policy.isBlocking
+                    && policy.status !== "approved"
+                    && policy.status !== "notApplicable"
+                ),
+            );
+            if (pending.length > 0) {
+                unmet.push("blocking_policies");
+                pendingPolicyEvaluationIds.push(...pending.map((policy) => policy.evaluationId));
+            }
+        }
+
+        for (const name of conditions.requiredPolicyDisplayNames) {
+            const matched = snapshot.policies.filter(
+                (policy) => (policy.displayName ?? "").trim().toLowerCase()
+                    === name.trim().toLowerCase(),
+            );
+            const passed = matched.length > 0 && matched.every(
+                (policy) => policy.status === "approved" || policy.status === "notApplicable",
+            );
+            if (!passed) {
+                unmet.push(`policy:${name}`);
+                pendingPolicyEvaluationIds.push(...matched.map((policy) => policy.evaluationId));
+            }
+        }
+
+        if (conditions.codeReviewRecommendation) {
+            const review = snapshot.codeReview;
+            const satisfied = Boolean(
+                review
+                && review.iterationCurrent
+                && review.recommendation
+                && review.recommendation !== "other"
+                && conditions.codeReviewRecommendation.includes(review.recommendation),
+            );
+            if (!satisfied) unmet.push("code_review_recommendation");
+        }
+
+        if (unmet.length > 0) {
             return {
                 disposition: "pending",
                 observation: {
                     ...evidence,
                     ready: false,
-                    pendingReviewerIds: pendingReviewers.map((reviewer) => reviewer.id),
-                    pendingPolicyEvaluationIds: pendingPolicies.map(
-                        (policy) => policy.evaluationId,
-                    ),
+                    unmet,
+                    pendingReviewerIds,
+                    pendingPolicyEvaluationIds,
                 },
                 cursor,
             };

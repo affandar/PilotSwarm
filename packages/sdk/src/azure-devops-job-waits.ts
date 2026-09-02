@@ -11,9 +11,33 @@ export interface AzureDevOpsPullRequestIdentity {
     pullRequestId: number;
 }
 
+export type AzureDevOpsCodeReviewRecommendation = "approve" | "approve_with_comments";
+
+/**
+ * Heterogeneous, declarative conditions that satisfy a single `pull_request_approval`
+ * watcher. The gate is satisfied only when every declared condition holds against the
+ * current source commit. Different Job states declare different condition sets against the
+ * same watcher kind rather than introducing a new kind per gate flavor.
+ */
+export interface AzureDevOpsApprovalConditions {
+    /** Every required human reviewer must vote approve (>= 5). */
+    requiredReviewers: boolean;
+    /** Every enabled, blocking branch policy must be approved or not applicable. */
+    requireAllBlockingPolicies: boolean;
+    /** These named branch policies (matched by displayName, case-insensitively) must pass. */
+    requiredPolicyDisplayNames: string[];
+    /**
+     * When set, a Code Review Agent overall-assessment comment on the current PR iteration
+     * must carry one of these recommendations. `null` means the code-review comment is not
+     * consulted.
+     */
+    codeReviewRecommendation: AzureDevOpsCodeReviewRecommendation[] | null;
+}
+
 export interface AzureDevOpsPullRequestApprovalTarget extends AzureDevOpsPullRequestIdentity {
     expectedSourceCommit: string;
     resourceKey: string;
+    conditions: AzureDevOpsApprovalConditions;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -81,6 +105,65 @@ export function azureDevOpsPullRequestResourceKey(
     return `azure_devops:pull_request:${components.join(":")}`;
 }
 
+function normalizeCodeReviewRecommendation(value: unknown): AzureDevOpsCodeReviewRecommendation {
+    const raw = typeof value === "string"
+        ? value.trim().toLowerCase().replace(/[\s-]+/g, "_")
+        : "";
+    if (raw === "approve") return "approve";
+    if (raw === "approve_with_comments") return "approve_with_comments";
+    throw new Error(
+        `Azure DevOps approval condition has an invalid code-review recommendation: ${String(value)}`,
+    );
+}
+
+function parseConditionStringArray(value: unknown, label: string): string[] {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) {
+        throw new Error(`Azure DevOps approval condition ${label} must be an array of strings`);
+    }
+    return value.map((entry) => requiredString(entry, `${label} entry`));
+}
+
+export function parseAzureDevOpsApprovalConditions(value: unknown): AzureDevOpsApprovalConditions {
+    if (value === undefined || value === null) {
+        return {
+            requiredReviewers: true,
+            requireAllBlockingPolicies: true,
+            requiredPolicyDisplayNames: [],
+            codeReviewRecommendation: null,
+        };
+    }
+    const input = record(value);
+    const recommendationRaw = input.codeReviewRecommendation;
+    let codeReviewRecommendation: AzureDevOpsCodeReviewRecommendation[] | null = null;
+    if (recommendationRaw !== undefined && recommendationRaw !== null) {
+        if (!Array.isArray(recommendationRaw) || recommendationRaw.length === 0) {
+            throw new Error(
+                "Azure DevOps approval condition codeReviewRecommendation must be a non-empty array",
+            );
+        }
+        codeReviewRecommendation = recommendationRaw.map(normalizeCodeReviewRecommendation);
+    }
+    const conditions: AzureDevOpsApprovalConditions = {
+        requiredReviewers: input.requiredReviewers === true,
+        requireAllBlockingPolicies: input.requireAllBlockingPolicies === true,
+        requiredPolicyDisplayNames: parseConditionStringArray(
+            input.requiredPolicyDisplayNames,
+            "requiredPolicyDisplayNames",
+        ),
+        codeReviewRecommendation,
+    };
+    if (!conditions.requiredReviewers
+        && !conditions.requireAllBlockingPolicies
+        && conditions.requiredPolicyDisplayNames.length === 0
+        && conditions.codeReviewRecommendation === null) {
+        throw new Error(
+            "Azure DevOps approval conditions must declare at least one satisfaction condition",
+        );
+    }
+    return conditions;
+}
+
 export function parseAzureDevOpsPullRequestApprovalTarget(
     value: unknown,
 ): AzureDevOpsPullRequestApprovalTarget {
@@ -99,6 +182,7 @@ export function parseAzureDevOpsPullRequestApprovalTarget(
         ...identity,
         expectedSourceCommit,
         resourceKey: azureDevOpsPullRequestResourceKey(identity),
+        conditions: parseAzureDevOpsApprovalConditions(input.conditions),
     };
 }
 

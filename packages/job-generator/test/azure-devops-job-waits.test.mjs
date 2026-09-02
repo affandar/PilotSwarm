@@ -418,6 +418,8 @@ function providerFetch(overrides = {}) {
             },
         },
     ];
+    const threads = overrides.threads ?? [];
+    const iterations = overrides.iterations ?? [];
     return {
         requests,
         fetch: async (url, init) => {
@@ -428,6 +430,12 @@ function providerFetch(overrides = {}) {
             }
             if (endpoint.pathname.endsWith("/policy/evaluations")) {
                 return response({ value: policies });
+            }
+            if (endpoint.pathname.endsWith("/threads")) {
+                return response({ value: threads });
+            }
+            if (endpoint.pathname.endsWith("/iterations")) {
+                return response({ value: iterations });
             }
             if (overrides.pullRequestStatus) {
                 return response(
@@ -540,6 +548,169 @@ test("Azure DevOps approval observer remains pending for required review or poli
     assert.equal(result.disposition, "pending");
     assert.deepEqual(result.observation.pendingReviewerIds, ["reviewer-1"]);
     assert.deepEqual(result.observation.pendingPolicyEvaluationIds, ["evaluation-1"]);
+});
+
+const fixProposedConditions = {
+    requiredReviewers: false,
+    requiredPolicyDisplayNames: ["PVS/Smart Test Selection (git)"],
+    codeReviewRecommendation: ["approve", "approve_with_comments"],
+};
+
+function pvsPolicy(status = "approved") {
+    return {
+        evaluationId: "pvs",
+        status,
+        configuration: {
+            id: 9,
+            isEnabled: true,
+            isBlocking: true,
+            type: { id: "build", displayName: "Build" },
+            settings: { displayName: "PVS/Smart Test Selection (Git)" },
+        },
+    };
+}
+
+const iterationFixture = [
+    { id: 1, createdDate: "2026-09-02T03:57:21Z", sourceRefCommit: { commitId: sourceCommit } },
+];
+
+function codeReviewThread(recommendation = "`Approve`", publishedDate = "2026-09-02T04:36:31Z") {
+    return [{
+        id: 100,
+        comments: [{
+            id: 1,
+            publishedDate,
+            content: "## Code Review \u2014 Overall Assessment\n"
+                + "- **Current iteration**: `1`\n"
+                + `- **Approval recommendation**: ${recommendation}\n\n`
+                + "---\n_Posted by Code Review Agent_",
+        }],
+    }];
+}
+
+function conditionOperation(conditions = fixProposedConditions, extra = {}) {
+    return operation({ ...target(), conditions, ...extra });
+}
+
+test(
+    "Azure DevOps approval gate ignores humans and satisfies on PVS + current code-review approve",
+    async () => {
+        const provider = providerFetch({
+            reviewers: [{ id: "human-1", isRequired: true, vote: 0 }],
+            policies: [
+                pvsPolicy("approved"),
+                {
+                    evaluationId: "compliance",
+                    status: "queued",
+                    configuration: {
+                        id: 11,
+                        isEnabled: true,
+                        isBlocking: true,
+                        type: { id: "compliance", displayName: "Code Review Compliance" },
+                    },
+                },
+            ],
+            iterations: iterationFixture,
+            threads: codeReviewThread("`Approve`"),
+        });
+        const observer = new AzureDevOpsPullRequestApprovalObserver(
+            new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+        );
+
+        const result = await observer.observe({
+            wait: wait(),
+            operation: conditionOperation(),
+        });
+
+        assert.equal(result.disposition, "satisfied");
+        assert.equal(result.result.approved, true);
+        assert.equal(result.evidence.codeReview.recommendation, "approve");
+        assert.equal(result.evidence.codeReview.iterationCurrent, true);
+    },
+);
+
+test("Azure DevOps approval gate accepts a markdown 'Approve with comments' recommendation", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("approved")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("**`Approve with comments`**"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "satisfied");
+    assert.equal(result.evidence.codeReview.recommendation, "approve_with_comments");
+});
+
+test("Azure DevOps approval gate holds when the code-review comment predates the current iteration", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("approved")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("`Approve`", "2026-09-02T03:00:00Z"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "pending");
+    assert.equal(result.observation.codeReview.iterationCurrent, false);
+    assert.ok(result.observation.unmet.includes("code_review_recommendation"));
+});
+
+test("Azure DevOps approval gate holds when the named PVS policy is not approved", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("rejected")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("`Approve`"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "pending");
+    assert.ok(result.observation.unmet.includes("policy:PVS/Smart Test Selection (git)"));
+    assert.deepEqual(result.observation.pendingPolicyEvaluationIds, ["pvs"]);
+});
+
+test("Azure DevOps approval gate holds when the code-review recommendation is not an approval", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("approved")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("`Reject`"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "pending");
+    assert.equal(result.observation.codeReview.recommendation, "other");
+    assert.ok(result.observation.unmet.includes("code_review_recommendation"));
+});
+
+test("Azure DevOps approval gate holds when the code-review comment is absent", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("approved")],
+        iterations: iterationFixture,
+        threads: [],
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "pending");
+    assert.equal(result.observation.codeReview, null);
+    assert.ok(result.observation.unmet.includes("code_review_recommendation"));
 });
 
 test("Azure DevOps approval observer rejects a changed source commit", async () => {
