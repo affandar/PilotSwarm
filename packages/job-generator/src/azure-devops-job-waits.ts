@@ -665,6 +665,139 @@ function observationEvidence(
     };
 }
 
+interface ObservedConditionCheck {
+    key: string;
+    label: string;
+    state: "satisfied" | "pending" | "failed";
+    detail: string | null;
+}
+
+interface ApprovalConditionEvaluation {
+    conditions: ObservedConditionCheck[];
+    unmet: string[];
+    pendingReviewerIds: string[];
+    pendingPolicyEvaluationIds: string[];
+}
+
+// Flatten the declared approval conditions into one canonical row per condition
+// so the portal can render the heterogeneous gate as an explicit list with a
+// per-condition override control. The row `key` is the single source of truth
+// shared by the `unmet` set and the operator override keys, so overriding a row
+// force-satisfies exactly that condition. Only declared conditions produce a
+// row; an undeclared human-review requirement never appears.
+function evaluateApprovalConditions(
+    target: AzureDevOpsPullRequestApprovalTarget,
+    snapshot: AzureDevOpsPullRequestApprovalSnapshot,
+    overrideKeys: ReadonlySet<string>,
+): ApprovalConditionEvaluation {
+    const conditions = target.conditions;
+    const rows: ObservedConditionCheck[] = [];
+    const unmet: string[] = [];
+    const pendingReviewerIds: string[] = [];
+    const pendingPolicyEvaluationIds: string[] = [];
+
+    const record = (
+        key: string,
+        label: string,
+        rawState: ObservedConditionCheck["state"],
+        detail: string | null,
+        onUnmet?: () => void,
+    ): void => {
+        const state: ObservedConditionCheck["state"] = overrideKeys.has(key) ? "satisfied" : rawState;
+        rows.push({ key, label, state, detail });
+        if (state !== "satisfied") {
+            unmet.push(key);
+            onUnmet?.();
+        }
+    };
+
+    if (conditions.requiredReviewers) {
+        const required = snapshot.reviewers.filter((reviewer) => reviewer.isRequired);
+        const pending = required.filter((reviewer) => reviewer.vote < 5);
+        const rejected = required.some((reviewer) => reviewer.vote < 0);
+        const rawState: ObservedConditionCheck["state"] = rejected
+            ? "failed"
+            : pending.length === 0 && required.length > 0
+                ? "satisfied"
+                : "pending";
+        const detail = required.length === 0
+            ? "no required reviewers assigned"
+            : `${required.length - pending.length} of ${required.length} required reviewer(s) approved`;
+        record("required_reviewers", "Required reviewer approval", rawState, detail, () => {
+            pendingReviewerIds.push(...pending.map((reviewer) => reviewer.id));
+        });
+    }
+
+    if (conditions.requireAllBlockingPolicies) {
+        const blocking = snapshot.policies.filter((policy) => policy.isEnabled && policy.isBlocking);
+        const pending = blocking.filter(
+            (policy) => policy.status !== "approved" && policy.status !== "notApplicable",
+        );
+        const rejected = pending.some(
+            (policy) => policy.status === "rejected" || policy.status === "broken",
+        );
+        const rawState: ObservedConditionCheck["state"] = rejected
+            ? "failed"
+            : pending.length === 0
+                ? "satisfied"
+                : "pending";
+        const detail = `${blocking.length - pending.length} of ${blocking.length} `
+            + `blocking polic${blocking.length === 1 ? "y" : "ies"} passed`;
+        record("blocking_policies", "All blocking branch policies", rawState, detail, () => {
+            pendingPolicyEvaluationIds.push(...pending.map((policy) => policy.evaluationId));
+        });
+    }
+
+    for (const name of conditions.requiredPolicyDisplayNames) {
+        const matched = snapshot.policies.filter(
+            (policy) => (policy.displayName ?? "").trim().toLowerCase() === name.trim().toLowerCase(),
+        );
+        const passed = matched.length > 0 && matched.every(
+            (policy) => policy.status === "approved" || policy.status === "notApplicable",
+        );
+        const rejected = matched.some(
+            (policy) => policy.status === "rejected" || policy.status === "broken",
+        );
+        const rawState: ObservedConditionCheck["state"] = rejected
+            ? "failed"
+            : passed
+                ? "satisfied"
+                : "pending";
+        const detail = matched.length === 0
+            ? "not yet evaluated"
+            : passed
+                ? "policy passed"
+                : `status: ${matched.map((policy) => policy.status).join(", ")}`;
+        record(`policy:${name}`, `Policy \u00b7 ${name}`, rawState, detail, () => {
+            pendingPolicyEvaluationIds.push(...matched.map((policy) => policy.evaluationId));
+        });
+    }
+
+    if (conditions.codeReviewRecommendation) {
+        const review = snapshot.codeReview;
+        const satisfied = Boolean(
+            review
+            && review.iterationCurrent
+            && review.recommendation
+            && review.recommendation !== "other"
+            && conditions.codeReviewRecommendation.includes(review.recommendation),
+        );
+        const detail = !review
+            ? "no Code Review Agent recommendation on the current iteration"
+            : !review.iterationCurrent
+                ? "recommendation predates the current iteration"
+                : `recommendation: ${review.recommendation ?? "none"}`;
+        record(
+            "code_review_recommendation",
+            "Code Review Agent recommendation",
+            satisfied ? "satisfied" : "pending",
+            detail,
+        );
+    }
+
+    return { conditions: rows, unmet, pendingReviewerIds, pendingPolicyEvaluationIds };
+}
+
 export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
     readonly provider = AZURE_DEVOPS_JOB_WAIT_PROVIDER;
     readonly kind = AZURE_DEVOPS_PULL_REQUEST_APPROVAL_KIND;
@@ -736,61 +869,13 @@ export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
             };
         }
 
-        const conditions = target.conditions;
-        const unmet: string[] = [];
-        const pendingReviewerIds: string[] = [];
-        const pendingPolicyEvaluationIds: string[] = [];
-
-        if (conditions.requiredReviewers) {
-            const pending = snapshot.reviewers.filter(
-                (reviewer) => reviewer.isRequired && reviewer.vote < 5,
-            );
-            if (pending.length > 0) {
-                unmet.push("required_reviewers");
-                pendingReviewerIds.push(...pending.map((reviewer) => reviewer.id));
-            }
-        }
-
-        if (conditions.requireAllBlockingPolicies) {
-            const pending = snapshot.policies.filter(
-                (policy) => (
-                    policy.isEnabled
-                    && policy.isBlocking
-                    && policy.status !== "approved"
-                    && policy.status !== "notApplicable"
-                ),
-            );
-            if (pending.length > 0) {
-                unmet.push("blocking_policies");
-                pendingPolicyEvaluationIds.push(...pending.map((policy) => policy.evaluationId));
-            }
-        }
-
-        for (const name of conditions.requiredPolicyDisplayNames) {
-            const matched = snapshot.policies.filter(
-                (policy) => (policy.displayName ?? "").trim().toLowerCase()
-                    === name.trim().toLowerCase(),
-            );
-            const passed = matched.length > 0 && matched.every(
-                (policy) => policy.status === "approved" || policy.status === "notApplicable",
-            );
-            if (!passed) {
-                unmet.push(`policy:${name}`);
-                pendingPolicyEvaluationIds.push(...matched.map((policy) => policy.evaluationId));
-            }
-        }
-
-        if (conditions.codeReviewRecommendation) {
-            const review = snapshot.codeReview;
-            const satisfied = Boolean(
-                review
-                && review.iterationCurrent
-                && review.recommendation
-                && review.recommendation !== "other"
-                && conditions.codeReviewRecommendation.includes(review.recommendation),
-            );
-            if (!satisfied) unmet.push("code_review_recommendation");
-        }
+        const overrideKeys = new Set(input.wait.conditionOverrides ?? []);
+        const {
+            conditions: conditionChecks,
+            unmet,
+            pendingReviewerIds,
+            pendingPolicyEvaluationIds,
+        } = evaluateApprovalConditions(target, snapshot, overrideKeys);
 
         if (unmet.length > 0) {
             return {
@@ -798,6 +883,7 @@ export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
                 observation: {
                     ...evidence,
                     ready: false,
+                    conditions: conditionChecks,
                     unmet,
                     pendingReviewerIds,
                     pendingPolicyEvaluationIds,
@@ -818,7 +904,7 @@ export class AzureDevOpsPullRequestApprovalObserver implements JobWaitObserver {
         };
         return {
             disposition: "satisfied",
-            observation: { ...evidence, ready: true },
+            observation: { ...evidence, ready: true, conditions: conditionChecks },
             cursor,
             evidence,
             result,

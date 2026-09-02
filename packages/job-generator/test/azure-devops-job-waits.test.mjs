@@ -679,6 +679,77 @@ test("Azure DevOps approval gate holds when the named PVS policy is not approved
     assert.deepEqual(result.observation.pendingPolicyEvaluationIds, ["pvs"]);
 });
 
+test("Azure DevOps approval gate emits a canonical condition row per declared condition", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("rejected")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("`Approve`"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
+
+    assert.equal(result.disposition, "pending");
+    const rows = result.observation.conditions;
+    assert.equal(rows.length, 2);
+    const policyRow = rows.find((row) => row.key === "policy:PVS/Smart Test Selection (git)");
+    const reviewRow = rows.find((row) => row.key === "code_review_recommendation");
+    assert.ok(policyRow, "expected a named-policy condition row");
+    assert.equal(policyRow.state, "failed");
+    assert.ok(reviewRow, "expected a code-review condition row");
+    assert.equal(reviewRow.state, "satisfied");
+    assert.ok(
+        !rows.some((row) => row.key === "required_reviewers"),
+        "human reviewers are not a declared condition for this gate",
+    );
+});
+
+test("Azure DevOps approval gate treats an overridden condition key as satisfied", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("rejected")],
+        iterations: iterationFixture,
+        threads: codeReviewThread("`Approve`"),
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const result = await observer.observe({
+        wait: { ...wait(), conditionOverrides: ["policy:PVS/Smart Test Selection (git)"] },
+        operation: conditionOperation(),
+    });
+
+    assert.equal(result.disposition, "satisfied");
+    assert.equal(result.result.approved, true);
+    const policyRow = result.observation.conditions.find(
+        (row) => row.key === "policy:PVS/Smart Test Selection (git)",
+    );
+    assert.equal(policyRow.state, "satisfied");
+});
+
+test("Azure DevOps approval gate override clears a missing code-review recommendation", async () => {
+    const provider = providerFetch({
+        policies: [pvsPolicy("approved")],
+        iterations: iterationFixture,
+    });
+    const observer = new AzureDevOpsPullRequestApprovalObserver(
+        new AzureDevOpsPullRequestClient({ token: "ado-token", fetch: provider.fetch }),
+    );
+
+    const pending = await observer.observe({ wait: wait(), operation: conditionOperation() });
+    assert.equal(pending.disposition, "pending");
+    assert.ok(pending.observation.unmet.includes("code_review_recommendation"));
+
+    const overridden = await observer.observe({
+        wait: { ...wait(), conditionOverrides: ["code_review_recommendation"] },
+        operation: conditionOperation(),
+    });
+    assert.equal(overridden.disposition, "satisfied");
+    assert.equal(overridden.result.approved, true);
+});
+
 test("Azure DevOps approval gate holds when the code-review recommendation is not an approval", async () => {
     const provider = providerFetch({
         policies: [pvsPolicy("approved")],
