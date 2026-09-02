@@ -2286,6 +2286,21 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-danger);
 }
 
+.ps-state-run-current-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.02rem 0.34rem;
+  border-radius: 999px;
+  border: 1px solid var(--ps-accent, #388bfd);
+  color: var(--ps-accent, #388bfd);
+  background: color-mix(in srgb, var(--ps-accent, #388bfd) 12%, transparent);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
 .ps-job-session-row:disabled {
   opacity: 0.64;
   cursor: default;

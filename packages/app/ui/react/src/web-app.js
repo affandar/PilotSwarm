@@ -12,7 +12,7 @@ import {
     jobGeneratorTreeSelectionKey,
     navigateJobGeneratorTree,
 } from "./job-generator-tree-navigation.js";
-import { persistedStateRunLabel } from "./job-generator-state-run-label.js";
+import { persistedStateRunLabel, isCurrentStateRun } from "./job-generator-state-run-label.js";
 import { describeJobWait, describeObservedConditionChecks, jobWaitGlossaryEntry, persistedJobWaitLabel } from "./job-generator-wait-label.js";
 import { activateJobTransitionSession } from "./job-transition-navigation.js";
 import {
@@ -6629,7 +6629,10 @@ function JobTransitionTimeline({ transition, timeline, onOverrideCondition }) {
     return React.createElement("div", { className: "ps-job-transition-timeline" },
         React.createElement("div", { className: "ps-job-transition-timeline-header" },
             React.createElement("strong", null,
-                persistedStateRunLabel(transition, " · current state")),
+                persistedStateRunLabel(transition, { pendingArrow: true }),
+                isCurrentStateRun(transition)
+                    ? React.createElement("span", { className: "ps-state-run-current-badge" }, "current")
+                    : null),
             React.createElement("span", null,
                 `Revision ${transition.revision} · ${transition.statusLabel}`
                 + (transition.stateOwner ? ` · ${transition.stateOwner}` : ""))),
@@ -6914,7 +6917,7 @@ function JobGeneratorPane({
         (transition) => transition.id === selected.transitionId,
     ) || null;
     const selectionTitle = selectedTransition
-        ? persistedStateRunLabel(selectedTransition)
+        ? persistedStateRunLabel(selectedTransition, { pendingArrow: true })
         : selectedJob?.label || selectedGenerator?.name || "Nothing selected";
     const selectionMeta = selectedTransition
         ? `Revision ${selectedTransition.revision} · ${selectedTransition.statusLabel}`
@@ -7105,7 +7108,10 @@ function JobGeneratorPane({
                                             },
                                             React.createElement("span", { className: "ps-job-session-branch" }, "└"),
                                             React.createElement("span", { className: "ps-job-tree-primary" },
-                                                persistedStateRunLabel(transition, " · current")),
+                                                persistedStateRunLabel(transition, { pendingArrow: true }),
+                                                isCurrentStateRun(transition)
+                                                    ? React.createElement("span", { className: "ps-state-run-current-badge" }, "current")
+                                                    : null),
                                             React.createElement("span", {
                                                 className: `ps-job-transition-status is-${transition.status}`,
                                             }, transition.statusLabel),
