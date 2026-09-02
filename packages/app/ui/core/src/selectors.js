@@ -3768,6 +3768,7 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
         .filter(({ entry }) => entry?.eventType === "job.worker_capacity_wait")
         .map(({ entry, atMs }) => ({
             entry,
+            pending: entry?.details?.pending === true,
             startMs: new Date(entry?.details?.runnableAt).getTime(),
             endMs: new Date(entry?.details?.workerAcquiredAt || atMs).getTime(),
         }))
@@ -4195,11 +4196,13 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
             startMs: Math.max(rangeStartMs, candidate.startMs),
             endMs: Math.min(rangeEndMs, candidate.endMs),
         };
-        const sameSessionNonCapacityWindows = mergeWorkerTimelineWindows([
-            ...waitSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
-            ...overheadSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
-            ...jobExecutionSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
-        ]);
+        const sameSessionNonCapacityWindows = candidate.entry.sessionId
+            ? mergeWorkerTimelineWindows([
+                ...waitSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+                ...overheadSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+                ...jobExecutionSegments.filter((segment) => segment.sessionId === candidate.entry.sessionId),
+            ])
+            : [];
         for (const part of subtractWorkerTimelineWindows(bounded, sameSessionNonCapacityWindows)) {
             const blockingJobs = new Map();
             for (const segment of jobExecutionSegments) {
@@ -4243,9 +4246,12 @@ function buildWorkerTimelineSwimlane(entries, options = {}) {
                 endMs: part.endMs,
                 durationMs: part.endMs - part.startMs,
                 label: "Queued · waiting for worker",
+                pending: candidate.pending === true,
                 activity: [
                     blockingSummary || "Runnable Job is queued and awaiting worker capacity",
-                    "No compute is allocated to this Job",
+                    candidate.pending === true
+                        ? "No compute allocated yet · waiting for a worker to pick it up"
+                        : "No compute is allocated to this Job",
                 ].join(" · "),
                 blockingJobs: blockingJobLabels,
                 workerConcurrency,

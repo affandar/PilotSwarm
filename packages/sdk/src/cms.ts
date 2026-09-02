@@ -7093,9 +7093,64 @@ export class PgSessionCatalog implements SessionCatalog {
                    ON generator.generator_id = job.generator_id
                  WHERE operation.signal_delivered_at IS NOT NULL
                    AND ($2::timestamptz IS NULL OR operation.signal_delivered_at >= $2)
+
+                 UNION ALL
+
+                 -- Currently-queued (unacked) runs: runnable but not yet claimed by any
+                 -- worker, so they have no session and none of the retrospective
+                 -- capacity-wait branches above fire. A runnable+unacked run is queued
+                 -- globally regardless of which worker eventually claims it, so surface it
+                 -- as an open-ended (ends "now") wait in the lane of the worker that already
+                 -- served a prior state of the same job.
+                 SELECT
+                     'capacity-wait:pending:' || state_run.state_run_id,
+                     now(),
+                     'worker_capacity_wait'::text,
+                     'job.worker_capacity_wait'::text,
+                     state_run.session_id,
+                     $1::text,
+                     job.generator_id,
+                     generator.name,
+                     job.job_id,
+                     job.job_key,
+                     state_run.state_run_id,
+                     state_run.state_name,
+                     state_run.state_revision,
+                     NULL::text,
+                     jsonb_build_object(
+                         'runnableAt', state_run.created_at,
+                         'workerAcquiredAt', NULL,
+                         'waitDurationMs',
+                             FLOOR(EXTRACT(EPOCH FROM (now() - state_run.created_at)) * 1000),
+                         'waitSource', 'runnable_pending',
+                         'pending', true
+                     )
+                 FROM "${this.sql.schema}".job_state_runs state_run
+                 JOIN "${this.sql.schema}".jobs job
+                   ON job.job_id = state_run.job_id
+                 JOIN "${this.sql.schema}".job_generators generator
+                   ON generator.generator_id = job.generator_id
+                 WHERE state_run.status = 'unacked'
+                   AND state_run.terminal IS NOT TRUE
+                   AND state_run.started_at IS NULL
+                   AND EXISTS (
+                       SELECT 1
+                       FROM "${this.sql.schema}".job_sessions prior_session
+                       JOIN "${this.sql.schema}".session_events prior_event
+                         ON prior_event.session_id = prior_session.session_id
+                        AND prior_event.worker_node_id = $1
+                       WHERE prior_session.job_id = state_run.job_id
+                   )
+                   AND ($2::timestamptz IS NULL OR state_run.created_at >= $2)
              )
-             SELECT *
+             SELECT timeline.*
              FROM timeline
+             LEFT JOIN "${this.sql.schema}".jobs filter_job
+               ON filter_job.job_id = timeline.job_id
+             LEFT JOIN "${this.sql.schema}".job_generators filter_generator
+               ON filter_generator.generator_id = timeline.generator_id
+             WHERE (timeline.job_id IS NULL OR filter_job.deleted_at IS NULL)
+               AND (timeline.generator_id IS NULL OR filter_generator.deleted_at IS NULL)
              ORDER BY at DESC, timeline_id DESC
              LIMIT $4`,
             [normalizedWorkerNodeId, options.since ?? null, eventTypes, limit],

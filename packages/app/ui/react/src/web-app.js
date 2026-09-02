@@ -10495,7 +10495,7 @@ export function WorkerTimelineSwimlane({
                         ? React.createElement(React.Fragment, null,
                         React.createElement("strong", null, segment.label),
                         React.createElement("span", null, segment.kind === "capacity_wait"
-                            ? `no compute allocated · ${formatTimelineDuration(segment.durationMs)}`
+                            ? `no compute allocated · ${formatTimelineDuration(segment.durationMs)}${segment.pending ? " · ongoing" : ""}`
                             : segment.compute === false
                             ? `no active compute · ${formatTimelineDuration(segment.durationMs)}`
                             : formatTimelineDuration(segment.durationMs)))
