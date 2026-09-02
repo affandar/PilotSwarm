@@ -2,7 +2,7 @@ import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js"
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
-import { selectSessionRows } from "./selectors.js";
+import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
 import {
     normalizeArtifactEntries,
@@ -20,6 +20,9 @@ import {
     BUDGET_SERIES_DAYS,
     BUDGET_SERIES_RANGES,
     createInitialState,
+    SESSION_VIEW_LAYOUT_KEYS,
+    defaultSessionView,
+    normalizeStoredSessionViews,
 } from "./state.js";
 
 /**
@@ -635,6 +638,38 @@ function updateUiForSessionSelection(state, nextActiveSessionId) {
     };
 }
 
+// Add the linked session's owner to the owner filter when that is what hides
+// it. Returns the next sessions slice, or null when the owner filter is not
+// the reason (an `all` filter, a system or unowned session, an owner the
+// filter already admits) so the caller falls back to the transient exception.
+function admitLinkedSessionOwner(state, sessions, targetId) {
+    const target = sessions.byId?.[targetId];
+    if (!target || target.isGroup || target.isSystem) return null;
+    const filter = normalizeSessionOwnerFilter(sessions.ownerFilter);
+    if (filter.all === true) return null;
+    const ownerKey = ownerKeyForOwner(target.owner);
+    if (!ownerKey || ownerKey === SYSTEM_OWNER_KEY) return null;
+    const viewerKey = ownerKeyForOwner(state.auth?.principal);
+    if (viewerKey && ownerKey === viewerKey) return null;
+    if (filter.includeShared || filter.ownerKeys.includes(ownerKey)) return null;
+    const candidate = {
+        ...sessions,
+        ownerFilterExplicit: true,
+        ownerFilter: { ...filter, ownerKeys: [...filter.ownerKeys, ownerKey] },
+        ownerFilterAutoAdmitted: { sessionId: targetId, ownerKey },
+    };
+    // Prove it worked: a session hidden by something else as well (a text
+    // filter, a collapsed ancestor) must not change the filter for nothing.
+    const rows = selectSessionRows({ ...state, sessions: candidate });
+    return rows.some((row) => row.sessionId === targetId) ? candidate : null;
+}
+
+function keepAdmittedOwner(filter, admitted) {
+    const ownerKey = admitted?.ownerKey;
+    if (!ownerKey || filter.all === true || filter.includeShared || filter.ownerKeys.includes(ownerKey)) return filter;
+    return { ...filter, ownerKeys: [...filter.ownerKeys, ownerKey] };
+}
+
 function applyVisibleSessionSelection(state, nextSessions) {
     let sessions = nextSessions;
 
@@ -671,16 +706,27 @@ function applyVisibleSessionSelection(state, nextSessions) {
         }
     }
 
-    // A resolved intent target excluded by the current filters gets a
-    // transient exception so the linked session is shown anyway. Never
-    // persisted; cleared on manual navigation or filter change.
-    if (intentTargetId && sessions.filterExceptionId !== intentTargetId) {
+    // A resolved intent target excluded by the current filters. First choice:
+    // when the only thing hiding it is that its owner is not in the owner
+    // filter, ADD that owner to the filter. The filter persists with the
+    // profile, so the linked session — and that person's other shared
+    // sessions — stay listed after the link is gone. Without this the link
+    // opened the chat but the row never appeared in the list. Fallback (no
+    // human owner, or hidden for another reason): the transient exception,
+    // never persisted, cleared on manual navigation or filter change.
+    if (intentTargetId && sessions.filterExceptionId !== intentTargetId
+        && sessions.ownerFilterAutoAdmitted?.sessionId !== intentTargetId) {
         const probeRows = selectSessionRows({ ...state, sessions });
         if (!probeRows.some((row) => row.sessionId === intentTargetId)) {
-            sessions = {
-                ...sessions,
-                filterExceptionId: intentTargetId,
-            };
+            const admitted = admitLinkedSessionOwner(state, sessions, intentTargetId);
+            if (admitted) {
+                sessions = admitted;
+            } else {
+                sessions = {
+                    ...sessions,
+                    filterExceptionId: intentTargetId,
+                };
+            }
         }
     }
 
@@ -771,6 +817,103 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 export function appReducer(state, action) {
+    const next = baseReducer(state, action);
+    if (next === state) return next;
+    return reconcileSessionView(state, next, action);
+}
+
+// Per-session desktop views, kept in step with the ui slice.
+//
+//   active session changed  → apply that session's stored view (or the
+//                             default: no columns, even sizes)
+//   profile settings applied → re-apply the active session's view, so the
+//                             global desktopPanes/layoutAdjustments a poll
+//                             carries never override a per-session choice
+//   anything else changed a column toggle or a right-side size while the
+//   session stayed the same → record it for that session
+//
+// Desktop only (the phone has no columns; its layout is untouched), and only
+// once the profile has been read, so the defaults cannot be recorded over a
+// stored view the tab has not seen yet.
+function reconcileSessionView(prev, next, action) {
+    const ui = next.ui;
+    if (ui.sessionViewDevice !== "desktop") return next;
+    const active = next.sessions.activeSessionId || null;
+    if (!active || next.sessions.byId?.[active]?.isGroup) return next;
+    const prevActive = prev.sessions.activeSessionId || null;
+    // A profile read (the first one included) re-applies the active
+    // session's view from the merged map. Local edits made before the read
+    // were recorded below and win the merge, so a column opened while the
+    // profile was still loading is not shut by the answer.
+    if (action.type === "profileSettings/apply") {
+        return { ...next, ui: applySessionViewToUi(ui, ui.sessionViews?.[active]?.desktop || defaultSessionView()) };
+    }
+    if (active !== prevActive) {
+        // Before the read there is nothing to apply on a switch; the stored
+        // view lands with the read.
+        if (!ui.sessionViewsLoaded) return next;
+        return { ...next, ui: applySessionViewToUi(ui, ui.sessionViews?.[active]?.desktop || defaultSessionView()) };
+    }
+    const current = sessionViewFromUi(ui);
+    const before = sessionViewFromUi(prev.ui);
+    if (sessionViewsEqual(current, before)) return next;
+    const entry = { ...(ui.sessionViews?.[active] || {}), desktop: { ...current, at: Date.now() } };
+    return {
+        ...next,
+        ui: {
+            ...ui,
+            sessionViews: { ...(ui.sessionViews || {}), [active]: entry },
+        },
+    };
+}
+
+function sessionViewFromUi(ui) {
+    const layout = {};
+    for (const key of SESSION_VIEW_LAYOUT_KEYS) layout[key] = Number(ui.layout?.[key]) || 0;
+    return {
+        canvasOpen: ui.canvasOpen === true,
+        diagnosticsOpen: ui.diagnosticsOpen === true,
+        zen: ui.canvasOpen === true && ui.canvasZen === true,
+        layout,
+    };
+}
+
+function sessionViewsEqual(a, b) {
+    if (a.canvasOpen !== b.canvasOpen || a.diagnosticsOpen !== b.diagnosticsOpen || a.zen !== b.zen) return false;
+    for (const key of SESSION_VIEW_LAYOUT_KEYS) if (a.layout[key] !== b.layout[key]) return false;
+    return true;
+}
+
+function applySessionViewToUi(ui, view) {
+    const current = sessionViewFromUi(ui);
+    const wanted = { canvasOpen: view.canvasOpen === true, diagnosticsOpen: view.diagnosticsOpen === true, zen: view.canvasOpen === true && view.zen === true, layout: view.layout || {} };
+    if (sessionViewsEqual(current, { ...wanted, layout: { ...current.layout, ...wanted.layout } })) return ui;
+    return {
+        ...ui,
+        canvasOpen: wanted.canvasOpen,
+        diagnosticsOpen: wanted.diagnosticsOpen,
+        canvasZen: wanted.zen,
+        rightPaneMode: wanted.canvasOpen ? "canvas" : "panes",
+        ...(wanted.canvasOpen ? {} : { canvasMaximized: false }),
+        layout: { ...(ui.layout || {}), ...wanted.layout },
+    };
+}
+
+// Newest wins, per session: every record carries the time it was made, so a
+// local edit newer than the stored one survives the poll, and another
+// desktop's later edit replaces this tab's older one. No "touched" set —
+// one that never cleared made two desktops fight over the same session.
+function mergeSessionViews(remote, local) {
+    const out = { ...(remote || {}) };
+    for (const [id, entry] of Object.entries(local || {})) {
+        const localAt = Number(entry?.desktop?.at) || 0;
+        const remoteAt = Number(out[id]?.desktop?.at) || 0;
+        if (!out[id] || localAt > remoteAt) out[id] = entry;
+    }
+    return out;
+}
+
+function baseReducer(state, action) {
     switch (action.type) {
         case "connection/ready":
             return {
@@ -828,6 +971,12 @@ export function appReducer(state, action) {
                 },
             };
 
+        case "ui/sessionViewDevice": {
+            const device = action.device === "desktop" || action.device === "mobile" ? action.device : null;
+            if (device === state.ui.sessionViewDevice) return state;
+            return { ...state, ui: { ...state.ui, sessionViewDevice: device } };
+        }
+
         case "ui/touchScale":
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
@@ -868,6 +1017,11 @@ export function appReducer(state, action) {
             // migrating that — see normalizeStoredDesktopPanes.
             const hasDesktopPanes = Object.prototype.hasOwnProperty.call(settings, "desktopPanes")
                 && settings.desktopPanes && typeof settings.desktopPanes === "object";
+            const hasSessionViews = Object.prototype.hasOwnProperty.call(settings, "sessionViews")
+                && settings.sessionViews && typeof settings.sessionViews === "object";
+            const nextSessionViews = hasSessionViews
+                ? mergeSessionViews(normalizeStoredSessionViews(settings.sessionViews), state.ui.sessionViews)
+                : state.ui.sessionViews;
             const nextDesktopPanes = (hasDesktopPanes || hasRightPaneMode)
                 ? normalizeStoredDesktopPanes(
                     hasDesktopPanes ? settings.desktopPanes : null,
@@ -914,7 +1068,13 @@ export function appReducer(state, action) {
                 ...state.sessions,
                 ...(hasOwnerFilter
                     ? {
-                        ownerFilter: normalizeSessionOwnerFilter(settings.sessionOwnerFilter),
+                        // A stored filter that predates a just-admitted owner
+                        // (the first poll racing the deep link, or another
+                        // device's save) must not drop that owner again.
+                        ownerFilter: keepAdmittedOwner(
+                            normalizeSessionOwnerFilter(settings.sessionOwnerFilter),
+                            state.sessions.ownerFilterAutoAdmitted,
+                        ),
                         ownerFilterExplicit: true,
                     }
                     : {}),
@@ -948,6 +1108,9 @@ export function appReducer(state, action) {
                         ? { canvasOpen: nextDesktopPanes.canvasOpen, diagnosticsOpen: nextDesktopPanes.diagnosticsOpen, canvasZen: nextDesktopPanes.zen === true }
                         : {}),
                     layout: nextLayout,
+                    sessionViews: nextSessionViews,
+                    // Read once is enough: from here on this tab records.
+                    sessionViewsLoaded: true,
                 },
                 canvas: hasCanvasPrefs
                     ? { ...state.canvas, prefs: mergeCanvasPrefs(state.canvas.prefs, normalizeStoredCanvasPrefs(settings.canvasPrefs), hasLoadedSessions ? state.sessions.byId : null) }
@@ -1184,6 +1347,7 @@ export function appReducer(state, action) {
                     // the deep-link latch and its transient filter exception.
                     navigationIntent: null,
                     filterExceptionId: null,
+                ownerFilterAutoAdmitted: null,
                 };
                 const selection = applyVisibleSessionSelection(state, nextSessions);
                 return {
@@ -1201,6 +1365,7 @@ export function appReducer(state, action) {
                     ownerFilter: normalizeSessionOwnerFilter(action.filter),
                     navigationIntent: null,
                     filterExceptionId: null,
+                ownerFilterAutoAdmitted: null,
                 };
                 const selection = applyVisibleSessionSelection(state, nextSessions);
                 return {
@@ -1221,6 +1386,7 @@ export function appReducer(state, action) {
                 listDeselected: false,
                 navigationIntent: { sessionId, status: "pending" },
                 filterExceptionId: null,
+                ownerFilterAutoAdmitted: null,
             };
             const selection = applyVisibleSessionSelection(state, nextSessions);
             return {
@@ -1719,7 +1885,7 @@ export function appReducer(state, action) {
                     ...state.sessions,
                     activeSessionId: action.sessionId,
                     ...(releasesNavigationLatch
-                        ? { navigationIntent: null, filterExceptionId: null }
+                        ? { navigationIntent: null, filterExceptionId: null, ownerFilterAutoAdmitted: null }
                         : {}),
                 },
                 ui: {

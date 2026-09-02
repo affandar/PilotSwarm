@@ -169,6 +169,62 @@ export function normalizeStoredRightPaneMode(value) {
  *   "panes"  -> both off. "panes" was the default value rather than a choice,
  *               and the new default is a clean two-column workspace.
  */
+// ── Per-session desktop views ─────────────────────────────────────────────
+// How a person set up the workspace for ONE session: which optional columns
+// are open and how the right side is sized. Keyed by session id, then by
+// device slot ("desktop" today; a "mobile" slot is reserved, not written).
+// Absent = the default workspace: sessions and chat, no other pane.
+export const SESSION_VIEW_LAYOUT_KEYS = Object.freeze([
+    "paneAdjust", "activityPaneAdjust", "canvasPaneAdjust", "diagnosticsPaneAdjust", "diagnosticsSplitAdjust",
+]);
+export const SESSION_VIEW_DEVICES = Object.freeze(["desktop", "mobile"]);
+// Bound on the profile document: the newest entries win.
+export const SESSION_VIEWS_MAX = 300;
+
+export function defaultSessionView() {
+    const layout = {};
+    for (const key of SESSION_VIEW_LAYOUT_KEYS) layout[key] = 0;
+    return { canvasOpen: false, diagnosticsOpen: false, zen: false, layout, at: 0 };
+}
+
+function normalizeStoredSessionView(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const view = defaultSessionView();
+    view.canvasOpen = value.canvasOpen === true;
+    view.diagnosticsOpen = value.diagnosticsOpen === true;
+    view.zen = view.canvasOpen && value.zen === true;
+    const layout = value.layout && typeof value.layout === "object" ? value.layout : {};
+    for (const key of SESSION_VIEW_LAYOUT_KEYS) {
+        const n = Number(layout[key]);
+        view.layout[key] = Number.isFinite(n) ? Math.trunc(n) : 0;
+    }
+    const at = Number(value.at);
+    view.at = Number.isFinite(at) && at > 0 ? Math.trunc(at) : 0;
+    return view;
+}
+
+export function normalizeStoredSessionViews(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const entries = [];
+    for (const [sessionId, slots] of Object.entries(value)) {
+        const id = String(sessionId || "").trim();
+        if (!id || !slots || typeof slots !== "object" || Array.isArray(slots)) continue;
+        const entry = {};
+        let newest = 0;
+        for (const device of SESSION_VIEW_DEVICES) {
+            const view = normalizeStoredSessionView(slots[device]);
+            if (!view) continue;
+            entry[device] = view;
+            newest = Math.max(newest, view.at);
+        }
+        if (Object.keys(entry).length > 0) entries.push([id, entry, newest]);
+    }
+    entries.sort((a, b) => b[2] - a[2]);
+    const out = {};
+    for (const [id, entry] of entries.slice(0, SESSION_VIEWS_MAX)) out[id] = entry;
+    return out;
+}
+
 export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
     const candidate = value && typeof value === "object" ? value : null;
     if (candidate && (typeof candidate.canvasOpen === "boolean" || typeof candidate.diagnosticsOpen === "boolean")) {
@@ -345,6 +401,14 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
+            // Per-session desktop views (see normalizeStoredSessionViews).
+            // Applied when the active session changes, recorded when the
+            // columns or the right-side sizes change — desktop only, and only
+            // once the profile has been read (so a fresh tab does not record
+            // the defaults over a stored view before it has seen it).
+            sessionViews: {},
+            sessionViewsLoaded: false,
+            sessionViewDevice: null,
             statsViewMode: "session",
             prompt: "",
             promptCursor: 0,
@@ -430,6 +494,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             ownerFilter: normalizeSessionOwnerFilter(sessionOwnerFilter),
             navigationIntent: null,
             filterExceptionId: null,
+            ownerFilterAutoAdmitted: null,
         },
         history: {
             bySessionId: new Map(),

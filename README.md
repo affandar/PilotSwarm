@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.56** — A session's creation config is durable and a resume override is field-level: the create persists the full config to the session catalog row, the orchestration start restores it on any process, and a partial resume overrides only the fields it actually sets instead of erasing the rest.
+> **Latest release: v0.5.57** — Worker-registered tools get `invocation.facts`, a session-bound facts accessor with a `tools/` namespace no agent can read; the portal re-renders only the composer on a keystroke instead of the whole app; a session's workspace layout (columns and sizes) is remembered per session.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
@@ -94,6 +94,32 @@ console.log(response);
 await client.stop();
 await worker.stop();
 ```
+
+A worker-registered tool can keep durable state per session without touching
+SDK internals. Its handler receives `invocation.facts`, bound to the calling
+session; the model never sees it, and nothing under the `tools/` key prefix is
+readable, writable, or searchable by any agent through the fact tools:
+
+```typescript
+const proxy = defineTool("call_service", {
+    description: "Call the external service for this session",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    handler: async ({ query }, ctx) => {
+        // Exact read, this session only. `{ scope: "root" }` binds to the spawn
+        // tree's root session; `{ scope: "shared" }` is cluster-wide.
+        let binding = await ctx.facts?.read("tools/my-service/binding");
+        if (!binding) {
+            binding = await openExternalSession(ctx.durableSessionId);
+            await ctx.facts?.store("tools/my-service/binding", binding);
+            binding = await ctx.facts?.read("tools/my-service/binding"); // adopt the winner if two replicas raced
+        }
+        return callService(binding, query);
+    },
+});
+```
+
+Reserve more prefixes for tools with `new PilotSwarmWorker({ reservedFactPrefixes: ["bindings/"] })`.
+Design: `docs/proposals/tool-context-facts-accessor.md`.
 
 PilotSwarm's own framework prompt and management plugins ship embedded inside `pilotswarm-sdk`. Apps layer their own `plugin/` directories on top; they do not need to copy the framework's built-in plugin text into their own repos.
 

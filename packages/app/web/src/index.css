@@ -8098,12 +8098,30 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 }
 
 /* Version/status parked in the toolbar rail: right-aligned stack, quiet. */
+/* The slot is a flex item in the right rail. A flex item's default minimum
+   is its content width, so a long status line ("Showing linked session
+   outside your current filters. · Connected") could never shrink; with the
+   rail right-aligned the excess ran LEFT, under the centred action buttons.
+   min-width: 0 lets the slot shrink, and the max-widths below hand that
+   width down to the status span so it ellipsizes inside the rail instead. */
+.ps-toolbar-meta-slot {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
 .ps-toolbar-meta-slot .portal-header-meta {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 1px;
   margin-right: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ps-toolbar-meta-slot .portal-header-status {
+  max-width: 100%;
 }
 
 /* ── Canvas share: the owner's dialog ─────────────────────────────── */

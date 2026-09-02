@@ -1,4 +1,5 @@
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
+import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
@@ -649,6 +650,13 @@ export class ManagedSession {
     private config: ManagedSessionConfig;
     /** Skills the `load_skill` tool may return, by reference from the worker. */
     private skillCatalog: Array<{ name: string; description: string; prompt: string }> = [];
+    // `invocation.facts` for worker-registered tools; set by SessionManager
+    // right after construction (it owns the fact store). Null on a worker
+    // without one — tools must check.
+    private factsAccessor: ToolFactsAccessor | null = null;
+    setFactsAccessor(accessor: ToolFactsAccessor | null): void {
+        this.factsAccessor = accessor;
+    }
 
     setSkillCatalog(list: Array<{ name: string; description: string; prompt: string }>): void {
         this.skillCatalog = Array.isArray(list) ? list : [];
@@ -2411,7 +2419,11 @@ export class ManagedSession {
                 ...t,
                 handler: async (args: any, invocation: any) => {
                     if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary((t as any).name ?? "tool");
-                    const augmented = { ...invocation, durableSessionId };
+                    const augmented = {
+                        ...invocation,
+                        durableSessionId,
+                        ...(this.factsAccessor ? { facts: this.factsAccessor } : {}),
+                    };
                     try {
                         return await (t as any).handler(args, augmented);
                     } catch (error) {

@@ -106,6 +106,9 @@ test("expand-before-resolve keeps a link target inside a collapsed group selecte
     assert.equal(selectSessionRows(state).some((row) => row.sessionId === "member-x"), true);
 });
 
+// The exception path is now the FALLBACK: a target with a human owner gets
+// that owner admitted to the filter instead (tests at the bottom). An unowned
+// target under includeUnowned:false is what still takes the exception.
 test("filter exception is set for a filtered-out link target and cleared on filter change", () => {
     let state = authedState({
         all: false,
@@ -120,7 +123,7 @@ test("filter exception is set for a filtered-out link target and cleared on filt
         type: "sessions/loaded",
         sessions: [
             { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
-            { sessionId: "foreign", title: "Foreign", status: "idle", owner: BOB },
+            { sessionId: "foreign", title: "Foreign", status: "idle", owner: null },
         ],
     });
 
@@ -152,7 +155,7 @@ test("manual navigation releases the latch and the filter exception", () => {
         type: "sessions/loaded",
         sessions: [
             { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
-            { sessionId: "foreign", title: "Foreign", status: "idle", owner: BOB },
+            { sessionId: "foreign", title: "Foreign", status: "idle", owner: null },
         ],
     });
     assert.equal(state.sessions.filterExceptionId, "foreign");
@@ -296,3 +299,86 @@ test("off-page deep-link target that getSession resolves as null fails the inten
     assert.equal(navError.retryable, false);
     assert.equal(navError.message, "This session was not found or has not been shared with you.");
 });
+
+// The list used to hide a linked session whose owner was outside the owner
+// filter behind a transient exception; the chat opened, the row did not
+// reliably show. Now the owner is ADDED to the filter, durably.
+test("a linked session by someone outside the owner filter adds that owner to the filter", () => {
+    let state = authedState({
+        all: false,
+        includeSystem: true,
+        includeUnowned: false,
+        includeMe: true,
+        includeShared: false,
+        ownerKeys: [],
+    });
+    state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "foreign" });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
+            { sessionId: "foreign", title: "Foreign", status: "idle", owner: BOB },
+            { sessionId: "foreign-2", title: "Bob's other", status: "idle", owner: BOB },
+        ],
+    });
+
+    assert.equal(state.sessions.activeSessionId, "foreign");
+    assert.equal(state.sessions.filterExceptionId, null, "no transient exception when the owner can be admitted");
+    assert.deepEqual(state.sessions.ownerFilter.ownerKeys, ["github\u0001bob"]);
+    assert.equal(state.sessions.ownerFilterExplicit, true);
+    const listed = selectSessionRows(state).map((row) => row.sessionId);
+    assert.ok(listed.includes("foreign"), "the linked session is listed");
+    assert.ok(listed.includes("foreign-2"), "the owner's other shared sessions are listed too");
+    assert.equal(
+        selectSessionFilterExceptionNotice(state),
+        "Added Bob to your session filters so the linked session is listed.",
+    );
+
+    // The filter change is durable: a manual filter edit clears the notice
+    // only, and re-loading keeps Bob's sessions listed.
+    state = appReducer(state, { type: "sessions/filterQuery", query: "" });
+    assert.equal(selectSessionFilterExceptionNotice(state), null);
+    assert.deepEqual(state.sessions.ownerFilter.ownerKeys, ["github\u0001bob"]);
+    assert.ok(selectSessionRows(state).some((row) => row.sessionId === "foreign-2"));
+});
+
+test("an unowned linked session still falls back to the transient exception", () => {
+    let state = authedState({
+        all: false,
+        includeSystem: true,
+        includeUnowned: false,
+        includeMe: true,
+        includeShared: false,
+        ownerKeys: [],
+    });
+    state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "nobody" });
+    state = appReducer(state, {
+        type: "sessions/loaded",
+        sessions: [
+            { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
+            { sessionId: "nobody", title: "Unowned", status: "idle", owner: null },
+        ],
+    });
+    assert.equal(state.sessions.filterExceptionId, "nobody");
+    assert.deepEqual(state.sessions.ownerFilter.ownerKeys, []);
+    assert.equal(selectSessionFilterExceptionNotice(state), "Showing linked session outside your current filters.");
+});
+
+test("a stored owner filter arriving after the admit keeps the admitted owner, and the notice tracks the filter", () => {
+    let state = authedState({ all: false, includeSystem: true, includeUnowned: false, includeMe: true, includeShared: false, ownerKeys: [] });
+    state = appReducer(state, { type: "sessions/navigationIntent", sessionId: "foreign" });
+    state = appReducer(state, { type: "sessions/loaded", sessions: [
+        { sessionId: "mine", title: "Mine", status: "idle", owner: ME },
+        { sessionId: "foreign", title: "Foreign", status: "idle", owner: BOB },
+    ] });
+    assert.deepEqual(state.sessions.ownerFilter.ownerKeys, ["github\u0001bob"]);
+    // The first profile poll answers late with the filter saved BEFORE the link.
+    state = appReducer(state, { type: "profileSettings/apply", settings: { sessionOwnerFilter: { all: false, includeSystem: true, includeMe: true, includeShared: false, ownerKeys: [] } } });
+    assert.deepEqual(state.sessions.ownerFilter.ownerKeys, ["github\u0001bob"], "the poll must not drop the admitted owner");
+    assert.ok(selectSessionRows(state).some((row) => row.sessionId === "foreign"));
+    assert.match(selectSessionFilterExceptionNotice(state), /Added Bob/);
+    // A manual filter change that removes Bob also retires the notice.
+    state = appReducer(state, { type: "sessions/ownerFilter", filter: { all: false, includeSystem: true, includeMe: true, includeShared: false, ownerKeys: [] } });
+    assert.equal(selectSessionFilterExceptionNotice(state), null);
+});
+

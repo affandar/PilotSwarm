@@ -13,6 +13,71 @@
   agents, Agent Manager verification sessions, and both inline and durable
   child-spawn paths. Orchestration `1.0.71` is frozen and new sessions use
   `1.0.72`.
+## 0.5.57 — 2026-09-02
+
+Tools get a private, durable place for state; the portal stops re-rendering
+the whole app on every keystroke; a session's workspace layout follows it.
+
+### Added
+
+- **`invocation.facts` for worker-registered tools.** A tool registered with
+  `worker.registerTools()` now receives a facts accessor on its invocation
+  context, next to `durableSessionId`: `read`, `store`, `delete`, each bound
+  to one of three scopes — `session` (default), `root` (the spawn tree's root
+  session), or `shared` (cluster-wide). Reads are exact, by scope key, never
+  a LIKE pattern. Runtime context only; never in a tool schema, never sent to
+  the model. Design: `docs/proposals/tool-context-facts-accessor.md`.
+- **The `tools/` fact namespace belongs to tools.** `store_fact`,
+  `bulk_store_facts`, `read_facts`, `delete_fact`, `facts_search`,
+  `facts_similar` and the crawl queue (`facts_read_uncrawled`) refuse it for
+  EVERY agent identity, the Facts Manager included, and strip such rows from
+  every result. A host reserves more prefixes with the new worker option
+  `reservedFactPrefixes`. Backslash-escaped LIKE patterns (`tools\/%`) are
+  unescaped before the check, which also closes that hole for the older
+  reserved prefixes.
+- **Per-session desktop views.** The portal remembers, per session and per
+  device slot, which optional columns are open (canvas, diagnostics, zen) and
+  how the right side is sized, and restores that when you return to the
+  session. A session with no stored view opens as sessions plus chat.
+  Stored in the profile as `sessionViews`, newest record wins across
+  devices, capped at 300 sessions. Phones keep their current layout.
+- **Agents budget table: select all / clear all** in the header checkbox.
+
+### Fixed
+
+- **The portal re-rendered the whole app on every keystroke, poll and live
+  event.** `selectCanvasView` built a fresh array per call, so its
+  shallow-equality check failed on every dispatch for the app root and the
+  toolbar. It is memoised now (including the agent's canvas flip tick). With
+  the chat pane's outbox array made stable, a keystroke re-renders the
+  composer alone. Measured on a phone viewport with a 600-turn transcript:
+  script per keystroke 1.9 → 0.8 ms, forced layouts 3.3 → 1.35.
+- **Composer auto-grow forced two full-page layouts per character.** It only
+  zeroes-and-measures when the text may have shrunk or the box resized.
+- **A linked session by another user now appears in the session list.** A
+  deep link to a session whose owner is outside your owner filter adds that
+  owner to the filter, durably, with a notice naming them. A late profile
+  read cannot drop the owner again. The transient exception remains only for
+  unowned or system sessions.
+- **The Warning and Question cards flickered on every poll.** The session
+  detail read rewrote the catalog row to "running" while the runtime itself
+  still reported "error", so the list and the detail disagreed on every
+  cycle. The row is left alone when the runtime reports the error
+  (`resolveStaleRunningRowRecovery`). The cards also stamped the session's
+  rolling `updatedAt` as their time; they use the event that raised them.
+- **Header status text ran under the toolbar buttons** at narrow widths.
+- **ArrowDown on the diagnostics seam also moved the session selection.**
+  The global shortcut handler now ignores keys a focused control handled.
+
+### Tests
+
+- Unit: facts accessor (exact reads, three scopes, delete), the `tools/`
+  reservation across every fact tool for every identity, the LIKE-escape
+  bypass, per-call prefix sets, the crawl queue; per-session views; canvas
+  view identity; card timestamps; deep-link owner admit.
+- E2E: agents budget clear-all (the stub now serves the agent pivot),
+  toolbar status ellipsis. The budget toolbar test expects three tabs, as
+  shipped since 0.5.53.
 
 ## 0.5.56 — 2026-08-31
 

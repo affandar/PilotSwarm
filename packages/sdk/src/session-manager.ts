@@ -6,6 +6,7 @@ import type { ModelProviderRegistry } from "./model-providers.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
+import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -174,6 +175,8 @@ export function pickAgentCopyForOwner(
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
+    /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
+    reservedFactPrefixes?: string[];
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
     appDefaultPrompt?: string;
@@ -1520,6 +1523,7 @@ export class SessionManager {
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,
+            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             // bulk_store_facts reads its records from (and writes its failure
@@ -1578,6 +1582,7 @@ export class SessionManager {
             ? createGraphTools({
                 graphStore: this.graphStore,
                 factStore: this.factStore,
+                reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
                 agentIdentity: effectiveSerializableConfig.agentIdentity,
                 isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
                 agentId: effectiveSerializableConfig.agentIdentity,
@@ -1918,6 +1923,16 @@ export class SessionManager {
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
         managed.setSkillCatalog(await this._skillCatalogForSession(sessionId));
+        // The facts accessor a worker-registered tool sees as
+        // `invocation.facts`. Built HERE, next to the fact tools, because the
+        // store lives on this manager; the session config is serialisable
+        // and cannot carry functions.
+        managed.setFactsAccessor(createToolFactsAccessor({
+            factStore: this.factStore,
+            durableSessionId: sessionId,
+            rootSessionId: catalogRow?.rootSessionId ?? null,
+            agentId: effectiveSerializableConfig.agentIdentity ?? null,
+        }));
         this.sessions.set(sessionId, managed);
         const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
         if (promptLayers.length > 0 && this.sessionCatalog) {
@@ -2047,6 +2062,15 @@ export class SessionManager {
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
         managed.setSkillCatalog(await this._skillCatalogForSession(sessionId));
+                            if (this.factStore) {
+                                const resumedRow = await this.sessionCatalog?.getSession(sessionId).catch(() => null);
+                                managed.setFactsAccessor(createToolFactsAccessor({
+                                    factStore: this.factStore,
+                                    durableSessionId: sessionId,
+                                    rootSessionId: (resumedRow as any)?.rootSessionId ?? null,
+                                    agentId: config.agentIdentity ?? null,
+                                }));
+                            }
                             this.sessions.set(sessionId, managed);
                             // Brief pause before retry
                             await sleep(500 * attempt);

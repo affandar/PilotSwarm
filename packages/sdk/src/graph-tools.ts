@@ -1,6 +1,7 @@
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { AccessContext, FactStore } from "./facts-store.js";
+import { isToolOnlyFactKey, normalizeToolOnlyPrefixes } from "./facts-tools.js";
 import type { GraphStore } from "./graph-store.js";
 
 // Roles that may run the privileged crawl work queue (`facts_read_uncrawled` /
@@ -42,6 +43,8 @@ function isLikelyNodeKey(seed: string): boolean {
 }
 
 export interface CreateGraphToolsOptions {
+    /** Host-reserved fact key prefixes (see PilotSwarmWorkerOptions.reservedFactPrefixes). */
+    reservedFactPrefixes?: readonly string[] | null;
     graphStore: GraphStore;
     /** Base fact store — graph_stats reads crawl-queue counts from it. */
     factStore: FactStore;
@@ -88,6 +91,10 @@ export interface CreateGraphToolsOptions {
  */
 export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
     const { graphStore, factStore, agentIdentity, recordEvent } = opts;
+    // Keys under `tools/` (and host-reserved prefixes) belong to tools: the
+    // crawl queue reads across ALL scopes and would otherwise hand their
+    // values to the crawler and the Facts Manager.
+    const toolOnly = normalizeToolOnlyPrefixes(opts.reservedFactPrefixes);
     const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
     const agentId = opts.agentId ?? agentIdentity ?? "crawler";
     const isTuner = agentIdentity === TUNER_AGENT_ID;
@@ -388,7 +395,17 @@ export function createGraphTools(opts: CreateGraphToolsOptions): Tool<any>[] {
                     limit: { type: "number", description: "Max facts this batch (default 20, capped at 500)." },
                 },
             },
-            handler: (a: any) => factStore.readUncrawledFacts({ keyPrefix: a.keyPrefix ?? a.namespace, limit: a.limit }),
+            handler: async (a: any) => {
+                const keyPrefix = a.keyPrefix ?? a.namespace;
+                if (typeof keyPrefix === "string" && isToolOnlyFactKey(keyPrefix, toolOnly)) {
+                    return { error: `Error: the '${keyPrefix}' key namespace belongs to tools and is not readable by agents.` };
+                }
+                const result: any = await factStore.readUncrawledFacts({ keyPrefix, limit: a.limit });
+                const rows = Array.isArray(result) ? result : result?.facts;
+                if (!Array.isArray(rows)) return result;
+                const facts = rows.filter((f: any) => !isToolOnlyFactKey(String(f?.key || ""), toolOnly));
+                return Array.isArray(result) ? facts : { ...result, facts, count: facts.length };
+            },
         }));
 
         tools.push(defineTool("facts_set_crawled", {

@@ -63,6 +63,7 @@ import {
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
+    normalizeStoredSessionViews,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
     computeFitWidthColumnLayout,
@@ -358,6 +359,12 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "canvasPrefs")) {
         normalized.canvasPrefs = normalizeStoredCanvasPrefs(candidate.canvasPrefs);
     }
+    // Per-session desktop views: columns open + right-side sizes, per session
+    // and device slot. Whitelisted like everything else here, or the save
+    // would silently drop it.
+    if (hasOwn(candidate, "sessionViews")) {
+        normalized.sessionViews = normalizeStoredSessionViews(candidate.sessionViews);
+    }
     // Phones and desktops keep SEPARATE view preferences: rich prose reads well
     // on a wide transcript and poorly in a 390px column, so a single shared
     // value would have each device overwriting the other's choice.
@@ -464,6 +471,10 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
                 desktopPanes: { canvasOpen: state.canvasOpen === true, diagnosticsOpen: state.diagnosticsOpen === true, zen: state.canvasZen === true },
             }),
         canvasPrefs: state.canvasPrefs,
+        // Written from BOTH device classes: a phone carries the desktop's
+        // per-session views through its saves untouched (the reducer never
+        // records on a phone), so a phone save cannot erase them.
+        sessionViews: state.sessionViews,
         // setCurrentUserProfileSettings REPLACES the settings object, so the
         // other device class's slot has to be written back verbatim or saving
         // from a desktop would wipe the phone's preference (and vice versa).
@@ -562,6 +573,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // the current value.
         ...(hasOwn(normalizedRemote, "desktopPanes")
             ? { desktopPanes: normalizedRemote.desktopPanes }
+            : {}),
+        ...(hasOwn(normalizedRemote, "sessionViews")
+            ? { sessionViews: normalizedRemote.sessionViews }
             : {}),
         ...(hasOwn(normalizedRemote, "rightPaneMode")
             ? { rightPaneMode: normalizedRemote.rightPaneMode }
@@ -3878,9 +3892,21 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
         if (!preserveHorizontalScroll || syncingHorizontalRef.current) return;
         syncScrollLeft(event.currentTarget, stickyRef.current);
     }, [onScroll, preserveHorizontalScroll, syncScrollLeft, updateScrollShadow]);
+    // Re-read the shadow state when the CONTENT changes, not on every render:
+    // reading scrollHeight is a forced layout, and with no dependency list
+    // this ran on each keystroke's re-render of the pane.
     React.useEffect(() => {
         updateScrollShadow(ref.current);
-    });
+    }, [updateScrollShadow, normalizedLines, normalizedBottomSticky, normalizedSticky]);
+    // A column drag or a window resize changes clientHeight with no new
+    // content; the shadow has to follow that too.
+    React.useEffect(() => {
+        const node = ref.current;
+        if (!node || typeof ResizeObserver === "undefined") return undefined;
+        const observer = new ResizeObserver(() => updateScrollShadow(node));
+        observer.observe(node);
+        return () => observer.disconnect();
+    }, [updateScrollShadow, ref]);
 
     const handleStickyScroll = React.useCallback((event) => {
         if (!preserveHorizontalScroll || syncingHorizontalRef.current) return;
@@ -6211,9 +6237,12 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            // A shared empty array, not a literal: a fresh [] per call failed
+            // the shallow-equal check on every dispatch and re-rendered the
+            // whole pane, transcript included, on every keystroke.
             activeOutbox: activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
                 ? state.outbox.bySessionId[activeSessionId]
-                : [],
+                : EMPTY_ARRAY,
             branding: state.branding,
             connection: state.connection,
             sessionsById: state.sessions.byId,
@@ -8463,20 +8492,43 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     // zeroes the height first — NOT "auto": iOS Safari keeps a textarea's
     // scrollHeight at its high-water mark under "auto", so a box that grew
     // never shrank back after the text was sent or deleted.
-    const growInput = React.useCallback(() => {
+    //
+    // The zero-then-measure is two synchronous full-page layouts, and it ran
+    // on EVERY keystroke. It is only needed when the box may have to shrink
+    // (text removed, width changed). While text is being added the box can
+    // only grow, and "does the content overflow the box" is one layout read.
+    const lastPromptLengthRef = React.useRef(-1);
+    const growInput = React.useCallback((force = false) => {
         const node = inputRef.current;
         if (!node) return;
+        if (!force && node.scrollHeight <= node.clientHeight) return;
         node.style.height = "0px";
         node.style.height = `${node.scrollHeight + 2}px`;
     }, []);
     React.useLayoutEffect(() => {
-        growInput();
+        const length = String(promptState.value || "").length;
+        // Equal length can still drop a wrapped line (a selection replaced by
+        // as many characters), so only strict growth takes the cheap path.
+        const mayHaveShrunk = length <= lastPromptLengthRef.current;
+        lastPromptLengthRef.current = length;
+        growInput(mayHaveShrunk || length === 0);
     }, [growInput, promptState.value]);
     React.useEffect(() => {
         // Width changes re-wrap the content; re-measure on viewport resizes
         // (covers rotation and the on-screen keyboard shrinking the pane).
-        window.addEventListener("resize", growInput);
-        return () => window.removeEventListener("resize", growInput);
+        const onResize = () => growInput(true);
+        window.addEventListener("resize", onResize);
+        // A pane-splitter drag or a font-size change re-wraps the text with
+        // no window resize; watch the box itself.
+        const node = inputRef.current;
+        const observer = node && typeof ResizeObserver !== "undefined"
+            ? new ResizeObserver(() => growInput(true))
+            : null;
+        if (observer && node) observer.observe(node);
+        return () => {
+            window.removeEventListener("resize", onResize);
+            observer?.disconnect();
+        };
     }, [growInput]);
 
     const canAttachImages = typeof controller.transport?.supportsPromptImageAttachments === "function"
@@ -11067,6 +11119,16 @@ function AgentUsagePane({ controller }) {
         if (next.has(name)) next.delete(name); else next.add(name);
         return next;
     });
+    // The header checkbox: one click clears every agent out of the chart,
+    // the next brings them all back. Half-filled while the rows disagree.
+    const allNames = view.agents.map((a) => a.agent);
+    const includedCount = allNames.filter((name) => included.has(name)).length;
+    const allIncluded = allNames.length > 0 && includedCount === allNames.length;
+    const noneIncluded = includedCount === 0;
+    const toggleAll = () => setExcluded(() => (noneIncluded ? new Set() : new Set(allNames)));
+    const headerCheckboxRef = React.useCallback((node) => {
+        if (node) node.indeterminate = !allIncluded && !noneIncluded;
+    }, [allIncluded, noneIncluded]);
     const rows = React.useMemo(() => [...view.agents].sort(AGENT_SORTS[sortKey] || AGENT_SORTS.total), [view, sortKey]);
     const setRange = (days) => controller.setUsageSummaryFilter({ days }).catch(() => {});
     const setProviders = ({ preset, providers }) => controller.setUsageSummaryFilter({ preset, providers }).catch(() => {});
@@ -11111,7 +11173,12 @@ function AgentUsagePane({ controller }) {
                 : React.createElement("div", { className: "ps-summary__table-wrap" },
                     React.createElement("table", { className: "ps-summary__table" },
                         React.createElement("thead", null, React.createElement("tr", null,
-                            React.createElement("th", { title: "Untick to remove this agent from the chart" }, ""),
+                            React.createElement("th", { title: noneIncluded ? "Put every agent back in the chart" : "Clear every agent out of the chart" },
+                                React.createElement("input", {
+                                    type: "checkbox", ref: headerCheckboxRef, checked: allIncluded,
+                                    onChange: toggleAll,
+                                    "aria-label": noneIncluded ? "Select all agents" : "Clear all agents",
+                                })),
                             sortableHead("agent", "Agent"),
                             React.createElement("th", { title: "Distinct model names this agent ran in the window" }, "Models"),
                             sortableHead("turns", "Turns"),
@@ -12383,6 +12450,12 @@ function DistillerModelPickers({ controller, extras }) {
 function useKeyboardShortcuts(controller, mobile) {
     React.useEffect(() => {
         const handler = (event) => {
+            // A focused control that handled the key owns it. The diagnostics
+            // seam answers ArrowUp/ArrowDown itself; letting the same keydown
+            // fall through here moved the session selection as well — which
+            // went unnoticed until per-session views made the newly selected
+            // session open with its own (default) columns.
+            if (event.defaultPrevented) return;
             const target = event.target;
             const editable = target instanceof HTMLElement
                 && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT" || target.isContentEditable);
@@ -14019,6 +14092,7 @@ export function PilotSwarmWebApp({ controller }) {
         canvasPaneAdjust: rootState.ui.layout?.canvasPaneAdjust ?? 0,
         diagnosticsPaneAdjust: rootState.ui.layout?.diagnosticsPaneAdjust ?? 0,
         diagnosticsSplitAdjust: rootState.ui.layout?.diagnosticsSplitAdjust ?? 0,
+        sessionViews: rootState.ui.sessionViews,
         focusRegion: rootState.ui.focusRegion,
         requestedFocusRegion: rootState.ui.requestedFocusRegion,
         inspectorTab: rootState.ui.inspectorTab,
@@ -14055,6 +14129,13 @@ export function PilotSwarmWebApp({ controller }) {
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
     useKeyboardShortcuts(controller, mobile);
+
+    // Tell the reducer which device slot of the per-session views this tab
+    // owns. Only a desktop applies and records them; a phone keeps its
+    // current layout behaviour and just carries the stored views through.
+    React.useEffect(() => {
+        controller.dispatch({ type: "ui/sessionViewDevice", device: mobile ? "mobile" : "desktop" });
+    }, [controller, mobile]);
 
     // Keyboard takeover (phone): while the on-screen keyboard is up and the
     // composer summoned it, the conversation owns the visual viewport — the
@@ -14303,7 +14384,7 @@ export function PilotSwarmWebApp({ controller }) {
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.themeId, state.touchScale]);
+    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

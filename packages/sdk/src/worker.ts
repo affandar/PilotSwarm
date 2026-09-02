@@ -322,6 +322,7 @@ export class PilotSwarmWorker {
             options.githubToken,
             this.sessionStore,
             {
+                reservedFactPrefixes: options.reservedFactPrefixes,
                 frameworkBasePrompt: this._frameworkBasePrompt ?? undefined,
                 frameworkBaseToolNames: this._frameworkBaseToolNames,
                 appDefaultPrompt: this._appDefaultPrompt ?? undefined,

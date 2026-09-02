@@ -383,13 +383,13 @@ function sessionStatusIcon(session, mode = "local") {
     }
 }
 
-function ownerKeyForOwner(owner) {
+export function ownerKeyForOwner(owner) {
     const provider = String(owner?.provider || "").trim();
     const subject = String(owner?.subject || "").trim();
     return provider && subject ? `${provider}\u0001${subject}` : null;
 }
 
-function ownerDisplayName(owner, fallback = "unknown user") {
+export function ownerDisplayName(owner, fallback = "unknown user") {
     return String(owner?.displayName || owner?.email || "").trim() || fallback;
 }
 
@@ -398,7 +398,7 @@ function ownerDisplayName(owner, fallback = "unknown user") {
 // deletable) — but they belong to the same "System" bucket as the real system
 // agents, so the single System filter entry covers both. Computed via the same
 // join helper so it stays byte-identical to real owner keys.
-const SYSTEM_OWNER_KEY = ownerKeyForOwner({ provider: "system", subject: "system" });
+export const SYSTEM_OWNER_KEY = ownerKeyForOwner({ provider: "system", subject: "system" });
 
 function initialsFromText(value) {
     const text = String(value || "").trim();
@@ -1457,6 +1457,17 @@ export function selectNavigationError(state) {
  * linked session is being shown despite the current filters excluding it.
  */
 export function selectSessionFilterExceptionNotice(state) {
+    // A linked session whose owner was added to the filter so it is listed.
+    // Durable (the filter itself changed and persists); the notice is what
+    // is transient, cleared on the next manual navigation or filter change.
+    const admitted = state.sessions?.ownerFilterAutoAdmitted || null;
+    const stillAdmitted = admitted?.ownerKey
+        && Array.isArray(state.sessions?.ownerFilter?.ownerKeys)
+        && state.sessions.ownerFilter.ownerKeys.includes(admitted.ownerKey);
+    if (admitted?.sessionId && stillAdmitted && state.sessions?.byId?.[admitted.sessionId]) {
+        const owner = state.sessions.byId[admitted.sessionId]?.owner;
+        return `Added ${ownerDisplayName(owner, "its owner")} to your session filters so the linked session is listed.`;
+    }
     const exceptionId = state.sessions?.filterExceptionId || null;
     if (!exceptionId || !state.sessions?.byId?.[exceptionId]) return null;
     return "Showing linked session outside your current filters.";
@@ -1471,7 +1482,26 @@ export function canStopSessionTurn(session) {
     return (session.status || "") === "running";
 }
 
-function buildPendingQuestionMessage(session) {
+// The moment an event of one of these types was recorded, in ms, or null.
+// Product cards (Question, Warning) take their timestamp from the event that
+// raised them. They used to stamp session.updatedAt, which moves on EVERY
+// poll and status tick — so the card's clock jumped forward with each update
+// and read as flicker.
+function latestEventCreatedAtMs(events = [], eventTypes = []) {
+    const wanted = new Set(eventTypes);
+    for (let index = (events || []).length - 1; index >= 0; index -= 1) {
+        const event = events[index];
+        if (!event || !wanted.has(event.eventType)) continue;
+        const createdAt = event.createdAt;
+        const ms = createdAt instanceof Date
+            ? createdAt.getTime()
+            : typeof createdAt === "number" ? createdAt : new Date(createdAt || 0).getTime();
+        return Number.isFinite(ms) && ms > 0 ? ms : null;
+    }
+    return null;
+}
+
+function buildPendingQuestionMessage(session, events = []) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
@@ -1500,7 +1530,7 @@ function buildPendingQuestionMessage(session) {
         role: "system",
         text: body.join("\n"),
         time: "",
-        createdAt: session.updatedAt || Date.now(),
+        createdAt: latestEventCreatedAtMs(events, ["session.input_required_started"]),
         cardTitle: "Question",
         cardTitleColor: "cyan",
         cardBorderColor: "cyan",
@@ -1558,7 +1588,7 @@ function chatAlreadyContainsPendingQuestion(chat, question) {
     });
 }
 
-function buildSessionErrorMessage(session) {
+function buildSessionErrorMessage(session, events = []) {
     const errorText = String(session?.error || "").trim();
     if (!errorText) return null;
 
@@ -1575,7 +1605,10 @@ function buildSessionErrorMessage(session) {
         role: "system",
         text: body,
         time: "",
-        createdAt: session.updatedAt || Date.now(),
+        // The error event when one was recorded, else the end of the turn
+        // that produced the error; never the session's rolling updatedAt.
+        createdAt: latestEventCreatedAtMs(events, ["session.error"])
+            ?? latestEventCreatedAtMs(events, ["session.turn_completed", "assistant.turn_end"]),
         cardTitle: isFailed ? "Error" : "Warning",
         cardTitleColor: isFailed ? "red" : "yellow",
         cardBorderColor: isFailed ? "red" : "yellow",
@@ -1801,12 +1834,13 @@ export function selectActiveChat(state) {
     }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
+    const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
-        ? buildPendingQuestionMessage(session)
+        ? buildPendingQuestionMessage(session, events)
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
-    const sessionErrorMessage = buildSessionErrorMessage(session);
+    const sessionErrorMessage = buildSessionErrorMessage(session, events);
 
     if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage) {
         return createSplashCard(state.branding, session);
@@ -2949,7 +2983,39 @@ export function sessionCanvasMark(state, sessionId) {
     return mark;
 }
 
+// Memoized on its five inputs. The view carries a fresh `slots` array, so
+// without this every shallow-equal subscriber (the app root, the toolbar)
+// saw a "change" on EVERY dispatch — a keystroke, a poll, a live event —
+// and re-rendered the whole tree under it. Measured on a phone viewport
+// with a 600-turn transcript: ~10 component renders per keystroke, down to
+// the composer alone once the identity held.
+let canvasViewCache = null;
 export function selectCanvasView(state) {
+    const sessionId = state?.sessions?.activeSessionId || null;
+    const bySessionId = state?.canvas?.bySessionId;
+    const prefs = state?.canvas?.prefs;
+    const canvasSlot = state?.ui?.canvasSlot;
+    const canvasOpen = state?.ui?.canvasOpen;
+    // flipSeq is the agent-driven "open the canvas now" tick. It changes
+    // without any other key moving (a redraw of the already-open slot), and
+    // the phone opens its canvas tab off it — so it MUST be a cache key.
+    const flipSeq = state?.canvas?.flipSeq;
+    const cached = canvasViewCache;
+    if (cached
+        && cached.sessionId === sessionId
+        && cached.bySessionId === bySessionId
+        && cached.prefs === prefs
+        && cached.canvasSlot === canvasSlot
+        && cached.canvasOpen === canvasOpen
+        && cached.flipSeq === flipSeq) {
+        return cached.result;
+    }
+    const result = computeCanvasView(state);
+    canvasViewCache = { sessionId, bySessionId, prefs, canvasSlot, canvasOpen, flipSeq, result };
+    return result;
+}
+
+function computeCanvasView(state) {
     const sessionId = state?.sessions?.activeSessionId || null;
     // The pane shows ONE slot at a time. An out-of-range or never-drawn slot
     // falls back to 1 so a stale selection can never strand the pane.

@@ -112,9 +112,9 @@ test("the toolbar coin opens one table, and nothing else", async ({ page }) => {
 
         // One tab, one list, nothing else. Each of these was a surface of its
         // own and each is deleted, so their absence is the shape of the screen.
-        // Two tabs and nothing else: the provider table, and the Cluster
+        // Three tabs and nothing else: the provider table, the Cluster
         // summary (its own spec). No stats strip, no filter bar, no pivot.
-        await expect(page.getByRole("tab")).toHaveText(["Providers", "Cluster summary"]);
+        await expect(page.getByRole("tab")).toHaveText(["Providers", "Cluster summary", "Agents"]);
         await expect(page.locator(".ps-budget-stats")).toHaveCount(0);
         await expect(page.locator(".ps-budget-filters")).toHaveCount(0);
         await expect(page.locator(".ps-budget-pivot")).toHaveCount(0);

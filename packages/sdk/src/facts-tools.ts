@@ -11,6 +11,60 @@ const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
 const RESERVED_READ_PREFIXES = ["intake/", "config/facts-manager/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
 
+// Keys that belong to TOOLS, reachable only through the invocation-context
+// facts accessor (tool-facts-accessor.ts). Unlike the lists above these have
+// NO agent exemption: not the Facts Manager, not the tuner, not a crawler.
+// `tools/` is built in; a host adds more with the worker option
+// `reservedFactPrefixes`. Module-level so the read/search filters see them
+// without threading a parameter through every closure; set once per
+// createFactTools call (the worker's configuration does not change between
+// sessions).
+export const TOOL_PRIVATE_FACT_PREFIX = "tools/";
+const DEFAULT_TOOL_ONLY_PREFIXES: readonly string[] = Object.freeze([TOOL_PRIVATE_FACT_PREFIX]);
+
+export function normalizeToolOnlyPrefixes(extra?: readonly string[] | null): string[] {
+    const out = new Set<string>([TOOL_PRIVATE_FACT_PREFIX]);
+    for (const raw of extra ?? []) {
+        const text = String(raw ?? "").trim().replace(/^\/+/, "");
+        if (!text) continue;
+        out.add(text.endsWith("/") ? text : `${text}/`);
+    }
+    return [...out];
+}
+
+function toolOnlyPrefixFor(key: string, toolOnly: readonly string[]): string | null {
+    for (const prefix of toolOnly) if (key.startsWith(prefix)) return prefix;
+    return null;
+}
+
+// PostgreSQL LIKE treats backslash as the escape character and the delete/
+// read procs run LIKE without an ESCAPE clause, so `tools\/%` matches every
+// key under `tools/` while its raw literal head (`tools\/`) matches no
+// prefix check. Drop the escapes before any prefix comparison.
+function normalizeLikeForPrefixCheck(pattern: string): string {
+    return String(pattern || "").replace(/\\(.)/g, "$1").replace(/\*/g, "%");
+}
+
+function toolOnlyPrefixForPattern(pattern: string, toolOnly: readonly string[]): string | null {
+    const normalized = normalizeLikeForPrefixCheck(pattern);
+    for (const prefix of toolOnly) {
+        if (normalized.startsWith(prefix) || normalized.startsWith(prefix.replace("/", "/%"))) return prefix;
+        // A pattern whose literal head is a prefix of the reserved prefix
+        // (e.g. "t%" or "%") would sweep it up too.
+        if (patternTouchesPrefix(pattern, prefix)) return prefix;
+    }
+    return null;
+}
+
+function toolNamespaceError(prefix: string): string {
+    return `Error: the '${prefix}' key namespace belongs to tools and is not readable or writable by agents.`;
+}
+
+/** True when `key` is under a tool-only prefix — stripped from every agent-facing read. */
+export function isToolOnlyFactKey(key: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): boolean {
+    return toolOnlyPrefixFor(String(key || ""), toolOnly) !== null;
+}
+
 function boundedPreview(value: unknown, max = 80): string | undefined {
     const text = typeof value === "string" ? value.trim() : "";
     if (!text) return undefined;
@@ -31,10 +85,12 @@ function clampTags(tags: unknown): string[] | undefined {
     return out.length > 0 ? out : undefined;
 }
 
-function checkNamespaceWrite(key: string, agentIdentity?: string): string | null {
+function checkNamespaceWrite(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot store facts.";
     }
+    const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
+    if (toolPrefix) return toolNamespaceError(toolPrefix);
     for (const prefix of RESERVED_WRITE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved for the Facts Manager. ` +
@@ -103,7 +159,7 @@ function parseBulkRecords(text: string, sourceLabel: string): Array<Record<strin
  */
 function validateBulkRecord(
     record: unknown,
-    opts: { agentIdentity?: string; keyPrefix?: string | null; sessionId?: string | null; seenScopeKeys: Set<string> },
+    opts: { toolOnlyPrefixes?: readonly string[]; agentIdentity?: string; keyPrefix?: string | null; sessionId?: string | null; seenScopeKeys: Set<string> },
 ): { reason: string; message: string } | null {
     if (record === null || typeof record !== "object" || Array.isArray(record)) {
         return { reason: "invalid_shape", message: "record is not an object" };
@@ -129,7 +185,7 @@ function validateBulkRecord(
             message: "intake/ observations are written one at a time with store_fact, never in bulk",
         };
     }
-    const nsError = checkNamespaceWrite(key, opts.agentIdentity);
+    const nsError = checkNamespaceWrite(key, opts.agentIdentity, opts.toolOnlyPrefixes);
     if (nsError) {
         return { reason: "namespace_denied", message: nsError };
     }
@@ -191,17 +247,30 @@ async function writeBulkRecords(
     return { committed, failures };
 }
 
+// A read pattern whose literal head is SHORTER than the reserved prefix
+// ("%", "t%") sweeps the whole store; it is allowed and its results are
+// stripped row by row. A pattern whose head reaches INTO the prefix
+// ("tools/%", "tools/x/%") targets the namespace and is refused.
+function patternIsBroaderThan(pattern: string, prefix: string): boolean {
+    const normalized = normalizeLikeForPrefixCheck(pattern);
+    const wildcardIndex = normalized.search(/[%_]/);
+    const literalPrefix = wildcardIndex === -1 ? normalized : normalized.slice(0, wildcardIndex);
+    return literalPrefix.length < prefix.length && prefix.startsWith(literalPrefix);
+}
+
 function patternTouchesPrefix(pattern: string, prefix: string): boolean {
-    const normalized = pattern.replace(/\*/g, "%");
+    const normalized = normalizeLikeForPrefixCheck(pattern);
     const wildcardIndex = normalized.search(/[%_]/);
     const literalPrefix = wildcardIndex === -1 ? normalized : normalized.slice(0, wildcardIndex);
     return prefix.startsWith(literalPrefix) || literalPrefix.startsWith(prefix);
 }
 
-function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: string): string | null {
+function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
     if (!keyPattern) return null;
-    // Normalize glob wildcards to SQL pattern for prefix check
-    const normalized = keyPattern.replace(/\*/g, "%");
+    const toolPrefix = toolOnlyPrefixForPattern(keyPattern, toolOnly);
+    if (toolPrefix && !patternIsBroaderThan(keyPattern, toolPrefix)) return toolNamespaceError(toolPrefix);
+    // Normalize glob wildcards (and LIKE escapes) to SQL pattern for prefix check
+    const normalized = normalizeLikeForPrefixCheck(keyPattern);
     for (const prefix of RESERVED_READ_PREFIXES) {
         if ((normalized.startsWith(prefix) || normalized.startsWith(prefix.replace("/", "/%"))) &&
             agentIdentity !== FACTS_MANAGER_AGENT_ID && agentIdentity !== TUNER_AGENT_ID) {
@@ -212,10 +281,12 @@ function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: stri
     return null;
 }
 
-function checkNamespaceDelete(key: string, agentIdentity?: string): string | null {
+function checkNamespaceDelete(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot delete facts.";
     }
+    const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
+    if (toolPrefix) return toolNamespaceError(toolPrefix);
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
@@ -224,9 +295,14 @@ function checkNamespaceDelete(key: string, agentIdentity?: string): string | nul
     return null;
 }
 
-function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string): string | null {
+function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot delete facts.";
+    }
+    // Any pattern that could touch a tool-only key is refused outright: a
+    // pattern delete has no per-row filter to strip them afterwards.
+    for (const prefix of toolOnly) {
+        if (patternTouchesPrefix(keyPattern, prefix)) return toolNamespaceError(prefix);
     }
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (patternTouchesPrefix(keyPattern, prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
@@ -267,8 +343,17 @@ export function createFactTools(opts: {
      * `search_skills` is omitted for the facts-manager (it owns the namespace).
      */
     enhancedFactStore?: EnhancedFactStore;
+    /**
+     * Host-reserved key prefixes, kept from every agent like `tools/` is
+     * (worker option `reservedFactPrefixes`). Reachable only through the
+     * invocation-context facts accessor.
+     */
+    reservedFactPrefixes?: readonly string[] | null;
 }): Tool<any>[] {
     const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore, artifactStore } = opts;
+    // Per call, never module-level: two workers in one process, or a later
+    // createFactTools call without the option, must not change this set.
+    const toolOnly = normalizeToolOnlyPrefixes(opts.reservedFactPrefixes);
     const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
     const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
     const isTuner = agentIdentity === TUNER_AGENT_ID;
@@ -283,10 +368,12 @@ export function createFactTools(opts: {
     };
 
     const filterReservedReadFacts = (result: any) => {
-        if (isFactsManager || isTuner) return result;
         if (!result || !Array.isArray(result.facts)) return result;
+        const exempt = isFactsManager || isTuner;
         const facts = result.facts.filter((fact: any) => {
             const key = String(fact?.key || "");
+            if (isToolOnlyFactKey(key, toolOnly)) return false;   // no exemption
+            if (exempt) return true;
             return !RESERVED_READ_PREFIXES.some((prefix) => key.startsWith(prefix));
         });
         return {
@@ -347,7 +434,7 @@ export function createFactTools(opts: {
                 : (typeof args.key === "string" && "value" in args ? [{ key: args.key, value: args.value, tags: args.tags, shared: args.shared }] : []);
             if (factInputs.length === 0) return { error: "Error: store_fact requires either { key, value } or facts=[{ key, value }, ...]." };
             for (const fact of factInputs) {
-                const nsError = checkNamespaceWrite(fact.key, agentIdentity);
+                const nsError = checkNamespaceWrite(fact.key, agentIdentity, toolOnly);
                 if (nsError) return { error: nsError };
             }
 
@@ -523,6 +610,7 @@ export function createFactTools(opts: {
             records.forEach((record, index) => {
                 const failure = validateBulkRecord(record, {
                     agentIdentity,
+                    toolOnlyPrefixes: toolOnly,
                     keyPrefix,
                     sessionId: ctx?.sessionId ?? null,
                     seenScopeKeys,
@@ -648,7 +736,7 @@ export function createFactTools(opts: {
             if (args.scope === "all" && !canReadAllFacts) {
                 return { error: "Error: read_facts scope='all' is reserved for crawler, facts-manager, and agent-tuner sessions." };
             }
-            const nsError = checkNamespaceRead(args.key_pattern, agentIdentity);
+            const nsError = checkNamespaceRead(args.key_pattern, agentIdentity, toolOnly);
             if (nsError) return { error: nsError };
 
             // Normalize session_id: LLM may pass orchId format "session-<uuid>"
@@ -762,8 +850,8 @@ export function createFactTools(opts: {
             ctx?: { sessionId?: string },
         ) => {
             const nsError = args.pattern
-                ? checkNamespaceDeletePattern(args.key, agentIdentity)
-                : checkNamespaceDelete(args.key, agentIdentity);
+                ? checkNamespaceDeletePattern(args.key, agentIdentity, toolOnly)
+                : checkNamespaceDelete(args.key, agentIdentity, toolOnly);
             if (nsError) return { error: nsError };
 
             if (args.pattern) {
@@ -882,8 +970,13 @@ export function createFactTools(opts: {
         // "intake/*"), so match it against the reserved prefixes' leading
         // segment as well as the slash form checkNamespaceRead expects.
         const blockReservedSearch = (namespace?: string) => {
-            if (!namespace || isFactsManager || isTuner) return null;
+            if (!namespace) return null;
             const ns = namespace.replace(/\/+$/, "");
+            for (const p of toolOnly) {
+                const seg = p.replace(/\/+$/, "");
+                if (ns === seg || ns.startsWith(seg + "/")) return toolNamespaceError(p);
+            }
+            if (isFactsManager || isTuner) return null;
             const hitsReserved = RESERVED_READ_PREFIXES.some((p) => {
                 const seg = p.replace(/\/+$/, "");
                 return ns === seg || ns.startsWith(seg + "/") || seg.startsWith(ns + "/");
@@ -893,13 +986,16 @@ export function createFactTools(opts: {
                     `Search curated skills (namespace 'skills') or open asks (namespace 'asks') instead.`;
             }
             // Fall back to the shared slash-form check for any other shape.
-            return checkNamespaceRead(namespace, agentIdentity);
+            return checkNamespaceRead(namespace, agentIdentity, toolOnly);
         };
         const stripReserved = (result: any) => {
-            if (isFactsManager || isTuner) return result;
             if (!result || !Array.isArray(result.facts)) return result;
-            const facts = result.facts.filter((f: any) =>
-                !RESERVED_READ_PREFIXES.some((p) => String(f?.key || "").startsWith(p)));
+            const exempt = isFactsManager || isTuner;
+            const facts = result.facts.filter((f: any) => {
+                const key = String(f?.key || "");
+                if (isToolOnlyFactKey(key, toolOnly)) return false;   // no exemption
+                return exempt || !RESERVED_READ_PREFIXES.some((p) => key.startsWith(p));
+            });
             return { ...result, count: facts.length, facts };
         };
 
