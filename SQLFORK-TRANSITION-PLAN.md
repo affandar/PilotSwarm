@@ -269,7 +269,110 @@ This operationalizes §7 (Strategy A) and makes explicit the deployment-continui
 §7 leaves implicit. The unit of work is a **capability — a logical diff of fork vs upstream** —
 never a commit (nothing is cherry-picked).
 
-### Phase 0 — Live fork, route-as-you-go
+### Phase 0 — Test-coverage backfill (pre-rebase hardening)
+A green suite at the tip is what lets us *verify* each rebase conflict resolution instead of hoping.
+Tests don't make git's merge cleaner, but they turn "did my resolution silently break behavior?"
+from a gamble into a check — so before we lean on the rebase cadence (§11), close the coverage gap
+on the risky diverged commits.
+
+**Scan (as of `eaabdbf9..HEAD`, 2026-09-03):** 146 non-merge diverged commits → 53 already touch a
+test, 40 are docs/config only (no test owed), **53 change source but ship no test.** Split by rebase
+risk:
+
+- **P1 — 31 commits** touch a known recurring-conflict surface (worker / orchestration / caller-auth
+  / MCP / plugin / session / migrations). These repay a test on *every* crank — backfill first.
+- **P2 — 22 commits** change source off the hot surfaces (portal/UI, deploy, scripts). Lower rebase
+  risk; backfill after P1.
+
+**Rule (no history rewrite — each test commit is a logical deferred amend):** for each flagged
+commit, land a **new** characterization-test commit at `HEAD` that pins the behavior and **names the
+source commit it covers** via a `Covers:` trailer — *do not* rewrite history to inject the test into
+the original commit. It's logically an amend of that commit's missing test, deferred to `HEAD` so we
+never rewrite:
+
+```
+test: characterize worker poison-forensics logging
+
+Covers: ce429f01
+```
+
+Rewriting is more work (authoring against each intermediate state) for the same rebase benefit, and
+its only unique payoff (per-commit `git bisect`) isn't worth collecting on a fork we're draining.
+
+**Each flagged commit resolves to exactly one disposition:**
+- **Covered** — its behavior lives at `HEAD`; land a `Covers:`-trailered test commit (above).
+- **Waived** — the change survives at `HEAD` but has no behavior to characterize (pure rename, label
+  drop, diagnostic-logging, comment); record the waiver, no test.
+- **Superseded** — the commit's *net effect is gone* at `HEAD` (reverted, removed, or fully rewritten
+  by a later fork commit), so there is nothing live to test. A superseded commit still *replays*
+  during a rebase and can conflict mechanically, but a test can't protect behavior that isn't at the
+  tip — coverage genuinely doesn't apply; safety comes from the green suite at `HEAD`, which correctly
+  excludes it. Detection is a triage call — "does this commit's net change survive to `HEAD`?";
+  add/remove pairs are the tell.
+
+**Tracking (forward, not by re-scan):** the flagged commits stay flagged in history *by design* — an
+old commit like `ce429f01` will always show "source, no test" because its coverage lives in a later
+commit; that permanent flag is not unfinished work. So the seed scan below is a **one-time inventory**,
+and burndown is measured forward as *flagged − covered*:
+
+```powershell
+$covered = git log --format=%B eaabdbf9..HEAD |
+  Select-String -Pattern 'Covers:\s*([0-9a-f]{7,40})' -AllMatches |
+  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value }
+# remaining = flagged set (seed scan) minus $covered ; Phase 0 done when remaining + waived == flagged
+```
+
+**Going-forward invariant:** any new fork-only commit that changes source ships a test in the same
+commit (enforce as a fork CI gate — see §12). **Gate:** Phase 0 is done when every flagged commit is
+covered (a `Covers:` trailer), waived, or superseded.
+
+Seed the flagged set once:
+
+```powershell
+git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
+  $f = git diff-tree --no-commit-id --name-only -r $_
+  if (($f -notmatch '(?i)(\.test\.|\.spec\.|/tests?/|__tests__)') -and ($f -match '(?i)\.(ts|tsx|js|mjs|cjs)$')) {
+    git log -1 --format='%h %s' $_
+  }
+}
+```
+
+**P1 burndown (backfill first):**
+- [ ] `ce429f01` Add always-on diagnostics logging for session poison forensics
+- [ ] `736fcc1a` Default worker and orchestration concurrency to a single slot
+- [ ] `d0fbc07f` Make worker dispatcher poll interval configurable
+- [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env
+- [ ] `10604f23` Case-insensitively override base MCP servers with bound-agent servers
+- [ ] `8c6b1435` feat(sdk): make per-turn inactivity timeout configurable
+- [ ] `df37f9b5` feat(sdk): surface caller-delegated tokens as named env vars for non-MCP tools
+- [ ] `5f5c99bc` feat(repo-worker): auth dnx-launched repo MCP servers against private NuGet feeds
+- [ ] `150cb22c` fix(repo-worker): bind repo-shipped .github/agents agents in git workers
+- [ ] `5427c861` feat(git-worker): support pinning a session to a non-default git ref
+- [ ] `fb729e73` Expose git-workspace state accessors and add hydration demo
+- [ ] `36098cd3` worker/portal: derive serviceable-repo allowlist from live worker registry
+- [ ] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform
+- [ ] `fac08098` Add caller-attached per-session MCP servers
+- [ ] `a1352bc8` Route repo-less session turns to a dedicated generic worker pool
+- [ ] `2721098a` Persist git-repo-worker enlistment on hostPath to kill cold-start re-clone
+- [ ] `3f3e23f8` Make git-repo-worker readiness truthful (Ready == can accept a job)
+- [ ] `baa99423` Add delegated MCP access: connect to repo-defined MCP servers as the caller
+- [ ] `fa096eed` feat(sdk): add PluginSpec — load external ADO/GitHub plugin repos into the GHCP SDK
+- [ ] `767eecbd` feat(sdk): scope git reconcile to session hydration + log acquire->work timing
+- [ ] `2fb07251` feat(sdk,portal): repo-affinity routing for git-hydration workers
+- [ ] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(likely waive)*
+- [ ] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint
+- [ ] `2200b4b3` sdk: add beforeRunTurn worker hook
+- [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading
+- [ ] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options
+- [ ] `9863b9ca` chore: drop CP1/CP1b/CP2 milestone labels from code + comments *(likely waive)*
+- [ ] `8f3139d3` refactor: rename cp1-serve-one.mjs -> session-worker.mjs *(likely waive)*
+- [ ] `0a148efd` feat(worker): platform-owned session workingDirectory + config discovery
+- [ ] `62de590a` diag: log worker-startup defaults + GHCP createSession params *(likely waive)*
+- [ ] `184bb8b0` poc(windows-worker): add bounded dependency-load smoke to the bundle *(likely waive)*
+
+**P2 (22)** — enumerate via the scan above; backfill after P1.
+
+### Phase 1 — Live fork, route-as-you-go
 - Keep the fork the **active dev branch** for SQL-orchestration concepts upstream doesn't have
   yet; new work lands here first — expected, not a violation. (No hard "freeze".)
 - **Classify at authoring** — every change knows its eventual home: **generic platform** →
@@ -279,7 +382,7 @@ never a commit (nothing is cherry-picked).
 - Run a **constant rebase** cadence so the fork stays `origin/main + delta`, however that delta churns.
 - Keep deploying from the fork for now (single deployable, as today).
 
-### Phase 1 — Carve SQL out behind a plugin seam; the overlay becomes the deployment repo (→ 2 repos)
+### Phase 2 — Carve SQL out behind a plugin seam; the overlay becomes the deployment repo (→ 2 repos)
 - Introduce the **plugin seam** in the fork (generic evaluator-plugin loader — the `PluginSpec`
   mechanism). This can land in the fork **now**, ahead of upstreaming it — no upstream dependency.
 - Move the **2 Tier-1 files** (`IcmEvaluator` + its test) out of `providers.ts` into the
@@ -294,7 +397,7 @@ never a commit (nothing is cherry-picked).
 - **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
   overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
 
-### Phase 2 — Upstream the platform, theme by theme (slow track, external pace)
+### Phase 3 — Upstream the platform, theme by theme (slow track, external pace)
 - Slice the fork-vs-upstream logical diff into the ~8+ capability themes of §6.
 - For each theme, in dependency order:
   - Cut a clean PR branch from **current `origin/main`** via **path-scoped assembly** (bring the
@@ -310,7 +413,7 @@ never a commit (nothing is cherry-picked).
 - For any theme too entangled to lift — notably **(3)**, where upstream already added a parallel
   `orchestration_1_0_68/69` — use **Strategy B (clean-room on upstream's version)** instead of lifting.
 
-### Phase 3 — Retire (gated on a behavioral shift, still 2 repos)
+### Phase 4 — Retire (gated on a behavioral shift, still 2 repos)
 - This is **steady-state routing**, not a one-time burndown: new platform work flows in the top,
   merged themes drain out the bottom. "Drive to zero" is reachable only once the *inflow* of
   fork-first platform work slows.
@@ -499,6 +602,9 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 
 ## 12. Definition of done
 
+- [ ] **Phase 0** — test-coverage backfill complete: every flagged diverged commit is covered
+      (a backfill test commit with a `Covers:` trailer), waived, or superseded (P1 then P2); fork CI
+      gate enforces "source change ⇒ test in same commit" going forward (see §10 Phase 0).
 - [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
 - [ ] Plugin seam in place; Tier 1 (IcM) extracted to the overlay as a plugin.
@@ -529,5 +635,5 @@ small weekly rebases keep each migration/orchestration collision to one commit's
    hits, so decide early. *(The one known Strategy-B candidate; default stays A per §9.)*
 3. **Deploy-layer split** — enumerate which `deploy/` files are generic (→ core, upstreamed) vs
    SQL-specific (→ overlay: core-version pin, IcM injection, ACR/AKS/AFD/PG targeting, governance
-   overrides). Must be settled before the overlay can own the pipeline (§10 Phase 1).
+   overrides). Must be settled before the overlay can own the pipeline (§10 Phase 2).
 4. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
