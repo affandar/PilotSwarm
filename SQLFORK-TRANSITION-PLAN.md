@@ -344,9 +344,9 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 **P1 burndown (backfill first):**
 - [x] `ce429f01` Add always-on diagnostics logging for session poison forensics *(Covered)*
 - [x] `736fcc1a` Default worker and orchestration concurrency to a single slot *(Covered)*
-- [ ] `d0fbc07f` Make worker dispatcher poll interval configurable
-- [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env
-- [ ] `10604f23` Case-insensitively override base MCP servers with bound-agent servers
+- [ ] `d0fbc07f` Make worker dispatcher poll interval configurable *(Deferred — Covered at HEAD but inline in start(); needs a test seam)*
+- [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env *(Deferred — Covered at HEAD but inline in private _getOrCreateUnlocked; needs a test seam)*
+- [ ] `10604f23` Case-insensitively override base MCP servers with bound-agent servers *(Deferred — Covered at HEAD but inline in private _getOrCreateUnlocked; needs a test seam)*
 - [x] `8c6b1435` feat(sdk): make per-turn inactivity timeout configurable *(Covered)*
 - [ ] `df37f9b5` feat(sdk): surface caller-delegated tokens as named env vars for non-MCP tools
 - [ ] `5f5c99bc` feat(repo-worker): auth dnx-launched repo MCP servers against private NuGet feeds
@@ -354,8 +354,8 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [ ] `5427c861` feat(git-worker): support pinning a session to a non-default git ref
 - [ ] `fb729e73` Expose git-workspace state accessors and add hydration demo
 - [ ] `36098cd3` worker/portal: derive serviceable-repo allowlist from live worker registry
-- [ ] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform
-- [ ] `fac08098` Add caller-attached per-session MCP servers
+- [x] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform *(Waived — fully removes the callerMcpServers param + validator (SSRF surface); no API/behavior left at HEAD to test)*
+- [x] `fac08098` Add caller-attached per-session MCP servers *(Superseded — callerMcpServers fully removed by c305edcd; gone at HEAD)*
 - [ ] `a1352bc8` Route repo-less session turns to a dedicated generic worker pool
 - [ ] `2721098a` Persist git-repo-worker enlistment on hostPath to kill cold-start re-clone
 - [ ] `3f3e23f8` Make git-repo-worker readiness truthful (Ready == can accept a job)
@@ -366,11 +366,11 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [x] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(Waived — removes unused example scripts + a workflow smoke step; no behavior)*
 - [ ] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint
 - [ ] `2200b4b3` sdk: add beforeRunTurn worker hook
-- [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading
-- [ ] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options
+- [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading *(Deferred — Covered at HEAD (enable=true survives in createSession config) but inline; needs a test seam)*
+- [x] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options *(Waived — removes option-plumbing public API, falls back to SDK defaults; no behavior to characterize)*
 - [x] `9863b9ca` chore: drop CP1/CP1b/CP2 milestone labels from code + comments *(Waived — comment/label text only, behavior unchanged)*
 - [x] `8f3139d3` refactor: rename cp1-serve-one.mjs -> session-worker.mjs *(Superseded — renamed file removed from examples/ at HEAD)*
-- [ ] `0a148efd` feat(worker): platform-owned session workingDirectory + config discovery
+- [x] `0a148efd` feat(worker): platform-owned session workingDirectory + config discovery *(Superseded — the 3 worker options + platform-default workingDirectory fallback removed by 3dd98bbf; only log-string residue at HEAD)*
 - [x] `62de590a` diag: log worker-startup defaults + GHCP createSession params *(Waived — read-only diagnostic logging only, survives at HEAD)*
 - [x] `184bb8b0` poc(windows-worker): add bounded dependency-load smoke to the bundle *(Superseded — added worker-smoke.mjs removed from examples/ at HEAD)*
 
