@@ -56,7 +56,7 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig, hydrateGitWorkspace, dehydrateGitWorkspace, normalizeRef, GitStore, Runner } from "pilotswarm-sdk";
+import { PilotSwarmWorker, horizonConfigFromEnv, installPluginSpecs, fetchKeyVaultSecret, loadRepoMcpConfig, loadDefaultMcpConfig, hydrateGitWorkspace, dehydrateGitWorkspace, resolveTargetRef as resolveTargetRefCore, GitStore, Runner } from "pilotswarm-sdk";
 
 // Sentinel value written to KV by the bicep-deploy `seed-secrets` step for
 // optional secrets the user didn't provide (CSI Secret Store requires
@@ -189,37 +189,12 @@ if (gitCacheMirror) {
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     }).trim();
 
-    // Normalize a caller-supplied ref to something the enlistment can resolve.
-    // The enlistment's `origin` remote is the node-local git-cache mirror, whose
-    // branches land as `origin/<branch>` remote-tracking refs. A bare branch
-    // name ("main", "dev/alice/x") won't rev-parse on its own, so map it onto
-    // its remote-tracking ref. Already-qualified refs (origin/*, refs/*) and raw
-    // SHAs pass through untouched.
-    const normalizeRef = (ref) => {
-        const r = String(ref).trim();
-        if (!r) return r;
-        if (/^(origin\/|refs\/)/.test(r)) return r;
-        if (/^[0-9a-f]{7,40}$/i.test(r)) return r;
-        return `origin/${r}`;
-    };
-
-    // Resolve the ref a job resets to. A per-session branch (config.gitRef) wins,
-    // then the worker-wide GIT_ENLISTMENT_REF override, then the mirror's default
-    // branch (origin/HEAD), falling back to main/master.
-    const resolveTargetRef = (sessionGitRef) => {
-        const explicit = (sessionGitRef && String(sessionGitRef).trim())
-            || (process.env.GIT_ENLISTMENT_REF && process.env.GIT_ENLISTMENT_REF.trim());
-        if (explicit) return normalizeRef(explicit);
-        try {
-            // e.g. "origin/main" -> the tracking ref we reset onto.
-            return runGit(enlistmentDir, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-        } catch {
-            for (const b of ["origin/main", "origin/master"]) {
-                try { runGit(enlistmentDir, ["rev-parse", "--verify", b]); return b; } catch { /* try next */ }
-            }
-            throw new Error("could not resolve a default ref (set GIT_ENLISTMENT_REF)");
-        }
-    };
+    // Resolve the ref a job resets to (per-session config.gitRef > worker-wide
+    // GIT_ENLISTMENT_REF > the mirror's origin/HEAD default). The logic lives in
+    // the SDK's resolveTargetRef so it is unit-tested (test/unit/git-store.test.mjs);
+    // this binding injects the enlistment dir + git runner.
+    const resolveTargetRef = (sessionGitRef) =>
+        resolveTargetRefCore(sessionGitRef, { dir: enlistmentDir, runGit, envRef: process.env.GIT_ENLISTMENT_REF });
 
     // Clone the working enlistment FROM the local mirror. --no-hardlinks copies
     // objects into the enlistment's own store so it is fully self-contained; the
@@ -477,18 +452,8 @@ if (gitCacheMirror) {
         return run;
     };
 
-    const resolveTargetRef = (sessionGitRef) => {
-        const explicit = (sessionGitRef && String(sessionGitRef).trim())
-            || (process.env.GIT_ENLISTMENT_REF && process.env.GIT_ENLISTMENT_REF.trim());
-        if (explicit) return normalizeRef(explicit);
-        try { return runGit(sharedStore, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]); }
-        catch {
-            for (const b of ["origin/main", "origin/master"]) {
-                try { runGit(sharedStore, ["rev-parse", "--verify", b]); return b; } catch { /* next */ }
-            }
-            throw new Error("could not resolve a default ref (set GIT_ENLISTMENT_REF)");
-        }
-    };
+    const resolveTargetRef = (sessionGitRef) =>
+        resolveTargetRefCore(sessionGitRef, { dir: sharedStore, runGit, envRef: process.env.GIT_ENLISTMENT_REF });
     const localSha = (rev) => { try { return store.revParse(rev); } catch { return undefined; } };
 
     const worktreeHealthy = () => {

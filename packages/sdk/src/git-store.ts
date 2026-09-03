@@ -50,6 +50,37 @@ export function normalizeRef(ref: string | null | undefined): string {
     return `origin/${r}`;
 }
 
+/**
+ * Resolve the git ref a job resets its enlistment/worktree onto. Precedence:
+ *   1. `sessionGitRef` — the per-session branch (e.g. `config.gitRef`);
+ *   2. `envRef` — the worker-wide `GIT_ENLISTMENT_REF` override;
+ *   3. the store's default branch — `origin/HEAD`, falling back to
+ *      `origin/main` then `origin/master`.
+ * The first two are passed through {@link normalizeRef}; the default-branch
+ * lookup runs git through the injected `runGit` bound to `dir`. Whitespace-only
+ * session/env refs are treated as absent. Throws when nothing resolves (empty
+ * store, no default branch, no override).
+ */
+export function resolveTargetRef(
+    sessionGitRef: string | null | undefined,
+    opts: { dir: string; runGit: RunGit; envRef?: string | null },
+): string {
+    const { dir, runGit, envRef } = opts;
+    const session = sessionGitRef != null ? String(sessionGitRef).trim() : "";
+    const env = envRef != null ? String(envRef).trim() : "";
+    const explicit = session || env;
+    if (explicit) return normalizeRef(explicit);
+    try {
+        // e.g. "origin/main" -> the tracking ref we reset onto.
+        return runGit(dir, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+    } catch {
+        for (const b of ["origin/main", "origin/master"]) {
+            try { runGit(dir, ["rev-parse", "--verify", b]); return b; } catch { /* try next */ }
+        }
+        throw new Error("could not resolve a default ref (set GIT_ENLISTMENT_REF)");
+    }
+}
+
 export interface GitStoreOptions {
     /** directory whose .git is the object store */
     dir: string;

@@ -77,7 +77,7 @@ export type {
 } from "./git-workspace.js";
 // Shared git enlistment primitives (WRITER GitStore / READER Runner) used by the
 // repo-affinity workers for both the AKS mirror and devbox self-fetch paths.
-export { GitStore, Runner, makeRunGit, normalizeRef } from "./git-store.js";
+export { GitStore, Runner, makeRunGit, normalizeRef, resolveTargetRef } from "./git-store.js";
 export type { RunGit, GitStoreOptions, RunnerOptions } from "./git-store.js";
 export { FilesystemSessionStore, FilesystemArtifactStore } from "./session-store.js";
 export { PgFactStore, createFactStoreForUrl, createGraphStoreForUrl, resolveFactsTarget, isEnhancedFactStore, EnhancedFactsUnsupportedError } from "./facts-store.js";

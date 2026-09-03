@@ -351,7 +351,7 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [ ] `df37f9b5` feat(sdk): surface caller-delegated tokens as named env vars for non-MCP tools
 - [ ] `5f5c99bc` feat(repo-worker): auth dnx-launched repo MCP servers against private NuGet feeds
 - [ ] `150cb22c` fix(repo-worker): bind repo-shipped .github/agents agents in git workers
-- [ ] `5427c861` feat(git-worker): support pinning a session to a non-default git ref
+- [x] `5427c861` feat(git-worker): support pinning a session to a non-default git ref *(Covered — extract-for-test: lifted `resolveTargetRef` into `git-store.ts` with an injected `RunGit`, both example call sites now delegate to it; `normalizeRef` half already covered; `git-store.test.mjs` pins precedence (session > GIT_ENLISTMENT_REF > default) + origin/HEAD→main→master fallback via a fake runGit)*
 - [ ] `fb729e73` Expose git-workspace state accessors and add hydration demo
 - [ ] `36098cd3` worker/portal: derive serviceable-repo allowlist from live worker registry
 - [x] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform *(Waived — fully removes the callerMcpServers param + validator (SSRF surface); no API/behavior left at HEAD to test)*

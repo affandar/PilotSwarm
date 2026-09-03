@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { makeRunGit, normalizeRef, GitStore, Runner } from "../../dist/git-store.js";
+import { makeRunGit, normalizeRef, resolveTargetRef, GitStore, Runner } from "../../dist/git-store.js";
 
 const ID = ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"];
 let tmp, originDir, authorDir, storeDir;
@@ -52,6 +52,86 @@ test("normalizeRef maps bare branches, passes through qualified refs + SHAs", ()
     assert.equal(normalizeRef("origin/main"), "origin/main");
     assert.equal(normalizeRef("refs/heads/main"), "refs/heads/main");
     assert.equal(normalizeRef("0123abcd"), "0123abcd");
+});
+
+// A scripted git runner: joins the args to a key and returns the mapped stdout,
+// or throws the mapped Error. Records every call so a test can assert that the
+// explicit-ref paths never shell out. Any unscripted command throws.
+function fakeRunGit(script) {
+    const run = (cwd, args) => {
+        run.calls.push({ cwd, args });
+        const key = args.join(" ");
+        if (!(key in script)) throw new Error(`unexpected git: ${key}`);
+        const v = script[key];
+        if (v instanceof Error) throw v;
+        return v;
+    };
+    run.calls = [];
+    return run;
+}
+
+test("resolveTargetRef: an explicit session ref wins, is normalized, and never touches git", () => {
+    const runGit = fakeRunGit({});
+    assert.equal(
+        resolveTargetRef("feature/x", { dir: "/d", runGit, envRef: "origin/env" }),
+        "origin/feature/x",
+    );
+    assert.equal(runGit.calls.length, 0, "an explicit ref must not shell out to git");
+});
+
+test("resolveTargetRef: session ref beats the GIT_ENLISTMENT_REF override", () => {
+    const runGit = fakeRunGit({});
+    assert.equal(
+        resolveTargetRef("origin/sess", { dir: "/d", runGit, envRef: "origin/env" }),
+        "origin/sess",
+    );
+});
+
+test("resolveTargetRef: falls back to envRef (normalized) when no session ref, ignoring whitespace", () => {
+    const runGit = fakeRunGit({});
+    assert.equal(resolveTargetRef(undefined, { dir: "/d", runGit, envRef: "hotfix" }), "origin/hotfix");
+    assert.equal(resolveTargetRef(null, { dir: "/d", runGit, envRef: "hotfix" }), "origin/hotfix");
+    assert.equal(
+        resolveTargetRef("   ", { dir: "/d", runGit, envRef: "hotfix" }),
+        "origin/hotfix",
+        "a whitespace-only session ref is treated as absent",
+    );
+    assert.equal(runGit.calls.length, 0);
+});
+
+test("resolveTargetRef: no explicit ref resolves the default branch via origin/HEAD", () => {
+    const runGit = fakeRunGit({ "symbolic-ref --short refs/remotes/origin/HEAD": "origin/main" });
+    assert.equal(resolveTargetRef(undefined, { dir: "/d", runGit, envRef: undefined }), "origin/main");
+    assert.deepEqual(runGit.calls[0].args, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+});
+
+test("resolveTargetRef: a missing origin/HEAD falls back to origin/main then origin/master", () => {
+    const noHead = new Error("no origin/HEAD");
+    const toMain = fakeRunGit({
+        "symbolic-ref --short refs/remotes/origin/HEAD": noHead,
+        "rev-parse --verify origin/main": "ok",
+    });
+    assert.equal(resolveTargetRef(undefined, { dir: "/d", runGit: toMain, envRef: undefined }), "origin/main");
+
+    const toMaster = fakeRunGit({
+        "symbolic-ref --short refs/remotes/origin/HEAD": noHead,
+        "rev-parse --verify origin/main": new Error("no main"),
+        "rev-parse --verify origin/master": "ok",
+    });
+    assert.equal(resolveTargetRef(undefined, { dir: "/d", runGit: toMaster, envRef: undefined }), "origin/master");
+});
+
+test("resolveTargetRef: throws an actionable error when nothing resolves", () => {
+    const boom = new Error("nope");
+    const runGit = fakeRunGit({
+        "symbolic-ref --short refs/remotes/origin/HEAD": boom,
+        "rev-parse --verify origin/main": boom,
+        "rev-parse --verify origin/master": boom,
+    });
+    assert.throws(
+        () => resolveTargetRef(undefined, { dir: "/d", runGit, envRef: undefined }),
+        /could not resolve a default ref/,
+    );
 });
 
 test("GitStore.hasCommit / revParse reflect local object presence", () => {
