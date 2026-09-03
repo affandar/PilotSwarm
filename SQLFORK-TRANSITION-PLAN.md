@@ -363,16 +363,16 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [ ] `fa096eed` feat(sdk): add PluginSpec — load external ADO/GitHub plugin repos into the GHCP SDK
 - [ ] `767eecbd` feat(sdk): scope git reconcile to session hydration + log acquire->work timing
 - [ ] `2fb07251` feat(sdk,portal): repo-affinity routing for git-hydration workers
-- [ ] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(likely waive)*
+- [x] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(Waived — removes unused example scripts + a workflow smoke step; no behavior)*
 - [ ] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint
 - [ ] `2200b4b3` sdk: add beforeRunTurn worker hook
 - [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading
 - [ ] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options
-- [ ] `9863b9ca` chore: drop CP1/CP1b/CP2 milestone labels from code + comments *(likely waive)*
-- [ ] `8f3139d3` refactor: rename cp1-serve-one.mjs -> session-worker.mjs *(likely waive)*
+- [x] `9863b9ca` chore: drop CP1/CP1b/CP2 milestone labels from code + comments *(Waived — comment/label text only, behavior unchanged)*
+- [x] `8f3139d3` refactor: rename cp1-serve-one.mjs -> session-worker.mjs *(Superseded — renamed file removed from examples/ at HEAD)*
 - [ ] `0a148efd` feat(worker): platform-owned session workingDirectory + config discovery
-- [ ] `62de590a` diag: log worker-startup defaults + GHCP createSession params *(likely waive)*
-- [ ] `184bb8b0` poc(windows-worker): add bounded dependency-load smoke to the bundle *(likely waive)*
+- [x] `62de590a` diag: log worker-startup defaults + GHCP createSession params *(Waived — read-only diagnostic logging only, survives at HEAD)*
+- [x] `184bb8b0` poc(windows-worker): add bounded dependency-load smoke to the bundle *(Superseded — added worker-smoke.mjs removed from examples/ at HEAD)*
 
 **P2 (22)** — enumerate via the scan above; backfill after P1.
 
