@@ -296,6 +296,10 @@ test: characterize worker poison-forensics logging
 Covers: ce429f01
 ```
 
+The **same backfill commit also ticks that commit's box** in the P1/P2 burndown below (marking it
+*Covered*, *Waived*, or *Superseded*), so the checklist and the `Covers:` trailers stay in lockstep
+in one atomic change.
+
 Rewriting is more work (authoring against each intermediate state) for the same rebase benefit, and
 its only unique payoff (per-commit `git bisect`) isn't worth collecting on a fork we're draining.
 
