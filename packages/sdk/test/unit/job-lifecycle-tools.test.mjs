@@ -317,6 +317,12 @@ test("start_external_operation validates and normalizes Azure DevOps approval ta
         ...expectedIdentity,
         expectedSourceCommit: sourceCommit,
         resourceKey: azureDevOpsPullRequestResourceKey(expectedIdentity),
+        conditions: {
+            requiredReviewers: true,
+            requireAllBlockingPolicies: true,
+            requiredPolicyDisplayNames: [],
+            codeReviewRecommendation: null,
+        },
     });
     assert.ok(calls[0].nextPollAt instanceof Date);
 });
@@ -459,6 +465,12 @@ test("start_external_operation validates Azure DevOps completion targets", async
         ...expectedIdentity,
         expectedSourceCommit: sourceCommit,
         resourceKey: azureDevOpsPullRequestResourceKey(expectedIdentity),
+        conditions: {
+            requiredReviewers: true,
+            requireAllBlockingPolicies: true,
+            requiredPolicyDisplayNames: [],
+            codeReviewRecommendation: null,
+        },
     });
 });
 
