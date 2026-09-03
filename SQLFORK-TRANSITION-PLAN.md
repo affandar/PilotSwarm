@@ -100,10 +100,40 @@ microsoft  https://github.com/microsoft/PilotSwarm-SQLFork.git       (internal o
 
 ## 4. The core problem
 
-We diverged from PilotSwarm `main` several weeks ago and, in that window, **mixed platform
-concerns and SQL-specific concerns in the same commits/files.** The longer the fork lives,
-the harder the eventual reconciliation. We need to (a) freeze the divergence, (b) separate
-the two concerns cleanly, and (c) route each to its correct home.
+**Why fork at all?** To give SQL engineers a concrete place to build and iterate on platform
+scenarios **without risking a leak of SQL-specific IP into the public OSS upstream** — e.g. the
+internal IcM MCP endpoint/AAD scope (see §5). Work lands internally first; only
+deliberately-scrubbed platform enhancements route back upstream.
+
+**Why a separate repo, not a branch of the OSS repo? (TL;DR)** Git visibility is per-**repo**, not
+per-branch — a branch of a public repo is public the moment you push it, so any SQL IP on it leaks
+instantly. A separate internal repo is the only real privacy boundary; we still track upstream by
+adding it as a git **remote** and rebasing (§11).
+
+We diverged from PilotSwarm `main` at `eaabdbf9` (2026-08-08 — the current divergence point,
+which advances each rebase). In that window the fork accumulated **two
+kinds of value, tangled into the same commits/files:**
+- **SQL-specific values that cannot live in an OSS repo** — real internal endpoints, AAD scopes,
+  and CI-gate names (the Tier 1 IP in §5) that must stay in an internal overlay.
+- **Genuine platform enhancements** — scenarios we built here (durable orchestration, the
+  job-generator lifecycle, worker/git-hydration, delegated MCP, …) that are real improvements to
+  the platform and belong back **upstream** (§6).
+
+The problem is that these are mixed together, not that the fork exists. Left alone it also
+*drifts* — every week upstream moves and the reconciliation cost grows (quantified in the §11
+ledger).
+
+We are **not freezing the divergence.** Instead we set up a standing protocol:
+- (a) **Constantly rebase** the fork onto upstream so it never drifts — the fork stays a thin,
+  current superset of `main` rather than a snapshot that rots (the §11 rebase protocol).
+- (b) **Formalize the SQL-specific values into a separate overlay repo** — the same overlay
+  pattern `waldemort` uses to carry its environment-specific templates on top of a shared
+  platform — so proprietary/SQL config lives in one place instead of tangled through the tree.
+- (c) **Route generic platform work upstream** as themed PRs, draining the fork's delta over
+  time (§6).
+
+The end state is two repos — a pure-platform core (fork → upstream) and the SQL overlay — kept
+aligned by continuous rebase, not a one-time cutover.
 
 ## 5. IP classification (what goes upstream vs. internal)
 
