@@ -54,7 +54,7 @@ export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIR
  * the Copilot SDK expects for an injected `customAgents` entry. Mirrors the
  * inline element type of `SerializableSessionConfig.customAgents`.
  */
-interface RepoAgentDefinition {
+export interface RepoAgentDefinition {
     name: string;
     prompt: string;
     description?: string;
@@ -209,6 +209,92 @@ export function delegatedMcpAuthFingerprint(servers: Record<string, any>): strin
             : [];
     });
     return createHash("sha256").update(JSON.stringify(material)).digest("hex");
+}
+
+/**
+ * Parse a repo-shipped `.github/agents/<file>.agent.md` into a `customAgents`
+ * entry (name, persona prompt, description, tools, mcp-servers, skills). This is
+ * the only way to bind a `.github/agents` agent: the Copilot runtime's config
+ * discovery does NOT register those files as selectable custom agents, so they
+ * must be materialized explicitly and activated by name.
+ *
+ * Pure over its arguments plus the filesystem — the worker-plugin guard is
+ * injected (rather than read from `workerDefaults`) so the resolver can be
+ * unit-tested without constructing a SessionManager. Returns undefined — leaving
+ * the session on its normal path — when: no agent is bound; the bound name is a
+ * worker-plugin agent (that path owns binding); there is no working directory;
+ * the workspace has no `.github/agents`; or nothing in it matches by file slug
+ * or frontmatter `name:` (case-insensitive).
+ */
+export function resolveRepoAgentDefinition(
+    boundAgentName: string | undefined,
+    workingDirectory: string | undefined,
+    isWorkerPluginAgent?: (name: string) => boolean,
+): RepoAgentDefinition | undefined {
+    if (!boundAgentName) return undefined;
+    // Worker-plugin agents own their own binding path — never override it.
+    if (isWorkerPluginAgent?.(boundAgentName)) return undefined;
+    if (!workingDirectory) return undefined;
+    const agentsDir = path.join(workingDirectory, ".github", "agents");
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(agentsDir);
+    } catch {
+        // No `.github/agents` in this workspace (or not hydrated yet).
+        return undefined;
+    }
+    const wanted = boundAgentName.trim().toLowerCase();
+    const SUFFIX = ".agent.md";
+    for (const entry of entries) {
+        if (!entry.toLowerCase().endsWith(SUFFIX)) continue;
+        const slug = entry.slice(0, -SUFFIX.length);
+        let content: string;
+        try {
+            content = fs.readFileSync(path.join(agentsDir, entry), "utf-8");
+        } catch {
+            continue;
+        }
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+        if (!fmMatch) {
+            // No frontmatter — slug-only match with the whole file as prompt.
+            if (slug.toLowerCase() === wanted) {
+                const body = content.trim();
+                if (body) return { name: slug, prompt: body };
+            }
+            continue;
+        }
+        let fm: Record<string, unknown>;
+        try {
+            const parsed = parseYaml(fmMatch[1]);
+            fm = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+        } catch {
+            fm = {};
+        }
+        const declaredName = typeof fm.name === "string" ? fm.name.trim() : undefined;
+        if (slug.toLowerCase() !== wanted && declaredName?.toLowerCase() !== wanted) continue;
+
+        const name = declaredName || slug;
+        const body = content.slice(fmMatch[0].length).trim();
+        const description = typeof fm.description === "string" ? fm.description : undefined;
+        // CustomAgentConfig requires a non-empty prompt; fall back to the
+        // description (then the name) if the file has no body.
+        const prompt = body || description || name;
+
+        const def: RepoAgentDefinition = { name, prompt };
+        if (description) def.description = description;
+        if (Array.isArray(fm.tools)) def.tools = fm.tools.map((t) => String(t));
+        // Frontmatter authors the map under the hyphenated `mcp-servers` key;
+        // accept a camelCase spelling too for robustness.
+        const mcp = (fm["mcp-servers"] ?? (fm as Record<string, unknown>).mcpServers) as
+            | Record<string, unknown>
+            | undefined;
+        if (mcp && typeof mcp === "object") {
+            def.mcpServers = mcp as Record<string, unknown>;
+        }
+        if (Array.isArray(fm.skills)) def.skills = fm.skills.map((s) => String(s));
+        return def;
+    }
+    return undefined;
 }
 
 /** Worker-level defaults — applied to every session. */
@@ -3000,70 +3086,13 @@ export class SessionManager {
         boundAgentName: string | undefined,
         workingDirectory: string | undefined,
     ): RepoAgentDefinition | undefined {
-        if (!boundAgentName) return undefined;
-        // Worker-plugin agents own their own binding path — never override it.
-        if (this.workerDefaults.agentPromptLookup?.[boundAgentName]) return undefined;
-        if (!workingDirectory) return undefined;
-        const agentsDir = path.join(workingDirectory, ".github", "agents");
-        let entries: string[];
-        try {
-            entries = fs.readdirSync(agentsDir);
-        } catch {
-            // No `.github/agents` in this workspace (or not hydrated yet).
-            return undefined;
-        }
-        const wanted = boundAgentName.trim().toLowerCase();
-        const SUFFIX = ".agent.md";
-        for (const entry of entries) {
-            if (!entry.toLowerCase().endsWith(SUFFIX)) continue;
-            const slug = entry.slice(0, -SUFFIX.length);
-            let content: string;
-            try {
-                content = fs.readFileSync(path.join(agentsDir, entry), "utf-8");
-            } catch {
-                continue;
-            }
-            const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-            if (!fmMatch) {
-                // No frontmatter — slug-only match with the whole file as prompt.
-                if (slug.toLowerCase() === wanted) {
-                    const body = content.trim();
-                    if (body) return { name: slug, prompt: body };
-                }
-                continue;
-            }
-            let fm: Record<string, unknown>;
-            try {
-                const parsed = parseYaml(fmMatch[1]);
-                fm = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-            } catch {
-                fm = {};
-            }
-            const declaredName = typeof fm.name === "string" ? fm.name.trim() : undefined;
-            if (slug.toLowerCase() !== wanted && declaredName?.toLowerCase() !== wanted) continue;
-
-            const name = declaredName || slug;
-            const body = content.slice(fmMatch[0].length).trim();
-            const description = typeof fm.description === "string" ? fm.description : undefined;
-            // CustomAgentConfig requires a non-empty prompt; fall back to the
-            // description (then the name) if the file has no body.
-            const prompt = body || description || name;
-
-            const def: RepoAgentDefinition = { name, prompt };
-            if (description) def.description = description;
-            if (Array.isArray(fm.tools)) def.tools = fm.tools.map((t) => String(t));
-            // Frontmatter authors the map under the hyphenated `mcp-servers` key;
-            // accept a camelCase spelling too for robustness.
-            const mcp = (fm["mcp-servers"] ?? (fm as Record<string, unknown>).mcpServers) as
-                | Record<string, unknown>
-                | undefined;
-            if (mcp && typeof mcp === "object") {
-                def.mcpServers = mcp as Record<string, unknown>;
-            }
-            if (Array.isArray(fm.skills)) def.skills = fm.skills.map((s) => String(s));
-            return def;
-        }
-        return undefined;
+        // Delegates to the exported, filesystem-pure resolver; the only
+        // `this`-state it needs is the worker-plugin guard, injected as a fn.
+        return resolveRepoAgentDefinition(
+            boundAgentName,
+            workingDirectory,
+            (name) => Boolean(this.workerDefaults.agentPromptLookup?.[name]),
+        );
     }
 
     private _buildLastInstructionsSection(
