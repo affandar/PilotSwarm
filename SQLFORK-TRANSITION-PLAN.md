@@ -342,7 +342,7 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 ```
 
 **P1 burndown (backfill first):**
-- [ ] `ce429f01` Add always-on diagnostics logging for session poison forensics
+- [x] `ce429f01` Add always-on diagnostics logging for session poison forensics *(Covered)*
 - [ ] `736fcc1a` Default worker and orchestration concurrency to a single slot
 - [ ] `d0fbc07f` Make worker dispatcher poll interval configurable
 - [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env
