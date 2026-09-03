@@ -36,6 +36,26 @@ function withProvenanceEnv(values, callback) {
     }
 }
 
+const CONCURRENCY_ENV = ["PILOTSWARM_WORKER_CONCURRENCY", "PILOTSWARM_ORCHESTRATION_CONCURRENCY"];
+
+// Slot totals read straight from process.env, so pin the concurrency env for the
+// duration of the callback (deleting a key means "unset") and restore afterwards.
+function withConcurrencyEnv(values, callback) {
+    const original = Object.fromEntries(CONCURRENCY_ENV.map((name) => [name, process.env[name]]));
+    for (const name of CONCURRENCY_ENV) {
+        if (values[name] === undefined) delete process.env[name];
+        else process.env[name] = values[name];
+    }
+    try {
+        return callback();
+    } finally {
+        for (const name of CONCURRENCY_ENV) {
+            if (original[name] === undefined) delete process.env[name];
+            else process.env[name] = original[name];
+        }
+    }
+}
+
 test("package-less workers maintain and stop a dedicated registry heartbeat", async () => {
     const originalInterval = process.env.PILOTSWARM_WORKER_HEARTBEAT_MS;
     process.env.PILOTSWARM_WORKER_HEARTBEAT_MS = "5";
@@ -133,11 +153,41 @@ test("worker provenance is explicit and stable for the process lifetime", () => 
 });
 
 test("worker health reports busy slots separately from resident sessions", () => {
-    const instance = worker();
-    const health = instance._collectWorkerHealth();
+    withConcurrencyEnv({}, () => {
+        const instance = worker();
+        const health = instance._collectWorkerHealth();
 
-    assert.equal(health.activeSessions, 0);
-    assert.deepEqual(health.workerSlots, { busy: 0, total: 2 });
+        assert.equal(health.activeSessions, 0);
+        assert.deepEqual(health.workerSlots, { busy: 0, total: 1 });
+    });
+});
+
+test("worker slot totals default to a single slot and honor concurrency env overrides", () => {
+    withConcurrencyEnv({}, () => {
+        const instance = worker();
+        const health = instance._collectWorkerHealth();
+
+        assert.equal(health.workerSlots.total, 1, "worker slots default to one slot");
+        assert.equal(health.orchestrationSlots.total, 1, "orchestration slots default to one slot");
+    });
+
+    withConcurrencyEnv(
+        {
+            PILOTSWARM_WORKER_CONCURRENCY: "4",
+            PILOTSWARM_ORCHESTRATION_CONCURRENCY: "3",
+        },
+        () => {
+            const instance = worker();
+            const health = instance._collectWorkerHealth();
+
+            assert.equal(health.workerSlots.total, 4, "worker concurrency env overrides the default");
+            assert.equal(
+                health.orchestrationSlots.total,
+                3,
+                "orchestration concurrency env overrides the default",
+            );
+        },
+    );
 });
 
 test("new workers capture new provenance and options override environment values", () => {
