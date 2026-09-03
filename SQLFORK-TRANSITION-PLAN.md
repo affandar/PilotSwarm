@@ -294,7 +294,180 @@ never a commit (nothing is cherry-picked).
 > `overlay` — the overlay owns composition, and "done" means the **fork-vs-upstream logical diff
 > is empty**, not "all commits replayed."
 
-## 11. Definition of done
+## 11. Rebase protocol
+
+The fork tracks upstream by **rebase, not merge** — that's what keeps history linear and the
+fork-vs-upstream diff a clean "what we add" delta (a merge buries it under merge commits).
+Rebasing rewrites published history, so it runs on a **candidate branch first**, gets validated,
+then is swapped in and force-pushed. **The live deployable branch is never rebased in place.**
+
+**Cadence.** Rebase little and often — weekly, and after each upstream theme merges. Frequent
+small rebases keep the conflict surface tiny; a long gap lets it balloon (the current +46 gap
+already yields ~36 conflicting files, including the `orchestration_1_0_68/69` add/add).
+
+**One-time setup.**
+- `git config rerere.enabled true` — records each conflict resolution and auto-reapplies it on
+  later rebases (so you resolve the orchestration collision *once*, not every week).
+
+**Branch & tag naming.**  Dates in tag names are the **committer date of the referenced commit**
+(`YYYY-MM-DD`), not the day you happened to tag — so each tag is self-describing.
+- **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
+  every rebase; all by-name references (overlay core pin, CI, PR policy) point here.
+- **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
+- **Candidate branch (ephemeral):** `rebase/onto-<upstreamDate>-<upstreamSha>` — deleted after swap.
+- **Per-rebase tags (immutable):** `rebase/from-<forkTipDate>-<forkTipSha>` (rollback point) and
+  `rebase/onto-<upstreamDate>-<upstreamSha>` (the upstream tip rebased onto). Consumers needing a
+  reproducible deploy pin to the `onto-` tag rather than the moving branch.
+- **Baseline (today):** `rebase/from-2026-09-03-2dc49630` (current fork tip) and
+  `rebase/onto-2026-08-08-eaabdbf9` (the merge-base this state rests on) — the first row of the
+  audit trail, before any upstream rebase.
+
+**Per-rebase steps.**
+1. `git fetch origin` — pull the new upstream `main`.
+2. Backup the current fork tip for rollback:
+   `git tag -a rebase/from-<forkTipDate>-<forkTipSha> feature/aks-git-repo-worker -m "pre-rebase fork tip"`.
+3. Cut a candidate branch (or worktree) from the current fork tip:
+   `git switch -c rebase/onto-<upstreamDate>-<upstreamSha> feature/aks-git-repo-worker`.
+4. Replay the ~140 divergence commits onto the new upstream tip:
+   `git rebase origin/main`  (equivalently `git rebase --onto origin/main upstream-base`).
+5. Resolve conflicts **by class**:
+   - **Theme already upstreamed** → the commit is now redundant; resolve to upstream's version, or
+     `git rebase --skip` if fully absorbed (the theme *drains* out and the delta shrinks).
+   - **Parallel implementation** (e.g. `orchestration_1_0_68/69`) → adopt upstream's and delete the
+     fork's divergent copy — this is the Strategy-B reconcile flagged in Open decisions.
+   - **Migration version collision** (both sides define the same `cms-migrations.ts` version `NNNN`
+     — *seen on the day-1 crank: upstream `0045 session_canvases` vs. fork `0045 session_git_state_pinning`*)
+     → keep both and **renumber the fork's** to follow upstream (the list entry, the SQL function
+     name, and its definition). Numbers must stay unique and ordered, so `rerere` can't reliably
+     auto-resolve this — the target number shifts each rebase.
+   - **Genuine fork-only work** → keep; reapply on top.
+   Continue with `git rebase --continue` until the replay completes.
+6. **Validate on the candidate — before swapping anything:**
+   - build + unit/integration tests green,
+   - smoke: bring up worker + portal, run one lifecycle-job E2E,
+   - deploy to **non-prod** (overlay pinned at the candidate) and sanity-check.
+7. **Swap in** once green. If the live branch gained new commits during validation, rebase those
+   few onto the candidate first, then tag the upstream base and force-push the stable branch:
+   `git tag -a rebase/onto-<upstreamDate>-<upstreamSha> origin/main -m "upstream base rebased onto"`
+   `git switch feature/aks-git-repo-worker && git reset --hard rebase/onto-<upstreamDate>-<upstreamSha>`
+   `git push microsoft feature/aks-git-repo-worker --force-with-lease`
+   `git push microsoft --tags`.
+8. **Re-measure & refresh:** the new merge-base is now `origin/main`, so
+   `git diff origin/main...HEAD` reports the *current* delta — update §3's metrics and the diagram.
+   (`upstream-base` stays frozen at `eaabdbf9` as the original-divergence marker; advance it only if
+   you'd rather the compare link track the shrinking current delta.)
+9. Clean up: delete the candidate branch; keep the `from-`/`onto-` tags as the permanent audit trail.
+
+**Rollback.** If validation fails, discard the candidate — the live branch never moved. If a bad
+rebase was already pushed, `git reset --hard rebase/from-<forkTipDate>-<forkTipSha>` and force-push.
+
+### Upstream-ahead ledger & rebase-risk
+
+Upstream is **46 commits ahead** of the fork's merge-base (`eaabdbf9..origin/main`, tip
+`378adf16`; ~43 non-merge), spanning **2026-08-11 → 2026-09-02**. The ledger is in **replay
+order** and **grouped by commit date** — read each day as one daily-cadence rebase increment (the
+conflict surface a single day adds). Each row is tagged by **actual file overlap** with the fork's
+rewritten SDK core (scan of each commit's changed files). **"Risk" = likelihood of a rebase
+conflict, not code quality.** Note: upstream ships real feature work under `release: vX` messages —
+these are **not** version bumps (`df15fae4` "v0.5.38" rewrites `session-manager`/`model-providers`/
+`cms-migrations`), so a release row is tagged by what it actually touches.
+
+Legend: 🔴 **high** — touches the fork's rewritten SDK core (orchestration / cms-migrations /
+session / providers / client / types); 🟡 **medium** — portal / tests / deploy overlap, mostly
+mechanical; ⚪ **low** — docs / scripts only, no code overlap. Parenthetical = the hot files hit.
+
+**2026-08-11**
+- `df15fae4` 🔴 release v0.5.38 *(session-manager, model-providers, cms-migrations — the day-1 crank hit this)*
+
+**2026-08-12**
+- `ca03d6a9` 🔴 release v0.5.39 *(session-manager, session-proxy, protocol, worker)*
+
+**2026-08-13**
+- `13f03bd1` 🟡 fix(waf): sync AFD WAF template — DRS exclusions + drsRuleGroupOverrides *(overlay-bound, §10)*
+
+**2026-08-14**
+- `921762ed` 🔴 release v0.5.40 *(session-manager, managed-session, cms-migrations, protocol)*
+- `96ace632` 🟡 release v0.5.41 — mobile portal fixes
+
+**2026-08-15**
+- `ebe26ff5` 🔴 release v0.5.42 — phone keyboard, share links, model switches *(session-proxy)*
+- `1906ce59` ⚪ docs(proposals): token ledger — requirements, pool selection, migration
+- `63412be9` ⚪ docs(proposals): token ledger — pool choice is a filter
+- `7100f869` ⚪ docs(proposals): token ledger — capability guide
+
+**2026-08-24**
+- `3784dbd8` 🔴 release v0.5.43 *(orchestration 1.0.68 + `orchestration/*`, session-manager, model-providers — orchestration versioning)*
+- `aca52b21` 🟡 release v0.5.44
+- `495474c4` 🔴 release v0.5.46 *(session-manager, mcp-loader, cms-migrations, worker)*
+
+**2026-08-25**
+- `1906a977` 🔴 portal: readable name picker, selected tab, package download *(http-api-transport)*
+- `45974fa4` 🟡 portal: a flat, searchable agent picker
+- `992eb5cd` 🟡 portal: selected rows keep their text in every theme
+- `21a58968` 🟡 portal: also require a text colour on any selection fill
+- `6f31ae9f` 🟡 portal: fold the session detail box, lock touch panning to one axis
+- `4e7d7d81` 🟡 portal: stop the WAITING block blinking in the detail box
+- `78c69939` 🔴 sdk+portal: an agent's opening instruction is not something you said *(client, session-proxy)*
+
+**2026-08-26**  ← worst cluster: providers + orchestration collide here
+- `2220ba4b` 🔴 Add in-place personal provider key updates *(model-providers, cms-migrations, protocol)*
+- `a9828db6` 🔴 **sdk: freeze orchestration 1.0.69, open 1.0.70** — add/add vs. fork's `_68/_69`; the defining collision (reconcile per §13)
+- `d7aead1f` 🔴 providers: keep apiVersion on a key update *(cms-migrations)*
+- `72be73f8` 🔴 providers: keep apiVersion on a key update *(cms-migrations)*
+- `ede346e7` 🟡 portal: a failed provider change stops leaving a banner behind
+- `bafb3d0c` 🟡 test: cover the Update Key fixes behaviourally
+- `43e0cac8` 🟡 test: cover the Update Key fixes behaviourally
+- `0da4eb9a` 🟡 portal: a stopped session keeps its reason when folded
+- `685d10b6` 🟡 perf(portal): canvas snapshot waits for the selection to settle
+- `022337d9` 🟡 fix the e2e suite: 12 failures, one real perf regression
+
+**2026-08-27**
+- `8c8c8973` 🔴 release v0.5.47 *(orchestration/queue, cms-migrations, protocol, session-proxy)*
+- `d873cbe8` 🔴 release v0.5.48 *(cms-migrations, protocol, http-api-transport, session-proxy)*
+
+**2026-08-28**
+- `3a9bb282` 🔴 release v0.5.49 — a provider type that stores no key *(model-providers, session-manager)*
+- `76c3601c` 🟡 release v0.5.50 — the WAITING line is one glance again
+
+**2026-08-29**
+- `c457cd79` 🟡 release v0.5.51 — Sol Fast, full thinking range, pane badge
+
+**2026-08-30**
+- `c7f18e3b` 🔴 release v0.5.52 — sessions stop paying for their own wake-ups *(opens orchestration 1.0.70, session-manager, types)*
+- `3e2615c3` 🔴 release v0.5.53 — base-prompt trim, private skills, tokens by agent *(session-manager, cms-migrations, protocol, worker)*
+
+**2026-08-31**
+- `6b27e3a0` 🔴 release v0.5.54 — API-created agent sessions get their agent back *(session-proxy)*
+- `941e72e6` 🔴 release v0.5.55 — the creation config becomes durable *(client, cms-migrations, cms)*
+- `dd6abcf1` 🔴 release v0.5.56 — a resume override becomes field-level *(client)*
+- `33f27482` 🟡 test: child-contract input assertion is structural
+
+**2026-09-02**
+- `6de39141` 🔴 release v0.5.57 — private facts namespace; portal render fix *(session-manager, session-status, worker, types)*
+- `eabec65a` ⚪ docs: two gaps found while building on invocation.facts
+- `378adf16` ⚪ scripts: install the CLI from the GitHub release tarballs
+
+**Bottom line — risk is pervasive, not concentrated.** **21 of ~43 commits touch the fork's SDK
+core** (🔴), and the two worst surfaces *recur* rather than sit in one place:
+- **`cms-migrations.ts` collides in ~12 commits** — the exact migration version-number collision the
+  day-1 crank hit (upstream `0045 session_canvases` vs. fork `0045 session_git_state_pinning`). Every
+  one needs a renumber (§11 resolve-by-class), and `rerere` can't fully absorb it because the number
+  keeps shifting. This is the dominant, repeating cost.
+- **Orchestration versioning recurs across three commits** — `3784dbd8` (1.0.68), `a9828db6` (1.0.69),
+  `c7f18e3b` (1.0.70) — so the fork's `orchestration_1_0_68/69` collides with upstream's independent
+  68/69/70 line more than once; validates the §13 reconcile decision (adopt upstream's line).
+
+The 08-26 cluster (providers + the 1.0.69 freeze) is the single worst day, but SDK-core touches land
+on **most** days — which is exactly why the protocol's **little-and-often cadence + `rerere`** matter:
+small weekly rebases keep each migration/orchestration collision to one commit's worth, instead of a
+144-commit pileup.
+
+> **First-crank finding (2026-09-03).** A dry-run rebase onto day-1 `df15fae4` (isolated worktree)
+> replayed 51 fork commits cleanly, then stopped at 52/144 (`fb729e73`) on the `cms-migrations.ts`
+> migration-0045 collision above — confirming both that "release" commits carry SDK-core rewrites and
+> that migration renumbering is the routine conflict class.
+
+## 12. Definition of done
 
 - [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
@@ -317,7 +490,7 @@ never a commit (nothing is cherry-picked).
       fork's logical diff vs upstream is empty.
 - [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQLFork` deleted; this file removed.
 
-## 12. Open decisions
+## 13. Open decisions
 
 1. **sqlmort timing** — use ADO `SQL-AI-Marketplace` now; cut over to `sqlmort` when ready.
 2. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
