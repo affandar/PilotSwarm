@@ -357,14 +357,14 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [x] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform *(Waived — fully removes the callerMcpServers param + validator (SSRF surface); no API/behavior left at HEAD to test)*
 - [x] `fac08098` Add caller-attached per-session MCP servers *(Superseded — callerMcpServers fully removed by c305edcd; gone at HEAD)*
 - [ ] `a1352bc8` Route repo-less session turns to a dedicated generic worker pool
-- [ ] `2721098a` Persist git-repo-worker enlistment on hostPath to kill cold-start re-clone
-- [ ] `3f3e23f8` Make git-repo-worker readiness truthful (Ready == can accept a job)
+- [x] `2721098a` Persist git-repo-worker enlistment on hostPath to kill cold-start re-clone *(Waived — touches only examples/git-repo-worker.js + deploy/gitops daemonset.yaml; no shipped library code in the unit-test surface)*
+- [x] `3f3e23f8` Make git-repo-worker readiness truthful (Ready == can accept a job) *(Waived — touches only examples/git-repo-worker.js + deploy/gitops daemonset.yaml; no shipped library code in the unit-test surface)*
 - [x] `baa99423` Add delegated MCP access: connect to repo-defined MCP servers as the caller *(Covered — callerAuthSecretName + loadRepoMcpConfig; injectMcpAuthorization no longer exists at HEAD)*
 - [x] `fa096eed` feat(sdk): add PluginSpec — load external ADO/GitHub plugin repos into the GHCP SDK *(Covered)*
 - [ ] `767eecbd` feat(sdk): scope git reconcile to session hydration + log acquire->work timing
 - [ ] `2fb07251` feat(sdk,portal): repo-affinity routing for git-hydration workers
 - [x] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(Waived — removes unused example scripts + a workflow smoke step; no behavior)*
-- [ ] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint
+- [x] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint *(Waived — touches only examples/git-repo-worker.js + deploy/Dockerfile.worker; no shipped library code in the unit-test surface)*
 - [ ] `2200b4b3` sdk: add beforeRunTurn worker hook
 - [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading *(Deferred — Covered at HEAD (enable=true survives in createSession config) but inline; needs a test seam)*
 - [x] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options *(Waived — removes option-plumbing public API, falls back to SDK defaults; no behavior to characterize)*
