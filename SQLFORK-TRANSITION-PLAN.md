@@ -120,15 +120,16 @@ Only **2 files** carry a hard internal coupling (live internal endpoint + AAD ap
 The generic `ado_wiql` and `kusto` evaluators in the same file are **public** — carve IcM
 out behind the plugin-loader seam; ship the rest upstream.
 
-### 🟡 Tier 2 — Internal names/terminology, no secrets → **genericize in place, or move fixtures**
+### 🟡 Tier 2 — Internal names/terminology, no secrets → **genericize in place**
 - **`PVS` / "Private Validation Service" / "PVS/Smart Test Selection (git)"** (~40 hits) —
   internal SQL CI-gate names, used only as demo/test fixtures. The gate *mechanism* is
   generic; only the labels are internal.
 - **`DsMainDev`** (~8 hits) — internal repo name used as an example `repoAffinity` placeholder.
 - **`pssqlwus2acr.azurecr.io`** (1 hit) — a real dev ACR name in a build-arg comment.
 
-Decision per item: genericize (e.g. `PVS`→`ExampleGate`, `DsMainDev`→`<your-repo>`, drop the
-real ACR name) to keep it public, **or** route the fixture to the SQL-internal repo.
+Decision: **genericize in place** to keep it public — `PVS`→`ExampleGate`,
+`DsMainDev`→`<your-repo>`, drop the real ACR name. (No routing to the overlay needed; these are
+labels/fixtures, not IP.)
 
 ### 🟢 Tier 3 — Benign, stays public (verified, no action)
 - All `kusto.windows.net` → public `help.kusto.windows.net` sample cluster
@@ -232,17 +233,98 @@ platform work** — **Strategy A (reconcile) is the default.** Reserve **Strateg
 capability whose commits are too entangled with SQL-specific concerns to cleanly split; those
 few, reimplement clean rather than untangle.
 
-## 10. Definition of done
+## 10. Execution plan (phased)
 
-- [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded).
-- [ ] Tier 1 (IcM) extracted to SQL-internal repo behind a generic plugin seam.
-- [ ] Tier 2 genericized or routed; Tier 3 confirmed benign (done).
-- [ ] The fork holds nothing of value not already landed upstream or moved to the SQL-internal repo.
-- [ ] `PilotSwarm-SQLFork` deleted; this file removed.
+This operationalizes §7 (Strategy A) and makes explicit the deployment-continuity model
+§7 leaves implicit. The unit of work is a **capability — a logical diff of fork vs upstream** —
+never a commit (nothing is cherry-picked).
 
-## 11. Open decisions
+### Phase 0 — Live fork, route-as-you-go
+- Keep the fork the **active dev branch** for SQL-orchestration concepts upstream doesn't have
+  yet; new work lands here first — expected, not a violation. (No hard "freeze".)
+- **Classify at authoring** — every change knows its eventual home: **generic platform** →
+  upstream (drained later via a theme PR); **SQL-specific** → overlay (or genericize in place).
+- **Author upstream-first only when practical** (genuinely generic, no dependency on
+  not-yet-upstreamed primitives); everything else is fork-first by necessity.
+- Run a **constant rebase** cadence so the fork stays `origin/main + delta`, however that delta churns.
+- Keep deploying from the fork for now (single deployable, as today).
 
-1. **Tier 2 disposition** — genericize in place (stay public) vs move fixtures to the
-   SQL-internal repo, per item (PVS, DsMainDev, ACR name).
-2. **Strategy A vs B per workstream** — default A; list any capability to do clean-room.
-3. **sqlmort timing** — use ADO `SQL-AI-Marketplace` now; cut over to `sqlmort` when ready.
+### Phase 1 — Carve SQL out behind a plugin seam; the overlay becomes the deployment repo (→ 2 repos)
+- Introduce the **plugin seam** in the fork (generic evaluator-plugin loader — the `PluginSpec`
+  mechanism). This can land in the fork **now**, ahead of upstreaming it — no upstream dependency.
+- Move the **2 Tier-1 files** (`IcmEvaluator` + its test) out of `providers.ts` into the
+  **`SQL-AI-Marketplace` overlay** as a plugin.
+- **Make the overlay the deployment/integration repo:** it depends on core (fork now, upstream
+  later), injects the IcM plugin, and owns the compose→build→ship pipeline.
+- **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
+  composition + env + infra (core-version pin, IcM injection, ACR/AKS/AFD/PG targeting,
+  governance-restricted-subscription overrides) move to the **overlay**.
+- Genericize **Tier 2** labels/fixtures in place (`PVS`→`ExampleGate`, `DsMainDev`→placeholder,
+  drop the real ACR name).
+- **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
+  overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
+
+### Phase 2 — Upstream the platform, theme by theme (slow track, external pace)
+- Slice the fork-vs-upstream logical diff into the ~8+ capability themes of §6.
+- For each theme, in dependency order:
+  - Cut a clean PR branch from **current `origin/main`** via **path-scoped assembly** (bring the
+    theme's final file state, commit clean) — not a replay of entangled history.
+  - Open the PR into `affandar/main` from a GitHub fork of `affandar` (a **contribution remote**,
+    never a deploy input).
+  - On merge, the next fork rebase **drains** that theme (its commits collapse to no-ops);
+    reconcile if upstream modified or independently built it.
+- Suggested order (foundation → top): **(3)** orchestration primitives → **(2)** job-generator /
+  lifecycle → **(4)** delegated-MCP + seam → **(8)** worker hardening → **(1)** git-hydration fleet
+  → **(9)** devbox auth → **(5)** MCP proxy → **(7)** ADO integration → **(6)** portal UI;
+  **(10)** reliability / deploy fixes trickle in throughout.
+- For any theme too entangled to lift — notably **(3)**, where upstream already added a parallel
+  `orchestration_1_0_68/69` — use **Strategy B (clean-room on upstream's version)** instead of lifting.
+
+### Phase 3 — Retire (gated on a behavioral shift, still 2 repos)
+- This is **steady-state routing**, not a one-time burndown: new platform work flows in the top,
+  merged themes drain out the bottom. "Drive to zero" is reachable only once the *inflow* of
+  fork-first platform work slows.
+- Delete the fork only when **(a)** the accumulated delta is drained **and (b)** new generic
+  platform work has moved **upstream-first**, so nothing fresh keeps landing fork-only.
+- Swap the deploy core **fork → upstream**: because the overlay owns the pipeline, this is just
+  **repinning the overlay's core dependency**, not moving any build logic.
+- Delete `PilotSwarm-SQLFork`; remove this plan doc.
+
+> **Invariant throughout:** deployment is always **exactly 2 repos** — core (`fork`→`upstream`) +
+> `overlay` — the overlay owns composition, and "done" means the **fork-vs-upstream logical diff
+> is empty**, not "all commits replayed."
+
+## 11. Definition of done
+
+- [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
+      delta current and drainable) until retirement.
+- [ ] Plugin seam in place; Tier 1 (IcM) extracted to the overlay as a plugin.
+- [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
+      the fork is a pure-platform repo.
+- [ ] Tier 2 genericized in place (Tier 3 is benign — no action; see §5).
+- [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
+  - [ ] (1) AKS git-hydration worker fleet
+  - [ ] (2) Job Generator framework + durable lifecycle state machine *(IcM evaluator carved out)*
+  - [ ] (3) Durable orchestration primitives *(reconcile vs. upstream `orchestration_1_0_68/69`)*
+  - [ ] (4) Delegated MCP + caller-auth *(incl. the `PluginSpec` seam)*
+  - [ ] (5) In-cluster MCP auth proxy
+  - [ ] (6) Portal / observability UI
+  - [ ] (7) Generic Azure DevOps integration
+  - [ ] (8) Worker platform hardening
+  - [ ] (9) Devbox worker auth
+  - [ ] (10) Reliability & deploy
+- [ ] New generic platform work is authored upstream-first (inflow stopped) and the
+      fork's logical diff vs upstream is empty.
+- [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQLFork` deleted; this file removed.
+
+## 12. Open decisions
+
+1. **sqlmort timing** — use ADO `SQL-AI-Marketplace` now; cut over to `sqlmort` when ready.
+2. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
+   so this is a *reconcile two implementations* problem, not an add. Decide per subsystem: adopt
+   upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork rebase
+   hits, so decide early. *(The one known Strategy-B candidate; default stays A per §9.)*
+3. **Deploy-layer split** — enumerate which `deploy/` files are generic (→ core, upstreamed) vs
+   SQL-specific (→ overlay: core-version pin, IcM injection, ACR/AKS/AFD/PG targeting, governance
+   overrides). Must be settled before the overlay can own the pipeline (§10 Phase 1).
+4. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
