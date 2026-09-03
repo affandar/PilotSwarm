@@ -347,7 +347,7 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - [ ] `d0fbc07f` Make worker dispatcher poll interval configurable
 - [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env
 - [ ] `10604f23` Case-insensitively override base MCP servers with bound-agent servers
-- [ ] `8c6b1435` feat(sdk): make per-turn inactivity timeout configurable
+- [x] `8c6b1435` feat(sdk): make per-turn inactivity timeout configurable *(Covered)*
 - [ ] `df37f9b5` feat(sdk): surface caller-delegated tokens as named env vars for non-MCP tools
 - [ ] `5f5c99bc` feat(repo-worker): auth dnx-launched repo MCP servers against private NuGet feeds
 - [ ] `150cb22c` fix(repo-worker): bind repo-shipped .github/agents agents in git workers
