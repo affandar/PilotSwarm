@@ -21,8 +21,10 @@ import {
 } from "./worker-timeline-lane-order.js";
 import {
     DEFAULT_WORKER_TIMELINE_ZOOM,
-    WORKER_TIMELINE_ZOOM_LEVELS,
+    WORKER_TIMELINE_SPAN_LEVELS_MS,
     computeWorkerTimelineZoomLayout,
+    defaultWorkerTimelineZoom,
+    formatWorkerTimelineSpan,
     stepWorkerTimelineZoom,
 } from "./worker-timeline-zoom.js";
 import {
@@ -10163,31 +10165,37 @@ export function WorkerTimelineSwimlane({
     const segments = Array.isArray(timeline?.segments) ? timeline.segments : [];
     const markers = Array.isArray(timeline?.markers) ? timeline.markers : [];
     const scrollRef = React.useRef(null);
-    const [fullscreenChartHeight, setFullscreenChartHeight] = React.useState(0);
+    const headersRef = React.useRef(null);
+    const [availableChartHeight, setAvailableChartHeight] = React.useState(360);
     const [draggedLaneKey, setDraggedLaneKey] = React.useState(null);
     const [dropTarget, setDropTarget] = React.useState(null);
     React.useEffect(() => {
-        if (!fullscreen) {
-            setFullscreenChartHeight(0);
-            return undefined;
-        }
         const scrollNode = scrollRef.current;
         if (!scrollNode) return undefined;
-        const updateHeight = () => {
-            setFullscreenChartHeight(Math.max(360, scrollNode.clientHeight - 53));
+        const measure = () => {
+            // The true fit target is the scroll viewport minus the sticky
+            // header — that's the space the timeline body actually gets. Feeding
+            // this (not a hardcoded 360) into the zoom layout is what lets a full
+            // zoom-out clamp the chart to the viewport so the whole run shows
+            // without scrolling, in the inline pane and full-screen alike. Floor
+            // keeps lanes legible on a very short pane.
+            const headerHeight = headersRef.current?.offsetHeight || 0;
+            const available = Math.max(160, Math.round(scrollNode.clientHeight - headerHeight));
+            setAvailableChartHeight(available);
         };
-        const frame = window.requestAnimationFrame(updateHeight);
+        const frame = window.requestAnimationFrame(measure);
         const observer = typeof ResizeObserver === "function"
-            ? new ResizeObserver(updateHeight)
+            ? new ResizeObserver(measure)
             : null;
         observer?.observe(scrollNode);
-        window.addEventListener("resize", updateHeight);
+        if (headersRef.current) observer?.observe(headersRef.current);
+        window.addEventListener("resize", measure);
         return () => {
             window.cancelAnimationFrame(frame);
             observer?.disconnect();
-            window.removeEventListener("resize", updateHeight);
+            window.removeEventListener("resize", measure);
         };
-    }, [fullscreen, timeline?.durationMs]);
+    }, [fullscreen, timeline?.durationMs, lanes.length]);
     const startAt = timeline?.displayStartAt || timeline?.startAt;
     const endAt = timeline?.displayEndAt || timeline?.endAt;
     const startMs = new Date(startAt).getTime();
@@ -10208,7 +10216,7 @@ export function WorkerTimelineSwimlane({
         durationMs: displayDurationMs,
         laneCount: lanes.length,
         zoom,
-        minimumChartHeight: fullscreen ? fullscreenChartHeight : 360,
+        minimumChartHeight: availableChartHeight,
     });
     const chartHeight = zoomLayout.chartHeight;
     const ticks = timelineAxisTicks(startAt, endAt, chartHeight);
@@ -10240,9 +10248,13 @@ export function WorkerTimelineSwimlane({
     const gridColumns = `var(--ps-worker-timeline-axis-width) repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
     const laneColumns = `repeat(${lanes.length}, minmax(${zoomLayout.laneWidthPx}px, 1fr))`;
     const chartWidth = `${zoomLayout.chartWidth}px`;
-    const zoomIndex = WORKER_TIMELINE_ZOOM_LEVELS.indexOf(zoomLayout.zoom);
-    const canZoomOut = zoomIndex > 0;
-    const canZoomIn = zoomIndex < WORKER_TIMELINE_ZOOM_LEVELS.length - 1;
+    const zoomIndex = WORKER_TIMELINE_SPAN_LEVELS_MS.indexOf(zoomLayout.visibleSpanMs);
+    // Zoom IN shrinks the visible span (toward the sub-second end of the
+    // ladder); zoom OUT grows it. Zooming out stops being meaningful once the
+    // whole run already fits the viewport, so gate it on the run duration too.
+    const canZoomIn = zoomIndex > 0;
+    const canZoomOut = zoomIndex < WORKER_TIMELINE_SPAN_LEVELS_MS.length - 1
+        && zoomLayout.visibleSpanMs < displayDurationMs;
     const workerName = String(timeline?.workerName || timeline?.workerNodeId || "").trim();
     const workerHostname = String(timeline?.hostname || "").trim();
     const positionPercent = (atMs) => (
@@ -10300,7 +10312,8 @@ export function WorkerTimelineSwimlane({
                 React.createElement("output", {
                     className: "ps-worker-swimlane__zoom-level",
                     "aria-live": "polite",
-                }, `${Math.round(zoomLayout.zoom * 100)}%`),
+                    title: `Visible span: ${formatWorkerTimelineSpan(zoomLayout.visibleSpanMs)} of the timeline fills the pane`,
+                }, formatWorkerTimelineSpan(zoomLayout.visibleSpanMs)),
                 React.createElement("button", {
                     type: "button",
                     className: "ps-mini-button",
@@ -10344,6 +10357,7 @@ export function WorkerTimelineSwimlane({
             },
             React.createElement("div", {
                 className: "ps-worker-swimlane__headers",
+                ref: headersRef,
                 style: { gridTemplateColumns: gridColumns },
             },
             React.createElement("div", { className: "ps-worker-swimlane__axis-header" }, "UTC"),
@@ -10657,7 +10671,9 @@ function WorkerTimelineTable({ timeline, theme }) {
 
 function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
     const [utilizationFullscreen, setUtilizationFullscreen] = React.useState(false);
-    const [timelineZoom, setTimelineZoom] = React.useState(DEFAULT_WORKER_TIMELINE_ZOOM);
+    const [timelineZoom, setTimelineZoom] = React.useState(
+        () => defaultWorkerTimelineZoom(swimlane?.displayDurationMs || swimlane?.durationMs),
+    );
     const [laneOrder, setLaneOrder] = React.useState(
         () => reconcileWorkerTimelineLaneOrder(swimlane?.lanes),
     );
@@ -10665,7 +10681,9 @@ function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
         setLaneOrder((current) => reconcileWorkerTimelineLaneOrder(swimlane?.lanes, current));
     }, [swimlane?.lanes]);
     React.useEffect(() => {
-        setTimelineZoom(DEFAULT_WORKER_TIMELINE_ZOOM);
+        // Reset to "fit the whole run" only when switching workers — not on
+        // every live duration tick, which would fight a manual zoom.
+        setTimelineZoom(defaultWorkerTimelineZoom(swimlane?.displayDurationMs || swimlane?.durationMs));
     }, [swimlane?.workerNodeId]);
     React.useEffect(() => {
         if (!utilizationFullscreen) return undefined;

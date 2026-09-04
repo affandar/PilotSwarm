@@ -4,7 +4,10 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
     DEFAULT_WORKER_TIMELINE_ZOOM,
+    WORKER_TIMELINE_SPAN_LEVELS_MS,
     computeWorkerTimelineZoomLayout,
+    defaultWorkerTimelineZoom,
+    formatWorkerTimelineSpan,
     normalizeWorkerTimelineZoom,
     stepWorkerTimelineZoom,
 } from "../../ui/react/src/worker-timeline-zoom.js";
@@ -37,56 +40,95 @@ globalThis.document = globalThis.document || {
 };
 const { WorkerTimelineSwimlane } = await import("../../ui/react/src/web-app.js");
 
-test("worker timeline zoom uses bounded, deterministic steps", () => {
+test("worker timeline zoom snaps to and steps along the span ladder", () => {
     assert.equal(normalizeWorkerTimelineZoom("bad"), DEFAULT_WORKER_TIMELINE_ZOOM);
-    assert.equal(normalizeWorkerTimelineZoom(1.4), 1.5);
-    assert.equal(stepWorkerTimelineZoom(1, "in"), 1.5);
-    assert.equal(stepWorkerTimelineZoom(1, "out"), 0.75);
-    assert.equal(stepWorkerTimelineZoom(3, "in"), 3);
-    assert.equal(stepWorkerTimelineZoom(0.5, "out"), 0.5);
+    // Snaps an arbitrary value to the nearest visible-span level.
+    assert.equal(normalizeWorkerTimelineZoom(1_400), 1_000);
+    assert.equal(normalizeWorkerTimelineZoom(40_000), 30_000);
+    // Zoom IN shrinks the visible span; zoom OUT grows it.
+    assert.equal(stepWorkerTimelineZoom(1_000, "in"), 500);
+    assert.equal(stepWorkerTimelineZoom(1_000, "out"), 2_000);
+    // Clamped at both ends of the ladder (250ms .. 8h).
+    assert.equal(stepWorkerTimelineZoom(250, "in"), 250);
+    assert.equal(stepWorkerTimelineZoom(28_800_000, "out"), 28_800_000);
 });
 
-test("worker timeline zoom changes only the time scale without changing lane geometry or data", () => {
-    const base = computeWorkerTimelineZoomLayout({
-        durationMs: 10 * 60_000,
-        laneCount: 4,
-        zoom: 1,
-    });
-    const zoomed = computeWorkerTimelineZoomLayout({
-        durationMs: 10 * 60_000,
-        laneCount: 4,
-        zoom: 2,
-    });
-
-    assert.equal(zoomed.chartHeight, base.chartHeight * 2);
-    assert.equal(zoomed.pixelsPerMinute, base.pixelsPerMinute * 2);
-    assert.equal(zoomed.chartWidth, base.chartWidth);
-    assert.equal(zoomed.laneWidthPx, base.laneWidthPx);
+test("worker timeline zoom reaches sub-second in and multi-hour out", () => {
+    assert.equal(WORKER_TIMELINE_SPAN_LEVELS_MS[0], 250);
+    assert.equal(
+        WORKER_TIMELINE_SPAN_LEVELS_MS[WORKER_TIMELINE_SPAN_LEVELS_MS.length - 1],
+        28_800_000,
+    );
+    // Repeated zoom-in bottoms out at a quarter-second visible span.
+    let deep = 60_000;
+    for (let i = 0; i < 20; i += 1) deep = stepWorkerTimelineZoom(deep, "in");
+    assert.equal(deep, 250);
+    // Repeated zoom-out tops out at eight hours.
+    let wide = 60_000;
+    for (let i = 0; i < 20; i += 1) wide = stepWorkerTimelineZoom(wide, "out");
+    assert.equal(wide, 28_800_000);
 });
 
-test("full-screen viewport height remains zoomable instead of becoming a fixed floor", () => {
-    const zoomedOut = computeWorkerTimelineZoomLayout({
-        durationMs: 10 * 60_000,
-        laneCount: 4,
-        zoom: 0.5,
-        minimumChartHeight: 720,
-    });
-    const defaultZoom = computeWorkerTimelineZoomLayout({
-        durationMs: 10 * 60_000,
-        laneCount: 4,
-        zoom: 1,
-        minimumChartHeight: 720,
-    });
-    const zoomedIn = computeWorkerTimelineZoomLayout({
-        durationMs: 10 * 60_000,
-        laneCount: 4,
-        zoom: 2,
-        minimumChartHeight: 720,
-    });
+test("default zoom fits the whole run in the viewport", () => {
+    // Smallest span >= duration ("fit").
+    assert.equal(defaultWorkerTimelineZoom(45_000), 60_000);
+    assert.equal(defaultWorkerTimelineZoom(90_000), 120_000);
+    assert.equal(defaultWorkerTimelineZoom(250), 250);
+    // Runs longer than the ladder clamp to the widest level.
+    assert.equal(defaultWorkerTimelineZoom(36 * 3_600_000), 28_800_000);
+    // Unknown duration falls back to the neutral default.
+    assert.equal(defaultWorkerTimelineZoom(0), DEFAULT_WORKER_TIMELINE_ZOOM);
+    assert.equal(defaultWorkerTimelineZoom("nope"), DEFAULT_WORKER_TIMELINE_ZOOM);
+});
 
-    assert.equal(zoomedOut.chartHeight, 360);
-    assert.equal(defaultZoom.chartHeight, 720);
-    assert.equal(zoomedIn.chartHeight, 1_440);
+test("visible-span labels read as time, not percentages", () => {
+    assert.equal(formatWorkerTimelineSpan(250), "250ms");
+    assert.equal(formatWorkerTimelineSpan(1_000), "1s");
+    assert.equal(formatWorkerTimelineSpan(1_500), "1.5s");
+    assert.equal(formatWorkerTimelineSpan(30_000), "30s");
+    assert.equal(formatWorkerTimelineSpan(60_000), "1m");
+    assert.equal(formatWorkerTimelineSpan(90_000), "1.5m");
+    assert.equal(formatWorkerTimelineSpan(3_600_000), "1h");
+});
+
+test("visible span sets density so exactly that span fills the viewport", () => {
+    // A 10-minute run, viewport 600px: a 1-minute visible span means the whole
+    // run is 10x taller than the viewport (600px per visible minute).
+    const oneMinuteView = computeWorkerTimelineZoomLayout({
+        durationMs: 10 * 60_000,
+        laneCount: 4,
+        zoom: 60_000,
+        minimumChartHeight: 600,
+    });
+    assert.equal(oneMinuteView.visibleSpanMs, 60_000);
+    assert.equal(oneMinuteView.chartHeight, 6_000);
+    assert.equal(oneMinuteView.pixelsPerMinute, 600);
+
+    // Zooming in to a 30s visible span doubles the density and chart height.
+    const halfMinuteView = computeWorkerTimelineZoomLayout({
+        durationMs: 10 * 60_000,
+        laneCount: 4,
+        zoom: 30_000,
+        minimumChartHeight: 600,
+    });
+    assert.equal(halfMinuteView.chartHeight, 12_000);
+    assert.equal(halfMinuteView.pixelsPerMinute, 1_200);
+
+    // Lane geometry is independent of the time scale.
+    assert.equal(halfMinuteView.chartWidth, oneMinuteView.chartWidth);
+    assert.equal(halfMinuteView.laneWidthPx, oneMinuteView.laneWidthPx);
+});
+
+test("zooming out past the run length clamps the chart to the viewport", () => {
+    // A 10-minute run at a 30-minute visible span already fits — the chart is
+    // never shorter than the viewport.
+    const wide = computeWorkerTimelineZoomLayout({
+        durationMs: 10 * 60_000,
+        laneCount: 4,
+        zoom: 1_800_000,
+        minimumChartHeight: 720,
+    });
+    assert.equal(wide.chartHeight, 720);
 });
 
 test("worker timeline renders registry name and accessible zoom controls at the selected scale", () => {
@@ -151,7 +193,7 @@ test("worker timeline renders registry name and accessible zoom controls at the 
         timeline,
         theme: {},
         controller: {},
-        zoom: 2,
+        zoom: 30_000,
         onZoomIn() {},
         onZoomOut() {},
     }));
@@ -161,7 +203,7 @@ test("worker timeline renders registry name and accessible zoom controls at the 
     assert.match(html, /title="worker-node-1"/);
     assert.match(html, /aria-label="Zoom out worker timeline"/);
     assert.match(html, /aria-label="Zoom in worker timeline"/);
-    assert.match(html, />200%<\/output>/);
+    assert.match(html, />30s<\/output>/);
     assert.match(html, /Worker utilization = active Job work \/ active worker time/);
     assert.match(html, /30000 ms/);
     assert.match(html, /35000 ms/);
