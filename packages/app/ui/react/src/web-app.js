@@ -4423,13 +4423,48 @@ function StatusDot({ color, node = false }) {
  * person cannot look like two different people in two panes.
  */
 function OwnerAvatar({ badge, size = "sm" }) {
+    // The full name on hover, drawn the way the toolbar tooltips are (a
+    // fixed-position label portalled to the body) rather than the browser's
+    // native title: that one is slow to appear, easy to miss, and styled by
+    // the OS rather than the app.
+    const [tip, setTip] = React.useState(null);
+    const ref = React.useRef(null);
+    const tipRef = React.useRef(null);
+    React.useLayoutEffect(() => {
+        if (!tip || !tipRef.current || typeof window === "undefined") return;
+        const half = tipRef.current.offsetWidth / 2;
+        const margin = 6;
+        tipRef.current.style.left = `${Math.max(half + margin, Math.min(tip.x, window.innerWidth - half - margin))}px`;
+    }, [tip]);
     if (!badge) return null;
-    return React.createElement("span", {
-        className: `ps-owner-avatar is-${size}${badge.isMine ? " is-mine" : ""}`,
-        "data-owner-hue": String(badge.hue ?? 0),
-        title: badge.isMine ? `${badge.name} (you)` : badge.name,
-        "aria-label": badge.name,
-    }, badge.initials);
+    const label = badge.isMine ? `${badge.name} (you)` : badge.name;
+    const show = () => {
+        const el = ref.current;
+        if (!el || typeof window === "undefined") return;
+        const r = el.getBoundingClientRect();
+        const below = r.bottom + 44 < window.innerHeight;
+        setTip({ x: r.left + r.width / 2, y: below ? r.bottom + 6 : r.top - 6, placement: below ? "below" : "above" });
+    };
+    const hide = () => setTip(null);
+    return React.createElement(React.Fragment, null,
+        React.createElement("span", {
+            ref,
+            className: `ps-owner-avatar is-${size}${badge.isMine ? " is-mine" : ""}`,
+            "data-owner-hue": String(badge.hue ?? 0),
+            "aria-label": label,
+            onMouseEnter: show,
+            onMouseLeave: hide,
+            onFocus: show,
+            onBlur: hide,
+        }, badge.initials),
+        tip && typeof document !== "undefined"
+            ? createPortal(React.createElement("span", {
+                ref: tipRef,
+                className: `ps-icon-tooltip is-${tip.placement}`,
+                role: "tooltip",
+                style: { top: `${tip.y}px` },
+            }, label), document.body)
+            : null);
 }
 
 /** Drop the TUI-only text chip; the portal draws OwnerAvatar instead. */

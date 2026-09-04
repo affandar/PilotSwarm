@@ -5820,19 +5820,20 @@ body.is-resizing-pane-y iframe {
    The disc is 16px against a ~16.6px line box (13px × 1.28), so it rides
    inside the existing line and does not push rows taller. */
 .ps-owner-avatar.is-sm {
-    width: 16px;
-    height: 16px;
-    font-size: 8.5px;
-    margin-inline-end: 7px;
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+    margin-inline-end: 8px;
+    cursor: default;
     vertical-align: middle;
     /* The glyph is centred by the flex box above; this keeps the two-letter
        monogram from riding high on its own line box inside the disc. */
     line-height: 1;
 }
 .ps-owner-avatar.is-md {
-    width: 22px;
-    height: 22px;
-    font-size: 10.5px;
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
     margin-inline-end: 8px;
     vertical-align: middle;
     line-height: 1;
@@ -5847,23 +5848,31 @@ body.is-resizing-pane-y iframe {
 
 .ps-owner-avatar[data-owner-hue="0"] { --ps-owner-fg: #2f6fd0; }
 .ps-owner-avatar[data-owner-hue="1"] { --ps-owner-fg: #1a8a5f; }
-.ps-owner-avatar[data-owner-hue="2"] { --ps-owner-fg: #a06510; }
+.ps-owner-avatar[data-owner-hue="2"] { --ps-owner-fg: #d0700f; }
 .ps-owner-avatar[data-owner-hue="3"] { --ps-owner-fg: #7d3fa8; }
-.ps-owner-avatar[data-owner-hue="4"] { --ps-owner-fg: #0f7a8a; }
-.ps-owner-avatar[data-owner-hue="5"] { --ps-owner-fg: #b03a63; }
-.ps-owner-avatar[data-owner-hue="6"] { --ps-owner-fg: #5d8420; }
-.ps-owner-avatar[data-owner-hue="7"] { --ps-owner-fg: #a75a2c; }
+.ps-owner-avatar[data-owner-hue="4"] { --ps-owner-fg: #0f8a96; }
+.ps-owner-avatar[data-owner-hue="5"] { --ps-owner-fg: #c8385f; }
+.ps-owner-avatar[data-owner-hue="6"] { --ps-owner-fg: #5d8f1a; }
+.ps-owner-avatar[data-owner-hue="7"] { --ps-owner-fg: #8a5a3a; }
+.ps-owner-avatar[data-owner-hue="8"] { --ps-owner-fg: #4550c8; }
+.ps-owner-avatar[data-owner-hue="9"] { --ps-owner-fg: #b0369f; }
+.ps-owner-avatar[data-owner-hue="10"] { --ps-owner-fg: #a68a00; }
+.ps-owner-avatar[data-owner-hue="11"] { --ps-owner-fg: #c8402e; }
 
 /* Dark grounds: same hues, lifted so white text keeps its contrast. */
 @media (prefers-color-scheme: dark) {
-    .ps-owner-avatar[data-owner-hue="0"] { --ps-owner-fg: #3d7fd6; }
-    .ps-owner-avatar[data-owner-hue="1"] { --ps-owner-fg: #1f9b6b; }
-    .ps-owner-avatar[data-owner-hue="2"] { --ps-owner-fg: #b5751a; }
-    .ps-owner-avatar[data-owner-hue="3"] { --ps-owner-fg: #8f4cbd; }
-    .ps-owner-avatar[data-owner-hue="4"] { --ps-owner-fg: #158a9c; }
-    .ps-owner-avatar[data-owner-hue="5"] { --ps-owner-fg: #c24872; }
-    .ps-owner-avatar[data-owner-hue="6"] { --ps-owner-fg: #6b9626; }
-    .ps-owner-avatar[data-owner-hue="7"] { --ps-owner-fg: #bb6733; }
+    .ps-owner-avatar[data-owner-hue="0"] { --ps-owner-fg: #3d84e0; }
+    .ps-owner-avatar[data-owner-hue="1"] { --ps-owner-fg: #22a86f; }
+    .ps-owner-avatar[data-owner-hue="2"] { --ps-owner-fg: #e07f18; }
+    .ps-owner-avatar[data-owner-hue="3"] { --ps-owner-fg: #9a56d2; }
+    .ps-owner-avatar[data-owner-hue="4"] { --ps-owner-fg: #1a9fae; }
+    .ps-owner-avatar[data-owner-hue="5"] { --ps-owner-fg: #d64a74; }
+    .ps-owner-avatar[data-owner-hue="6"] { --ps-owner-fg: #72a31f; }
+    .ps-owner-avatar[data-owner-hue="7"] { --ps-owner-fg: #a06a44; }
+    .ps-owner-avatar[data-owner-hue="8"] { --ps-owner-fg: #5a66dd; }
+    .ps-owner-avatar[data-owner-hue="9"] { --ps-owner-fg: #c443b3; }
+    .ps-owner-avatar[data-owner-hue="10"] { --ps-owner-fg: #b89a10; }
+    .ps-owner-avatar[data-owner-hue="11"] { --ps-owner-fg: #d94d3a; }
 }
 
 .ps-admin-detail { padding: 14px 18px; max-width: 72ch; }

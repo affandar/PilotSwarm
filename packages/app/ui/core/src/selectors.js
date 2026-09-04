@@ -457,15 +457,63 @@ export function manualOrderContainerKey(session, pinned = false) {
  * The one owner-badge descriptor both lists render from. Same person ⇒ same
  * initials and same colour, wherever they appear.
  */
-export function ownerBadgeFor(owner, { isMine = false } = {}) {
+export function ownerBadgeFor(owner, { isMine = false, hueByKey = null } = {}) {
     if (!owner) return null;
     const name = ownerDisplayName(owner, owner?.email || "");
+    const key = ownerBadgeKey(owner, owner?.email);
     return {
         initials: ownerInitials(owner),
-        hue: ownerBadgeHue(ownerBadgeKey(owner, owner?.email)),
+        // The list-wide assignment when the caller has one (no two people in
+        // the same list share a colour); the bare hash otherwise.
+        hue: hueByKey?.get?.(key) ?? ownerBadgeHue(key),
         name: name || "unknown user",
         isMine: Boolean(isMine),
     };
+}
+
+/**
+ * One colour per PERSON in a list, no two alike while the palette lasts.
+ *
+ * The hash alone puts different people on the same colour far too often
+ * (three people, twelve colours: one collision in four), and a badge whose
+ * colour does not tell people apart is not doing its job. So: everyone
+ * gets their hash hue first; anyone landing on a taken hue walks to the next
+ * free one. Walk order is the sorted identity key, so the outcome depends
+ * only on WHO is in the list — the same people get the same colours across
+ * reloads and in both panes, and a newcomer only ever takes a free colour.
+ */
+export function assignOwnerBadgeHues(keys) {
+    const sorted = [...new Set([...keys].map((k) => String(k || "").trim().toLowerCase()).filter(Boolean))].sort();
+    const taken = new Set();
+    const out = new Map();
+    for (const key of sorted) {
+        let hue = ownerBadgeHue(key);
+        if (taken.size < OWNER_BADGE_HUES) {
+            let steps = 0;
+            while (taken.has(hue) && steps < OWNER_BADGE_HUES) { hue = (hue + 1) % OWNER_BADGE_HUES; steps += 1; }
+        }
+        taken.add(hue);
+        out.set(key, hue);
+    }
+    return out;
+}
+
+// The assignment for every human owner in the session catalog, memoised on
+// the catalog's identity: the row selector runs per row and per dispatch.
+let ownerHueMapCache = null;
+export function ownerHueMapForSessions(byId) {
+    if (ownerHueMapCache && ownerHueMapCache.byId === byId) return ownerHueMapCache.map;
+    const keys = [];
+    for (const session of Object.values(byId || {})) {
+        if (!session || session.isSystem || session.isGroup) continue;
+        const owner = session.owner;
+        const ownerKey = ownerKeyForOwner(owner);
+        if (!ownerKey || ownerKey === SYSTEM_OWNER_KEY) continue;
+        keys.push(ownerBadgeKey(owner, owner?.email));
+    }
+    const map = assignOwnerBadgeHues(keys);
+    ownerHueMapCache = { byId, map };
+    return map;
 }
 
 function ownerDirectoryFromSessions(byId) {
@@ -507,11 +555,11 @@ function resolvePackageOwner(pkg, directory) {
  * the badge is telling owners APART at a glance, which two-letter initials
  * alone do poorly (and did not do at all while they were all "?").
  *
- * Eight hues, all legible on both the light and dark portal grounds; the
+ * Twelve hues, all legible on both the light and dark portal grounds; the
  * viewer's own rows are styled separately by the caller, so this palette
  * never has to encode "mine".
  */
-const OWNER_BADGE_HUES = 8;
+export const OWNER_BADGE_HUES = 12;
 
 export function ownerBadgeHue(key) {
     const text = String(key || "").trim().toLowerCase();
@@ -1358,6 +1406,7 @@ export function selectSessionRows(state) {
                 ? ownerBadgeFor(effectiveSessionOwner(session, state.sessions.byId), {
                     isMine: Boolean(ownerKeyForOwner(state?.auth?.principal)
                         && ownerKeyForOwner(effectiveSessionOwner(session, state.sessions.byId)) === ownerKeyForOwner(state?.auth?.principal)),
+                    hueByKey: ownerHueMapForSessions(state.sessions.byId),
                 })
                 : null,
             orderable: isManuallyOrderableSession(session),
@@ -1904,7 +1953,11 @@ function describeChatMessageHeader(message, options = {}) {
     const sharedContext = options?.sharedContext === true;
     const isUser = message?.role === "user";
     const isSelf = isUser && senderKey && viewerKey && senderKey === viewerKey;
-    const fromOtherPerson = sharedContext && isUser && senderKey && !isSelf;
+    // A user-stamped message whose key is not the viewer's IS from someone
+    // else, whatever the session's visibility says: a targeted share leaves
+    // the session "private" but still puts another person's messages in the
+    // transcript. Naming them never needs the shared-context gate.
+    const fromOtherPerson = isUser && Boolean(senderKey) && Boolean(viewerKey) && !isSelf;
     // Owner tag: the sender is the session owner (or, for a sender-less own
     // message, the viewer themselves is the owner).
     const senderIsOwner = sharedContext && isUser && ownerKey && (
@@ -2891,12 +2944,19 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     const activeSessionId = state?.sessions?.activeSessionId;
     const activeSession = activeSessionId ? state?.sessions?.byId?.[activeSessionId] : null;
     const ownerKey = ownerKeyForOwner(activeSession?.owner);
-    // A shared context = the session is shared deployment-wide, or the viewer
-    // is not its owner (someone shared it with them). Only then does the
-    // transcript name speakers and tag the owner.
+    // A shared context = the session is shared deployment-wide, the viewer is
+    // not its owner (someone shared it with them), or someone other than the
+    // viewer has written to it (the owner shared it with a writer; the session
+    // row still says "private" — targeted shares are not on the row, but the
+    // other person's stamped messages are in the transcript). Only then does
+    // the transcript name speakers and tag the owner.
     const sharedContext = Boolean(activeSession && (
         (activeSession.visibility && activeSession.visibility !== "private")
         || (ownerKey && viewerKey && ownerKey !== viewerKey)
+        || (viewerKey && messages.some((message) => message?.role === "user"
+            && message?.sender?.kind === "user"
+            && ownerKeyForOwner(message.sender)
+            && ownerKeyForOwner(message.sender) !== viewerKey))
     ));
     const buildOptions = {
         ...(options?.tableMode ? { tableMode: options.tableMode } : {}),
@@ -4165,6 +4225,8 @@ export function selectAdminConsole(state) {
     const canEditPackage = (pkg) => ownsPackage(pkg) || Boolean(pkg?.canEdit);
     // Built once per render, not per row.
     const ownerDirectory = ownerDirectoryFromSessions(state?.sessions?.byId);
+    // Same assignment as the session list, so the same person is the same colour in both panes.
+    const packageHueByKey = ownerHueMapForSessions(state?.sessions?.byId);
     // Same rule as the session list: the owner chip only earns its place when
     // this list actually holds more than one owner. Shared packages belong to
     // the deployment, not a person, so they neither carry a chip nor count
@@ -4212,7 +4274,7 @@ export function selectAdminConsole(state) {
         // PERSON's, matching the session list exactly.
         ownerBadge: (pkg.scope === "shared" || !decoratePackageOwners)
             ? null
-            : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory)),
+            : ownerBadgeFor(resolvePackageOwner(pkg, ownerDirectory), { hueByKey: packageHueByKey }),
         // Highlight only while the Agents section is active — otherwise the
         // GitHub Keys screen shows a double selection.
         selected: rowMatchesSelection(pkg),
