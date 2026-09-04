@@ -5,7 +5,7 @@
  *
  * Two things must hold and are guarded here:
  *   1. VERSION CEREMONY — every version below the latest is frozen into its
- *      own directory and registered; latest is 1.0.71. Each bump updates this
+ *      own directory and registered; latest is 1.0.72. Each bump updates this
  *      block, which is the point: a freeze that forgets the ceremony is a
  *      freeze nobody checked.
  *   2. FREEZE BOUNDARY — the durable yield exists from 1.0.59 onward, never in
@@ -24,21 +24,21 @@ import {
 import * as dispatcher from "../../src/orchestration.ts";
 
 describe("orchestration version registry", () => {
-    it("latest is 1.0.71, registered, and exported from the dispatcher", () => {
-        expect(LATEST).toBe("1.0.71");
+    it("latest is 1.0.72, registered, and exported from the dispatcher", () => {
+        expect(LATEST).toBe("1.0.72");
         const latest = REGISTRY.find((e) => e.version === LATEST);
         expect(latest?.handler).toBeTypeOf("function");
-        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_71");
-        expect(dispatcher.durableSessionOrchestration_1_0_71).toBeTypeOf("function");
+        expect(latest.handler.name).toBe("durableSessionOrchestration_1_0_72");
+        expect(dispatcher.durableSessionOrchestration_1_0_72).toBeTypeOf("function");
     });
 
-    it("freezes 1.0.65 through 1.0.70 as distinct registered handlers", () => {
+    it("freezes 1.0.65 through 1.0.71 as distinct registered handlers", () => {
         const latest = REGISTRY.find((e) => e.version === LATEST);
-        // 1.0.70 matters most here: it was the live directory until the 1.0.71
-        // bump, so the freeze had to repoint it at orchestration_1_0_70/.
+        // 1.0.71 matters most here: it was the live directory until the 1.0.72
+        // bump, so the freeze had to repoint it at orchestration_1_0_71/.
         // Leaving that import on ./orchestration/ would make "frozen" silently
         // track live development — this is the assertion that catches it.
-        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69", "1.0.70"]) {
+        for (const version of ["1.0.65", "1.0.66", "1.0.67", "1.0.68", "1.0.69", "1.0.70", "1.0.71"]) {
             const frozen = REGISTRY.find((e) => e.version === version);
             expect(frozen?.handler).toBeTypeOf("function");
             expect(frozen.handler.name).toBe(`durableSessionOrchestration_${version.replaceAll(".", "_")}`);
@@ -56,11 +56,13 @@ describe("orchestration version registry", () => {
         const frozen166 = readFileSync(new URL("../../src/orchestration_1_0_66/runtime.ts", import.meta.url), "utf8");
         const frozen167 = readFileSync(new URL("../../src/orchestration_1_0_67/runtime.ts", import.meta.url), "utf8");
         const frozen169 = readFileSync(new URL("../../src/orchestration_1_0_69/runtime.ts", import.meta.url), "utf8");
+        const frozen171 = readFileSync(new URL("../../src/orchestration_1_0_71/runtime.ts", import.meta.url), "utf8");
         expect(frozen164).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.64"/);
         expect(frozen165).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.65"/);
         expect(frozen166).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.66"/);
         expect(frozen167).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.67"/);
         expect(frozen169).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.69"/);
+        expect(frozen171).toMatch(/CURRENT_ORCHESTRATION_VERSION\s*=\s*"1\.0\.71"/);
     });
 
     it("registry versions are unique and strictly monotonic, floor still present", () => {

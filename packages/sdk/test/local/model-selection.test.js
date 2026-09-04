@@ -157,8 +157,10 @@ async function testMidSessionModelSwitch(env) {
                 || model.qualifiedName.endsWith(`:${TEST_CLAUDE_MODEL}`),
             );
             assertNotNull(claudeModel, `configured Claude model for ${TEST_CLAUDE_MODEL}`);
-            console.log(`  Switching to ${claudeModel.qualifiedName}...`);
-            await mgmt.setSessionModel(session.sessionId, claudeModel.qualifiedName);
+            const targetModel = claudeModel.qualifiedName;
+            const targetShort = modelShort(targetModel);
+            console.log(`  Switching to ${targetModel}...`);
+            await mgmt.setSessionModel(session.sessionId, targetModel);
             console.log("  Management model switch accepted; sending next turn...");
             const switchedResponse = await session.sendAndWait("Say hello again", TIMEOUT);
             console.log(`  Response after switch: "${switchedResponse?.slice(0, 120)}"`);
@@ -167,7 +169,7 @@ async function testMidSessionModelSwitch(env) {
             const catalog = await createCatalog(env);
             try {
                 const row = await catalog.getSession(session.sessionId);
-                assertEqual(row.model.includes(TEST_CLAUDE_MODEL.split(":").pop()), true, `model switched to claude (got ${row.model})`);
+                assertEqual(row.model.includes(targetShort), true, `model switched to ${targetShort} (got ${row.model})`);
                 const buckets = await catalog.getSessionTokensByModel(session.sessionId);
                 assertEqual(buckets.length >= 2, true, `two model buckets after switch (got ${buckets.length})`);
                 const turns = await catalog.getSessionTurnMetrics(session.sessionId);
@@ -175,7 +177,7 @@ async function testMidSessionModelSwitch(env) {
                 assertEqual(orderedTurns.length >= 2, true, `at least two turn metrics after switch (got ${orderedTurns.length})`);
                 assertEqual(orderedTurns[0].model.includes(TEST_GPT_MODEL), true, `first turn uses original model (got ${orderedTurns[0].model})`);
                 assertEqual(
-                    orderedTurns[orderedTurns.length - 1].model.includes(TEST_CLAUDE_MODEL.split(":").pop()),
+                    orderedTurns[orderedTurns.length - 1].model.includes(targetShort),
                     true,
                     `next turn uses switched model (got ${orderedTurns[orderedTurns.length - 1].model})`,
                 );
@@ -186,7 +188,7 @@ async function testMidSessionModelSwitch(env) {
                 const runtimeNotice = events.find((event) => event.eventType === "system.message" && String(event.data?.content || "").includes("Runtime model for this turn is"));
                 assertNotNull(runtimeNotice, "runtime model notice should be injected into the first prompt after switch");
                 assertEqual(
-                    String(runtimeNotice.data?.content || "").includes(TEST_CLAUDE_MODEL.split(":").pop()),
+                    String(runtimeNotice.data?.content || "").includes(targetShort),
                     true,
                     `runtime notice should name switched model (got ${runtimeNotice.data?.content})`,
                 );
@@ -738,14 +740,16 @@ async function testDifferentModelSameWorker(env) {
             const row2 = await catalog.getSession(s2.sessionId);
             console.log(`  CMS model 1: "${row1?.model}"`);
             console.log(`  CMS model 2: "${row2?.model}"`);
+            const expectedModel1 = worker.modelProviders?.normalize(TEST_GPT_MODEL) ?? TEST_GPT_MODEL;
+            const expectedModel2 = worker.modelProviders?.normalize(TEST_CLAUDE_MODEL) ?? TEST_CLAUDE_MODEL;
             assertEqual(
-                row1.model.includes(TEST_GPT_MODEL),
-                true,
+                row1.model,
+                expectedModel1,
                 `session 1 model is ${TEST_GPT_MODEL} (got: ${row1.model})`,
             );
             assertEqual(
-                row2.model.includes(TEST_CLAUDE_MODEL),
-                true,
+                row2.model,
+                expectedModel2,
                 `session 2 model is ${TEST_CLAUDE_MODEL} (got: ${row2.model})`,
             );
         } finally {

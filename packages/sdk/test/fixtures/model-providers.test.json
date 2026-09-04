@@ -53,21 +53,28 @@
                     "defaultReasoningEffort": "medium"
                 },
                 {
-                    "name": "claude-sonnet-4.6",
-                    "description": "Fallback Claude model for tests that resolve Claude variants.",
+                    "name": "claude-sonnet-5",
+                    "description": "Current Claude model for tests that resolve Claude variants.",
                     "cost": "medium",
                     "supportedReasoningEfforts": [
+                        "low",
                         "medium",
-                        "high"
+                        "high",
+                        "xhigh",
+                        "max"
                     ],
                     "defaultReasoningEffort": "medium"
                 },
                 {
-                    "name": "claude-opus-4.6",
+                    "name": "claude-opus-5",
                     "description": "High-capability Claude model for compatibility checks.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
-                        "medium"
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
                     ],
                     "defaultReasoningEffort": "medium"
                 }
