@@ -1,7 +1,8 @@
 import React from "react";
-// createPortal is only invoked when an IconButton tooltip renders (portal only,
-// never in the TUI); the import itself is side-effect-free and react-dom is a
-// dependency wherever this file loads, so it is safe in the shared module.
+// createPortal is only invoked by browser-only surfaces (tooltips, toolbar
+// slots, and viewport-level dialogs); the import itself is side-effect-free
+// and react-dom is a dependency wherever this file loads, so it is safe in the
+// shared module.
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
@@ -6944,7 +6945,7 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
             .finally(() => setBusy(false));
     };
 
-    return React.createElement("div", { className: "ps-canvas-share-overlay", onClick: onClose },
+    const overlay = React.createElement("div", { className: "ps-canvas-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-canvas-share-dialog", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Share canvas" },
             React.createElement("div", { className: "ps-canvas-share-title" },
                 "Share this canvas",
@@ -7034,6 +7035,16 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                             ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: remove }, "Remove link")
                             : null))),
             error ? React.createElement("div", { className: "ps-canvas-share-error" }, error) : null));
+
+    // CanvasPane lives inside `.ps-canvas-layer`, which is a z-indexed
+    // stacking context below the pane resizers. A fixed overlay left inside
+    // that tree cannot out-rank a sibling resizer regardless of its own
+    // z-index, so the divider used to paint straight through this dialog.
+    // Put viewport chrome at the document root; React keeps context and event
+    // bubbling intact across the portal.
+    return typeof document !== "undefined" && document.body
+        ? createPortal(overlay, document.body)
+        : overlay;
 }
 
 /**

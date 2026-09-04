@@ -108,9 +108,11 @@ export function parseStashedDeepLinkTarget(raw) {    if (!raw) return null;
  * copied the URL out of the bar and sent it on — would be thrown back into a
  * chromeless view they had explicitly left. The parameter is written as an
  * explicit `true` rather than deleted so the URL keeps saying, out loud, which
- * mode it is in.
+ * mode it is in. Redirect sign-in returns to the bare redirect URI; when that
+ * happened, `target` restores the consumed session target before the rewrite
+ * so refresh/copy still points at the canvas the viewer is looking at.
  */
-export function writeShowChromeParam(show) {
+export function writeShowChromeParam(show, target = null) {
     if (typeof window === "undefined") return null;
     // A browser too old for replaceState, or a test double without one, simply
     // keeps the stale parameter: the on-screen toggle still works, and this is
@@ -118,6 +120,24 @@ export function writeShowChromeParam(show) {
     if (typeof window.history?.replaceState !== "function" || !window.location?.href) return null;
     try {
         const url = new URL(window.location.href);
+        const currentSessionId = (url.searchParams.get("session") || "").trim();
+        const restoredSessionId = String(target?.sessionId || "").trim();
+        if (!currentSessionId && restoredSessionId) {
+            url.searchParams.set("session", restoredSessionId);
+
+            if (target?.artifact) url.searchParams.set("artifact", String(target.artifact));
+            else url.searchParams.delete("artifact");
+
+            if (target?.canvas) url.searchParams.set("view", "canvas");
+            else if (target?.fullscreen) url.searchParams.set("view", "full");
+            else url.searchParams.delete("view");
+
+            if (Number.isInteger(target?.slot)) url.searchParams.set("slot", String(target.slot));
+            else url.searchParams.delete("slot");
+
+            if (target?.max) url.searchParams.set("max", "1");
+            else url.searchParams.delete("max");
+        }
         url.searchParams.set("show_chrome", show ? "true" : "false");
         window.history.replaceState(window.history.state ?? null, "", `${url.pathname}${url.search}${url.hash}`);
         return url.search;

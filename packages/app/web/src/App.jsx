@@ -700,19 +700,28 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                     // Keep the address bar honest: a reload, or the URL copied
                     // out of the bar and passed on, must reproduce the view the
                     // person is actually looking at — not the one they left.
-                    writeShowChromeParam(true);
+                    // Redirect sign-in returns to a bare URL, so hand the
+                    // consumed target back to the writer to restore the link's
+                    // session/view/slot fields as well as the chrome flag.
+                    writeShowChromeParam(true, deepLinkTarget);
                 },
             })
-            : React.createElement(PortalHeader, {
-                account: auth.account,
-                authEnabled: auth.authEnabled,
-                isAdmin: auth.authorization?.role === "admin",
-                branding: portal?.branding,
-                onSignOut: auth.signOut,
-                versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
-                statusText,
-                themeIcon,
-            }),
+            : null,
+        // Keep the real header mounted while chromeless. The desktop toolbar
+        // discovers its portal target only after mount; removing the target on
+        // a chromeless landing made "Show chrome" restore an empty header and
+        // leave the toolbar stranded as a second inline row. CSS removes this
+        // mounted header from layout, focus order and the accessibility tree.
+        React.createElement(PortalHeader, {
+            account: auth.account,
+            authEnabled: auth.authEnabled,
+            isAdmin: auth.authorization?.role === "admin",
+            branding: portal?.branding,
+            onSignOut: auth.signOut,
+            versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
+            statusText,
+            themeIcon,
+        }),
         chromeHidden
             ? null
             : React.createElement(PortalMobileStatus, {

@@ -8304,6 +8304,13 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   outline-offset: 2px;
 }
 
+/* The header stays mounted so the desktop toolbar always has a stable portal
+   target. `display:none` makes the hidden header leave layout, tab order and
+   the accessibility tree while preserving that target for the restore. */
+.portal-app-shell.is-chromeless > .portal-header {
+  display: none;
+}
+
 /* Edge to edge: the workspace padding exists to sit the panes off the header,
    and with the header gone it only shrinks the canvas. */
 .portal-app-shell.is-chromeless > .portal-main {
@@ -9161,5 +9168,4 @@ textarea.ps-link-input {
   white-space: nowrap;
   text-align: right;
 }
-
 

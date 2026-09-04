@@ -37,7 +37,7 @@ function targetFor(search) {
 }
 
 /** Drive the URL rewrite against a fake history, returning what it replaced. */
-function rewriteFrom(href, show, { history } = {}) {
+function rewriteFrom(href, show, { history, target } = {}) {
     const previous = globalThis.window;
     const calls = [];
     globalThis.window = {
@@ -48,7 +48,7 @@ function rewriteFrom(href, show, { history } = {}) {
         },
     };
     try {
-        const returned = writeShowChromeParam(show);
+        const returned = writeShowChromeParam(show, target);
         return { calls, returned };
     } finally {
         if (previous === undefined) delete globalThis.window;
@@ -163,10 +163,14 @@ test("the share dialog appends show_chrome only when the box is checked", () => 
 
 // ─── 4. The chromeless render path ──────────────────────────────────────────
 
-test("chrome hiding swaps the header for the strip and nothing else", () => {
+test("chrome hiding shows the strip while keeping the real header mounted", () => {
     const workspace = APP.slice(APP.indexOf("function PortalWorkspace"));
     assert.match(workspace, /chromeHidden\s*\?\s*React\.createElement\(PortalChromelessStrip/,
-        "the strip stands in for PortalHeader");
+        "the strip is shown only in chromeless mode");
+    assert.match(workspace, /\}\)\s*:\s*null,\s*\/\/ Keep the real header mounted[\s\S]{0,500}?React\.createElement\(PortalHeader/,
+        "the real header and its toolbar portal target stay mounted behind the strip");
+    assert.match(CSS, /\.portal-app-shell\.is-chromeless > \.portal-header \{\s*display: none;/,
+        "the mounted header leaves layout, focus order, and the accessibility tree");
     assert.match(workspace, /useState\(\(\) => Boolean\(deepLinkTarget\?\.hideChrome\)\)/,
         "seeded from the deep link, but stateful so it can be restored");
     assert.match(workspace, /onShowChrome: \(\) => \{[\s\S]{0,400}?setChromeHidden\(false\)/,
@@ -265,6 +269,25 @@ test("a URL with no show_chrome gains an explicit one", () => {
     assert.match(calls[0].url, /show_chrome=true/);
 });
 
+test("a redirect-restored target reconstructs the complete address-bar link", () => {
+    const target = parseStashedDeepLinkTarget(JSON.stringify({
+        sessionId: "session after sign-in",
+        canvas: true,
+        fullscreen: false,
+        max: true,
+        slot: 3,
+        hideChrome: true,
+    }));
+    const { calls } = rewriteFrom("http://portal.example/", true, { target });
+    const params = new URLSearchParams(calls[0].url.slice(calls[0].url.indexOf("?")));
+
+    assert.equal(params.get("session"), "session after sign-in");
+    assert.equal(params.get("view"), "canvas");
+    assert.equal(params.get("slot"), "3");
+    assert.equal(params.get("max"), "1");
+    assert.equal(params.get("show_chrome"), "true");
+});
+
 test("a browser without replaceState is a no-op, not a crash", () => {
     // The on-screen toggle is what matters; the URL is bookkeeping.
     const { calls, returned } = rewriteFrom("http://portal.example/?show_chrome=false", true, { history: null });
@@ -274,8 +297,17 @@ test("a browser without replaceState is a no-op, not a crash", () => {
 
 test("the strip's button is what triggers the rewrite", () => {
     const workspace = APP.slice(APP.indexOf("function PortalWorkspace"));
-    assert.match(workspace, /onShowChrome: \(\) => \{[\s\S]{0,400}?writeShowChromeParam\(true\)/,
-        "clicking Show chrome updates the URL as well as the state");
+    assert.match(workspace, /onShowChrome: \(\) => \{[\s\S]{0,800}?writeShowChromeParam\(true, deepLinkTarget\)/,
+        "clicking Show chrome updates the URL and restores the consumed redirect target");
+});
+
+test("the canvas share dialog escapes pane stacking contexts", () => {
+    const dialog = WEB_APP.slice(
+        WEB_APP.indexOf("function CanvasShareDialog"),
+        WEB_APP.indexOf("function CanvasSlotControls"),
+    );
+    assert.match(dialog, /createPortal\(overlay, document\.body\)/,
+        "the viewport overlay is rooted above z-indexed pane dividers");
 });
 
 // ─── 5. The branding chain the strip label depends on ───────────────────────
