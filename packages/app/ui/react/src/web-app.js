@@ -1,7 +1,8 @@
 import React from "react";
-// createPortal is only invoked when an IconButton tooltip renders (portal only,
-// never in the TUI); the import itself is side-effect-free and react-dom is a
-// dependency wherever this file loads, so it is safe in the shared module.
+// createPortal is only invoked by browser-only surfaces (tooltips, toolbar
+// slots, and viewport-level dialogs); the import itself is side-effect-free
+// and react-dom is a dependency wherever this file loads, so it is safe in the
+// shared module.
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
@@ -6877,8 +6878,19 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     // the policy, so the control is disabled for everyone else rather than
     // letting them pick a value and then showing a refusal.
     const [kvMe, setKvMe] = React.useState(null);
+    // Off by default: every link this dialog has ever produced opened the full
+    // workspace, and a share option that silently changed that for existing
+    // habits would be a surprise. Checked, the link carries `show_chrome=false`
+    // and lands on the canvas alone.
+    //
+    // Presentation only. It hides the portal header; it does NOT make the
+    // canvas read-only, because a query parameter is not a permission — the
+    // recipient can simply delete it. What a viewer may change inside the app
+    // stays governed by the KV policy below, and the strip is worded so it
+    // never implies otherwise.
+    const [hideChrome, setHideChrome] = React.useState(false);
     const transport = controller.transport;
-    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1`;
+    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1${hideChrome ? "&show_chrome=false" : ""}`;
     // The token variants all resolve the same hashed row: one token, N doors,
     // single-switch revocation whichever door the bearer uses.
     const linkRows = (url, keyPrefix) => React.createElement(MultiOriginLinkRows, {
@@ -6933,7 +6945,7 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
             .finally(() => setBusy(false));
     };
 
-    return React.createElement("div", { className: "ps-canvas-share-overlay", onClick: onClose },
+    const overlay = React.createElement("div", { className: "ps-canvas-share-overlay", onClick: onClose },
         React.createElement("div", { className: "ps-canvas-share-dialog", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-label": "Share canvas" },
             React.createElement("div", { className: "ps-canvas-share-title" },
                 "Share this canvas",
@@ -6965,6 +6977,13 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                 },
                     React.createElement("div", { className: "ps-canvas-share-sub" }, "Opens the portal signed in, canvas full screen. Session visibility rules apply."),
                     linkRows(sessionLink, "session"),
+                    React.createElement("label", { className: "ps-canvas-share-check" },
+                        React.createElement("input", {
+                            type: "checkbox",
+                            checked: hideChrome,
+                            onChange: (event) => setHideChrome(event.target.checked),
+                        }),
+                        "Hide page chrome"),
                     // Who may WRITE the app's shared state. Stated in words:
                     // "readers" reaches everyone the session is read-shared
                     // with, which a dialog that only says "link" hides.
@@ -7016,6 +7035,16 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
                             ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy, onClick: remove }, "Remove link")
                             : null))),
             error ? React.createElement("div", { className: "ps-canvas-share-error" }, error) : null));
+
+    // CanvasPane lives inside `.ps-canvas-layer`, which is a z-indexed
+    // stacking context below the pane resizers. A fixed overlay left inside
+    // that tree cannot out-rank a sibling resizer regardless of its own
+    // z-index, so the divider used to paint straight through this dialog.
+    // Put viewport chrome at the document root; React keeps context and event
+    // bubbling intact across the portal.
+    return typeof document !== "undefined" && document.body
+        ? createPortal(overlay, document.body)
+        : overlay;
 }
 
 /**

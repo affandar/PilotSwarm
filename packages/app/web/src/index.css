@@ -8180,6 +8180,23 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
 
 .ps-canvas-share-actions { display: flex; gap: 8px; margin-top: 8px; }
 
+/* The "Hide page chrome" opt-in. A checkbox row rather than a select: it is a
+   property of the LINK being copied, not of the canvas, so it sits with the
+   link box and above the access policy it must not be confused with. */
+.ps-canvas-share-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.ps-canvas-share-check input {
+  flex: none;
+  cursor: pointer;
+}
+
 /* Tab panels share ONE grid cell, so the container is always as tall as the
    taller panel and switching tabs never resizes the dialog. The inactive
    panel keeps its space (visibility, not display) — which is the whole
@@ -8235,6 +8252,90 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   text-align: center;
   gap: 6px;
   color: var(--ps-muted);
+}
+
+/* ── show_chrome=false: the header's stand-in ───────────────────────────────
+   A signed-in viewer who followed a "hide page chrome" link. Deliberately the
+   same visual weight as the public share strip above — one muted line — so the
+   two chromeless landings feel like one idea. */
+.portal-chromeless-strip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  color: var(--ps-muted);
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.portal-chromeless-strip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Recessed on purpose: this mode exists so nothing competes with the canvas,
+   so the way back is almost invisible until it is looked for. It is still a
+   real button — focus-visible restores it in full for keyboard users, who
+   otherwise could not tell they had landed on it. */
+.portal-chromeless-strip-restore {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.18;
+  transition: opacity 120ms ease;
+}
+
+.portal-chromeless-strip-restore:hover {
+  opacity: 1;
+}
+
+.portal-chromeless-strip-restore:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--ps-accent);
+  outline-offset: 2px;
+}
+
+/* The header stays mounted so the desktop toolbar always has a stable portal
+   target. `display:none` makes the hidden header leave layout, tab order and
+   the accessibility tree while preserving that target for the restore. */
+.portal-app-shell.is-chromeless > .portal-header {
+  display: none;
+}
+
+/* Edge to edge: the workspace padding exists to sit the panes off the header,
+   and with the header gone it only shrinks the canvas. */
+.portal-app-shell.is-chromeless > .portal-main {
+  padding: 0;
+}
+
+/* The workspace toolbar is chrome too, and it is NOT covered by a maximized
+   canvas: the canvas layer positions against .ps-workspace-grid, which starts
+   below this bar. Without this rule "hide page chrome" left a full row of
+   New-session / Filter / Diagnostics / Budget / Admin / Theme sitting above the
+   canvas — the workspace, still visibly there.
+
+   The whole bar goes, including the canvas zoom/zen group that shares it. That
+   group is genuinely canvas-related, but leaving it behind would strand a
+   floating cluster of buttons over an otherwise bare page, which reads as a
+   rendering fault rather than a deliberate mode. Everything returns together
+   via "Show chrome".
+
+   display:none rather than opacity/visibility on purpose: hidden chrome must
+   also leave the tab order and the accessibility tree, or a keyboard user
+   tabs through a dozen invisible workspace controls. The slot elements
+   PortalHeader portals into stay in the DOM, so nothing that looks them up
+   starts spinning. */
+.portal-app-shell.is-chromeless .ps-toolbar {
+  display: none;
 }
 
 
@@ -9067,5 +9168,4 @@ textarea.ps-link-input {
   white-space: nowrap;
   text-align: right;
 }
-
 
