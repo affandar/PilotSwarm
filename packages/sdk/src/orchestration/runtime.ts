@@ -115,8 +115,10 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
             state.config.toolNames = mergedToolNames;
             runtime.ctx.traceInfo(`[orch] merged top-level agent tools for ${input.agentId}: ${mergedToolNames.join(", ")}`);
         }
-        if (agentDef.initialRequiredTool) {
-            state.config.initialRequiredTool = agentDef.initialRequiredTool;
+        if (agentDef.initialRequiredTool && !state.pendingRequiredTool) {
+            // Agent metadata is resolved once at startup, then immediately
+            // translated into the existing turn-level requiredTool contract.
+            state.pendingRequiredTool = agentDef.initialRequiredTool;
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;

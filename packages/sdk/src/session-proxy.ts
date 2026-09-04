@@ -873,10 +873,10 @@ export function childModelCreationOptions(config: SerializableSessionConfig) {
 }
 
 /** @internal Initial turn options shared by every named-agent creation path. */
-export function initialAgentTurnOptions(initialRequiredTool?: string) {
+export function bootstrapTurnOptions(requiredTool?: string) {
     return {
         bootstrap: true as const,
-        ...(initialRequiredTool ? { requiredTool: initialRequiredTool } : {}),
+        ...(requiredTool ? { requiredTool } : {}),
     };
 }
 
@@ -895,10 +895,10 @@ export function createSessionManagerProxy(ctx: any) {
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, initialRequiredTool?: string) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string) {
             return ctx.scheduleActivity("spawnChildSession", {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
-                ...(initialRequiredTool ? { initialRequiredTool } : {}),
+                ...(requiredTool ? { requiredTool } : {}),
             });
         },
     /**
@@ -2018,7 +2018,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // `kind: "system"` when it is the agent definition's own.
                     const bootstrapFromManager = typeof args.prompt === "string" && args.prompt.trim().length > 0;
                     await created.send(bootstrap, {
-                        ...initialAgentTurnOptions(agentDef.initialRequiredTool),
+                        ...bootstrapTurnOptions(agentDef.initialRequiredTool),
                         sender: bootstrapFromManager
                             ? { kind: "agent", sessionId: input.sessionId, display: `${runConfig.agentIdentity || "agent"} · opening message` }
                             : { kind: "system", display: `${agentName} kickoff` },
@@ -2069,7 +2069,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     let agentId: string | undefined;
                     let agentSplash: string | undefined;
                     let agentSplashMobile: string | undefined;
-                    let agentInitialRequiredTool: string | undefined;
+                    let bootstrapRequiredTool: string | undefined;
                     let boundAgentName: string | undefined;
                     let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
                     let resolvedAgentName = args.agent_name;
@@ -2087,7 +2087,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         agentId = agentDef.id ?? resolvedAgentName;
                         agentSplash = agentDef.splash;
                         agentSplashMobile = agentDef.splashMobile;
-                        agentInitialRequiredTool = agentDef.initialRequiredTool;
+                        bootstrapRequiredTool = agentDef.initialRequiredTool;
                         boundAgentName = agentDef.name;
                         promptLayeringKind = agentDef.promptLayerKind
                             ?? (agentDef.system
@@ -2251,7 +2251,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     // THIS agent, not by whoever later reads the child's
                     // transcript. Unstamped it renders as their own "You:".
                     await childSession.send(agentTask, {
-                        ...initialAgentTurnOptions(agentInitialRequiredTool),
+                        ...bootstrapTurnOptions(bootstrapRequiredTool),
                         sender: { kind: "agent", sessionId: input.sessionId, display: `${runConfig.agentIdentity || "agent"} · task` },
                     });
 
@@ -4331,7 +4331,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Goes through the full SDK path: CMS registration + orchestration startup.
     runtime.registerActivity("spawnChildSession", async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; initialRequiredTool?: string },
+        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string },
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
@@ -4465,7 +4465,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // session, not an actual user-authored message inside that child chat.
             const sendAt = Date.now();
             await session.send(input.task, {
-                ...initialAgentTurnOptions(input.initialRequiredTool),
+                ...bootstrapTurnOptions(input.requiredTool),
                 // The comment above says it: this is orchestration-generated
                 // bootstrap state, not a user-authored message. Say so in the
                 // record, or the child's transcript opens under "You:".

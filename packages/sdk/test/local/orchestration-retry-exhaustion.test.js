@@ -218,16 +218,13 @@ describe("generic retry exhaustion (orchestration 1.0.69)", () => {
         const harness = createThrowingHarness({ turnResults: [errResult] });
 
         const out = drive(handler(harness.ctx, INPUT({
-            config: {
-                model: "azure-openai:gpt-5.4-mini",
-                initialRequiredTool: "package_catalog",
-            },
+            requiredTool: "package_catalog",
         })), harness);
 
         expect(out.kind).toBe("continueAsNew");
         expect(harness.turns[0].opts.requiredTool).toBe("package_catalog");
         expect(out.input.requiredTool).toBe("package_catalog");
-        expect(out.input.config.initialRequiredTool).toBeUndefined();
+        expect(Object.hasOwn(out.input.config, "initialRequiredTool")).toBe(false);
     });
 
     it("a RETURNED auth failure stops immediately with the fix-your-key hint, like the thrown one always did", async () => {

@@ -2791,6 +2791,14 @@ export class ManagedSession {
                             textEmittedToolCallRef.current = textToolCall;
                             return;
                         }
+                        // A required-tool answer is provisional until the
+                        // corresponding execution event has happened. Keep an
+                        // unsupported answer in the live Copilot conversation
+                        // so the correction has context, but do not expose it
+                        // through onEvent or the durable CMS transcript.
+                        if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                            return;
+                        }
                         finalContent = content ?? finalContent;
                         publishReasoningSnapshot("assistant.message", true);
                     }
@@ -2810,6 +2818,15 @@ export class ManagedSession {
                         }
                         turnStartedAtMs = null;
                     } else if (eventType === "assistant.message_delta" || eventType === "assistant.streaming_delta") {
+                        // A model that skipped the required tool may stream a
+                        // complete-looking answer before we can issue the
+                        // correction. Treat those deltas like its provisional
+                        // assistant.message: do not expose them to live event
+                        // consumers. Once the tool starts, the grounded answer
+                        // streams normally.
+                        if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                            return;
+                        }
                         streamingDeltaCount += 1;
                         const deltaText = (eventData && typeof eventData === "object")
                             ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
@@ -2882,6 +2899,7 @@ export class ManagedSession {
             if (opts?.onDelta) {
                 unsubscribers.push(
                     this.copilotSession.on("assistant.message_delta", (event: any) => {
+                        if (opts.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) return;
                         if (event.data?.deltaContent) {
                             opts.onDelta!(event.data.deltaContent);
                         }

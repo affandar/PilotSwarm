@@ -54,6 +54,8 @@ export interface InterruptedCronTimer {
 export interface BudgetStashedPrompt {
     prompt: string;
     clientMessageIds?: string[];
+    /** Turn-level contract that must survive a provider-budget refusal with its prompt. */
+    requiredTool?: string;
 }
 
 export interface DurableSessionState {

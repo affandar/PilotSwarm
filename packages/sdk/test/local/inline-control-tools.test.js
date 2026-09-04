@@ -62,6 +62,9 @@ class FakeCopilotSession {
                 const result = await tool.handler(call.args ?? {});
                 this.emit("tool.execution_complete", { data: { toolName: call.name, arguments: call.args ?? {}, result } });
             }
+            for (const delta of scriptedSend.assistantDeltas ?? []) {
+                this.emit("assistant.message_delta", { data: { deltaContent: delta } });
+            }
             if (!this.aborted && scriptedSend.assistantContent != null) {
                 this.emit("assistant.message", { data: { content: scriptedSend.assistantContent } });
             }
@@ -96,24 +99,54 @@ describe("inline control tool execution", () => {
         const fakeSession = new FakeCopilotSession();
         const catalog = vi.fn(async () => ({ commands: 71 }));
         fakeSession.scriptedSends = [
-            { assistantContent: "The catalog has 71 commands." },
-            { toolCalls: [{ name: "package_catalog", args: { arguments: ["catalog"] } }], assistantContent: "Catalog verified." },
+            {
+                assistantDeltas: ["The catalog has ", "71 commands."],
+                assistantContent: "The catalog has 71 commands.",
+            },
+            {
+                toolCalls: [{ name: "package_catalog", args: { arguments: ["catalog"] } }],
+                assistantDeltas: ["Catalog ", "verified."],
+                assistantContent: "Catalog verified.",
+            },
         ];
+        const visibleEvents = [];
+        const visibleDeltas = [];
 
         const managed = new ManagedSession("required-tool-correction", fakeSession, {
             tools: [{ name: "package_catalog", parameters: { type: "object", properties: {} }, handler: catalog }],
         });
-        const result = await managed.runTurn("Verify the package catalog.", { requiredTool: "package_catalog" });
+        const result = await managed.runTurn("Verify the package catalog.", {
+            requiredTool: "package_catalog",
+            onEvent: (event) => visibleEvents.push(event),
+            onDelta: (delta) => visibleDeltas.push(delta),
+        });
 
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Catalog verified.");
         expect(catalog).toHaveBeenCalledOnce();
         expect(fakeSession.sentPrompts).toHaveLength(2);
+        expect(fakeSession.sentPrompts[0]).toContain('MUST invoke the tool "package_catalog"');
+        expect(fakeSession.sentPrompts[0]).toContain("Verify the package catalog.");
         expect(fakeSession.sentPrompts[1]).toContain("Required-tool contract violation");
+        expect(fakeSession.sentPrompts[1]).toContain('Invoke "package_catalog" now');
+        expect(fakeSession.sentPrompts[1]).toContain("answer only from its result");
         expect(result.events).toEqual(expect.arrayContaining([
             expect.objectContaining({ eventType: "runtime.required_tool_not_invoked" }),
             expect.objectContaining({ eventType: "tool.execution_start", data: expect.objectContaining({ toolName: "package_catalog" }) }),
         ]));
+        expect(visibleEvents
+            .filter((event) => event.eventType === "assistant.message")
+            .map((event) => event.data.content))
+            .toEqual(["Catalog verified."]);
+        expect(visibleEvents
+            .filter((event) => event.eventType === "assistant.message_delta")
+            .map((event) => event.data.deltaContent))
+            .toEqual(["Catalog ", "verified."]);
+        expect(visibleDeltas).toEqual(["Catalog ", "verified."]);
+        expect(result.events
+            .filter((event) => event.eventType === "assistant.message")
+            .map((event) => event.data.content))
+            .toEqual(["Catalog verified."]);
     });
 
     it("fails closed when a required tool is omitted again after correction", async () => {
@@ -133,6 +166,7 @@ describe("inline control tool execution", () => {
         expect(result.message).toContain('Required tool "package_catalog" was not invoked');
         expect(fakeSession.sentPrompts).toHaveLength(2);
         expect(result.events.filter((event) => event.eventType === "runtime.required_tool_not_invoked")).toHaveLength(2);
+        expect(result.events.filter((event) => event.eventType === "assistant.message")).toHaveLength(0);
     });
 
     it("keeps spawn_agent inline when a control bridge is provided", async () => {

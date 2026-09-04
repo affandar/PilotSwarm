@@ -86,15 +86,6 @@ export function prependToFifo(runtime: DurableSessionRuntime, item: any): void {
     appendToFifo(runtime, [item]);
 }
 
-export function consumeInitialRequiredTool(
-    state: Pick<DurableSessionRuntime["state"], "config">,
-    explicitRequiredTool?: string,
-): string | undefined {
-    const requiredTool = explicitRequiredTool ?? state.config.initialRequiredTool;
-    state.config.initialRequiredTool = undefined;
-    return requiredTool;
-}
-
 export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): void {
     const { ctx } = runtime;
     let writeBucketIdx = 0;
@@ -700,7 +691,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     if (state.pendingPrompt && !state.waitingForAgentIds) {
         const prompt = state.pendingPrompt;
         const isBootstrap = state.bootstrapPrompt;
-        const requiredTool = consumeInitialRequiredTool(state, state.pendingRequiredTool);
+        const requiredTool = state.pendingRequiredTool;
         const cycleOrigin = state.pendingCycleOrigin;
         const pendingAttachments = state.pendingAttachments;
         state.pendingPrompt = undefined;
@@ -801,7 +792,11 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     }
                 }
                 maybeQueueSharedPreamble(runtime);
-                mergedRequiredTool = consumeInitialRequiredTool(state, mergedRequiredTool);
+                // Top-level named-agent metadata is translated into the same
+                // pending turn field as every other requiredTool. An explicit
+                // requirement on the queued prompt still wins.
+                mergedRequiredTool ??= state.pendingRequiredTool;
+                state.pendingRequiredTool = undefined;
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,

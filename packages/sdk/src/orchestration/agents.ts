@@ -637,7 +637,7 @@ export function* handleSubAgentAction(
             let agentTitleIsExplicit = Boolean(explicitAgentTitle);
             let agentId: string | undefined;
             let agentSplash: string | undefined;
-            let agentInitialRequiredTool: string | undefined;
+            let bootstrapRequiredTool: string | undefined;
             let boundAgentName: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
             const resolvedAgentName = result.agentName;
@@ -654,7 +654,7 @@ export function* handleSubAgentAction(
                 if (!agentTitleIsExplicit) agentTitle = agentDef.title;
                 agentId = agentDef.id ?? resolvedAgentName;
                 agentSplash = agentDef.splash;
-                agentInitialRequiredTool = agentDef.initialRequiredTool;
+                bootstrapRequiredTool = agentDef.initialRequiredTool;
                 boundAgentName = agentDef.name;
                 promptLayeringKind = agentDef.promptLayerKind
                     ?? (agentDef.system
@@ -749,7 +749,7 @@ export function* handleSubAgentAction(
                     agentId,
                     agentSplash,
                     agentTitleIsExplicit,
-                    agentInitialRequiredTool,
+                    bootstrapRequiredTool,
                 );
             } catch (err: any) {
                 ctx.traceInfo(`[orch] spawnChildSession failed: ${err.message}`);

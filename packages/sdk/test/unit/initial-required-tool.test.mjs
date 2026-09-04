@@ -1,31 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { consumeInitialRequiredTool } from "../../dist/orchestration/queue.js";
 import { resolveTopLevelAgentConfig } from "../../dist/orchestration/runtime.js";
 import { createSessionManagerProxy } from "../../dist/session-proxy.js";
 
-test("the first prompt consumes a named agent's initial required tool", () => {
-    const state = { config: { initialRequiredTool: "package_catalog" } };
-
-    assert.equal(consumeInitialRequiredTool(state), "package_catalog");
-    assert.equal(state.config.initialRequiredTool, undefined);
-    assert.equal(consumeInitialRequiredTool(state), undefined, "later turns must not re-enforce startup");
-});
-
-test("an explicit turn requirement wins while startup metadata is still consumed", () => {
-    const state = { config: { initialRequiredTool: "package_catalog" } };
-
-    assert.equal(consumeInitialRequiredTool(state, "user_selected_tool"), "user_selected_tool");
-    assert.equal(state.config.initialRequiredTool, undefined);
-});
-
-test("top-level named-agent resolution binds its initial required tool", () => {
+test("top-level named-agent resolution translates metadata into the pending turn contract", () => {
     const runtime = {
         ctx: { traceInfo: () => {} },
         input: { sessionId: "top-level", agentId: "catalog-analyst" },
         options: { isSystem: false },
-        state: { iteration: 0, config: { toolNames: ["caller_tool"] } },
+        state: { iteration: 0, config: { toolNames: ["caller_tool"] }, pendingRequiredTool: undefined },
         manager: {
             resolveAgentConfig: () => ({ activity: "resolveAgentConfig" }),
         },
@@ -40,7 +24,24 @@ test("top-level named-agent resolution binds its initial required tool", () => {
         initialRequiredTool: "package_catalog",
     }).done, true);
     assert.deepEqual(runtime.state.config.toolNames, ["package_catalog", "caller_tool"]);
-    assert.equal(runtime.state.config.initialRequiredTool, "package_catalog");
+    assert.equal(runtime.state.pendingRequiredTool, "package_catalog");
+    assert.equal(Object.hasOwn(runtime.state.config, "initialRequiredTool"), false);
+});
+
+test("an explicit pending turn requirement wins over named-agent startup metadata", () => {
+    const runtime = {
+        ctx: { traceInfo: () => {} },
+        input: { sessionId: "top-level", agentId: "catalog-analyst" },
+        options: { isSystem: false },
+        state: { iteration: 0, config: {}, pendingRequiredTool: "user_selected_tool" },
+        manager: { resolveAgentConfig: () => ({ activity: "resolveAgentConfig" }) },
+        session: null,
+    };
+    const generator = resolveTopLevelAgentConfig(runtime);
+
+    assert.deepEqual(generator.next().value, { activity: "resolveAgentConfig" });
+    assert.equal(generator.next({ initialRequiredTool: "package_catalog" }).done, true);
+    assert.equal(runtime.state.pendingRequiredTool, "user_selected_tool");
 });
 
 test("legacy child activity payloads remain byte-shape compatible", () => {
@@ -55,6 +56,6 @@ test("legacy child activity payloads remain byte-shape compatible", () => {
     manager.spawnChildSession("parent", {}, "task", 1, false);
     manager.spawnChildSession("parent", {}, "task", 1, false, undefined, undefined, undefined, undefined, "package_catalog");
 
-    assert.equal(Object.hasOwn(scheduled[0].input, "initialRequiredTool"), false);
-    assert.equal(scheduled[1].input.initialRequiredTool, "package_catalog");
+    assert.equal(Object.hasOwn(scheduled[0].input, "requiredTool"), false);
+    assert.equal(scheduled[1].input.requiredTool, "package_catalog");
 });

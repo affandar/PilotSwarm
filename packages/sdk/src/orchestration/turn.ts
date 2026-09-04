@@ -320,6 +320,10 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
+    // A provider-budget refusal stashes the whole pending turn contract, not
+    // just its text. Any wake or interrupt that finally reaches the model must
+    // enforce the same requiredTool as the refused attempt.
+    requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -966,6 +970,7 @@ function* stashBudgetRefusedPrompt(
     sourcePrompt: string,
     clientMessageIds?: string[],
     isBootstrap?: boolean,
+    requiredTool?: string,
 ): Generator<any, void, any> {
     const { state } = runtime;
     // 1.0.71: the turn's note rides in the prompt as a trailing block. It is
@@ -989,12 +994,15 @@ function* stashBudgetRefusedPrompt(
         : [];
     const key = ids.length > 0 ? ids.join(",") : prompt;
     const stash = state.budgetStash ?? [];
-    const already = stash.some((entry) => {
+    const existing = stash.find((entry) => {
         const entryIds = entry.clientMessageIds ?? [];
         const entryKey = entryIds.length > 0 ? entryIds.join(",") : entry.prompt;
         return entryKey === key;
     });
-    if (already) return;
+    if (existing) {
+        if (!existing.requiredTool && requiredTool) existing.requiredTool = requiredTool;
+        return;
+    }
 
     // The durable record, with the ids the outbox acks by — this is what
     // turns the optimistic ✓ into a true one and shows the message in the
@@ -1021,7 +1029,11 @@ function* stashBudgetRefusedPrompt(
             ...(isBootstrap ? { sender: { kind: "system", display: "agent kickoff" } } : {}),
         },
     }]);
-    stash.push({ prompt, ...(ids.length > 0 ? { clientMessageIds: ids } : {}) });
+    stash.push({
+        prompt,
+        ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
+        ...(requiredTool ? { requiredTool } : {}),
+    });
     state.budgetStash = stash;
     runtime.ctx.traceInfo(
         `[orch] stashed prompt refused by the budget gate (${stash.length} waiting)`);
@@ -1178,7 +1190,7 @@ export function* handleTurnResult(
             // So: record it durably NOW (the ✓ becomes true), stash it, and
             // let it ride into every retry until a turn actually runs.
             if (budgetRefusal) {
-                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap);
+                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool);
             }
 
             if (options.parentSessionId) {

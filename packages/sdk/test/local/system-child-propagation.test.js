@@ -38,10 +38,10 @@ function makeRuntime({ isSystem, agentDef = null }) {
         input: { sessionId: "parent-session" },
         manager: {
             resolveAgentConfig: (name) => ({ __activity: "resolveAgentConfig", name }),
-            // Signature: (parentSessionId, config, task, nestingLevel, isSystem, ..., initialRequiredTool)
-            spawnChildSession: (_parentId, _config, _task, _nesting, spawnIsSystem, _title, _agentId, _splash, _titleIsExplicit, initialRequiredTool) => {
+            // Signature: (parentSessionId, config, task, nestingLevel, isSystem, ..., requiredTool)
+            spawnChildSession: (_parentId, _config, _task, _nesting, spawnIsSystem, _title, _agentId, _splash, _titleIsExplicit, requiredTool) => {
                 captured.isSystem = spawnIsSystem;
-                captured.initialRequiredTool = initialRequiredTool;
+                captured.requiredTool = requiredTool;
                 return { __activity: "spawnChildSession" };
             },
             recordSessionEvent: () => ({ __activity: "recordSessionEvent" }),
@@ -108,6 +108,6 @@ describe("sub-agent isSystem contract", () => {
         });
         const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "catalog-analyst" });
         pump(gen, responders, () => captured.isSystem !== undefined);
-        assertEqual(captured.initialRequiredTool, "package_catalog");
+        assertEqual(captured.requiredTool, "package_catalog");
     });
 });

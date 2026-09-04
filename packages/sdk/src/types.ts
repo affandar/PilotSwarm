@@ -196,8 +196,6 @@ export interface SerializableSessionConfig {
     waitThreshold?: number;
     /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
     boundAgentName?: string;
-    /** Internal one-shot requirement resolved from a top-level named agent and consumed by its bootstrap turn. */
-    initialRequiredTool?: string;
     /** Internal: selects how framework, app, and agent prompts compose for this session. */
     promptLayering?: {
         kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
@@ -603,7 +601,7 @@ export interface OrchestrationInput {
      * epoch boundary. Each was durably recorded as a user.message at stash
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
-    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[] }>;
+    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string }>;
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;

@@ -53,7 +53,6 @@ export function buildSystemAgentBootstrapPayload(
             kind: agent.promptLayerKind ?? (agent.namespace === "pilotswarm" ? "pilotswarm-system-agent" : "app-system-agent"),
         },
         toolNames: agent.tools ?? undefined,
-        ...(agent.initialRequiredTool ? { initialRequiredTool: agent.initialRequiredTool } : {}),
     };
 
     const input: OrchestrationInput = {
@@ -62,6 +61,7 @@ export function buildSystemAgentBootstrapPayload(
         sourceOrchestrationVersion: DURABLE_SESSION_LATEST_VERSION,
         iteration: 0,
         ...(agent.initialPrompt ? { prompt: agent.initialPrompt, bootstrapPrompt: true } : {}),
+        ...(agent.initialRequiredTool ? { requiredTool: agent.initialRequiredTool } : {}),
         blobEnabled: opts.blobEnabled,
         dehydrateThreshold: opts.dehydrateThreshold,
         idleTimeout: -1,

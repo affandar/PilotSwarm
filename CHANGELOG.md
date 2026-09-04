@@ -8,11 +8,13 @@
   `initialRequiredTool` to one of their declared tools. PilotSwarm verifies a
   real execution event on the initial turn, fails immediately when the handler
   is unavailable, issues one bounded same-turn correction when the model
-  answers from memory, and then fails closed without entering the generic
-  retry loop. The contract applies to direct starts, worker-managed system
-  agents, Agent Manager verification sessions, and both inline and durable
-  child-spawn paths. Orchestration `1.0.71` is frozen and new sessions use
-  `1.0.72`.
+  answers from memory, withholds that unsupported answer and its live stream
+  from consumers and the durable transcript, and then fails closed without
+  entering the generic retry loop.
+  The turn-level contract survives provider-budget pauses and applies to
+  direct starts, worker-managed system agents, Agent Manager verification
+  sessions, and both inline and durable child-spawn paths. Orchestration
+  `1.0.71` is frozen and new sessions use `1.0.72`.
 ## 0.5.57 — 2026-09-02
 
 Tools get a private, durable place for state; the portal stops re-rendering

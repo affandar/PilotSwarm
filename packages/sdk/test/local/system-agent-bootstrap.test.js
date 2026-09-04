@@ -30,8 +30,8 @@ describe("System agent bootstrap payload", () => {
         assertEqual(serializableConfig.agentIdentity, "facts-manager", "config should carry agent identity");
         assertEqual(input.agentId, "facts-manager", "orchestration input should carry agent id");
         assertEqual(input.config.agentIdentity, "facts-manager", "embedded config should carry agent identity");
-        assertEqual(serializableConfig.initialRequiredTool, "read_facts", "config should carry initial tool enforcement");
-        assertEqual(input.config.initialRequiredTool, "read_facts", "orchestration input should carry initial tool enforcement");
+        assertEqual(Object.hasOwn(serializableConfig, "initialRequiredTool"), false, "session config should not duplicate a turn contract");
+        assertEqual(input.requiredTool, "read_facts", "bootstrap turn should use the existing requiredTool contract");
         assertEqual(input.parentSessionId, "session-parent", "child parentSessionId should be preserved");
         assertEqual(input.isSystem, true, "system bootstrap input should mark system sessions");
     });
