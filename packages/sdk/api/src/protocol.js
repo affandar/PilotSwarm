@@ -41,8 +41,8 @@ export const API_VERSION = 1;
 export const WS_PATH = "/api/v1/ws";
 
 /** WebSocket message vocabulary (same as the legacy /portal-ws, minus theme). */
-export const WS_CLIENT_MESSAGES = ["subscribeSession", "unsubscribeSession", "subscribeLogs", "unsubscribeLogs"];
-export const WS_SERVER_MESSAGES = ["ready", "subscribedSession", "sessionEvent", "subscribedLogs", "logEntry", "error"];
+export const WS_CLIENT_MESSAGES = ["subscribeSession", "unsubscribeSession", "subscribeLive", "unsubscribeLive", "subscribeLogs", "unsubscribeLogs"];
+export const WS_SERVER_MESSAGES = ["ready", "subscribedSession", "sessionEvent", "subscribedLive", "live", "subscribedLogs", "logEntry", "error"];
 
 /** Error code used when an SDK web-mode method has no API equivalent. */
 export const WEB_MODE_UNSUPPORTED = "WEB_MODE_UNSUPPORTED";
@@ -114,6 +114,7 @@ export const OPERATIONS = [
     { name: "getSessionEvents", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/events", params: { sessionId: path("sessionId"), afterSeq: query("number"), limit: query("number"), eventTypes: query("json") }, summary: "Session events after a sequence number (reconnect catch-up). Optional eventTypes (JSON string array) narrows to those event types server-side." },
     { name: "getSessionEventsBefore", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/events-before", params: { sessionId: path("sessionId"), beforeSeq: query("number"), limit: query("number"), eventTypes: query("json") }, summary: "Older session events for history paging. Optional eventTypes (JSON string array) narrows to those event types server-side (chat transcript paging)." },
     { name: "getCanvasLive", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/canvas-live", params: { sessionId: path("sessionId") }, summary: "The canvas data plane's last-value rows: current doc pointer + latest merged tick per slot. Snapshot source for live canvas subscriptions; empty when the deployment predates the plane." },
+    { name: "getLive", access: "session:read", method: "GET", path: "/management/sessions/:sessionId/live", params: { sessionId: path("sessionId"), topics: query("json") }, summary: "Current retained values from the ephemeral live plane, optionally filtered by topic." },
     // The canvas KV store (interactive-canvas-apps Part C). canvas:read and
     // canvas:write are their OWN access classes: both gate on session read
     // (a canvas reader may hold no session write), and whether a read-only

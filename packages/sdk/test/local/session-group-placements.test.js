@@ -303,10 +303,16 @@ describe("session group placements (0034)", () => {
             await client.query(`DELETE FROM "${SCHEMA}".session_groups WHERE group_id = $1`, [gRace]);
             // The place sees the not-yet-committed group, passes the ownership
             // check, and blocks on the FK row lock until the delete commits.
-            const racing = catalog.placeSessionsInGroup(viewer(ALICE), [raceRoot], gRace);
+            // Observe rejection immediately: PostgreSQL can reject before
+            // COMMIT's promise resolves, otherwise Vitest reports an unhandled
+            // rejection even though the later .rejects assertion passes.
+            const racing = catalog.placeSessionsInGroup(viewer(ALICE), [raceRoot], gRace)
+                .then((value) => ({ value }), (error) => ({ error }));
             await new Promise((resolve) => setTimeout(resolve, 300));
             await client.query("COMMIT");
-            await expect(racing).rejects.toThrow(/foreign key|not found or is not owned/i);
+            const result = await racing;
+            expect(result.error).toBeInstanceOf(Error);
+            expect(result.error.message).toMatch(/foreign key|not found or is not owned/i);
         } finally {
             client.release();
         }

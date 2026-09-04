@@ -317,3 +317,215 @@ test("unsubscribe stops delivery and sends unsubscribeSession when last handler 
     assert.deepEqual(seen, []);
     await client.stop();
 });
+
+test("live subscriptions are grouped per session and fan out by topic", async () => {
+    const client = createWsClient();
+    const turn = [];
+    const presence = [];
+    const offTurn = client.subscribeLive("s1", "turn", (message) => turn.push(message));
+    const offPresence = client.subscribeLive("s1", "presence", (message) => presence.push(message));
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(socket.sent, [{ type: "subscribeLive", sessionId: "s1", topics: ["turn", "presence"] }]);
+
+    socket.emit("message", { data: JSON.stringify({
+        type: "live", sessionId: "s1", topic: "turn", seq: 1, kind: "snapshot", data: { text: "hi" },
+    }) });
+    assert.equal(turn.length, 1);
+    assert.equal(presence.length, 0);
+
+    offTurn();
+    assert.deepEqual(socket.sent.slice(-2), [
+        { type: "unsubscribeLive", sessionId: "s1" },
+        { type: "subscribeLive", sessionId: "s1", topics: ["presence"] },
+    ]);
+    offPresence();
+    await client.stop();
+});
+
+test("a duplicate live seq is ignored and a patch gap performs one snapshot refetch", async () => {
+    FakeWebSocket.instances = [];
+    let refetches = 0;
+    const client = new ApiClient({
+        apiUrl: "https://portal.example.com",
+        WebSocketImpl: FakeWebSocket,
+        fetchImpl: async (url) => {
+            assert.match(url, /\/management\/sessions\/s1\/live\?topics=/);
+            refetches += 1;
+            return jsonResponse({ ok: true, result: [{ topic: "turn", seq: 4, payload: { text: "whole" } }] });
+        },
+    });
+    const seen = [];
+    client.subscribeLive("s1", "turn", (message) => seen.push(message));
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const emit = (seq, kind, data) => socket.emit("message", { data: JSON.stringify({
+        type: "live", sessionId: "s1", topic: "turn", seq, kind, data,
+    }) });
+    emit(1, "snapshot", { text: "one" });
+    emit(1, "snapshot", { text: "duplicate" });
+    emit(3, "patch", { text: "three" });
+    emit(4, "patch", { text: "four" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(refetches, 1, "concurrent gap notifications collapse into one read");
+    assert.deepEqual(seen.map((message) => [message.seq, message.kind, message.data.text]), [
+        [1, "snapshot", "one"],
+        [4, "snapshot", "whole"],
+    ]);
+    await client.stop();
+});
+
+test("a live-only socket reconnects and resubscribes", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const client = createWsClient();
+    client.subscribeLive("s1", "turn", () => {});
+    await new Promise((resolve) => setImmediate(resolve));
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    first.close(1006, "network");
+    t.mock.timers.tick(2000);
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = FakeWebSocket.instances[1];
+    assert.ok(second, "live subscribers keep the reconnect loop alive");
+    second.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(second.sent, [{ type: "subscribeLive", sessionId: "s1", topics: ["turn"] }]);
+    await client.stop();
+});
+
+test("a lower patch seq after an unlogged-table reset refetches and accepts the new lineage", async () => {
+    FakeWebSocket.instances = [];
+    const client = new ApiClient({
+        apiUrl: "https://portal.example.com",
+        WebSocketImpl: FakeWebSocket,
+        fetchImpl: async () => jsonResponse({ ok: true, result: [
+            { topic: "turn", seq: 1, payload: { text: "after restart" } },
+        ] }),
+    });
+    const seen = [];
+    client.subscribeLive("s1", "turn", (message) => seen.push(message));
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    socket.emit("message", { data: JSON.stringify({
+        type: "live", sessionId: "s1", topic: "turn", seq: 99, kind: "snapshot", data: { text: "before restart" },
+    }) });
+    socket.emit("message", { data: JSON.stringify({
+        type: "live", sessionId: "s1", topic: "turn", seq: 1, kind: "patch", data: { text: "after restart" },
+    }) });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(seen.map((message) => [message.seq, message.data.text]), [
+        [99, "before restart"], [1, "after restart"],
+    ]);
+    await client.stop();
+});
+
+test("a stale live refetch cannot cross an unsubscribe and erase the replacement guard", async () => {
+    FakeWebSocket.instances = [];
+    const pending = [];
+    const client = new ApiClient({
+        apiUrl: "https://portal.example.com",
+        WebSocketImpl: FakeWebSocket,
+        fetchImpl: async () => new Promise((resolve) => pending.push(resolve)),
+    });
+    const firstSeen = [];
+    const offFirst = client.subscribeLive("s1", "turn", (message) => firstSeen.push(message));
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await new Promise((resolve) => setImmediate(resolve));
+    const emit = (seq, kind, data) => socket.emit("message", { data: JSON.stringify({
+        type: "live", sessionId: "s1", topic: "turn", seq, kind, data,
+    }) });
+
+    emit(1, "snapshot", { text: "first" });
+    emit(3, "patch", { text: "old gap" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending.length, 1);
+
+    offFirst();
+    const replacementSeen = [];
+    client.subscribeLive("s1", "turn", (message) => replacementSeen.push(message));
+    emit(3, "patch", { text: "replacement gap" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending.length, 2);
+
+    pending[0](jsonResponse({ ok: true, result: [
+        { topic: "turn", seq: 3, payload: { text: "stale" } },
+    ] }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(replacementSeen, [], "the old request cannot publish into replacement handlers");
+
+    emit(4, "patch", { text: "still coalesced" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending.length, 2, "the old request cannot erase the replacement refetch guard");
+
+    pending[1](jsonResponse({ ok: true, result: [
+        { topic: "turn", seq: 4, payload: { text: "current" } },
+    ] }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(replacementSeen.map((message) => [message.seq, message.data.text]), [[4, "current"]]);
+    await client.stop();
+});
+
+test("an older pointer snapshot cannot overwrite newer live state", async () => {
+    const client = createWsClient();
+    const seen = [];
+    client.subscribeLive("s1", "turn", (message) => seen.push(message));
+    await client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq: 9, kind: "snapshot", data: { text: "new" } });
+    await client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq: 8, kind: "snapshot", data: { text: "old" } });
+    assert.deepEqual(seen.map((message) => message.data.text), ["new"]);
+    await client.stop();
+});
+
+test("additional live readers get the retained value and stale cleanup is idempotent", async () => {
+    const client = createWsClient();
+    const off = client.subscribeLive("s1", "turn", () => {});
+    await client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq: 1, kind: "snapshot", data: { text: "one", keep: true } });
+    await client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq: 2, kind: "patch", data: { text: "two" } });
+    const seen = [];
+    const offSecond = client.subscribeLive("s1", "turn", (message) => seen.push(message));
+    assert.deepEqual(seen[0].data, { text: "two", keep: true });
+    off(); offSecond();
+    const replacement = [];
+    client.subscribeLive("s1", "turn", (message) => replacement.push(message));
+    off();
+    await client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq: 3, kind: "snapshot", data: { text: "new reader" } });
+    assert.equal(replacement.length, 1);
+    await client.stop();
+});
+
+test("gap recovery retains the highest tick received during a slow read", async () => {
+    const pending = [];
+    const client = new ApiClient({ apiUrl: "https://portal.example.com", WebSocketImpl: FakeWebSocket,
+        fetchImpl: () => new Promise((resolve) => pending.push(resolve)),
+    });
+    const seen = [];
+    client.subscribeLive("s1", "turn", (message) => seen.push(message));
+    const emit = (seq, kind = "patch") => client.handleLiveMessage({ sessionId: "s1", topic: "turn", seq, kind, data: { text: String(seq) } });
+    await emit(1, "snapshot");
+    void emit(3);
+    void emit(5);
+    void emit(4);
+    await new Promise((resolve) => setImmediate(resolve));
+    pending[0](jsonResponse({ ok: true, result: [{ topic: "turn", seq: 3, payload: { text: "3" } }] }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pending.length, 2, "the newer gap must be fetched even if a lower tick arrived last");
+    pending[1](jsonResponse({ ok: true, result: [{ topic: "turn", seq: 5, payload: { text: "5" } }] }));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(seen.at(-1).seq, 5);
+    await client.stop();
+});

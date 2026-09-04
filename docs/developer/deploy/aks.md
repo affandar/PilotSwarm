@@ -613,6 +613,7 @@ kubectl create secret generic copilot-runtime-secrets \
     --from-literal=PILOTSWARM_ORCHESTRATION_CONCURRENCY="2" \
     --from-literal=PILOTSWARM_WORKER_CONCURRENCY="2" \
     --from-literal=PILOTSWARM_TURN_TIMEOUT_MS="1200000" \
+    --from-literal=PILOTSWARM_LIVE_TURN="0" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions"
 ```
@@ -625,6 +626,7 @@ Worker sizing is env-driven:
 - `PILOTSWARM_ORCHESTRATION_CONCURRENCY` — Duroxide orchestration concurrency. Default: `2`.
 - `PILOTSWARM_WORKER_CONCURRENCY` — Duroxide activity/worker concurrency. Default: `2`.
 - `PILOTSWARM_TURN_TIMEOUT_MS` — wall-clock cap for one Copilot turn. Default: `1200000` (20 minutes); `0` disables it.
+- `PILOTSWARM_LIVE_TURN` — set to `1` to publish coalesced in-progress assistant text and reasoning on the generic live plane. Default: off. The portal consumes these values as transient chat state; durable turn events remain the source of truth.
 
 Provider availability in selectors is env-driven at worker startup. If you add or remove a provider key, refresh the secret and restart the workers; changing the checked-in template alone is not enough, and changing the real `.model_providers.json` only takes effect after the updated file is present in the runtime environment.
 
@@ -719,6 +721,7 @@ kubectl create secret generic copilot-runtime-secrets \
     --from-literal=PILOTSWARM_ORCHESTRATION_CONCURRENCY="2" \
     --from-literal=PILOTSWARM_WORKER_CONCURRENCY="2" \
     --from-literal=PILOTSWARM_TURN_TIMEOUT_MS="1200000" \
+    --from-literal=PILOTSWARM_LIVE_TURN="0" \
     --from-literal=AZURE_STORAGE_CONNECTION_STRING="..." \
     --from-literal=AZURE_STORAGE_CONTAINER="copilot-sessions" \
     --dry-run=client -o yaml | kubectl apply -f -

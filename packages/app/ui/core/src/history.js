@@ -530,6 +530,9 @@ function buildChatMessage(event, role) {
     const attachments = Array.isArray(event?.data?.attachments)
         ? event.data.attachments.filter((a) => a && typeof a.filename === "string" && a.filename)
         : [];
+    const messageId = typeof event?.data?.messageId === "string" && event.data.messageId
+        ? event.data.messageId
+        : null;
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: deriveChatRole(event, role, text),
@@ -539,7 +542,74 @@ function buildChatMessage(event, role) {
         ...(clientMessageIds.length > 0 ? { clientMessageIds } : {}),
         ...(sender ? { sender } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(messageId ? { messageId } : {}),
     };
+}
+
+/** Apply one transient `turn` topic snapshot without touching durable events/seq. */
+export function applyLiveTurnToHistory(history, payload, meta = {}) {
+    if (!payload) return history;
+    if (payload.phase === "idle") return clearLiveTurnFromHistory(history, null, payload.streamId || null);
+    if (payload.phase !== "live") return history;
+    const messageId = typeof payload.messageId === "string" && payload.messageId ? payload.messageId : null;
+    const reasoningId = typeof payload.reasoningId === "string" && payload.reasoningId ? payload.reasoningId : null;
+    const liveKey = messageId || (reasoningId ? `reasoning:${reasoningId}` : "active-turn");
+    const createdAt = Number(meta.createdAt) || Date.now();
+    const current = history || { chat: [], activity: [], events: [], lastSeq: 0 };
+    const oldChat = current.chat || [];
+    // Durable truth wins even when a delayed retained snapshot arrives later.
+    if ((messageId && oldChat.some((item) => !item.liveTurn && item.messageId === messageId))
+        || (current.closedLiveKeys || []).includes(liveKey)
+        || (payload.streamId && (current.closedLiveStreams || []).includes(payload.streamId))) return current;
+    const matches = (item) => item?.liveTurn === true && (
+        item?.liveKey === liveKey
+        || (messageId && item?.messageId === messageId)
+        || (reasoningId && item?.reasoningId === reasoningId && (!item.messageId || !messageId))
+    );
+    const firstMatch = oldChat.findIndex(matches);
+    const previous = firstMatch >= 0 ? oldChat[firstMatch] : null;
+    const chat = oldChat.filter((item) => !matches(item));
+    const reasoningText = typeof payload.reasoningText === "string" ? payload.reasoningText : "";
+    const text = typeof payload.text === "string" ? payload.text : "";
+    const liveStartedAt = Number(previous?.liveStartedAt || previous?.createdAt) || createdAt;
+    // Reasoning and answer text are one visual turn, not two independently
+    // mounted transcript rows. Keeping them in one keyed item lets the browser
+    // collapse reasoning above the answer and lets the durable final settle
+    // into the exact same React component instead of flashing between nodes.
+    const replacement = (reasoningText || text) ? [{
+        id: previous?.id || `live:${meta.sessionId || ""}:${liveKey}`,
+        role: "assistant",
+        ...(messageId ? { messageId } : {}),
+        ...(reasoningId ? { reasoningId } : {}),
+        liveKey: previous?.liveKey || liveKey,
+        liveTurn: true,
+        streamId: payload.streamId || previous?.streamId || null,
+        streaming: true,
+        truncated: payload.truncated === true,
+        text,
+        reasoningText,
+        liveStartedAt,
+        createdAt: liveStartedAt,
+        time: "",
+    }] : [];
+    chat.splice(firstMatch < 0 ? chat.length : Math.min(firstMatch, chat.length), 0, ...replacement);
+    return { ...current, chat };
+}
+
+export function clearLiveTurnFromHistory(history, messageId = null, streamId = null) {
+    if (!history?.chat) return history;
+    const chat = history.chat.filter((item) => !(
+        item?.liveTurn === true && (!messageId || item?.messageId === messageId) && (!streamId || item?.streamId === streamId)
+    ));
+    const retired = history.chat.filter((item) => item.liveTurn && (!messageId || item.messageId === messageId) && (!streamId || item.streamId === streamId));
+    const closedLiveKeys = [...new Set([...(history.closedLiveKeys || []),
+        ...retired.flatMap((item) => [item.liveKey, item.messageId, item.reasoningId && `reasoning:${item.reasoningId}`].filter(Boolean)),
+    ])].slice(-256);
+    const closedLiveStreams = [...new Set([...(history.closedLiveStreams || []),
+        ...(!messageId ? retired.map((item) => item.streamId).filter(Boolean) : []),
+        ...(streamId ? [streamId] : []),
+    ])].slice(-256);
+    return chat.length === history.chat.length && !streamId ? history : { ...history, chat, closedLiveKeys, closedLiveStreams };
 }
 
 // The Copilot SDK echoes the system prompt as a system.message on EVERY
@@ -764,6 +834,12 @@ function formatActivity(event) {
         case "assistant.turn_end":
         case "assistant.streaming_progress":
             return null;
+
+        case "model.call_start": {
+            const model = String(event?.data?.model || event?.data?.modelId || "model").split(":").pop();
+            runs = buildLabeledActivityRuns(time, "[model]", "cyan", `calling ${model}`, "white");
+            break;
+        }
 
         case "session.artifact_presented": {
             const data = (event?.data ?? {}) || {};
@@ -1167,6 +1243,8 @@ export function appendEventToHistory(history, event) {
         ? existingEvents
         : [...existingEvents, event].slice(-loadedEventLimit);
     const next = {
+        closedLiveKeys: history?.closedLiveKeys || [],
+        closedLiveStreams: history?.closedLiveStreams || [],
         chat: clampHistoryItems(history?.chat || [], loadedEventLimit),
         activity: clampHistoryItems(history?.activity || [], loadedEventLimit),
         events: nextEvents,
@@ -1201,6 +1279,7 @@ export function appendEventToHistory(history, event) {
                     : m
             ));
         }
+        Object.assign(next, clearLiveTurnFromHistory(next));
         return next;
     }
 
@@ -1241,9 +1320,41 @@ export function appendEventToHistory(history, event) {
         next.activity = clampHistoryItems(next.activity, loadedEventLimit);
         const message = buildChatMessage(event, "assistant");
         if (!message) return next;
-        next.chat.push(message);
+        const liveIndex = message.messageId
+            ? next.chat.findIndex((item) => item?.liveTurn === true && item?.messageId === message.messageId)
+            : -1;
+        const liveItem = liveIndex >= 0 ? next.chat[liveIndex] : null;
+        Object.assign(next, clearLiveTurnFromHistory(next, message.messageId || null));
+        // Preserve the model-call slot when several assistant messages are
+        // interleaved: the durable final replaces its own live bubble in
+        // place instead of jumping behind a later streaming message.
+        if (liveIndex >= 0) {
+            const settledAt = Date.now();
+            const liveStartedAt = Number(liveItem?.liveStartedAt || liveItem?.createdAt) || settledAt;
+            const liveAgeMs = Math.max(0, settledAt - liveStartedAt);
+            // A live surface that never crossed the reveal threshold remains
+            // invisible and the durable answer renders normally. Once it was
+            // eligible to be seen, preserve the key and reasoning long enough
+            // for the browser to morph it smoothly into committed transcript.
+            if (liveAgeMs >= 200) {
+                const streamSettleDelayMs = Math.max(0, 900 - liveAgeMs);
+                Object.assign(message, {
+                    streamSettling: true,
+                    liveKey: liveItem?.liveKey || message.messageId,
+                    liveStartedAt,
+                    liveReasoningText: liveItem?.reasoningText || "",
+                    streamSettleDelayMs,
+                    streamSettleAt: settledAt + streamSettleDelayMs + 180,
+                });
+            }
+            next.chat.splice(Math.min(liveIndex, next.chat.length), 0, message);
+        }
+        else next.chat.push(message);
         next.chat = clampHistoryItems(dedupeChatMessages(next.chat), loadedEventLimit);
         return next;
+    }
+    if (event.eventType === "session.turn_completed" || event.eventType === "session.turn_stopped") {
+        Object.assign(next, clearLiveTurnFromHistory(next));
     }
     if (event.eventType === "system.message") {
         if (shouldRenderSystemMessageAsActivity(event)) {

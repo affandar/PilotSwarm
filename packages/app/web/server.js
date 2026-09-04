@@ -12,6 +12,7 @@ import { PortalRuntime } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
+import { createLivePlane } from "./api/live-plane.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, "dist");
@@ -344,6 +345,12 @@ export async function startServer(opts = {}) {
     runtime.canvasPlane = canvasPlane;
     canvasPlane.start().catch(() => { /* reconnect loop owns retries */ });
 
+    const livePlane = createLivePlane({
+        getLive: (sessionId, topics) => runtime.getLive(sessionId, topics),
+    });
+    runtime.livePlane = livePlane;
+    livePlane.start().catch(() => { /* reconnect loop owns retries */ });
+
     const socketServers = attachWebSockets(server, runtime, [
         { path: "/portal-ws", allowThemeMessages: true },
         { path: WS_PATH },
@@ -351,6 +358,7 @@ export async function startServer(opts = {}) {
 
     async function shutdown() {
         await canvasPlane.stop().catch(() => {});
+        await livePlane.stop().catch(() => {});
         for (const socketServer of socketServers) {
             for (const client of socketServer.clients) {
                 try {

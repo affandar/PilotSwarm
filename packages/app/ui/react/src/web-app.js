@@ -1256,7 +1256,7 @@ function Runs({ runs, theme }) {
 
             if (artifactRef) {
                 return React.createElement(ArtifactLink, {
-                    key: `${index}:${run.text || ""}`,
+                    key: index,
                     artifactRef,
                     style,
                 });
@@ -1269,7 +1269,7 @@ function Runs({ runs, theme }) {
 
             return isExternalHref
                 ? React.createElement("a", {
-                    key: `${index}:${run.text || ""}`,
+                    key: index,
                     className: "ps-md-link",
                     href,
                     target: "_blank",
@@ -1277,7 +1277,8 @@ function Runs({ runs, theme }) {
                     style,
                 }, text)
                 : React.createElement("span", {
-                    key: `${index}:${run.text || ""}`,
+                    key: index,
+                    className: run?.role === "streamingCaret" ? "ps-streaming-caret" : undefined,
                     style,
                 }, text);
         }),
@@ -1285,14 +1286,16 @@ function Runs({ runs, theme }) {
 }
 
 function SystemNoticeLine({ line, theme }) {
+    const [open, setOpen] = React.useState(false);
     const body = String(line?.body || "").trim();
-    return React.createElement("details", { className: "ps-system-notice" },
+    const className = `ps-system-notice${line?.liveReasoning || line?.streamReasoning ? " is-live-reasoning" : ""}`;
+    return React.createElement("details", { className, onToggle: (event) => setOpen(event.currentTarget.open) },
         React.createElement("summary", {
             className: "ps-system-notice-summary",
             style: { color: resolveColor(theme, line?.color) || "var(--ps-muted)" },
         },
         React.createElement("span", { className: "ps-system-notice-summary-text" }, line?.text || "System notice")),
-        body
+        body && open
             ? React.createElement("div", { className: "ps-system-notice-body" },
                 React.createElement(MarkdownPreviewContent, { content: body, theme }))
             : null);
@@ -3217,6 +3220,11 @@ function parseStructuredChatBlocks(lines = []) {
             }
             blocks.push({
                 type: "card",
+                cardKey: currentLine.cardKey || null,
+                variant: currentLine.cardVariant || null,
+                liveStartedAt: Number(currentLine.liveStartedAt) || null,
+                settleDelayMs: Number(currentLine.settleDelayMs) || 0,
+                settleAt: Number(currentLine.settleAt) || null,
                 headerRuns: Array.isArray(currentLine.runs) ? currentLine.runs : [],
                 borderColor: currentLine.borderColor || "gray",
                 blocks: parseStructuredChatBlocks(innerLines),
@@ -3490,6 +3498,68 @@ function ArtifactImageStrip({ controller, sessionId, attachments }) {
         }));
 }
 
+function StreamingChatCard({ block, theme, controller }) {
+    const revealDelayMs = 200;
+    const settleDurationMs = 180;
+    const initialAgeMs = block.liveStartedAt ? Math.max(0, Date.now() - block.liveStartedAt) : revealDelayMs;
+    const [revealed, setRevealed] = React.useState(
+        block.variant !== "live" || initialAgeMs >= revealDelayMs,
+    );
+    const [settled, setSettled] = React.useState(
+        block.variant === "settling" && block.settleAt && Date.now() >= block.settleAt,
+    );
+
+    React.useEffect(() => {
+        if (block.variant !== "live") return undefined;
+        setSettled(false);
+        if (revealed) return undefined;
+        const ageMs = block.liveStartedAt ? Math.max(0, Date.now() - block.liveStartedAt) : 0;
+        const timer = setTimeout(() => setRevealed(true), Math.max(0, revealDelayMs - ageMs));
+        return () => clearTimeout(timer);
+    }, [block.variant, block.liveStartedAt, revealed]);
+
+    React.useEffect(() => {
+        if (block.variant !== "settling") return undefined;
+        setRevealed(true);
+        const remainingMs = block.settleAt
+            ? Math.max(0, block.settleAt - Date.now())
+            : Math.max(0, block.settleDelayMs) + settleDurationMs;
+        const timer = setTimeout(
+            () => setSettled(true),
+            remainingMs,
+        );
+        return () => clearTimeout(timer);
+    }, [block.variant, block.settleAt, block.settleDelayMs]);
+
+    const body = Array.isArray(block.blocks)
+        ? React.createElement(StructuredBlockList, { blocks: block.blocks, theme, controller })
+        : (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
+            key: `line:${bodyIndex}`,
+            className: "ps-chat-card-line",
+        }, React.createElement(Runs, { runs: bodyRuns, theme })));
+
+    // Fade decoration only. Replacing the section with a Fragment remounts
+    // every descendant and loses selection, disclosure state and scroll.
+    if (block.variant === "live" && !revealed) return null;
+
+    const isSettling = block.variant === "settling";
+    const remainingSettleDelayMs = block.settleAt
+        ? Math.max(0, block.settleAt - Date.now() - settleDurationMs)
+        : Math.max(0, block.settleDelayMs);
+    return React.createElement("section", {
+        className: `ps-chat-card is-live${settled ? " is-settled" : isSettling ? " is-settling" : " is-revealing"}`,
+        "aria-busy": isSettling ? undefined : "true",
+        "aria-label": isSettling ? "Agent response complete" : "Agent response streaming",
+        style: {
+            "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)",
+            "--ps-live-settle-delay": `${remainingSettleDelayMs}ms`,
+        },
+    },
+    React.createElement("header", { className: "ps-chat-card-header" },
+        React.createElement(Runs, { runs: block.headerRuns, theme })),
+    React.createElement("div", { className: "ps-chat-card-body" }, body));
+}
+
 // Renders parsed chat blocks; sentinel card blocks recurse through this list
 // so structured content (box/markdown tables, code fences) inside a card
 // renders exactly the same as it does at top level.
@@ -3538,8 +3608,16 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             }
 
             if (block.type === "card") {
+                if (block.variant === "live" || block.variant === "settling") {
+                    return React.createElement(StreamingChatCard, {
+                        key: `card:${block.cardKey || index}`,
+                        block,
+                        theme,
+                        controller,
+                    });
+                }
                 return React.createElement("section", {
-                    key: `card:${index}`,
+                    key: `card:${block.cardKey || index}`,
                     className: "ps-chat-card",
                     style: { "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)" },
                 },
@@ -3813,7 +3891,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -3925,7 +4003,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onWheel, onTouchMove, onTouchEnd, onTouchCancel: onTouchEnd },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -6434,6 +6512,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
+        ariaLive: "polite",
         className: "is-wrapped",
         panelClassName: "ps-chat-panel",
         panelRef,

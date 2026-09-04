@@ -58,6 +58,13 @@ GITHUB_TOKEN=your-token-here
 
 ## Running with the TUI
 
+The shipped browser portal can optionally show live reasoning and answer
+previews for these agents: set `PILOTSWARM_LIVE_TURN=1` on the worker process
+(and on the portal when it embeds workers). No sample tool changes are
+required. The native direct transport stays on durable events. See the
+[live-plane architecture](../../docs/architecture/live-plane.md) for limits
+and reconnect behavior.
+
 From the repo root:
 
 ```bash

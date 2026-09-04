@@ -182,12 +182,12 @@ test("handshake: everything except subscribeCanvas is refused on a share connect
     const handle = createConnectionHandler(h.runtime);
     const ws = fakeSocket();
     await handle(ws, { headers: {}, url: "/?canvasShare=tok-1" });
-    for (const type of ["subscribeSession", "subscribeLogs", "theme"]) {
+    for (const type of ["subscribeSession", "subscribeLive", "publishLive", "subscribeLogs", "theme"]) {
         ws.emit("message", JSON.stringify({ type, sessionId: "sess-9" }));
     }
     await tick();
     const errors = ws.sent.filter((m) => m.type === "error" && m.scope === "share");
-    assert.equal(errors.length, 3, "each refused loudly");
+    assert.equal(errors.length, 5, "each refused loudly");
     assert.ok(!ws.sent.some((m) => m.type === "subscribedSession" || m.type === "subscribedLogs"));
 });
 

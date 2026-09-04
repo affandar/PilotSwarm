@@ -154,6 +154,12 @@ Logo notes:
 
 ## Validation Guidance
 
+- For opt-in live reasoning/answer previews, set `PILOTSWARM_LIVE_TURN=1` on
+  workers (also the portal for embedded local workers). Use the shipped live
+  plane and shared UI; do not persist raw deltas or create a parallel chat
+  stream. Custom clients should follow `docs/architecture/live-plane.md` and
+  keep durable event replay authoritative.
+
 - Do more than write files: run a local portal build when practical.
 - Verify the portal can load branding from `plugin.json.portal`.
 - Verify named-agent creation appears in the browser UI when the plugin and session policy are present.

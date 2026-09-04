@@ -1976,6 +1976,11 @@ export class NodeSdkTransport {
         return this.mgmt.getCanvasLive(sessionId);
     }
 
+    async getLive(sessionId, topics) {
+        if (typeof this.mgmt.getLive !== "function") return [];
+        return this.mgmt.getLive(sessionId, topics);
+    }
+
     // The canvas KV store. The portal runtime hands a resolved principal
     // (door 1); the native TUI has no canvas surface and never calls these.
     async readCanvasKv(sessionId, slot, principal, query = {}) {

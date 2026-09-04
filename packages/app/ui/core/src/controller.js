@@ -4,8 +4,10 @@ import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
     appendEventToHistory,
+    applyLiveTurnToHistory,
     buildHistoryModel,
     CHAT_HISTORY_EVENT_TYPES,
+    clearLiveTurnFromHistory,
     DEFAULT_HISTORY_EVENT_LIMIT,
     dedupeChatMessages,
     getNextHistoryEventLimit,
@@ -2503,6 +2505,8 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
+        this._liveTurnIdleTimers?.clear();
         if (this.catalogTimer) clearInterval(this.catalogTimer);
         this.catalogTimer = null;
         if (this.activeSessionDetailTimer) clearTimeout(this.activeSessionDetailTimer);
@@ -2518,6 +2522,16 @@ export class PilotSwarmUiController {
     }
 
     detachActiveSession() {
+        // Timers belong to the subscription, not to a future visit to this session.
+        const sessionId = this.activeSessionSubscriptionId;
+        if (sessionId) {
+            clearTimeout(this._liveTurnIdleTimers?.get(sessionId));
+            this._liveTurnIdleTimers?.delete(sessionId);
+            const history = this.getState().history.bySessionId.get(sessionId);
+            if (history) this.dispatch({ type: "history/set", sessionId, history: {
+                ...history, chat: history.chat.filter((item) => !item.liveTurn),
+            } });
+        }
         if (this.activeSessionUnsub) {
             this.activeSessionUnsub();
             this.activeSessionUnsub = null;
@@ -2866,8 +2880,9 @@ export class PilotSwarmUiController {
         if (newEvents.length === 0) {
             return existingHistory;
         }
-        let history = existingHistory;
+        let history = this.getState().history.bySessionId.get(sessionId) || existingHistory;
         for (const event of newEvents) {
+            if (event.seq <= (history.lastSeq || 0)) continue;
             history = appendEventToHistory(history, event);
         }
         history = {
@@ -2937,10 +2952,37 @@ export class PilotSwarmUiController {
                 }
                 throw error;
             }
-            const history = {
-                ...buildHistoryModel(events, { requestedLimit }),
-                lastSeq: events[events.length - 1]?.seq || 0,
+            const current = this.getState().history.bySessionId.get(sessionId);
+            // Durable events and previews can arrive while REST is pending.
+            // Merge that newer truth before replacing the loaded window.
+            const mergedEvents = [...new Map([...(events || []), ...(current?.events || [])]
+                .map((event) => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq);
+            let history = {
+                ...buildHistoryModel(mergedEvents, { requestedLimit }),
+                lastSeq: mergedEvents.at(-1)?.seq || 0,
             };
+            history.closedLiveKeys = current?.closedLiveKeys || [];
+            history.closedLiveStreams = current?.closedLiveStreams || [];
+            const newTerminal = mergedEvents.some((event) => event.seq > (current?.lastSeq || 0)
+                && ["session.turn_completed", "session.turn_stopped"].includes(event.eventType));
+            for (const item of current?.chat || []) {
+                if (item.streamSettling) {
+                    history.chat = history.chat.map((message) => message.messageId === item.messageId
+                        ? { ...item, ...message } : message);
+                } else if (item.liveTurn && !newTerminal) {
+                    // Reuse the item itself: its key, reveal clock and memoized
+                    // rendering belong to this visit, not the REST response.
+                    if (!history.chat.some((message) => message.messageId && message.messageId === item.messageId)) {
+                        history.chat.push(item);
+                    } else {
+                        const finalEvent = mergedEvents.find((event) => event.eventType === "assistant.message" && event.data?.messageId === item.messageId);
+                        if (finalEvent) {
+                            const reconciled = appendEventToHistory({ chat: [item], events: [], activity: [], lastSeq: 0 }, finalEvent).chat[0];
+                            history.chat = history.chat.map((message) => message.messageId === item.messageId ? { ...reconciled, ...message } : message);
+                        }
+                    }
+                }
+            }
             this.dispatch({
                 type: "history/set",
                 sessionId,
@@ -5708,6 +5750,71 @@ export class PilotSwarmUiController {
         // history would corrupt the replay cursor — and they must never
         // appear in the transcript.
         if (event.transient === true) {
+            if (event.eventType === "assistant.live_tick") {
+                // A worker can die leaving a reasoning-only retained row.
+                // On re-entry its message ID cannot match a durable final;
+                // use database timestamps to reject snapshots older than an
+                // already-loaded terminal event. Never use client wall time.
+                const snapshotTime = event.liveUpdatedAt ? new Date(event.liveUpdatedAt).getTime() : NaN;
+                if (event.data?.phase === "live" && Number.isFinite(snapshotTime)) {
+                    const history = this.getState().history.bySessionId.get(sessionId);
+                    if (history?.events?.some((entry) => ["session.turn_completed", "session.turn_stopped"].includes(entry.eventType)
+                        && new Date(entry.createdAt).getTime() > snapshotTime)) return false;
+                }
+                if (!this._liveTurnIdleTimers) this._liveTurnIdleTimers = new Map();
+                const pendingIdle = this._liveTurnIdleTimers.get(sessionId);
+                if (pendingIdle && event.data?.phase === "idle") {
+                    clearTimeout(pendingIdle);
+                    this._liveTurnIdleTimers.delete(sessionId);
+                }
+                // The live plane and durable event stream are independent.
+                // An idle tick commonly wins the race by a few milliseconds;
+                // tearing down immediately makes the live answer flash out
+                // before its durable replacement lands. Give reconciliation a
+                // bounded grace window, then clear only if it is still live.
+                if (event.data?.phase === "idle") {
+                    const ended = this.getState().history.bySessionId.get(sessionId);
+                    if (!ended) return true;
+                    const streamId = event.data?.streamId || null;
+                    const endedKeys = new Set(ended.chat.filter((item) => item.liveTurn && (
+                        !streamId || item.streamId === streamId
+                        || (ended.closedLiveStreams || []).includes(item.streamId)
+                        || (ended.closedLiveKeys || []).includes(item.liveKey)
+                    )).map((item) => item.liveKey));
+                    // Never reveal a preview that has already finished. Keep
+                    // only previews that crossed the reveal threshold, and
+                    // close their keys now so late packets cannot revive them.
+                    this.dispatch({ type: "history/set", sessionId, history: {
+                        ...clearLiveTurnFromHistory(ended, null, streamId),
+                        chat: ended.chat.filter((item) => !item.liveTurn || !endedKeys.has(item.liveKey) || Date.now() - item.liveStartedAt >= 200),
+                    } });
+                    const timer = setTimeout(() => {
+                        this._liveTurnIdleTimers?.delete(sessionId);
+                        const current = this.getState().history.bySessionId.get(sessionId);
+                        if (!current) return;
+                        const chat = current.chat.filter((item) => !item.liveTurn || !endedKeys.has(item.liveKey));
+                        const cleared = chat.length === current.chat.length ? current : { ...current, chat };
+                        if (cleared !== current) {
+                            this.dispatch({ type: "history/set", sessionId, history: cleared });
+                        }
+                    }, 1_200);
+                    timer.unref?.();
+                    this._liveTurnIdleTimers.set(sessionId, timer);
+                    return true;
+                }
+                const existing = this.getState().history.bySessionId.get(sessionId)
+                    || { chat: [], activity: [], events: [], lastSeq: 0 };
+                this.dispatch({
+                    type: "history/set",
+                    sessionId,
+                    history: applyLiveTurnToHistory(existing, event.data, {
+                        sessionId,
+                        seq: event.liveSeq,
+                        createdAt: Date.now(),
+                    }),
+                });
+                return true;
+            }
             if (event.eventType === "session.canvas_data") {
                 this.applyCanvasDataEvent(sessionId, event);
             }
@@ -5729,6 +5836,12 @@ export class PilotSwarmUiController {
                 this.dispatch({ type: "canvas/planeReleased", sessionId });
             }
             return false;
+        }
+        if (this._liveTurnIdleTimers?.has(sessionId)
+            && (event.eventType === "session.turn_completed"
+                || event.eventType === "session.turn_stopped")) {
+            clearTimeout(this._liveTurnIdleTimers.get(sessionId));
+            this._liveTurnIdleTimers.delete(sessionId);
         }
         const state = this.getState();
         const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };

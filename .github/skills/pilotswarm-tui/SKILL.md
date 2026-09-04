@@ -5,6 +5,16 @@ description: Modify or extend the PilotSwarm terminal UI. Covers the shared-firs
 
 # PilotSwarm TUI
 
+## Streaming chat contract
+
+For live-plane changes, read `docs/architecture/live-plane.md`. Shared core
+owns provisional identity, durable-final precedence and stream-scoped idle
+cleanup. Browser reveal/dwell/fade is intentionally host-specific, but it
+must preserve card/disclosure/content DOM and geometry at completion. Cache
+unchanged transcript rendering and parse collapsed reasoning only on demand.
+Use `packages/app/web/test/e2e/live-turn.spec.mjs` to verify DOM continuity;
+metadata-only assertions cannot prove smooth settlement.
+
 Use this skill when changing any of:
 
 - `packages/app/ui/core/`

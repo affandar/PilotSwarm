@@ -1487,10 +1487,111 @@ body.is-resizing-pane-y iframe {
   margin-top: 6px;
 }
 
+/* A live answer is intentionally not styled like committed transcript text.
+   Its stable shaded shell stays mounted as markdown grows, which both makes
+   the provisional state legible and limits repaints to the streaming body. */
+.ps-chat-card.is-live {
+  border-color: color-mix(in srgb, var(--ps-chat-card-accent) 58%, var(--ps-border));
+  background: color-mix(in srgb, var(--ps-chat-card-accent) 7%, var(--ps-background));
+  box-shadow:
+    inset 3px 0 0 color-mix(in srgb, var(--ps-chat-card-accent) 72%, transparent),
+    0 8px 22px color-mix(in srgb, #000 14%, transparent);
+  isolation: isolate;
+}
+
+.ps-chat-card.is-live .ps-chat-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom-color: color-mix(in srgb, var(--ps-chat-card-accent) 24%, transparent);
+  background: color-mix(in srgb, var(--ps-chat-card-accent) 13%, var(--ps-surface));
+}
+
+.ps-chat-card.is-live .ps-chat-card-header::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ps-chat-card-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-chat-card-accent) 16%, transparent);
+}
+
+.ps-chat-card.is-live .ps-chat-card-body {
+  background: color-mix(in srgb, var(--ps-chat-card-accent) 3%, transparent);
+}
+
+.ps-chat-card.is-live.is-revealing {
+  animation: ps-live-card-reveal 140ms ease-out both;
+}
+
+.ps-chat-card.is-live.is-settling {
+  animation: ps-live-card-settle 180ms ease-in-out var(--ps-live-settle-delay, 0ms) both;
+}
+
+/* Preserve geometry and DOM after commitment; only provisional decoration fades. */
+.ps-chat-card.is-live.is-settled {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.ps-chat-card.is-live.is-settled .ps-chat-card-header,
+.ps-chat-card.is-live.is-settled .ps-chat-card-body {
+  background: transparent;
+  border-color: transparent;
+}
+.ps-chat-card.is-live.is-settled .ps-chat-card-header::before {
+  background: transparent;
+  box-shadow: none;
+}
+
+.ps-chat-card.is-live.is-settled .ps-system-notice.is-live-reasoning {
+  background: transparent;
+  border-left-color: transparent;
+}
+
+@keyframes ps-live-card-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ps-live-card-settle {
+  from {
+    border-color: color-mix(in srgb, var(--ps-chat-card-accent) 58%, var(--ps-border));
+    background: color-mix(in srgb, var(--ps-chat-card-accent) 7%, var(--ps-background));
+    box-shadow:
+      inset 3px 0 0 color-mix(in srgb, var(--ps-chat-card-accent) 72%, transparent),
+      0 8px 22px color-mix(in srgb, #000 14%, transparent);
+  }
+  to {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-chat-card.is-live.is-revealing,
+  .ps-chat-card.is-live.is-settling {
+    animation-duration: 1ms;
+  }
+}
+
 .ps-chat-panel .ps-line,
 .ps-chat-panel .ps-chat-card-line {
   min-height: 1.24rem;
   line-height: 1.24rem;
+}
+
+.ps-streaming-caret {
+  display: inline-block;
+  opacity: 0.78;
 }
 
 .ps-system-notice {
@@ -1500,6 +1601,13 @@ body.is-resizing-pane-y iframe {
 
 .ps-system-notice[open] {
   margin-bottom: 14px;
+}
+
+.ps-system-notice.is-live-reasoning {
+  padding: 7px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--ps-muted) 55%, transparent);
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
+  background: color-mix(in srgb, var(--ps-muted) 6%, transparent);
 }
 
 .ps-system-notice-summary {
@@ -6229,7 +6337,7 @@ body.is-resizing-pane-y iframe {
   font-size: 10px;
   letter-spacing: 0.06em;
 }
-:root[data-ps-theme="workspace-dark"] .ps-chat-card {
+:root[data-ps-theme="workspace-dark"] .ps-chat-card:not(.is-live) {
   border: none;
   border-left: 2px solid color-mix(in srgb, var(--ps-chat-card-accent, var(--ps-border)) 85%, transparent);
   border-radius: 8px;
@@ -9177,4 +9285,3 @@ textarea.ps-link-input {
   white-space: nowrap;
   text-align: right;
 }
-

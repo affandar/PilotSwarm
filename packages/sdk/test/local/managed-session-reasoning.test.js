@@ -40,15 +40,19 @@ class FakeCopilotSession {
 
     async send() {
         queueMicrotask(() => {
+            this.emit("assistant.turn_start", { data: {} });
             this.emit("assistant.reasoning_delta", {
-                data: { deltaContent: "Checking hydration" },
+                data: { reasoningId: "r1", deltaContent: "Checking hydration" },
             });
             this.emit("assistant.reasoning_delta", {
-                data: { deltaContent: " and replay state." },
+                data: { reasoningId: "r1", deltaContent: " and replay state." },
             });
+            this.emit("assistant.message_delta", { data: { messageId: "m1", deltaContent: "Do" } });
+            this.emit("assistant.message_delta", { data: { messageId: "m1", deltaContent: "ne." } });
             this.emit("assistant.message", {
-                data: { content: this.assistantContent },
+                data: { messageId: "m1", content: this.assistantContent },
             });
+            this.emit("assistant.turn_end", { data: {} });
             this.emit("session.idle", { data: {} });
         });
     }
@@ -73,6 +77,30 @@ describe("managed session reasoning snapshots", () => {
         expect(reasoningEvents[reasoningEvents.length - 1]?.data?.content)
             .toContain("Checking hydration and replay state.");
         expect(events.some((event) => event.eventType === "assistant.reasoning_delta")).toBe(true);
+    });
+
+    it("emits coalesced live ticks only when requested and preserves streaming counters", async () => {
+        const without = [];
+        await new ManagedSession("live-off", new FakeCopilotSession(), {}).runTurn("go", {
+            onEvent: (event) => without.push(event),
+        });
+        expect(without.filter((event) => event.eventType === "assistant.live_tick")).toHaveLength(0);
+        const offTurnEnd = without.find((event) => event.eventType === "assistant.turn_end");
+        expect(offTurnEnd.data.streamingDeltas).toBe(2);
+        expect(offTurnEnd.data.streamingChars).toBe(5);
+
+        const withLive = [];
+        await new ManagedSession("live-on", new FakeCopilotSession(), {}).runTurn("go", {
+            liveTurn: true,
+            onEvent: (event) => withLive.push(event),
+        });
+        const ticks = withLive.filter((event) => event.eventType === "assistant.live_tick").map((event) => event.data);
+        expect(ticks.some((tick) => tick.phase === "live" && tick.messageId === "m1" && tick.text === "Done.")).toBe(true);
+        expect(ticks.at(-1)).toEqual({ phase: "idle", streamId: expect.any(String), messageId: null, text: "", reasoningId: null, reasoningText: "" });
+        expect(ticks.at(-1).streamId).toBe(ticks.find((tick) => tick.phase === "live").streamId);
+        const onTurnEnd = withLive.find((event) => event.eventType === "assistant.turn_end");
+        expect(onTurnEnd.data.streamingDeltas).toBe(2);
+        expect(onTurnEnd.data.streamingChars).toBe(5);
     });
 
     it("requires a rebind when the resolved provider fingerprint changes", () => {

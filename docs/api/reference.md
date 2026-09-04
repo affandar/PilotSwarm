@@ -69,15 +69,28 @@ engine's reason.
 
 ```text
 client -> server: subscribeSession { sessionId } | unsubscribeSession { sessionId }
+                  | subscribeLive { sessionId, topics[] } | unsubscribeLive { sessionId }
                   | subscribeLogs {} | unsubscribeLogs {}
 server -> client: ready | subscribedSession { sessionId } | sessionEvent { sessionId, event }
+                  | subscribedLive { sessionId, topics[] }
+                  | live { sessionId, topic, seq, kind, data?, updatedAt? }
                   | subscribedLogs | logEntry { entry } | error { scope, sessionId?, error }
 ```
 
 WebSocket delivery is an acceleration path; correctness comes from replay —
 after a reconnect, catch up with
 `GET /api/v1/management/sessions/:sessionId/events?afterSeq=…`. The log tail
-is live-only (no history, no catch-up).
+is live-only (no history, no catch-up). Generic live topics are ephemeral
+last-value state: reconnecting clients receive a retained snapshot from
+`getLive` before subsequent notifications. They do not enter session history.
+
+`kind` is `snapshot`, `patch`, `signal`, or `unavailable` (release cached
+state and its sequence). Clients ignore stale snapshots, refetch on patch
+gaps, and replay durable events independently. Topic subscriptions are limited
+to 16 per session; live publishing is server-only. The optional `turn` topic
+carries `phase`, `streamId`, message/reasoning IDs and cumulative text, plus
+`truncated: true` when a preview reaches its limit. An idle applies only to
+its stream. See [live-plane architecture](../architecture/live-plane.md).
 
 ## Operations
 
@@ -150,6 +163,7 @@ group membership is per-viewer state, not a property of the session. See
 | getExecutionHistory | `GET /api/v1/management/sessions/:sessionId/execution-history` | sessionId (path), executionId (query: number) | Raw execution history events. |
 | getSessionEvents | `GET /api/v1/management/sessions/:sessionId/events` | sessionId (path), afterSeq (query: number), limit (query: number), eventTypes (query: json) | Session events after a sequence number (reconnect catch-up). Optional eventTypes (JSON string array) narrows to those event types server-side. |
 | getSessionEventsBefore | `GET /api/v1/management/sessions/:sessionId/events-before` | sessionId (path), beforeSeq (query: number), limit (query: number), eventTypes (query: json) | Older session events for history paging. Optional eventTypes (JSON string array) narrows to those event types server-side (chat transcript paging). |
+| getLive | `GET /api/v1/management/sessions/:sessionId/live` | sessionId (path), topics (query: json) | Current retained values from the ephemeral live plane, optionally filtered by topic. |
 | getSessionMetricSummary | `GET /api/v1/management/sessions/:sessionId/metric-summary` | sessionId (path) | Per-session metric summary. |
 | getSessionTokensByModel | `GET /api/v1/management/sessions/:sessionId/tokens-by-model` | sessionId (path) | Token totals grouped by model. |
 | getSessionTreeStats | `GET /api/v1/management/sessions/:sessionId/tree-stats` | sessionId (path) | Stats rolled up across the spawn tree. |

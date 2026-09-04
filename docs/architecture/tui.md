@@ -103,6 +103,16 @@ packages/app/tui/src/index.js
 
 ## Main Data Flows
 
+### Live previews
+
+The optional [ephemeral live plane](live-plane.md) supplies provisional
+reasoning and answer snapshots to Web API transports. Shared history code
+preserves identity across reasoning → answer → durable final, rejects late
+previews, and leaves the durable cursor untouched. Browser-only reveal/dwell
+and decoration fades preserve the actual card DOM; the direct native host
+continues to use durable events. Do not put these reconciliation rules in
+host-specific renderers.
+
 ### Session/catalog flow
 
 ```text

@@ -982,6 +982,17 @@ export interface SessionCatalog {
     upsertCanvasLiveDoc?(sessionId: string, slot: number, doc: { rev: number; sha: string }, updatedBy: string): Promise<{ seq: number } | null>;
     getCanvasLive?(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>>;
 
+    /** Generic ephemeral last-value plane (migration 0073). */
+    liveAvailable?(): Promise<boolean>;
+    publishLive?(
+        sessionId: string,
+        topic: string,
+        input: { patch: Record<string, unknown> } | { snapshot: Record<string, unknown> } | { signal: true },
+        updatedBy: string,
+        maxBytes?: number,
+    ): Promise<{ seq: number; sizeBytes: number; payload: Record<string, unknown> } | { signal: true } | { refused: true; currentSizeBytes: number | null } | null>;
+    getLive?(sessionId: string, topics?: string[]): Promise<Array<{ topic: string; seq: number; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>>;
+
     /**
      * Canvas share links (migration 0048): one live view token per
      * (session, slot), stored as a HASH. The raw token never touches the
@@ -1429,6 +1440,9 @@ function sqlForSchema(schema: string) {
     return {
         schema,
         fn: {
+            liveAvailable:             `${s}.cms_live_available`,
+            publishLive:               `${s}.cms_publish_live`,
+            getLive:                   `${s}.cms_get_live`,
             createSession:              `${s}.cms_create_session`,
             setSessionOwner:            `${s}.cms_set_session_owner`,
             inheritSessionOwner:        `${s}.cms_inherit_session_owner`,
@@ -2439,6 +2453,87 @@ export class PgSessionCatalog implements SessionCatalog {
             payload: r.payload ?? {},
             updatedBy: String(r.updated_by || ""),
             updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+        }));
+    }
+
+    // ── Generic live plane (migration 0073) ────────────────────────────
+    private liveProbe: { available: boolean; checkedAt: number } | null = null;
+
+    async liveAvailable(): Promise<boolean> {
+        if (this.liveProbe && Date.now() - this.liveProbe.checkedAt < 5_000) return this.liveProbe.available;
+        try {
+            const { rows } = await this.pool.query(
+                `SELECT ${this.sql.fn.liveAvailable}() AS t`,
+            );
+            const available = Boolean(rows?.[0]?.t);
+            this.liveProbe = { available, checkedAt: Date.now() };
+            return available;
+        } catch {
+            // A transient database error is not a permanent feature probe.
+            return false;
+        }
+    }
+
+    async publishLive(
+        sessionId: string,
+        topic: string,
+        input: { patch: Record<string, unknown> } | { snapshot: Record<string, unknown> } | { signal: true },
+        updatedBy: string,
+        maxBytes = 262_144,
+    ): Promise<{ seq: number; sizeBytes: number; payload: Record<string, unknown> } | { signal: true } | { refused: true; currentSizeBytes: number | null } | null> {
+        const normalizedTopic = String(topic || "").trim();
+        if (!/^[a-z][a-z0-9_.:-]{0,63}$/.test(normalizedTopic)) {
+            throw new Error(`Invalid live topic: ${topic}`);
+        }
+        if (!input || typeof input !== "object") throw new Error("publishLive requires an input object");
+        const modes = Number("patch" in input) + Number("snapshot" in input) + Number("signal" in input);
+        if (modes !== 1) throw new Error("publishLive requires exactly one of patch, snapshot, or signal");
+        if ("signal" in input && input.signal !== true) throw new Error("publishLive signal must be true");
+        if (!(await this.liveAvailable())) return null;
+
+        const kind = "signal" in input ? "signal" : "patch" in input ? "patch" : "snapshot";
+        const data = "patch" in input ? input.patch : "snapshot" in input ? input.snapshot : {};
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            throw new Error("publishLive patch/snapshot data must be an object");
+        }
+        const safeMaxBytes = Math.max(1, Math.min(262_144, Math.floor(Number(maxBytes) || 262_144)));
+        try {
+            const { rows } = await this.pool.query({
+                text: `SELECT ${this.sql.fn.publishLive}($1, $2, $3::jsonb, $4, $5, $6) AS result`,
+                values: [sessionId, normalizedTopic, JSON.stringify(data), kind, updatedBy || "", safeMaxBytes],
+                query_timeout: 5_000,
+            });
+            return rows[0]?.result ?? null;
+        } catch (error) {
+            if (!["42P01", "42883"].includes((error as any)?.code)) throw error;
+            this.liveProbe = { available: false, checkedAt: Date.now() };
+            return null;
+        }
+    }
+    async getLive(sessionId: string, topics?: string[]): Promise<Array<{ topic: string; seq: number; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        if (topics !== undefined && !Array.isArray(topics)) throw new Error("Live topics must be an array");
+        const normalizedTopics = topics?.map((topic) => String(topic || "").trim()) ?? null;
+        if (normalizedTopics?.some((topic) => !/^[a-z][a-z0-9_.:-]{0,63}$/.test(topic))) {
+            throw new Error("Invalid live topic");
+        }
+        if (!(await this.liveAvailable())) return [];
+        let rows: any[];
+        try {
+            ({ rows } = await this.pool.query(
+                `SELECT * FROM ${this.sql.fn.getLive}($1, $2::text[])`,
+                [sessionId, normalizedTopics],
+            ));
+        } catch (error) {
+            if ((error as any)?.code !== "42P01") throw error;
+            this.liveProbe = { available: false, checkedAt: Date.now() };
+            return [];
+        }
+        return rows.map((row: any) => ({
+            topic: String(row.topic),
+            seq: Number(row.seq),
+            payload: row.payload ?? {},
+            updatedBy: String(row.updated_by || ""),
+            updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
         }));
     }
 

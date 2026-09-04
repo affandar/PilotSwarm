@@ -1192,6 +1192,8 @@ export class PortalRuntime {
                 return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit, safeParams.eventTypes);
             case "getCanvasLive":
                 return this.transport.getCanvasLive(safeParams.sessionId);
+            case "getLive":
+                return this.transport.getLive(safeParams.sessionId, safeParams.topics);
             case "readCanvasKv": {
                 const slot = this._canvasKvSlot(safeParams.slot);
                 return this.transport.readCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, isAdmin), {
@@ -1540,6 +1542,12 @@ export class PortalRuntime {
 
     subscribeSession(sessionId, handler) {
         return this.transport.subscribeSession(sessionId, handler);
+    }
+
+    async getLive(sessionId, topics) {
+        await this.start();
+        if (typeof this.transport.getLive !== "function") return [];
+        return this.transport.getLive(sessionId, topics);
     }
 
     /**

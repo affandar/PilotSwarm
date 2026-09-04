@@ -47,6 +47,13 @@ If a fix can live below `packages/app/tui`, it usually should.
 
 ## Source Map
 
+For streaming chat, follow the [live-plane contract](../../architecture/live-plane.md).
+Keep keys stable when the first message ID arrives, cache unchanged history
+items, and never replace a settled card's shell with a Fragment. Test the
+actual DOM (including expanded reasoning and tables) through final delivery.
+Idle cleanup must be stream-scoped and tolerate independent durable/live
+delivery order. Closed reasoning must not repeatedly parse hidden markdown.
+
 ### Terminal host
 
 - [`packages/app/tui/bin/tui.js`](../../../packages/app/tui/bin/tui.js) — CLI entrypoint

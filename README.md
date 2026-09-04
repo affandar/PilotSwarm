@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.57** — Worker-registered tools get `invocation.facts`, a session-bound facts accessor with a `tools/` namespace no agent can read; the portal re-renders only the composer on a keystroke instead of the whole app; a session's workspace layout (columns and sizes) is remembered per session.
+> **Latest release: v0.5.58** — Opt-in live reasoning and answer previews with smooth completion, bounded update pacing and reconnect recovery; named-agent startup tool enforcement; chromeless canvas sharing and dialog-layering fixes.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

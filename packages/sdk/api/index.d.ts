@@ -62,6 +62,23 @@ export interface ApiClientOptions {
     WebSocketImpl?: unknown;
 }
 
+/** Generic ephemeral topic delivery; never a durable replay event. */
+export type LiveUpdate = {
+    sessionId: string;
+    topic: string;
+    updatedAt?: string;
+} & ({ kind: "snapshot" | "patch"; seq: number; data: Record<string, unknown> }
+    | { kind: "signal"; seq?: number | null }
+    | { kind: "unavailable" });
+
+export interface LiveStateRow {
+    topic: string;
+    seq: number;
+    payload: Record<string, unknown>;
+    updatedBy: string;
+    updatedAt: string;
+}
+
 export declare class ApiClient {
     constructor(options: ApiClientOptions);
     apiUrl: string;
@@ -81,6 +98,7 @@ export declare class ApiClient {
     start(): Promise<void>;
     stop(): Promise<void>;
     subscribeSession(sessionId: string, handler: (event: unknown) => void, onResubscribe?: () => void): () => void;
+    subscribeLive(sessionId: string, topic: string, handler: (update: LiveUpdate) => void): () => void;
     subscribeLogs(handler: (entry: unknown) => void): () => void;
 }
 
@@ -103,6 +121,7 @@ export declare class HttpApiTransport {
     bootstrap: any;
     start(): Promise<void>;
     stop(): Promise<void>;
+    getLive(sessionId: string, topics?: string[]): Promise<LiveStateRow[]>;
     [method: string]: any;
 }
 

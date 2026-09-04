@@ -375,6 +375,16 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "session_creation_config",
             sql: migration_0072_session_creation_config(schema),
         },
+        {
+            version: "0073",
+            name: "live_state",
+            sql: migration_0073_live_state(schema),
+        },
+        {
+            version: "0074",
+            name: "live_access",
+            sql: migration_0074_live_access(schema),
+        },
     ];
 }
 
@@ -14397,6 +14407,100 @@ function migration_0072_session_creation_config(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS creation_config JSONB;
+`;
+}
+
+/**
+ * 0073 — generic ephemeral live plane.
+ *
+ * One last-value row per (session, topic). This is deliberately UNLOGGED:
+ * durable transcript and orchestration truth remain in their existing tables,
+ * while a database restart merely loses an in-progress visual acceleration.
+ */
+function migration_0073_live_state(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE UNLOGGED TABLE IF NOT EXISTS ${s}.live_state (
+    session_id TEXT NOT NULL REFERENCES ${s}.sessions(session_id) ON DELETE CASCADE,
+    topic TEXT NOT NULL,
+    seq BIGINT NOT NULL DEFAULT 1,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, topic)
+) WITH (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 50);
+`;
+}
+
+/** 0074 — live plane access stays behind versioned, atomic stored procedures. */
+function migration_0074_live_access(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.cms_live_available()
+RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+    SELECT to_regclass('"${schema}".live_state') IS NOT NULL;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_live(p_session TEXT, p_topics TEXT[] DEFAULT NULL)
+RETURNS TABLE(topic TEXT, seq BIGINT, payload JSONB, updated_by TEXT, updated_at TIMESTAMPTZ, size_bytes INTEGER)
+LANGUAGE sql STABLE AS $$
+    SELECT l.topic, l.seq, l.payload, l.updated_by, l.updated_at, octet_length(l.payload::text)
+      FROM ${s}.live_state l
+     WHERE l.session_id = p_session AND (p_topics IS NULL OR l.topic = ANY(p_topics))
+     ORDER BY l.topic;
+$$;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_publish_live(
+    p_session TEXT, p_topic TEXT, p_data JSONB, p_kind TEXT, p_writer TEXT, p_max_bytes INTEGER
+) RETURNS JSONB LANGUAGE plpgsql AS $$
+DECLARE
+    v_result JSONB;
+    v_size INTEGER;
+BEGIN
+    IF p_topic !~ '^[a-z][a-z0-9_.:-]{0,63}$' OR p_kind NOT IN ('patch', 'snapshot', 'signal') THEN
+        RAISE EXCEPTION 'Invalid live topic or kind';
+    END IF;
+    IF p_kind = 'signal' THEN
+        PERFORM pg_notify('pilotswarm_live', json_build_object(
+            'schema', '${schema}', 'sessionId', p_session, 'topic', p_topic, 'seq', NULL, 'kind', 'signal')::text);
+        RETURN jsonb_build_object('signal', true);
+    END IF;
+    IF jsonb_typeof(p_data) IS DISTINCT FROM 'object' THEN
+        RAISE EXCEPTION 'Live data must be an object';
+    END IF;
+    p_max_bytes := LEAST(262144, GREATEST(1, COALESCE(p_max_bytes, 262144)));
+    WITH up AS (
+        INSERT INTO ${s}.live_state AS retained (session_id, topic, seq, payload, updated_by, updated_at)
+        SELECT p_session, p_topic, 1,
+               CASE WHEN p_kind = 'patch' THEN ${s}.jsonb_merge_patch('{}'::jsonb, p_data) ELSE p_data END,
+               COALESCE(p_writer, ''), now()
+         WHERE octet_length((CASE WHEN p_kind = 'patch' THEN ${s}.jsonb_merge_patch('{}'::jsonb, p_data) ELSE p_data END)::text) <= p_max_bytes
+        ON CONFLICT (session_id, topic) DO UPDATE SET
+            seq = retained.seq + 1,
+            payload = CASE WHEN p_kind = 'patch' THEN ${s}.jsonb_merge_patch(retained.payload, p_data) ELSE p_data END,
+            updated_by = EXCLUDED.updated_by,
+            updated_at = now()
+        WHERE octet_length((CASE WHEN p_kind = 'patch' THEN ${s}.jsonb_merge_patch(retained.payload, p_data) ELSE p_data END)::text) <= p_max_bytes
+        RETURNING retained.seq, retained.payload
+    ), notified AS (
+        SELECT up.*,
+               pg_notify('pilotswarm_live',
+                   CASE WHEN octet_length(e.inline) <= 7900 THEN e.inline ELSE e.pointer END)
+          FROM up CROSS JOIN LATERAL (
+              SELECT json_build_object('schema', '${schema}', 'sessionId', p_session, 'topic', p_topic,
+                         'seq', up.seq, 'kind', p_kind, 'data', p_data)::text AS inline,
+                     json_build_object('schema', '${schema}', 'sessionId', p_session, 'topic', p_topic,
+                         'seq', up.seq, 'kind', p_kind)::text AS pointer
+          ) e
+    )
+    SELECT jsonb_build_object('seq', seq, 'payload', payload, 'sizeBytes', octet_length(payload::text))
+      INTO v_result FROM notified;
+    IF v_result IS NOT NULL THEN RETURN v_result; END IF;
+    SELECT octet_length(l.payload::text) INTO v_size
+      FROM ${s}.live_state l WHERE l.session_id = p_session AND l.topic = p_topic;
+    RETURN jsonb_build_object('refused', true, 'currentSizeBytes', v_size);
+END;
+$$;
 `;
 }
 

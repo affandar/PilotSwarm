@@ -9,6 +9,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort } from "./model-providers.js";
+import { LiveTurnCoalescer } from "./live-turn.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -2642,6 +2643,13 @@ export class ManagedSession {
         let turnStartedAtMs: number | null = null;
         let streamingDeltaCount = 0;
         let streamingDeltaChars = 0;
+        const liveTurn = opts?.liveTurn && opts?.onEvent
+            ? new LiveTurnCoalescer((payload) => {
+                try {
+                    opts.onEvent!({ eventType: "assistant.live_tick", data: payload });
+                } catch {}
+            })
+            : null;
         // Note: we used to emit a synthetic `assistant.streaming_progress`
         // heartbeat into CMS for the activity pane. The user found those
         // rows noisy compared to the actual reasoning snapshots, so the
@@ -2800,17 +2808,20 @@ export class ManagedSession {
                             return;
                         }
                         finalContent = content ?? finalContent;
+                        liveTurn?.finalMessage(eventData);
                         publishReasoningSnapshot("assistant.message", true);
                     }
 
                     // Track turn boundaries so we can stamp turn_end with a
                     // durationMs and the streaming counters.
                     if (eventType === "assistant.turn_start") {
+                        liveTurn?.startTurn();
                         turnStartedAtMs = Date.now();
                         streamingDeltaCount = 0;
                         streamingDeltaChars = 0;
                     } else if (eventType === "assistant.turn_end") {
                         flushStreamingProgress(true);
+                        liveTurn?.finishTurn();
                         if (turnStartedAtMs && eventData && typeof eventData === "object") {
                             (eventData as Record<string, unknown>).durationMs = Date.now() - turnStartedAtMs;
                             (eventData as Record<string, unknown>).streamingDeltas = streamingDeltaCount;
@@ -2832,6 +2843,7 @@ export class ManagedSession {
                             ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
                             : "";
                         if (typeof deltaText === "string") streamingDeltaChars += deltaText.length;
+                        liveTurn?.messageDelta(eventData);
                         // Don't record the delta itself in collectedEvents —
                         // it's pure noise for replay. Only emit the throttled
                         // synthetic when we actually received text; some
@@ -2856,6 +2868,7 @@ export class ManagedSession {
                     // persisted.
                     if (eventType === "assistant.reasoning") {
                         const content = String(extractReasoningText(eventData) || "").trim();
+                        liveTurn?.finalReasoning(eventData);
                         if (content && content === lastPublishedReasoning) {
                             return;
                         }
@@ -2863,6 +2876,10 @@ export class ManagedSession {
                             lastPublishedReasoning = content;
                             lastReasoningPublishAt = Date.now();
                         }
+                    }
+
+                    if (eventType === "assistant.reasoning_delta" || eventType === "reasoning_delta") {
+                        liveTurn?.reasoningDelta(eventData);
                     }
 
                     collectedEvents.push(captured);
@@ -2921,6 +2938,7 @@ export class ManagedSession {
                 this.copilotSession.on("session.idle", () => {
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
+                    liveTurn?.finishTurn();
                     resolve();
                 }),
             );
@@ -2977,6 +2995,7 @@ export class ManagedSession {
             const unsub = this.copilotSession.on("session.idle", () => {
                 flushStreamingProgress(true);
                 publishReasoningSnapshot("session.idle", true);
+                liveTurn?.finishTurn();
                 unsub();
                 resolve();
             });
@@ -3150,6 +3169,10 @@ export class ManagedSession {
             // Clear guard timers so a settled turn leaves nothing armed.
             if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer);
             if (inactivityTimer) clearTimeout(inactivityTimer);
+            // Abort/error paths may never emit session.idle. Clear the retained
+            // live row anyway so reconnecting viewers cannot see stale text.
+            liveTurn?.finishTurn();
+            liveTurn?.dispose();
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
         }

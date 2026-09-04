@@ -2074,6 +2074,14 @@ export class PilotSwarmManagementClient {
         return catalog.getCanvasLive(sessionId);
     }
 
+    async getLive(sessionId: string, topics?: string[]): Promise<Array<{ topic: string; seq: number; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        this._ensureStarted();
+        const catalog = this._catalog as any;
+        if (typeof catalog?.getLive !== "function") return [];
+        if (typeof catalog?.liveAvailable === "function" && !(await catalog.liveAvailable())) return [];
+        return catalog.getLive(sessionId, topics);
+    }
+
     // ── The canvas KV store (migration 0064) ─────────────────────────
     //
     // Doors 1 (signed-in) and 2 (link, read-only) land here with a RESOLVED

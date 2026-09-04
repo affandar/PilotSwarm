@@ -117,6 +117,7 @@ describe("inline control tool execution", () => {
         });
         const result = await managed.runTurn("Verify the package catalog.", {
             requiredTool: "package_catalog",
+            liveTurn: true,
             onEvent: (event) => visibleEvents.push(event),
             onDelta: (delta) => visibleDeltas.push(delta),
         });
@@ -143,6 +144,10 @@ describe("inline control tool execution", () => {
             .map((event) => event.data.deltaContent))
             .toEqual(["Catalog ", "verified."]);
         expect(visibleDeltas).toEqual(["Catalog ", "verified."]);
+        expect(visibleEvents
+            .filter((event) => event.eventType === "assistant.live_tick" && event.data.phase === "live")
+            .every((event) => !String(event.data.text).includes("71 commands")))
+            .toBe(true);
         expect(result.events
             .filter((event) => event.eventType === "assistant.message")
             .map((event) => event.data.content))

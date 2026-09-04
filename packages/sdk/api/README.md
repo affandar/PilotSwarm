@@ -21,7 +21,13 @@ const api = new ApiClient({
 const session = await api.call("createSession", { model: "anthropic:claude-sonnet-4-6" });
 await api.call("sendMessage", { sessionId: session.sessionId, prompt: "hello" });
 const unsubscribe = api.subscribeSession(session.sessionId, (event) => console.log(event));
+const unsubscribeLive = api.subscribeLive(session.sessionId, "turn", (update) => console.log(update));
 ```
+
+`subscribeLive` carries ephemeral last-value topics such as in-progress turn
+text. It resubscribes automatically, ignores duplicate sequence values, and
+refetches a topic snapshot with `getLive` after a sequence gap. Live values
+are never part of the durable session event log.
 
 ## Modules
 

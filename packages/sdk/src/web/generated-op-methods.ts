@@ -56,6 +56,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getGraphNamespace",
     "getLatestResponse",
     "getLegacyProviderMigrationStatus",
+    "getLive",
     "getLogConfig",
     "getModelDefaults",
     "getModelsByProvider",
@@ -614,6 +615,15 @@ export interface ManagementOps {
      * @remarks `GET /management/providers/legacy-key-migration` — access: `fleet:admin`
      */
     getLegacyProviderMigrationStatus(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Current retained values from the ephemeral live plane, optionally filtered by topic.
+     * @remarks `GET /management/sessions/:sessionId/live` — access: `session:read`
+     */
+    getLive(params: {
+        sessionId: string;
+        topics?: any;
+    }): Promise<any>;
 
     /**
      * Log tail availability.
@@ -1642,6 +1652,7 @@ export function createManagementOps(
         getGraphNamespace: (params: Record<string, unknown> = {}) => callOp("getGraphNamespace", params),
         getLatestResponse: (params: Record<string, unknown> = {}) => callOp("getLatestResponse", params),
         getLegacyProviderMigrationStatus: (params: Record<string, unknown> = {}) => callOp("getLegacyProviderMigrationStatus", params),
+        getLive: (params: Record<string, unknown> = {}) => callOp("getLive", params),
         getLogConfig: (params: Record<string, unknown> = {}) => callOp("getLogConfig", params),
         getModelDefaults: (params: Record<string, unknown> = {}) => callOp("getModelDefaults", params),
         getModelsByProvider: (params: Record<string, unknown> = {}) => callOp("getModelsByProvider", params),

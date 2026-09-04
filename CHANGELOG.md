@@ -1,8 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.5.58 — 2026-09-04
+
+Opt-in live chat previews, smooth reasoning-to-answer transitions, enforced
+named-agent startup tools, and chromeless shared canvases.
 
 ### Added
+
+- **Ephemeral live chat.** Set `PILOTSWARM_LIVE_TURN=1` on workers to stream
+  coalesced reasoning and answer snapshots over a generic CMS live plane.
+  PostgreSQL migrations 0073/0074 keep this state separate from durable
+  history; both orchestration/facts provider configurations are supported.
+- **Stable streaming presentation.** Delayed reveal, bounded visible dwell,
+  persistent expandable reasoning, and a decoration-only completion fade.
+  Fast responses skip transient chrome. Completed answers win over late
+  previews; idle cleanup is scoped to its own stream.
+- **Generic live-topic API.** Authorized `getLive` reads and WebSocket
+  subscriptions with retained bursts, gap recovery, bounded queues,
+  monotonic snapshots, and reconnect refresh.
 
 - **Enforced named-agent startup tools.** Schema-v3 agent definitions may set
   `initialRequiredTool` to one of their declared tools. PilotSwarm verifies a
@@ -15,6 +30,26 @@
   direct starts, worker-managed system agents, Agent Manager verification
   sessions, and both inline and durable child-spawn paths. Orchestration
   `1.0.71` is frozen and new sessions use `1.0.72`.
+### Fixed
+
+- Cached rendering for unchanged transcript items; token bursts can no longer
+  bypass update pacing. Oversized previews pause with an explicit label while
+  durable final answers remain complete.
+- Canvas share links can hide page chrome; restored canvas views and modal
+  layering no longer leave the pane divider painted through dialogs.
+- Shared sessions identify the owner clearly. Model-selection and
+  orchestration-registry fixtures follow the current supported versions.
+
+### Maintainer workflow
+
+- CLI installation scripts consume all three GitHub release tarballs.
+- Added adversarial coverage for streaming identity, final/idle races,
+  subscriber replacement, slow consumers, reconnect recovery, and actual
+  browser DOM continuity through settlement.
+- The group-deletion concurrency test observes its expected rejection
+  immediately, avoiding a spurious unhandled-rejection failure without
+  weakening the foreign-key assertions.
+
 ## 0.5.57 — 2026-09-02
 
 Tools get a private, durable place for state; the portal stops re-rendering

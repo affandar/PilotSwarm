@@ -496,6 +496,10 @@ export class HttpApiTransport {
         return this.api.call("getCanvasLive", { sessionId });
     }
 
+    async getLive(sessionId, topics) {
+        return this.api.call("getLive", { sessionId, topics });
+    }
+
     // The canvas KV store (door 1 — signed-in browser).
     async readCanvasKv(sessionId, slot, query = {}) {
         return this.api.call("readCanvasKv", {
@@ -667,9 +671,23 @@ export class HttpApiTransport {
                 }
             }
         });
+        const unsubscribeLive = this.api.subscribeLive(sessionId, "turn", (message) => {
+            if (message?.kind === "signal") return;
+            const data = message?.kind === "unavailable" ? { phase: "idle" } : message?.data;
+            if (!data || typeof data !== "object") return;
+            handler({
+                eventType: "assistant.live_tick",
+                sessionId,
+                transient: true,
+                liveSeq: Number(message.seq) || 0,
+                liveUpdatedAt: message.updatedAt,
+                data,
+            });
+        });
         return () => {
             unsubscribeEvents();
             unsubscribeCanvas();
+            unsubscribeLive();
             const handlers = this._canvasEmitHandlers.get(sessionId);
             if (handlers) {
                 handlers.delete(handler);

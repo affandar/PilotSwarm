@@ -7,8 +7,11 @@ import { authenticateToken, extractToken } from "../auth.js";
  * One connection handler serves both `/api/v1/ws` (the product API) and the
  * legacy `/portal-ws` (which additionally answers the portal-only `theme`
  * message). Vocabulary:
- *   client -> server: subscribeSession | unsubscribeSession | subscribeLogs | unsubscribeLogs
- *   server -> client: ready | subscribedSession | sessionEvent | subscribedLogs | logEntry | error
+ *   client -> server: subscribeSession | unsubscribeSession |
+ *                     subscribeLive | unsubscribeLive |
+ *                     subscribeLogs | unsubscribeLogs
+ *   server -> client: ready | subscribedSession | sessionEvent |
+ *                     subscribedLive | live | subscribedLogs | logEntry | error
  *
  * Delivery here is an acceleration path — correctness comes from event
  * replay via GET /api/v1/management/sessions/:id/events?afterSeq=… after a
@@ -83,6 +86,8 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
 
         const sessionSubscriptions = new Map();
         const canvasSubscriptions = new Map();
+        const liveSubscriptions = new Map();
+        const liveSubscriptionGeneration = new Map();
         let logUnsubscribe = null;
 
         const send = (message) => {
@@ -213,6 +218,112 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                 return;
             }
 
+            if (type === "subscribeLive") {
+                const sessionId = String(message?.sessionId || "").trim();
+                const topics = [...new Set(Array.isArray(message?.topics)
+                    ? message.topics.map((topic) => String(topic || "").trim())
+                    : [])];
+                if (!sessionId || topics.length === 0 || topics.length > 16
+                    || topics.some((topic) => !/^[a-z][a-z0-9_.:-]{0,63}$/.test(topic))) {
+                    send({ type: "error", scope: "live", sessionId, error: "invalid live subscription" });
+                    return;
+                }
+                const generation = (liveSubscriptionGeneration.get(sessionId) || 0) + 1;
+                liveSubscriptionGeneration.set(sessionId, generation);
+                const previous = liveSubscriptions.get(sessionId);
+                if (previous) {
+                    previous.unsubscribe();
+                    liveSubscriptions.delete(sessionId);
+                }
+                const plane = runtime.livePlane;
+                if (!plane?.available) {
+                    send({ type: "error", scope: "live", sessionId, error: "live plane unavailable" });
+                    return;
+                }
+                try {
+                    await runtime.start();
+                    if (typeof runtime.authorizeSessionSubscribe === "function") {
+                        await runtime.authorizeSessionSubscribe(sessionId, auth);
+                    }
+                    if (liveSubscriptionGeneration.get(sessionId) !== generation) return;
+
+                    // Subscribe before reading the burst so no notification is
+                    // lost in between. Buffer until the snapshot is sent to
+                    // preserve burst-before-live ordering for the browser.
+                    let bursting = true;
+                    const queued = [];
+                    const unsubscribe = plane.subscribe(sessionId, topics, (update) => {
+                        if (liveSubscriptionGeneration.get(sessionId) !== generation) return;
+                        // Bound both the initial read queue and a slow socket.
+                        // Reconnect performs an authoritative snapshot burst.
+                        if (queued.length >= 128 || ws.bufferedAmount > 1_048_576) {
+                            ws.close(1013, "Live consumer is too slow; reconnect for a snapshot");
+                            return;
+                        }
+                        if (bursting) queued.push(update);
+                        else send({ type: "live", ...update });
+                    });
+                    liveSubscriptions.set(sessionId, { generation, unsubscribe });
+                    const rows = typeof runtime.getLive === "function"
+                        ? await runtime.getLive(sessionId, topics)
+                        : [];
+                    if (liveSubscriptionGeneration.get(sessionId) !== generation) {
+                        unsubscribe();
+                        const current = liveSubscriptions.get(sessionId);
+                        if (current?.generation === generation) liveSubscriptions.delete(sessionId);
+                        return;
+                    }
+                    const burstSeq = new Map();
+                    for (const row of rows || []) {
+                        const seq = Number(row.seq) || 0;
+                        burstSeq.set(row.topic, seq);
+                        send({
+                            type: "live",
+                            sessionId,
+                            topic: row.topic,
+                            seq,
+                            kind: "snapshot",
+                            data: row.payload || {},
+                            updatedAt: row.updatedAt,
+                        });
+                    }
+                    bursting = false;
+                    for (const update of queued) {
+                        const seen = burstSeq.get(update.topic) || 0;
+                        if (update.seq != null && Number(update.seq) <= seen) continue;
+                        if (update.seq != null) burstSeq.set(update.topic, Number(update.seq));
+                        send({ type: "live", ...update });
+                    }
+                    queued.length = 0;
+                    send({ type: "subscribedLive", sessionId, topics });
+                } catch (error) {
+                    const current = liveSubscriptions.get(sessionId);
+                    if (current?.generation === generation) {
+                        current.unsubscribe();
+                        liveSubscriptions.delete(sessionId);
+                    }
+                    if (liveSubscriptionGeneration.get(sessionId) !== generation) return;
+                    send({ type: "error", scope: "live", sessionId, error: error?.message || String(error) });
+                }
+                return;
+            }
+
+            if (type === "unsubscribeLive") {
+                const sessionId = String(message?.sessionId || "").trim();
+                liveSubscriptionGeneration.set(sessionId, (liveSubscriptionGeneration.get(sessionId) || 0) + 1);
+                const subscription = liveSubscriptions.get(sessionId);
+                if (subscription) {
+                    subscription.unsubscribe();
+                    liveSubscriptions.delete(sessionId);
+                }
+                return;
+            }
+
+            if (type === "publishLive") {
+                send({ type: "error", scope: "live", error: "live publishing is server-only" });
+                return;
+            }
+
             if (type === "subscribeLogs") {
                 if (logUnsubscribe) return;
                 try {
@@ -258,6 +369,11 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                 } catch {}
             }
             canvasSubscriptions.clear();
+            for (const subscription of liveSubscriptions.values()) {
+                try { subscription.unsubscribe(); } catch {}
+            }
+            liveSubscriptions.clear();
+            liveSubscriptionGeneration.clear();
             if (logUnsubscribe) {
                 try {
                     logUnsubscribe();

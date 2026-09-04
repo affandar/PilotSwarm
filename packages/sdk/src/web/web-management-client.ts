@@ -210,6 +210,10 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getCanvasLive", { sessionId });
     }
 
+    async getLive(sessionId: string, topics?: string[]): Promise<Array<{ topic: string; seq: number; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
+        return this._api.call("getLive", { sessionId, topics });
+    }
+
     async readCanvasKv(sessionId: string, slot: number, _principal?: any, query: { prefix?: string | null; limit?: number | null; after?: string | null; key?: string | null } = {}): Promise<any> {
         return this._api.call("readCanvasKv", {
             sessionId, slot,
@@ -977,4 +981,3 @@ export type SharedManagementSurface =
 type FullPublic<T> = Pick<T, keyof T>;
 export type _DirectSatisfiesShared = AssertExtends<FullPublic<DirectClient>, SharedManagementSurface>;
 export type _WebSatisfiesShared = AssertExtends<FullPublic<WebPilotSwarmManagementClient>, SharedManagementSurface>;
-

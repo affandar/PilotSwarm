@@ -88,6 +88,8 @@ export interface TurnOptions {
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
     onEvent?: (event: CapturedEvent) => void;
+    /** Emit coalesced assistant.live_tick events for the ephemeral live plane. */
+    liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
     turnIndex?: number;
     /** Model summary text for the list_available_models tool. */

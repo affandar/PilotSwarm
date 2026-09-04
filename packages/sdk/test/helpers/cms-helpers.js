@@ -174,7 +174,7 @@ export async function validateSessionAfterTurn(env, sessionId, opts = {}) {
         assertStrictlyIncreasingSeq(events, "[CMS] session_events");
 
         // ── 4. No ephemeral events leaked ──────────────────────
-        const EPHEMERAL_TYPES = ["assistant.message_delta", "reasoning_delta", "assistant.reasoning_delta"];
+        const EPHEMERAL_TYPES = ["assistant.live_tick", "assistant.message_delta", "reasoning_delta", "assistant.reasoning_delta"];
         for (const evt of events) {
             if (EPHEMERAL_TYPES.includes(evt.eventType)) {
                 throw new Error(`[CMS] Ephemeral event "${evt.eventType}" leaked into session_events (seq=${evt.seq})`);

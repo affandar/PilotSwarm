@@ -2480,7 +2480,22 @@ function splashArtWidth(text) {
         .reduce((widest, line) => Math.max(widest, stripTerminalMarkupTags(line).length), 0);
 }
 
+// Immutable history items survive live ticks. Do not re-parse thousands of
+// committed lines because the last message gained a handful of characters.
+const chatMessageLinesCache = new WeakMap();
 function buildChatMessageLines(message, maxWidth, options = {}) {
+    if (!message || typeof message !== "object") return buildChatMessageLinesUncached(message, maxWidth, options);
+    const key = JSON.stringify([maxWidth, options]);
+    let entries = chatMessageLinesCache.get(message);
+    if (entries?.has(key)) return entries.get(key);
+    const lines = buildChatMessageLinesUncached(message, maxWidth, options);
+    if (!entries) { entries = new Map(); chatMessageLinesCache.set(message, entries); }
+    if (entries.size >= 4) entries.delete(entries.keys().next().value);
+    entries.set(key, lines);
+    return lines;
+}
+
+function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
     if (message?.splash) {
         // Swap in the narrow-viewport variant when the main art would
         // overflow the pane (mobile portal, narrow terminals). When the
@@ -2498,6 +2513,66 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 
     if (message?.thinking) {
         return buildThinkingCardLines(message, maxWidth);
+    }
+
+    // The browser gives an in-flight assistant answer its own stable surface.
+    // Previously it was flattened into the ordinary transcript on every
+    // snapshot. As partial markdown changed shape (plain lines -> table/code
+    // block), React could replace several adjacent nodes and the whole answer
+    // appeared to flash. One keyed card keeps the outer DOM and its shading in
+    // place while only the body grows. The TUI deliberately keeps its existing
+    // line-oriented rendering.
+    if ((message?.liveTurn || message?.streamSettling) && options.tableMode === "sentinel") {
+        const isLive = message?.liveTurn === true;
+        const reasoningText = String(message?.reasoningText || message?.liveReasoningText || "");
+        const cardLines = buildMessageCardLines({
+            title: isLive
+                ? (message?.text ? "Agent is responding" : "Agent is thinking")
+                : "Agent responded",
+            body: decorateArtifactLinksForChat(message?.text || ""),
+            width: Math.max(20, maxWidth),
+            titleColor: "cyan",
+            borderColor: "cyan",
+            tableMode: "sentinel",
+        });
+        const cardEndIndex = cardLines.findIndex((line) => line?.kind === "cardEnd");
+        if (cardEndIndex > 0) {
+            const bodyLines = cardLines.slice(1, cardEndIndex);
+            if (reasoningText) {
+                bodyLines.unshift({
+                    ...buildSystemNoticeLine({
+                        title: isLive ? "Thinking" : "Thought",
+                        summary: isLive ? "In progress" : "Completed",
+                        body: reasoningText,
+                        color: "gray",
+                    }),
+                    liveReasoning: isLive,
+                    streamReasoning: true,
+                });
+            }
+            // Keep the progress marker out of markdown syntax: appending it
+            // to a closing fence or an empty row can change parsing/height.
+            if (isLive) cardLines[0].runs.push({ text: " ▍", color: "cyan", role: "streamingCaret" });
+            if (isLive && message.truncated) bodyLines.push([{ text: "Preview paused — the full answer will appear when complete.", color: "gray" }]);
+            const liveKey = message?.liveKey || message?.messageId || message?.id || "active-turn";
+            return [
+                {
+                    ...cardLines[0],
+                    cardVariant: isLive ? "live" : "settling",
+                    cardKey: `live:${liveKey}`,
+                    liveStartedAt: message?.liveStartedAt || message?.createdAt || Date.now(),
+                    settleDelayMs: Number(message?.streamSettleDelayMs) || 0,
+                    settleAt: Number(message?.streamSettleAt) || null,
+                },
+                ...bodyLines,
+                ...cardLines.slice(cardEndIndex),
+            ];
+        }
+    }
+
+    if (message?.liveTurn && options.tableMode !== "sentinel" && message.reasoningText) {
+        const reasoning = buildThinkingCardLines({ ...message, text: message.reasoningText }, maxWidth);
+        return message.text ? [...reasoning, ...buildChatMessageLines({ ...message, reasoningText: "" }, maxWidth, options)] : reasoning;
     }
 
     // Chrome-less message: render the text as plain markdown directly into
@@ -2642,6 +2717,7 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 
     if (startsWithStructuredBlock(tintedMarkdownLines)) {
         const structured = prefix.length > 0 ? [prefix, ...tintedMarkdownLines] : tintedMarkdownLines;
+        if (message?.streaming) appendStreamingCaret(structured);
         return attachmentChipLines.length > 0 ? [...structured, ...attachmentChipLines] : structured;
     }
 
@@ -2663,8 +2739,21 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
             renderedLines.push(lineRuns);
         }
     }
+    if (message?.streaming) {
+        appendStreamingCaret(renderedLines);
+    }
     renderedLines.push(...attachmentChipLines);
     return renderedLines;
+}
+
+function appendStreamingCaret(lines) {
+    const lastRuns = [...lines].reverse().find((line) => Array.isArray(line)
+        && line.some((run) => String(run?.text || "").trim()));
+    if (lastRuns) {
+        lastRuns.push({ text: " ▍", color: "cyan", role: "streamingCaret" });
+    } else {
+        lines.push([{ text: "▍", color: "cyan", role: "streamingCaret" }]);
+    }
 }
 
 // Image attachment chips under a message. In sentinel mode (browser portal)
@@ -2783,6 +2872,10 @@ function liveActivityPhaseText(item) {
         case "assistant.intent": return "planning\u2026";
         case "assistant.message_start":
         case "assistant.message": return "writing reply\u2026";
+        case "model.call_start": {
+            const model = String(item?.text || "").replace(/^.*\bcalling\s+/i, "").trim();
+            return `calling ${model || "model"}\u2026`;
+        }
         case "session.compaction_start": return "compacting context\u2026";
         case "session.compaction_complete": return "context compacted";
         case "session.dehydrated": return "dehydrating\u2026";

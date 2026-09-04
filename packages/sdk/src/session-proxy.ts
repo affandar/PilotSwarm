@@ -51,6 +51,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -3128,9 +3129,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 pendingEventWrites.push((promise as Promise<unknown>).catch(() => {}));
             };
             const EPHEMERAL_TYPES = new Set([
+                "assistant.live_tick",
                 "assistant.message_delta",
                 "assistant.streaming_delta",
                 "assistant.reasoning_delta",
+                "reasoning_delta",
                 // Tool-call argument streaming fragments — the same transient
                 // per-token class as the other *_delta events. The assembled
                 // call is persisted separately as tool.execution_start, so
@@ -3151,8 +3154,28 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // section — the generic path must not double-insert it.
                 "session.canvas_data",
             ]);
+            const liveTurnEnabled = process.env.PILOTSWARM_LIVE_TURN === "1"
+                && Boolean(catalog)
+                && typeof (catalog as any)?.publishLive === "function";
+            const liveTurnPublisher = liveTurnEnabled
+                ? new LatestValuePublisher<LiveTurnPayload>(
+                    (payload) => (catalog as any).publishLive(
+                        input.sessionId,
+                        "turn",
+                        { snapshot: payload },
+                        workerNodeId || "",
+                    ),
+                    (error) => activityCtx.traceInfo(
+                        `[runTurn.live] publish failed for ${input.sessionId}: ${(error as any)?.message ?? error}`,
+                    ),
+                )
+                : null;
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
+                    if (event.eventType === "assistant.live_tick") {
+                        if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
+                        return;
+                    }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
                     const persistedEvent = summarizeSdkSystemPromptEchoEvent(event);
                     if (!persistedEvent) return;
@@ -3406,6 +3429,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
                 return await targetSession.runTurn(prompt, {
                     onEvent,
+                    liveTurn: liveTurnEnabled,
                     modelSummary,
                     bootstrap: input.bootstrap,
                     requiredTool: input.requiredTool,
@@ -3576,6 +3600,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (pendingWritesAtBarrier.length > 0) {
                     await Promise.allSettled(pendingWritesAtBarrier);
                 }
+                // Deliberately do not await the live publisher here: an
+                // ephemeral database write must never extend the durable turn
+                // commit path. Its in-flight promise retains the publisher
+                // long enough to deliver the final latest-value snapshot.
             }
 
             if (cancelled) return { type: "cancelled" };
