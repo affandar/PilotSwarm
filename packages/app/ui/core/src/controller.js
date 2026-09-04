@@ -3818,6 +3818,33 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * Temporarily hide (or re-show) a single Job's lane in the selected worker's
+     * timeline swimlane. Ephemeral, per-worker, in-memory only — the selector
+     * redraws the swimlane from the visible Jobs, which also resets the
+     * timestamp boundaries to the remaining set.
+     */
+    toggleWorkerTimelineHiddenJob(workerNodeId, jobId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        const normalizedJobId = String(jobId || "").trim();
+        if (!normalizedWorkerNodeId || !normalizedJobId) return;
+        this.dispatch({
+            type: "admin/workers/timelineToggleHiddenJob",
+            workerNodeId: normalizedWorkerNodeId,
+            jobId: normalizedJobId,
+        });
+    }
+
+    /** Clear all hidden Jobs for a worker's timeline (the "show all" control). */
+    clearWorkerTimelineHiddenJobs(workerNodeId) {
+        const normalizedWorkerNodeId = String(workerNodeId || "").trim();
+        if (!normalizedWorkerNodeId) return;
+        this.dispatch({
+            type: "admin/workers/timelineClearHiddenJobs",
+            workerNodeId: normalizedWorkerNodeId,
+        });
+    }
+
     /** Reload the package list + sources (+ fleet state when permitted). */
     async refreshAdminAgentPackages() {
         if (typeof this.transport.listAgentPackages !== "function") {

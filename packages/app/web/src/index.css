@@ -7324,6 +7324,34 @@ body.is-resizing-pane-y iframe {
   letter-spacing: -2px;
 }
 
+.ps-worker-swimlane__lane-hide {
+  position: absolute;
+  top: 1px;
+  right: 17px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: color-mix(in srgb, var(--ps-muted) 72%, transparent);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ps-worker-swimlane__lane-hide:hover {
+  color: var(--ps-danger, #f85149);
+  background: color-mix(in srgb, var(--ps-danger, #f85149) 18%, transparent);
+}
+
+.ps-worker-swimlane__show-hidden {
+  margin-left: 4px;
+}
+
 .ps-worker-swimlane__lane-header strong,
 .ps-worker-swimlane__lane-header span {
   overflow: hidden;

@@ -3741,10 +3741,49 @@ function workerTimelineSupportsJobLane(entry) {
 
 export function buildWorkerTimelineSwimlane(entries, options = {}) {
     const nowMs = Number.isFinite(options.now) ? options.now : Date.now();
-    const allTimedEntries = entries
+    const hiddenJobIdSet = new Set(
+        (Array.isArray(options.hiddenJobIds)
+            ? options.hiddenJobIds
+            : options.hiddenJobIds instanceof Set
+                ? [...options.hiddenJobIds]
+                : [])
+            .map((id) => String(id || "").trim())
+            .filter(Boolean),
+    );
+    const unfilteredTimedEntries = entries
         .map((entry) => ({ entry, atMs: new Date(entry?.at).getTime() }))
         .filter(({ atMs }) => Number.isFinite(atMs))
         .sort((a, b) => a.atMs - b.atMs);
+    // Job descriptors from the RAW timeline — kept so a hidden Job can still be
+    // labelled in the "hidden" chip / "show all" control after its own entries
+    // have been filtered out below.
+    const jobDescriptorsById = new Map();
+    for (const { entry } of unfilteredTimedEntries) {
+        if (!entry?.jobId || !workerTimelineSupportsJobLane(entry) || jobDescriptorsById.has(entry.jobId)) continue;
+        jobDescriptorsById.set(entry.jobId, {
+            jobId: entry.jobId,
+            jobKey: entry.jobKey || null,
+            generatorName: entry.generatorName || null,
+        });
+    }
+    const hiddenJobs = [...hiddenJobIdSet]
+        .filter((jobId) => jobDescriptorsById.has(jobId))
+        .map((jobId) => jobDescriptorsById.get(jobId));
+    const hiddenJobMeta = {
+        hiddenJobIds: hiddenJobs.map((job) => job.jobId),
+        hiddenJobCount: hiddenJobs.length,
+        hiddenJobs,
+    };
+    // Redraw against only the VISIBLE Jobs. Every downstream value — range
+    // bounds, idle fill, allJobsCompleted, and display lead-in/out — derives
+    // from allTimedEntries, so dropping a hidden Job's entries here makes the
+    // whole swimlane (including the timestamp boundaries) recompute for the
+    // remaining set. That is what resets the boundaries when a Job is hidden.
+    const allTimedEntries = hiddenJobMeta.hiddenJobCount === 0
+        ? unfilteredTimedEntries
+        : unfilteredTimedEntries.filter(
+            ({ entry }) => !(entry?.jobId && hiddenJobIdSet.has(entry.jobId)),
+        );
     if (allTimedEntries.length === 0) {
         return {
             startAt: null,
@@ -3763,6 +3802,7 @@ export function buildWorkerTimelineSwimlane(entries, options = {}) {
             lanes: [],
             segments: [],
             markers: [],
+            ...hiddenJobMeta,
         };
     }
 
@@ -4472,6 +4512,7 @@ export function buildWorkerTimelineSwimlane(entries, options = {}) {
             ...jobExecutionSegments,
         ],
         markers,
+        ...hiddenJobMeta,
     };
 }
 
@@ -4604,6 +4645,9 @@ export function selectWorkerDetailsPane(state) {
             workerName: node.workerName && node.workerName !== WORKER_UNKNOWN ? node.workerName : null,
             workerNodeId: node.workerNodeId,
             hostname: node.hostname && node.hostname !== WORKER_UNKNOWN ? node.hostname : null,
+            hiddenJobIds: node.workerNodeId
+                ? state.admin?.workers?.hiddenJobIdsByWorker?.[node.workerNodeId]
+                : null,
         }),
         timelineTable: {
             loading: Boolean(timeline?.loading),

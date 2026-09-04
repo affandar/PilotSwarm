@@ -10153,6 +10153,8 @@ export function WorkerTimelineSwimlane({
     zoom = DEFAULT_WORKER_TIMELINE_ZOOM,
     onZoomIn = null,
     onZoomOut = null,
+    onHideJob = null,
+    onShowAllJobs = null,
 }) {
     const sourceLanes = Array.isArray(timeline?.lanes) ? timeline.lanes : [];
     const reconciledLaneOrder = reconcileWorkerTimelineLaneOrder(sourceLanes, laneOrder);
@@ -10307,6 +10309,17 @@ export function WorkerTimelineSwimlane({
                     "aria-label": "Zoom in worker timeline",
                     title: "Zoom in timeline",
                 }, "Zoom in")),
+                onShowAllJobs && Number(timeline?.hiddenJobCount) > 0
+                    ? React.createElement("button", {
+                        type: "button",
+                        className: "ps-mini-button ps-worker-swimlane__show-hidden",
+                        onClick: onShowAllJobs,
+                        title: `Hidden: ${(Array.isArray(timeline?.hiddenJobs) ? timeline.hiddenJobs : [])
+                            .map((job) => job.jobKey || job.jobId)
+                            .join(", ")}`,
+                        "aria-label": `Show all ${timeline.hiddenJobCount} hidden Jobs`,
+                    }, `${timeline.hiddenJobCount} hidden · Show all`)
+                    : null,
                 onToggleFullscreen
                     ? React.createElement("button", {
                         type: "button",
@@ -10428,7 +10441,18 @@ export function WorkerTimelineSwimlane({
                         title: `Efficiency = active / (active + attributable platform overhead + queued): ${formatTimelineDuration(lane.activeMs)} / (${formatTimelineDuration(lane.activeMs)} + ${formatTimelineDuration(lane.overheadMs)} + ${formatTimelineDuration(lane.queuedMs)}) = ${lane.efficiencyPercent}%. Response and observed-condition waits are excluded.`,
                     }, `Efficiency ${lane.efficiencyPercent}%`)))
                 : React.createElement("span", null,
-                    lane.kind === "overhead" ? "recorded bookkeeping" : "no active Job turn")))),
+                    lane.kind === "overhead" ? "recorded bookkeeping" : "no active Job turn"),
+            onHideJob && lane.jobId
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-worker-swimlane__lane-hide",
+                    onClick: (event) => { event.stopPropagation(); onHideJob(lane.jobId); },
+                    onMouseDown: (event) => event.stopPropagation(),
+                    draggable: false,
+                    "aria-label": `Hide Job ${lane.jobId} from the timeline`,
+                    title: "Hide this Job from the timeline",
+                }, "×")
+                : null))),
             React.createElement("div", {
                 className: "ps-worker-swimlane__body",
                 style: { height: `${chartHeight}px` },
@@ -10669,6 +10693,16 @@ function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
             position,
         ));
     };
+    const hideJob = (jobId) => {
+        if (swimlane?.workerNodeId && typeof controller?.toggleWorkerTimelineHiddenJob === "function") {
+            controller.toggleWorkerTimelineHiddenJob(swimlane.workerNodeId, jobId);
+        }
+    };
+    const showAllJobs = () => {
+        if (swimlane?.workerNodeId && typeof controller?.clearWorkerTimelineHiddenJobs === "function") {
+            controller.clearWorkerTimelineHiddenJobs(swimlane.workerNodeId);
+        }
+    };
     const fullscreenOverlay = utilizationFullscreen && typeof document !== "undefined"
         ? createPortal(
             React.createElement("div", {
@@ -10688,6 +10722,8 @@ function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
                 zoom: timelineZoom,
                 onZoomIn: zoomIn,
                 onZoomOut: zoomOut,
+                onHideJob: hideJob,
+                onShowAllJobs: showAllJobs,
             })),
             document.body)
         : null;
@@ -10716,6 +10752,8 @@ function WorkerDetailsBody({ lines, timeline, swimlane, theme, controller }) {
                         zoom: timelineZoom,
                         onZoomIn: zoomIn,
                         onZoomOut: zoomOut,
+                        onHideJob: hideJob,
+                        onShowAllJobs: showAllJobs,
                     }),
                 React.createElement(WorkerTimelineTable, { timeline, theme }))),
         fullscreenOverlay);

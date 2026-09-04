@@ -3063,6 +3063,42 @@ function baseReducer(state, action) {
                 },
             };
         }
+        case "admin/workers/timelineToggleHiddenJob": {
+            const workers = state.admin.workers || {};
+            const byWorker = workers.hiddenJobIdsByWorker || {};
+            const workerNodeId = String(action.workerNodeId || "").trim();
+            const jobId = String(action.jobId || "").trim();
+            if (!workerNodeId || !jobId) return state;
+            const current = Array.isArray(byWorker[workerNodeId]) ? byWorker[workerNodeId] : [];
+            const next = current.includes(jobId)
+                ? current.filter((id) => id !== jobId)
+                : [...current, jobId];
+            const nextByWorker = { ...byWorker };
+            if (next.length === 0) delete nextByWorker[workerNodeId];
+            else nextByWorker[workerNodeId] = next;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: { ...workers, hiddenJobIdsByWorker: nextByWorker },
+                },
+            };
+        }
+        case "admin/workers/timelineClearHiddenJobs": {
+            const workers = state.admin.workers || {};
+            const byWorker = workers.hiddenJobIdsByWorker || {};
+            const workerNodeId = String(action.workerNodeId || "").trim();
+            if (!workerNodeId || !byWorker[workerNodeId]?.length) return state;
+            const nextByWorker = { ...byWorker };
+            delete nextByWorker[workerNodeId];
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    workers: { ...workers, hiddenJobIdsByWorker: nextByWorker },
+                },
+            };
+        }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };
         }
