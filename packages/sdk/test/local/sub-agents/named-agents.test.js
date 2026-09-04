@@ -56,6 +56,7 @@ function makeResolveHarness() {
                 description: "User-creatable test agent",
                 prompt: "You are alpha.",
                 tools: ["bash"],
+                initialRequiredTool: "bash",
                 namespace: "testapp",
                 title: "Alpha Agent",
                 promptLayerKind: "app-agent",
@@ -94,5 +95,6 @@ describe("Sub-Agent: Named agent resolution", () => {
         expect(agent.system).toBe(false);
         expect(agent.creatable).toBe(true);
         expect(agent.namespace).toBe("testapp");
+        expect(agent.initialRequiredTool).toBe("bash");
     });
 });

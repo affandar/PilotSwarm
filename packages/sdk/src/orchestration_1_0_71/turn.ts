@@ -187,7 +187,6 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
     if (rc.phase === "turn.result.error") {
         return {
             prompt: rc.sourcePrompt,
-            ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
             ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
             retryCount: state.retryCount,
             needsHydration: state.needsHydration,
@@ -228,36 +227,6 @@ export function* projectAuthFailure(
         content: blockedDetail,
     });
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null);
-    runtime.state.retryCount = 0;
-}
-
-function* projectNonRetryableTurnFailure(
-    runtime: DurableSessionRuntime,
-    errorMessage: string,
-): Generator<any, void, any> {
-    runtime.state.blockedError = { message: errorMessage };
-    publishStatus(runtime, "error", {
-        error: errorMessage,
-        retriesExhausted: true,
-        nonRetryable: true,
-    });
-    yield* writeLatestResponse(runtime, {
-        iteration: runtime.state.iteration,
-        type: "error",
-        content: errorMessage,
-    });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null);
-    if (runtime.options.parentSessionId && !runtime.state.reportedFirstCompletionToParent) {
-        try {
-            yield runtime.manager.sendToSession(
-                runtime.options.parentSessionId,
-                `[CHILD_UPDATE from=${runtime.input.sessionId} type=failed iter=${runtime.state.iteration} verdict=failed]\n${errorMessage.slice(0, 2000)}`,
-            );
-            runtime.state.reportedFirstCompletionToParent = true;
-        } catch (err: any) {
-            runtime.ctx.traceInfo(`[orch] sendToSession(parent) non-retryable failure failed: ${err.message} (non-fatal)`);
-        }
-    }
     runtime.state.retryCount = 0;
 }
 
@@ -320,10 +289,6 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
-    // A provider-budget refusal stashes the whole pending turn contract, not
-    // just its text. Any wake or interrupt that finally reaches the model must
-    // enforce the same requiredTool as the refused attempt.
-    requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -623,7 +588,7 @@ export function* processPrompt(
     }
     yield* drainLeadingQueuedScheduleActions(runtime, prompt);
 
-    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap, requiredTool);
+    yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap);
 }
 
 // ─── Stop-turn race support ─────────────────────────────────
@@ -970,7 +935,6 @@ function* stashBudgetRefusedPrompt(
     sourcePrompt: string,
     clientMessageIds?: string[],
     isBootstrap?: boolean,
-    requiredTool?: string,
 ): Generator<any, void, any> {
     const { state } = runtime;
     // 1.0.71: the turn's note rides in the prompt as a trailing block. It is
@@ -994,15 +958,12 @@ function* stashBudgetRefusedPrompt(
         : [];
     const key = ids.length > 0 ? ids.join(",") : prompt;
     const stash = state.budgetStash ?? [];
-    const existing = stash.find((entry) => {
+    const already = stash.some((entry) => {
         const entryIds = entry.clientMessageIds ?? [];
         const entryKey = entryIds.length > 0 ? entryIds.join(",") : entry.prompt;
         return entryKey === key;
     });
-    if (existing) {
-        if (!existing.requiredTool && requiredTool) existing.requiredTool = requiredTool;
-        return;
-    }
+    if (already) return;
 
     // The durable record, with the ids the outbox acks by — this is what
     // turns the optimistic ✓ into a true one and shows the message in the
@@ -1029,11 +990,7 @@ function* stashBudgetRefusedPrompt(
             ...(isBootstrap ? { sender: { kind: "system", display: "agent kickoff" } } : {}),
         },
     }]);
-    stash.push({
-        prompt,
-        ...(ids.length > 0 ? { clientMessageIds: ids } : {}),
-        ...(requiredTool ? { requiredTool } : {}),
-    });
+    stash.push({ prompt, ...(ids.length > 0 ? { clientMessageIds: ids } : {}) });
     state.budgetStash = stash;
     runtime.ctx.traceInfo(
         `[orch] stashed prompt refused by the budget gate (${stash.length} waiting)`);
@@ -1074,7 +1031,6 @@ export function* handleTurnResult(
     // words. Only the budget stash below needs it, and only to attribute the
     // durable record it writes.
     isBootstrap?: boolean,
-    requiredTool?: string,
 ): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
@@ -1190,7 +1146,7 @@ export function* handleTurnResult(
             // So: record it durably NOW (the ✓ becomes true), stash it, and
             // let it ride into every retry until a turn actually runs.
             if (budgetRefusal) {
-                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap, requiredTool);
+                yield* stashBudgetRefusedPrompt(runtime, sourcePrompt, clientMessageIds, isBootstrap);
             }
 
             if (options.parentSessionId) {
@@ -1384,19 +1340,12 @@ export function* handleTurnResult(
                 return;
             }
 
-            if (result.retryable === false) {
-                ctx.traceInfo(`[orch] turn returned non-retryable error: ${result.message}`);
-                yield* projectNonRetryableTurnFailure(runtime, result.message);
-                return;
-            }
-
             state.retryCount++;
             ctx.traceInfo(`[orch] turn returned error (attempt ${state.retryCount}/${MAX_RETRIES}): ${result.message}`);
 
             const rc: RetryContext = {
                 sourcePrompt,
                 systemOnlyTurn: false,
-                requiredTool,
                 cycleOrigin,
                 phase: "turn.result.error",
             };

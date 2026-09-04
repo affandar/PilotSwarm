@@ -132,6 +132,72 @@ test("both fields survive into the package manifest", async () => {
     assert.equal(agents.get("helper").supportsDirectStart, undefined, "the default is derived, not baked in");
 });
 
+test("schema 3 preserves an initial required tool in the agent and package manifest", async () => {
+    const dir = tmpdir();
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "catalog-analyst",
+        version: "1.0.0",
+        description: "Test package",
+    }));
+    writeAgent(path.join(dir, "agents"), "analyst", [
+        "description: Catalog analyst",
+        "schemaVersion: 3",
+        "version: 1.0.0",
+        "tools:",
+        "  - package_catalog",
+        "initialRequiredTool: package_catalog",
+    ]);
+
+    const [agent] = loadAgentFiles(path.join(dir, "agents"));
+    assert.equal(agent.initialRequiredTool, "package_catalog");
+
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.ok(result.ok, JSON.stringify(result.errors));
+    assert.equal(result.manifest.agents[0].initialRequiredTool, "package_catalog");
+});
+
+test("initial required tools require schema 3 and a matching declared tool", async () => {
+    const dir = tmpdir();
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({
+        name: "broken-analyst",
+        version: "1.0.0",
+        description: "Test package",
+    }));
+    writeAgent(path.join(dir, "agents"), "analyst", [
+        "description: Broken analyst",
+        "schemaVersion: 2",
+        "version: 1.0.0",
+        "tools:",
+        "  - other_tool",
+        "initialRequiredTool: package_catalog",
+    ]);
+
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(result.ok, false);
+    assert.deepEqual(
+        result.errors.map((error) => error.code).sort(),
+        ["initial_required_tool_not_declared", "initial_required_tool_schema"],
+    );
+});
+
+test("the runtime loader skips invalid initial required tool definitions", () => {
+    const dir = path.join(tmpdir(), "agents");
+    writeAgent(dir, "old-schema", [
+        "schemaVersion: 2",
+        "version: 1.0.0",
+        "tools: [package_catalog]",
+        "initialRequiredTool: package_catalog",
+    ]);
+    writeAgent(dir, "undeclared", [
+        "schemaVersion: 3",
+        "version: 1.0.0",
+        "tools: [other_tool]",
+        "initialRequiredTool: package_catalog",
+    ]);
+
+    assert.deepEqual(loadAgentFiles(dir), []);
+});
+
 test("plugin.json title becomes the package's display name", async () => {
     const dir = tmpdir();
     fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({

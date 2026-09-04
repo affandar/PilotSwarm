@@ -1,5 +1,5 @@
 /**
- * Freezing 1.0.70 and opening 1.0.71.
+ * Freezing 1.0.70 and opening 1.0.71, then freezing 1.0.71 before 1.0.72.
  *
  * WHY THE BUMP: a wake-up (timer end, cron fire, child update) hands the model
  * a `[SYSTEM: …]` note. ≤1.0.70 parked it in `config.turnSystemPrompt`, which
@@ -31,15 +31,16 @@ import { fileURLToPath } from "node:url";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const read = (rel) => readFileSync(join(SRC, rel), "utf8");
 
-test("the latest version is 1.0.71", () => {
+test("the latest version is 1.0.72", () => {
     assert.match(
         read("orchestration-version.ts"),
-        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.71";/,
+        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.72";/,
     );
 });
 
-test("1.0.70 is frozen in its own directory, not the live one", () => {
+test("1.0.70 and 1.0.71 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
+    assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
     const registry = read("orchestration-registry.ts");
     assert.match(
         registry,
@@ -48,13 +49,15 @@ test("1.0.70 is frozen in its own directory, not the live one", () => {
     );
     assert.match(
         registry,
-        /import \{ durableSessionOrchestration_1_0_71 \} from "\.\/orchestration\/index\.js";/,
-        "the live directory is 1.0.71 now",
+        /import \{ durableSessionOrchestration_1_0_71 \} from "\.\/orchestration_1_0_71\/index\.js";/,
+        "1.0.71 must resolve to its frozen directory",
     );
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
+    assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
     assert.match(
         registry,
-        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_71 \}/,
+        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_72 \}/,
     );
     // The previous freeze must still be intact — a bump must never unfreeze.
     assert.match(registry, /from "\.\/orchestration_1_0_69\/index\.js";/);
@@ -73,10 +76,20 @@ test("a frozen orchestration self-identifies with its OWN version", () => {
         "a frozen version must not follow the moving latest",
     );
     assert.match(
+        read("orchestration_1_0_71/runtime.ts"),
+        /export const CURRENT_ORCHESTRATION_VERSION = "1\.0\.71";/,
+    );
+    assert.doesNotMatch(
+        read("orchestration_1_0_71/runtime.ts"),
+        /CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION/,
+        "the new frozen version must not follow the moving latest",
+    );
+    assert.match(
         read("orchestration/runtime.ts"),
         /export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;/,
     );
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
+    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_72\(/);
+    assert.match(read("orchestration_1_0_71/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
     assert.match(read("orchestration_1_0_70/index.ts"), /export function\* durableSessionOrchestration_1_0_70\(/);
 });
 
@@ -94,7 +107,7 @@ test("the frozen 1.0.70 keeps the OLD delivery: note parked for the system messa
     );
 });
 
-test("the live 1.0.71 delivers the note inside the user turn and flags it", () => {
+test("the live orchestration retains the 1.0.71 user-turn delivery", () => {
     const live = read("orchestration/turn.ts");
     assert.match(live, /import \{ appendSystemContextBlock, splitSystemContextBlock \} from "\.\.\/prompt-system-context\.js";/);
     const park = live.indexOf("state.config.turnSystemPrompt = turnSystemPrompt;");
@@ -104,7 +117,7 @@ test("the live 1.0.71 delivers the note inside the user turn and flags it", () =
     assert.match(after, /prompt = appendSystemContextBlock\(prompt, turnSystemPrompt\);/, "and the prompt carries it");
 });
 
-test("the live 1.0.71 retries from the prompt alone — never the note twice", () => {
+test("the live orchestration retains the 1.0.71 retry behavior", () => {
     // The note is inside sourcePrompt. Forwarding turnSystemPrompt too would
     // land it in pendingSystemPrompt and append it a second time.
     const live = read("orchestration/turn.ts");

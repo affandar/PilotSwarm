@@ -132,7 +132,7 @@ Orchestration generator functions are **replayed from the beginning** on every n
 Anything that **changes the sequence of `yield` statements** must itself be deterministic. Branching on non-deterministic values (like `Date.now()`) before a yield is the most common bug. `setCustomStatus()` is recorded in history — if the orchestration yields an activity where replay expects a `CustomStatusUpdated` (or vice versa), duroxide throws a nondeterminism error.
 
 ### Deployment note:
-Changing the orchestration code (adding/removing/reordering yields) creates a new version. Existing in-flight orchestrations were recorded with the old yield sequence and will fail on replay. **Always reset the database before redeploying** with orchestration changes — use `./scripts/deploy-aks.sh` which handles this automatically.
+Changing the orchestration code (adding/removing/reordering yields) requires a new version. Freeze the released handler in `orchestration_<version>/`, open the next version in `orchestration/`, and keep both registered so in-flight sessions replay against their original yield sequence while new sessions use the latest version. Do not reset durable state solely for an orchestration upgrade; a reset is reserved for an explicitly approved destructive operation.
 
 ### Docker / AKS Build Convention
 
@@ -299,7 +299,7 @@ When you change a PilotSwarm-authored `.agent.md` prompt, tool expectation, work
 - minor for new capabilities, tools, examples, or backwards-compatible workflow guidance
 - major for changed role semantics, removed expectations, or incompatible output/contract changes
 
-When changing builder templates that create or edit app agents, update both the template agents and their skills so generated app `.agent.md` files include `schemaVersion: 1` and a `version`, and so edits to existing agent files bump the version string according to the app's chosen versioning style.
+When changing builder templates that create or edit app agents, update both the template agents and their skills so generated app `.agent.md` files include `schemaVersion: 1` by default and a `version`, and so edits to existing agent files bump the version string according to the app's chosen versioning style. Use `schemaVersion: 3` only when the agent declares `initialRequiredTool`; that tool must also appear in `tools`.
 
 ## Significant Feature Rollouts
 

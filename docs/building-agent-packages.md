@@ -133,7 +133,7 @@ Frontmatter fields:
 |---|---|---|
 | `name` | yes (else derived from filename) | How sessions bind to the agent (`create_session {agent: "greeter"}`). Matched case/punctuation-insensitively. |
 | `description` | recommended | Shown in the agent picker/catalog. |
-| `schemaVersion` | recommended: `2` | Only `1` and `2` are accepted. |
+| `schemaVersion` | recommended: `2` | `1`, `2`, and `3` are accepted. Use `3` when declaring `initialRequiredTool`. |
 | `version` | recommended | Informational agent version. |
 | `title` | optional | Display title. |
 | `tools` | optional | Names of worker tools this agent may call — from this package's worker module or the deployment's built-ins. Omit for prompt-only agents. |
@@ -141,11 +141,13 @@ Frontmatter fields:
 | `mcpServers` | optional | Server names from this package's MCP catalog (§6). |
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
+| `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
 (the check is case/punctuation-insensitive and also strips a trailing
-"agent"), and two agents in one package whose names normalize identically.
+"agent"), two agents in one package whose names normalize identically, and an
+`initialRequiredTool` that uses an older schema or is absent from `tools`.
 
 ## 4. Skills — `skills/<name>/SKILL.md`
 

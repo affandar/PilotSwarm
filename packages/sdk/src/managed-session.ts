@@ -533,6 +533,7 @@ function formatCurrentModelConfig(config: ManagedSessionConfig): string {
 // dropped while the transcript implies it happened. We detect the malformed
 // text and re-prompt the model — bounded — to actually invoke the tool.
 const MAX_TEXT_TOOL_CALL_CORRECTIONS = 2;
+const MAX_REQUIRED_TOOL_CORRECTIONS = 1;
 const TEXT_TOOL_CALL_INVOKE_RE = /<(?:antml:)?invoke\s+name\s*=\s*"([^"]+)"/i;
 const TEXT_TOOL_CALL_STRUCTURE_RE = /<\/(?:antml:)?invoke\s*>|<(?:antml:)?parameter\b/i;
 const FENCED_CODE_BLOCK_RE = /```[\s\S]*?```/g;
@@ -584,6 +585,25 @@ function buildTextEmittedToolCallCorrection(toolName: string): string {
         `Come to your senses and actually invoke ${named} now using the real tool-calling mechanism, not text. ` +
         `Do not write <invoke> or <parameter> tags as message content. ` +
         `If you did not actually need a tool this turn, reply with plain prose only and no tool-call markup.]`;
+}
+
+function buildRequiredToolCorrection(toolName: string): string {
+    return `[SYSTEM: Required-tool contract violation. Your previous response did not invoke the "${toolName}" tool. ` +
+        `Claims, estimates, and remembered results do not satisfy this request. Invoke "${toolName}" now using the real ` +
+        `tool-calling mechanism, then answer only from its result.]`;
+}
+
+function hasInvokedTool(events: CapturedEvent[], requiredTool: string): boolean {
+    return events.some((event) => {
+        if (event.eventType !== "tool.execution_start" && event.eventType !== "tool.execution_complete") return false;
+        const data = event.data as any;
+        const toolName = typeof data?.toolName === "string"
+            ? data.toolName
+            : typeof data?.name === "string"
+                ? data.name
+                : "";
+        return toolName.trim() === requiredTool;
+    });
 }
 
 function failureToolResult(error: unknown) {
@@ -2581,6 +2601,15 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
         ];
 
+        if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
+            return {
+                type: "error",
+                message: `Required tool "${opts.requiredTool}" is not available in this session.`,
+                retryable: false,
+                events: [],
+            } as any;
+        }
+
         // Re-register tools for this turn (may have changed). Tool
         // *declarations* reach the CLI server via sessionConfig.tools at
         // create/resume; this call only refreshes the client-side handler map
@@ -2762,6 +2791,14 @@ export class ManagedSession {
                             textEmittedToolCallRef.current = textToolCall;
                             return;
                         }
+                        // A required-tool answer is provisional until the
+                        // corresponding execution event has happened. Keep an
+                        // unsupported answer in the live Copilot conversation
+                        // so the correction has context, but do not expose it
+                        // through onEvent or the durable CMS transcript.
+                        if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                            return;
+                        }
                         finalContent = content ?? finalContent;
                         publishReasoningSnapshot("assistant.message", true);
                     }
@@ -2781,6 +2818,15 @@ export class ManagedSession {
                         }
                         turnStartedAtMs = null;
                     } else if (eventType === "assistant.message_delta" || eventType === "assistant.streaming_delta") {
+                        // A model that skipped the required tool may stream a
+                        // complete-looking answer before we can issue the
+                        // correction. Treat those deltas like its provisional
+                        // assistant.message: do not expose them to live event
+                        // consumers. Once the tool starts, the grounded answer
+                        // streams normally.
+                        if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                            return;
+                        }
                         streamingDeltaCount += 1;
                         const deltaText = (eventData && typeof eventData === "object")
                             ? ((eventData as any).deltaContent ?? (eventData as any).delta ?? (eventData as any).content ?? "")
@@ -2853,6 +2899,7 @@ export class ManagedSession {
             if (opts?.onDelta) {
                 unsubscribers.push(
                     this.copilotSession.on("assistant.message_delta", (event: any) => {
+                        if (opts.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) return;
                         if (event.data?.deltaContent) {
                             opts.onDelta!(event.data.deltaContent);
                         }
@@ -3022,6 +3069,53 @@ export class ManagedSession {
                 return {
                     type: "error",
                     message,
+                    events: collectedEvents,
+                } as any;
+            }
+
+            let requiredToolCorrections = 0;
+            while (
+                opts?.requiredTool &&
+                !hasTerminalTurnBoundary(turnState) &&
+                !hasInvokedTool(collectedEvents, opts.requiredTool) &&
+                requiredToolCorrections < MAX_REQUIRED_TOOL_CORRECTIONS
+            ) {
+                requiredToolCorrections++;
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.required_tool_not_invoked",
+                    data: {
+                        toolName: opts.requiredTool,
+                        attempt: requiredToolCorrections,
+                        sessionId: this.sessionId,
+                    },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+
+                finalContent = undefined;
+                const nextIdle = waitForNextIdle();
+                await this.copilotSession.send({
+                    prompt: buildRequiredToolCorrection(opts.requiredTool),
+                    requiredTool: opts.requiredTool,
+                } as any);
+                if (guards.length > 0) {
+                    await Promise.race([nextIdle, ...guards]);
+                } else {
+                    await nextIdle;
+                }
+            }
+
+            if (opts?.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) {
+                const diagnostic: CapturedEvent = {
+                    eventType: "runtime.required_tool_not_invoked",
+                    data: { toolName: opts.requiredTool, final: true, sessionId: this.sessionId },
+                };
+                collectedEvents.push(diagnostic);
+                if (opts.onEvent) { try { opts.onEvent(diagnostic); } catch {} }
+                return {
+                    type: "error",
+                    message: `Required tool "${opts.requiredTool}" was not invoked after ${requiredToolCorrections + 1} attempts.`,
+                    retryable: false,
                     events: collectedEvents,
                 } as any;
             }

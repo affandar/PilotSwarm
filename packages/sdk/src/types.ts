@@ -73,7 +73,7 @@ type TurnResultVariant =
     | ({ type: "delete_agent"; agentId: string; reason?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | { type: "cancelled" }
     | { type: "stopped"; reason?: string; events?: CapturedEvent[] }
-    | { type: "error"; message: string; events?: CapturedEvent[] };
+    | { type: "error"; message: string; retryable?: boolean; events?: CapturedEvent[] };
 
 /** A raw event captured from CopilotSession.on() during a turn. */
 export interface CapturedEvent {
@@ -94,7 +94,7 @@ export interface TurnOptions {
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
     bootstrap?: boolean;
-    /** Require the Copilot SDK to use a specific tool during this turn. */
+    /** Require a real execution event for this tool; correct once, then fail the turn if still absent. */
     requiredTool?: string;
     /** Internal: this turn was started by a recurring cron/cron_at timer fire. */
     cycleOrigin?: "cron" | "cron_at";
@@ -601,7 +601,7 @@ export interface OrchestrationInput {
      * epoch boundary. Each was durably recorded as a user.message at stash
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
-    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[] }>;
+    budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string }>;
     /** Saved interrupted wait timer. The orchestration auto-resumes after the LLM responds. v1.0.32+. */
     interruptedWaitTimer?: {
         remainingSec: number;

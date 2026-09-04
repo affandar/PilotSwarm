@@ -275,6 +275,32 @@ describe("budget-gate resume scenarios (orchestration 1.0.69)", () => {
         expect(um).toHaveLength(1);
     });
 
+    it("the wake preserves a refused turn's requiredTool contract", async () => {
+        const handler = await latestHandler();
+        const { PROVIDER_BUDGET_WAKE_PROMPT } = await import("../../src/provider-budgets.ts");
+        const h = createHarness({
+            turnResults: [
+                gateRefusal(),
+                { type: "completed", content: "catalog verified" },
+            ],
+            queue: [
+                JSON.stringify({
+                    prompt: "PROBE-REQUIRED inspect the catalog",
+                    requiredTool: "package_catalog",
+                    clientMessageIds: ["cm-required"],
+                }),
+                { afterTurns: 1, msg: JSON.stringify({ prompt: PROVIDER_BUDGET_WAKE_PROMPT }) },
+            ],
+        });
+
+        drive(handler(h.ctx, INPUT()), h);
+
+        expect(h.turns).toHaveLength(2);
+        expect(h.turns[0].opts.requiredTool).toBe("package_catalog");
+        expect(h.turns[1].opts.requiredTool).toBe("package_catalog");
+        expect(h.turns[1].opts.stashedPrompts).toEqual(["PROBE-REQUIRED inspect the catalog"]);
+    });
+
     it("a message queued WHILE blocked is stashed too, and repeat refusals never duplicate", async () => {
         const handler = await latestHandler();
         const h = createHarness({
@@ -347,7 +373,11 @@ describe("budget-gate resume scenarios (orchestration 1.0.69)", () => {
         const { continueInput } = await import("../../src/orchestration/lifecycle.ts");
         const { createInitialState, deriveOptions } = await import("../../src/orchestration/state.ts");
 
-        const stash = [{ prompt: "PROBE-CAN survive the epoch boundary", clientMessageIds: ["cm-4"] }];
+        const stash = [{
+            prompt: "PROBE-CAN survive the epoch boundary",
+            clientMessageIds: ["cm-4"],
+            requiredTool: "package_catalog",
+        }];
         const state = createInitialState(INPUT(), deriveOptions(INPUT()));
         state.budgetStash = stash;
         const runtime = {

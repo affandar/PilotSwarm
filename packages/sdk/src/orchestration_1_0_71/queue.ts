@@ -792,11 +792,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     }
                 }
                 maybeQueueSharedPreamble(runtime);
-                // Top-level named-agent metadata is translated into the same
-                // pending turn field as every other requiredTool. An explicit
-                // requirement on the queued prompt still wins.
-                mergedRequiredTool ??= state.pendingRequiredTool;
-                state.pendingRequiredTool = undefined;
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,

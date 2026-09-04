@@ -25,6 +25,7 @@ vi.mock("../../src/session-proxy.js", () => ({
 function createThrowingHarness({ turnResults = null } = {}) {
     const turns = [];
     const cmsStateCalls = [];
+    const parentMessages = [];
     const script = turnResults ? [...turnResults] : null;
     const queue = [JSON.stringify({ prompt: "hello there", clientMessageIds: ["cm-x"] })];
 
@@ -94,6 +95,10 @@ function createThrowingHarness({ turnResults = null } = {}) {
                     cmsStateCalls.push(effect.args);
                     return undefined;
                 }
+                if (effect.effect === "manager.sendToSession") {
+                    parentMessages.push(effect.args);
+                    return undefined;
+                }
                 if (effect.effect === "manager.getWorkerSessionPolicy") {
                     return { policy: null, allowedAgentNames: [] };
                 }
@@ -107,7 +112,7 @@ function createThrowingHarness({ turnResults = null } = {}) {
         }
     };
 
-    return { ctx, turns, cmsStateCalls, resolve };
+    return { ctx, turns, cmsStateCalls, parentMessages, resolve };
 }
 
 async function latestHandler() {
@@ -207,6 +212,21 @@ describe("generic retry exhaustion (orchestration 1.0.69)", () => {
         expect(String(lastError)).toMatch(/Failed after 3 attempts/);
     });
 
+    it("a returned transient error preserves the initial required tool on retry", async () => {
+        const handler = await latestHandler();
+        const errResult = { type: "error", message: "provider melted (HTTP 503)" };
+        const harness = createThrowingHarness({ turnResults: [errResult] });
+
+        const out = drive(handler(harness.ctx, INPUT({
+            requiredTool: "package_catalog",
+        })), harness);
+
+        expect(out.kind).toBe("continueAsNew");
+        expect(harness.turns[0].opts.requiredTool).toBe("package_catalog");
+        expect(out.input.requiredTool).toBe("package_catalog");
+        expect(Object.hasOwn(out.input.config, "initialRequiredTool")).toBe(false);
+    });
+
     it("a RETURNED auth failure stops immediately with the fix-your-key hint, like the thrown one always did", async () => {
         const handler = await latestHandler();
         const authResult = { type: "error", message: "Authentication failed with provider (HTTP 401)" };
@@ -221,5 +241,42 @@ describe("generic retry exhaustion (orchestration 1.0.69)", () => {
         const [, , lastError] = errorWrites[errorWrites.length - 1];
         expect(String(lastError)).toMatch(/Authentication failed/);
         expect(String(lastError)).toMatch(/update your GitHub Copilot key|rejected the authentication token/);
+    });
+
+    it("a non-retryable required-tool failure stops without a continue-as-new retry", async () => {
+        const handler = await latestHandler();
+        const contractResult = {
+            type: "error",
+            message: 'Required tool "package_catalog" was not invoked after 2 attempts.',
+            retryable: false,
+        };
+
+        const harness = createThrowingHarness({ turnResults: [contractResult] });
+        const out = drive(handler(harness.ctx, INPUT()), harness);
+
+        expect(out.kind).not.toBe("continueAsNew");
+        expect(harness.turns).toHaveLength(1);
+        const errorWrites = harness.cmsStateCalls.filter(([, state]) => state === "error");
+        expect(errorWrites).toHaveLength(1);
+        expect(String(errorWrites[0][2])).toContain("package_catalog");
+    });
+
+    it("a child reports a non-retryable required-tool failure to its parent", async () => {
+        const handler = await latestHandler();
+        const contractResult = {
+            type: "error",
+            message: 'Required tool "package_catalog" was not invoked after 2 attempts.',
+            retryable: false,
+        };
+        const harness = createThrowingHarness({ turnResults: [contractResult] });
+
+        const out = drive(handler(harness.ctx, INPUT({ parentSessionId: "parent-session" })), harness);
+
+        expect(out.kind).not.toBe("continueAsNew");
+        expect(harness.parentMessages).toHaveLength(1);
+        expect(harness.parentMessages[0][0]).toBe("parent-session");
+        expect(harness.parentMessages[0][1]).toContain("type=failed");
+        expect(harness.parentMessages[0][1]).toContain("verdict=failed");
+        expect(harness.parentMessages[0][1]).toContain("package_catalog");
     });
 });

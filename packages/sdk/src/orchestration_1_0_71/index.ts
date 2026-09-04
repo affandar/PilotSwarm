@@ -1,5 +1,5 @@
 /**
- * Durable session orchestration v1.0.72.
+ * Durable session orchestration v1.0.71 — FROZEN.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.
@@ -15,6 +15,10 @@
  *   - agents.ts    sub-agent tracking, tool actions, shutdown cascade
  *   - runtime.ts   createRuntime, runLoop
  *
+ * Frozen at the release state before enforced named-agent startup tool calls.
+ * Replay-only maintenance from here; live development continues in
+ * ../orchestration/ as v1.0.72.
+ *
  * @internal
  */
 import type { OrchestrationInput } from "../types.js";
@@ -23,7 +27,7 @@ import { DURABLE_SESSION_LATEST_VERSION } from "../orchestration-version.js";
 
 export { CURRENT_ORCHESTRATION_VERSION };
 
-export function* durableSessionOrchestration_1_0_72(
+export function* durableSessionOrchestration_1_0_71(
     ctx: any,
     input: OrchestrationInput,
 ): Generator<any, string, any> {

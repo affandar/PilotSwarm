@@ -1,6 +1,6 @@
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PilotSwarmClient } from "../../src/client.ts";
-import { buildRunTurnConfig, childModelCreationOptions } from "../../src/session-proxy.ts";
+import { bootstrapTurnOptions, buildRunTurnConfig, childModelCreationOptions } from "../../src/session-proxy.ts";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("runTurn config backfill", () => {
@@ -45,6 +45,14 @@ describe("runTurn config backfill", () => {
         assertEqual(options.reasoningEffort, "xhigh", "child reasoning effort should inherit");
         assertEqual(options.contextTier, "long_context", "child context tier should inherit");
         assertEqual(options.childContract, childContract, "child contract should inherit");
+    });
+
+    it("forwards a named agent's initial required tool only on its bootstrap send", () => {
+        expect(bootstrapTurnOptions("package_catalog")).toEqual({
+            bootstrap: true,
+            requiredTool: "package_catalog",
+        });
+        expect(bootstrapTurnOptions()).toEqual({ bootstrap: true });
     });
 
     it("preserves the child wake contract in orchestration input", async () => {
