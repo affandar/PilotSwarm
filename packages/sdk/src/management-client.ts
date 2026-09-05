@@ -438,6 +438,8 @@ export interface ModelCredentialStatus {
 export interface ProviderViewer {
     principal: UserPrincipal | null;
     isAdmin: boolean;
+    /** Resolved by the authenticated surface, never from request parameters. */
+    adminScope?: "unrestricted" | "cluster";
 }
 
 /** What a caller sends to make a provider — the words the surface uses, not the column names. */
@@ -2657,8 +2659,13 @@ export class PilotSwarmManagementClient {
         return { search: caps.search, embedder: caps.embedder, graph: Boolean(this._graphStore) };
     }
 
-    async readFacts(query: ReadFactsQuery, opts?: { admin?: boolean }): Promise<{ count: number; facts: FactRecord[] }> {
+    async readFacts(query: ReadFactsQuery, opts?: { admin?: boolean; sessionId?: string }): Promise<{ count: number; facts: FactRecord[] }> {
         const admin = opts?.admin === true;
+        // sessionId is stamped by the authenticated surface after a READ gate.
+        // It grants one session, never unrestricted access to caller-supplied keys.
+        if (!admin && opts?.sessionId) {
+            return this._requireFactStore().readFacts({ ...query, sessionId: opts.sessionId }, { readerSessionId: opts.sessionId, grantedSessionIds: [opts.sessionId] });
+        }
         return this._requireFactStore().readFacts(this._scopeReadForRole(query, admin), this._apiAccessContext(admin));
     }
 
@@ -3936,7 +3943,7 @@ export class PilotSwarmManagementClient {
         const [totals, daily, breakdown] = await Promise.all([
             store.usageTotals(actor, isAdmin, filters),
             store.usageDaily(actor, isAdmin, filters),
-            store.usageBreakdown(actor, isAdmin, dimension, filters, limit + 1),
+            store.usageBreakdown(actor, isAdmin, dimension, filters, limit + 1, viewer.adminScope === "cluster" && isAdmin),
         ]);
         return {
             totals,
@@ -3969,13 +3976,13 @@ export class PilotSwarmManagementClient {
         const { store, actor, isAdmin } = await this._providerActor(viewer);
         const days = clampInteger(query.days ?? undefined, 14, 1, 365);
         const providers = Array.isArray(query.providers) ? query.providers : null;
-        return await store.usageAgents(actor, isAdmin, days, providers) as Record<string, unknown>;
+        return await store.usageAgents(actor, isAdmin, days, providers, viewer.adminScope === "cluster" && isAdmin) as Record<string, unknown>;
     }
 
     /** Sessions waiting on a limit right now, with what is holding each one. */
     async listPausedSessions(viewer: ProviderViewer): Promise<{ sessions: PausedSessionRow[] }> {
         const { store, actor, isAdmin } = await this._providerActor(viewer);
-        return { sessions: await store.listPaused(actor, isAdmin) };
+        return { sessions: await store.listPaused(actor, isAdmin, 100, viewer.adminScope === "cluster" && isAdmin) };
     }
 
     // ─── Agent packages / worker registry ────────────────────

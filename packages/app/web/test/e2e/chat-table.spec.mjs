@@ -38,6 +38,9 @@ test("a cell of long tokens never paints outside its box; the table scrolls inst
     await page.goto(base);
     await page.locator(".ps-session-list-button").first().waitFor();
     await page.locator(".ps-session-list-button").first().click();
+    // This fixture has no turn-completed boundary: its saved assistant output
+    // is intentionally an interim preview and is parsed only when expanded.
+    await page.locator(".ps-assistant-preview > summary").first().click();
     const table = page.locator(".ps-chat-table").first();
     await expect(table).toBeVisible();
     await page.waitForTimeout(300);

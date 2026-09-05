@@ -25,8 +25,8 @@ test("the sendMessage handler gates canvas-action prompts on session WRITE, fail
     const block = RUNTIME.slice(caseStart, RUNTIME.indexOf('case "sendAnswer"', caseStart));
     assert.match(block, /safeParams\.prompt\.startsWith\("\[canvas-action\] "\)/,
         "the guard keys on the canonical wire prefix");
-    assert.match(block, /snapshot\.viewerIsOwner \|\| isAdmin\s*\|\| snapshot\.viewerShareAccess === "write" \|\| snapshot\.visibility === "shared_write"/,
-        "the predicate is session write: owner, admin, write share, or shared_write visibility");
+    assert.match(block, /snapshot\.viewerIsOwner \|\| this\._resourceAdmin\(isAdmin, snapshot\)\s*\|\| snapshot\.viewerShareAccess === "write" \|\| snapshot\.visibility === "shared_write"/,
+        "the predicate is session write: owner, resource-authorized admin, write share, or shared_write visibility");
     assert.match(block, /if \(!mayRing\)/);
     assert.match(block, /forbiddenError\("Canvas actions are accepted only from people who can write this session/,
         "the refusal says why and points at the chat box");

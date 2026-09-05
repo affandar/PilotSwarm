@@ -703,8 +703,8 @@ Portal authz supports both email allowlists and Entra app-role claims:
 
 - authenticated users whose email appears in the configured admin/user allowlists are allowed in
 - authenticated users whose token carries an Entra app-role claim (`admin` / `user`) are decided from that claim; see [`portal-entra-app-roles.md`](./entra-app-roles.md)
-- `admin` and `user` have the same portal permissions today
-- per-user session visibility is a later phase
+- admins manage cluster health, cost and configuration; ordinary users manage their own resources
+- ownership enforcement controls session visibility; `AUTHZ_ADMIN_SCOPE=cluster` also applies ordinary ownership/sharing rules to admins, with the system-session exception documented below
 
 ### Refresh GitHub Token
 
@@ -921,6 +921,24 @@ tolerations:
 Spot instances are safe because sessions are durable — if a spot node is evicted, the orchestration retries automatically on another node.
 
 ## Updating Workers
+
+### Optional cluster-scoped administration
+
+Set `AUTHZ_ADMIN_SCOPE=cluster` on every worker and portal only after deploying
+compatible binaries. This requires an authenticated portal and
+`AUTHZ_ENFORCE_OWNERSHIP=true`. The default is `unrestricted`; the portal cannot
+change this operator setting. Verify health/bootstrap `authz.adminScope` and
+worker-registry `info.authz` (policy version 1), and retire old replicas before
+declaring activation complete. Roll a separate Web-mode MCP deployment onto
+the matching portal image too.
+
+Cluster mode retains all-user token accounting, configuration and admin
+read/write access to system sessions. It removes direct private non-system
+session/package bypass; the system-mediated backdoor is intentionally deferred
+to phase 2. Migration 0075 is additive: do not reset databases or rewrite
+owners/shares/ledgers. Rollback is an explicit operator change to
+`AUTHZ_ADMIN_SCOPE=unrestricted` followed by a consistent rollout. See the
+[mini spec](../../proposals/cluster-scoped-admin.md) for boundaries and tests.
 
 ### Rolling Update
 

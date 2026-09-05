@@ -35,7 +35,6 @@ import {
     normalizeArtifactEntries,
     normalizeSessionPause,
 } from "./state.js";
-import { isRecoverableTransportErrorText } from "./session-errors.js";
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
@@ -297,9 +296,15 @@ function isTerminalOrchestrationStatus(status) {
 
 function getSessionErrorVisualKind(session) {
     const status = getSessionVisualStatus(session);
-    if (session?.orchestrationStatus === "Failed" || status === "failed") return "failed";
+    if (session?.orchestrationStatus === "Failed") return "failed";
+    if (isTerminalOrchestrationStatus(session?.orchestrationStatus)) return null;
+    if (status === "failed") return "failed";
     if (status === "error") return "warning";
-    if (status === "running" && isRecoverableTransportErrorText(session?.error) && !isTerminalOrchestrationStatus(session?.orchestrationStatus)) return "warning";
+    // The CMS row may already say idle/waiting while the live detail still
+    // carries the retry. Keep its card visible until detail sync clears it.
+    if (!["completed", "cancelled", "terminated", "input_required"].includes(session?.status)
+        && String(session?.error || "").trim()
+        && !isTerminalOrchestrationStatus(session?.orchestrationStatus)) return "warning";
     return null;
 }
 
@@ -1650,7 +1655,7 @@ function buildSessionErrorMessage(session, events = []) {
         : `${errorText}\n\nThe orchestration is still running, so this may be transient.`;
 
     return {
-        id: `session-error:${session.sessionId}:${errorKind}:${errorText}`,
+        id: `session-error:${session.sessionId}`,
         role: "system",
         text: body,
         time: "",
@@ -2657,6 +2662,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
             && (!message?.cardTitle || String(message.cardTitle).toLowerCase() === "system");
         return buildMessageCardLines({
             title: message?.cardTitle || (message?.role === "system" ? "System" : "PilotSwarm"),
+            cardKey: message?.id,
             timestamp: formatTimestamp(message?.createdAt || message?.time),
             body: decorateArtifactLinksForChat(message?.text || ""),
             width: Math.max(20, maxWidth),
@@ -4124,6 +4130,8 @@ export function selectAdminConsole(state) {
 
     const systemGhcpKey = admin.systemGhcpKey || { supported: false, loading: false, configured: false, changedBy: null, changedAt: null, error: null };
     const isAdmin = Boolean(profile?.isAdmin);
+    const adminScope = state.auth?.adminScope ?? profile?.adminScope ?? "unrestricted";
+    const resourceAdmin = isAdmin && adminScope === "unrestricted";
     const modelProviderState = admin.modelProviders || {};
     const providerRows = Array.isArray(modelProviderState.providers) ? modelProviderState.providers : [];
     const modelRows = Array.isArray(modelProviderState.models) ? modelProviderState.models : [];
@@ -4276,7 +4284,7 @@ export function selectAdminConsole(state) {
     const pkgState = admin.packages || {};
     const pkgList = Array.isArray(pkgState.list) ? pkgState.list : [];
     const ownsPackage = (pkg) => Boolean(
-        isAdmin
+        resourceAdmin
         || (pkg?.owner && principal
             && pkg.owner.provider === principal.provider
             && pkg.owner.subject === principal.subject),
@@ -4439,8 +4447,11 @@ export function selectAdminConsole(state) {
             ? workerRows.filter((worker) => installedRowFor(worker)?.semver === activeVersion.semver
                 && installedRowFor(worker)?.status === "ok").length
             : 0;
-        const canManage = detail ? ownsPackage(detail) : (summary ? ownsPackage(summary) : false);
-        const canEdit = detail ? canEditPackage(detail) : (summary ? canEditPackage(summary) : false);
+        // The periodically refreshed list carries current editor grants; an
+        // older open detail must not preserve a revoked edit affordance.
+        const permissionSource = summary ?? detail;
+        const canManage = permissionSource ? ownsPackage(permissionSource) : false;
+        const canEdit = permissionSource ? canEditPackage(permissionSource) : false;
         packageDetail = {
             name: pkgState.selectedName,
             loading: Boolean(pkgState.detailLoading),
@@ -4667,6 +4678,8 @@ export function selectAdminConsole(state) {
             loadError: admin.loadError || null,
             principal,
             isAdmin,
+            adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
             packages: packagesView,
@@ -4706,6 +4719,8 @@ export function selectAdminConsole(state) {
             loadError: admin.loadError || null,
             principal,
             isAdmin,
+            adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
             packages: packagesView,
@@ -4751,6 +4766,8 @@ export function selectAdminConsole(state) {
             loadError: admin.loadError || null,
             principal,
             isAdmin,
+            adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
             packages: packagesView,
@@ -4799,6 +4816,8 @@ export function selectAdminConsole(state) {
         loadError: admin.loadError || null,
         principal,
         isAdmin,
+        adminScope,
+        adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
         section,
         settingsTree,
         packages: packagesView,

@@ -39,6 +39,8 @@ const SDK_BUILT_IN_TOOL_NAMES = [
     "reindex",
     "list_agents",
     "session_store_sql",
+    // CLI 1.0.83 runtime metadata, materialized after the first model turn.
+    "web_search",
 ];
 
 describe.concurrent("Tool name collisions with Copilot SDK built-ins", () => {

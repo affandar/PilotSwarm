@@ -151,6 +151,7 @@ export async function startServer(opts = {}) {
             ok: true,
             started,
             mode,
+            authz: runtime.getAuthorizationPolicy?.(),
         });
     });
 

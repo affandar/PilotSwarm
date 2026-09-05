@@ -1,4 +1,6 @@
 import { NodeSdkTransport } from "pilotswarm/host";
+import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
+import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
     loadAuthzConfig,
     normalizeVisibility,
@@ -234,6 +236,16 @@ export class PortalRuntime {
         this.transport.recordAuthzAudit(entry).catch(() => {});
     }
 
+    _resourceAdmin(isAdmin, snapshot = null) {
+        return adminCanAccessResource(isAdmin, this.authz.adminScope, snapshot?.isSystem);
+    }
+
+    getAuthorizationPolicy() {
+        return { adminScope: this.authz.adminScope ?? "unrestricted", policyVersion: ADMIN_SCOPE_POLICY_VERSION,
+            ownershipEnforced: this.authz.enforce, defaultVisibility: this.authz.defaultVisibility,
+            systemVisibility: this.authz.systemVisibility };
+    }
+
     _auditActor(authContext) {
         const principal = authContext?.principal;
         return {
@@ -270,6 +282,10 @@ export class PortalRuntime {
         }
 
         if (access === "fleet:read" || access === "fleet:admin") {
+            if (access === "fleet:read" && isAdmin && !this._resourceAdmin(isAdmin)
+                && !["getFleetStats", "getUserStats", "getSharedFactsStats", "getFactsTombstoneStats"].includes(method)) {
+                throw forbiddenError("Detailed fleet diagnostics may contain private content. Use an authorized session's diagnostics instead.");
+            }
             if (!isAdmin) {
                 const reason = access === "fleet:admin"
                     ? "This operation requires the admin role."
@@ -309,7 +325,7 @@ export class PortalRuntime {
 
         if (access === "authz:audit") {
             const sessionId = safeParams.sessionId ? String(safeParams.sessionId) : null;
-            if (isAdmin) return { snapshot: null };
+            if (this._resourceAdmin(isAdmin)) return { snapshot: null };
             if (!sessionId) throw forbiddenError("Fleet-wide audit requires the admin role. Pass sessionId to read audit for a session you own.");
             // Owner-only, and hard-enforced (session:share) so a missing/deleted
             // session id can't open the audit trail during dark-launch.
@@ -380,6 +396,7 @@ export class PortalRuntime {
     _decideSessionAccess(method, accessClass, snapshot, sessionId, authContext, { isAdmin, effectiveEnforce }) {
         const decision = evaluateSessionAccess(accessClass, snapshot, {
             isAdmin,
+            adminScope: this.authz.adminScope,
             systemReadable: this.authz.systemVisibility === "read",
         });
 
@@ -419,7 +436,7 @@ export class PortalRuntime {
      * other sessions' private facts — is denied.
      */
     async _authorizeFactsWrite(method, safeParams, authContext, { owner, isAdmin }) {
-        if (isAdmin) return;
+        if (this._resourceAdmin(isAdmin)) return;
         const inputs = Array.isArray(safeParams.input) ? safeParams.input : [safeParams.input];
         for (const input of inputs) {
             const sessionId = typeof input?.sessionId === "string" && input.sessionId.trim() ? input.sessionId.trim() : null;
@@ -433,11 +450,12 @@ export class PortalRuntime {
     }
 
     async _authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin }) {
-        if (isAdmin) return;
+        if (this._resourceAdmin(isAdmin)) return;
         const groupId = safeParams.groupId ? String(safeParams.groupId) : null;
         if (groupId) {
-            const groups = await this.transport.listSessionGroups().catch(() => []);
+            const groups = await this.transport.mgmt.listSessionGroups(this._placementViewer(authContext, isAdmin));
             const group = (groups || []).find((g) => g.groupId === groupId);
+            if (!group && this.authz.enforce) throw notFoundError();
             if (group) {
                 const groupOwner = normalizeOwnerPrincipal(group.owner);
                 const allowed = !groupOwner || (owner && groupOwner.provider === owner.provider && groupOwner.subject === owner.subject);
@@ -471,7 +489,7 @@ export class PortalRuntime {
      * the target-group ownership check is always enforced regardless.
      */
     _placementViewer(authContext, isAdmin) {
-        return { ...placementPrincipal(authContext), isAdmin: isAdmin || !this.authz.enforce };
+        return { ...placementPrincipal(authContext), isAdmin: this._resourceAdmin(isAdmin) || !this.authz.enforce };
     }
 
     /**
@@ -547,12 +565,12 @@ export class PortalRuntime {
      * private sessions (adversarial review LOW-1 / NEW-5).
      */
     _listViewer(owner, isAdmin) {
-        if (isAdmin || !this.authz.enforce) return null;
+        if (this._resourceAdmin(isAdmin) || !this.authz.enforce) return null;
         if (!owner) return { provider: "\0nomatch", subject: "\0nomatch", systemVisible: false };
         return {
             provider: owner.provider,
             subject: owner.subject,
-            systemVisible: this.authz.systemVisibility === "read",
+            systemVisible: isAdmin || this.authz.systemVisibility === "read",
         };
     }
 
@@ -623,6 +641,8 @@ export class PortalRuntime {
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
             authz: {
+                adminScope: this.authz.adminScope ?? "unrestricted",
+                policyVersion: ADMIN_SCOPE_POLICY_VERSION,
                 ownershipEnforced: this.authz.enforce,
                 defaultVisibility: this.authz.defaultVisibility,
                 systemVisibility: this.authz.systemVisibility,
@@ -639,6 +659,10 @@ export class PortalRuntime {
         // visibility so a plain caller cannot read another session's private facts.
         const role = authContext?.authorization?.role;
         const isAdmin = role === "admin" || role === "anonymous";
+        const resourceAdmin = this._resourceAdmin(isAdmin);
+        if (this.authz.adminScope === "cluster" && (!owner || role === "anonymous")) {
+            throw forbiddenError("Cluster-scoped administration requires an authenticated user.");
+        }
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
@@ -687,21 +711,25 @@ export class PortalRuntime {
                 return this.transport.getSessionTokensByModel(safeParams.sessionId);
             case "getSessionTreeStats":
                 return this.transport.getSessionTreeStats(safeParams.sessionId);
-            case "getFleetStats":
-                return this.transport.getFleetStats({
+            case "getFleetStats": {
+                const stats = await this.transport.getFleetStats({
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
-            case "getUserStats":
-                return this.transport.getUserStats({
+                return resourceAdmin ? stats : projectFleetAccounting(stats);
+            }
+            case "getUserStats": {
+                const stats = await this.transport.getUserStats({
                     includeDeleted: safeParams.includeDeleted,
                     since: safeParams.since ? new Date(safeParams.since) : undefined,
                 });
+                return resourceAdmin ? stats : projectUserAccounting(stats);
+            }
             case "getCurrentUserProfile": {
                 const profile = await this.transport.getCurrentUserProfile({
                     principal: requireUserPrincipal(authContext, "getCurrentUserProfile"),
                 });
-                return profile ? { ...profile, isAdmin } : profile;
+                return profile ? { ...profile, isAdmin, adminScope: this.authz.adminScope ?? "unrestricted", capabilities: adminCapabilities(isAdmin, this.authz.adminScope) } : profile;
             }
             case "setCurrentUserProfileSettings":
                 return this.transport.setCurrentUserProfileSettings({
@@ -793,15 +821,20 @@ export class PortalRuntime {
             case "factsCapabilities":
                 return this.transport.factsCapabilities();
             case "readFacts":
-                return this.transport.readFacts(safeParams, { admin: isAdmin });
+                if (!resourceAdmin && typeof safeParams.sessionId === "string" && safeParams.sessionId.trim()) {
+                    const sessionId = safeParams.sessionId.trim();
+                    await this._gateSession(method, "session:read", sessionId, authContext, { owner, isAdmin });
+                    return this.transport.readFacts(safeParams, { admin: false, sessionId });
+                }
+                return this.transport.readFacts(safeParams, { admin: resourceAdmin });
             case "storeFact":
                 return this.transport.storeFact(safeParams.input);
             case "deleteFact":
                 return this.transport.deleteFactRecord(safeParams.input);
             case "searchFacts":
-                return this.transport.searchFacts(safeParams.query, safeParams.opts, { admin: isAdmin });
+                return this.transport.searchFacts(safeParams.query, safeParams.opts, { admin: resourceAdmin });
             case "similarFacts":
-                return this.transport.similarFacts(safeParams.scopeKey, safeParams.opts, { admin: isAdmin });
+                return this.transport.similarFacts(safeParams.scopeKey, safeParams.opts, { admin: resourceAdmin });
             case "getEmbedderStatus":
                 return this.transport.getFactsEmbedderStatus();
             case "startFactsEmbedder":
@@ -864,47 +897,51 @@ export class PortalRuntime {
                     initialPrompt: safeParams.initialPrompt,
                     groupId: safeParams.groupId,
                     owner,
-                    isAdmin,
+                    isAdmin: resourceAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
             case "listCreatableAgents":
-                return this.transport.listCreatableAgents(owner, isAdmin);
+                return this.transport.listCreatableAgents(owner, resourceAdmin);
             case "getSessionCreationPolicy":
                 return this.transport.getSessionCreationPolicy();
 
             // ── Agent packages (docs/proposals/agent-packages.md) ────
             // access "authed" + creator-or-admin enforcement in the registry
             // procs; viewer filtering in the catalog reads. `owner` is the
-            // authenticated principal, `isAdmin` the resolved role.
+            // authenticated principal, `resourceAdmin` the resolved role.
             case "listAgentPackages":
-                return this.transport.listAgentPackages(owner, isAdmin);
+                return this.transport.listAgentPackages(owner, resourceAdmin);
             case "getAgentPackage":
-                return this.transport.getAgentPackage(safeParams.name, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.getAgentPackage(safeParams.name, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageTree":
-                return this.transport.getAgentPackageTree(safeParams.name, safeParams.semver ?? null, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.getAgentPackageTree(safeParams.name, safeParams.semver ?? null, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageFile":
-                return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.getAgentPackageFile(safeParams.name, safeParams.semver ?? null, safeParams.filePath, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "uploadAgentPackage":
-                return this.transport.uploadAgentPackage(safeParams.files, safeParams.scope, owner, isAdmin);
-            case "listAgentWorkerState":
-                return this.transport.listAgentWorkerState();
-            case "listWorkers":
-                return this.transport.listWorkers();
+                return this.transport.uploadAgentPackage(safeParams.files, safeParams.scope, owner, resourceAdmin);
+            case "listAgentWorkerState": {
+                const rows = await this.transport.listAgentWorkerState();
+                return resourceAdmin ? rows : rows.map(projectAgentWorkerState);
+            }
+            case "listWorkers": {
+                const rows = await this.transport.listWorkers();
+                return resourceAdmin ? rows : rows.map(projectWorker);
+            }
             case "setAgentPackageScope":
                 // `scope` here is the TARGET; the copy selector carries only
                 // the optional admin owner override (source scope is derived
                 // from the direction in the transport).
-                return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, isAdmin, packageSelectorParams(safeParams, { scopeless: true }));
+                return this.transport.setAgentPackageScope(safeParams.name, safeParams.scope, owner, resourceAdmin, packageSelectorParams(safeParams, { scopeless: true }));
             case "setAgentPackageEnabled":
-                return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.setAgentPackageEnabled(safeParams.name, safeParams.enabled, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "grantAgentPackageEditor": {
                 const grantee = safeParams.user && typeof safeParams.user === "object" ? safeParams.user : {};
                 if (!grantee.provider || !grantee.subject) {
                     throw Object.assign(new Error("grantAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
                 }
-                await this.transport.grantAgentPackageEditor(safeParams.name, grantee, owner, isAdmin);
+                await this.transport.grantAgentPackageEditor(safeParams.name, grantee, owner, resourceAdmin);
                 this._recordAudit({
                     actor: this._auditActor(authContext),
                     action: "grantAgentPackageEditor",
@@ -920,7 +957,7 @@ export class PortalRuntime {
                 if (!grantee.provider || !grantee.subject) {
                     throw Object.assign(new Error("revokeAgentPackageEditor requires user { provider, subject }"), { code: "INVALID_REQUEST" });
                 }
-                await this.transport.revokeAgentPackageEditor(safeParams.name, grantee, owner, isAdmin);
+                await this.transport.revokeAgentPackageEditor(safeParams.name, grantee, owner, resourceAdmin);
                 this._recordAudit({
                     actor: this._auditActor(authContext),
                     action: "revokeAgentPackageEditor",
@@ -934,13 +971,13 @@ export class PortalRuntime {
             case "listAgentPackageEditors":
                 return this.transport.listAgentPackageEditors(safeParams.name);
             case "pinAgentPackageVersion":
-                return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "deleteAgentPackage":
-                return this.transport.deleteAgentPackage(safeParams.name, owner, isAdmin, packageSelectorParams(safeParams));
+                return this.transport.deleteAgentPackage(safeParams.name, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "republishAgentPackageVersion":
                 return this.transport.republishAgentPackageVersion(
                     safeParams.name, safeParams.semver ?? null, safeParams.targetScope,
-                    owner, isAdmin, {
+                    owner, resourceAdmin, {
                         selector: packageSelectorParams(safeParams),
                         createdBy: principalLabel(authContext),
                     },
@@ -979,7 +1016,7 @@ export class PortalRuntime {
             case "setMyDefault":
             case "getProviderUsage":
             case "listPausedSessions":
-                return this._callProvider(method, safeParams, { principal: owner, isAdmin });
+                return this._callProvider(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
 
             case "sendMessage": {
                 // Canvas actions are CREATOR-only — not shared writers, not
@@ -1002,7 +1039,7 @@ export class PortalRuntime {
                     // viewers and link bearers are refused — their requests
                     // land in the KV as `suggested` instead.
                     const mayRing = Boolean(snapshot) && (
-                        snapshot.viewerIsOwner || isAdmin
+                        snapshot.viewerIsOwner || this._resourceAdmin(isAdmin, snapshot)
                         || snapshot.viewerShareAccess === "write" || snapshot.visibility === "shared_write");
                     if (!mayRing) {
                         throw forbiddenError("Canvas actions are accepted only from people who can write this session. Use the chat box, or ask the owner.");
@@ -1027,9 +1064,9 @@ export class PortalRuntime {
                 if (!snapshot) {
                     throw notFoundError();
                 }
-                const relation = snapshot.viewerIsOwner ? "owner" : (isAdmin ? "admin" : (snapshot.viewerShareAccess ? "collaborator" : "none"));
-                const canWrite = isAdmin || snapshot.viewerIsOwner || snapshot.visibility === "shared_write" || snapshot.viewerShareAccess === "write";
-                const canManage = isAdmin || snapshot.viewerIsOwner;
+                const relation = snapshot.viewerIsOwner ? "owner" : (this._resourceAdmin(isAdmin, snapshot) ? "admin" : (snapshot.viewerShareAccess ? "collaborator" : "none"));
+                const canWrite = this._resourceAdmin(isAdmin, snapshot) || snapshot.viewerIsOwner || snapshot.visibility === "shared_write" || snapshot.viewerShareAccess === "write";
+                const canManage = this._resourceAdmin(isAdmin, snapshot) || snapshot.viewerIsOwner;
                 // The caller's private placement of this tree (placements
                 // live on the root), never another viewer's.
                 const rootView = snapshot.rootSessionId
@@ -1196,7 +1233,7 @@ export class PortalRuntime {
                 return this.transport.getLive(safeParams.sessionId, safeParams.topics);
             case "readCanvasKv": {
                 const slot = this._canvasKvSlot(safeParams.slot);
-                return this.transport.readCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, isAdmin), {
+                return this.transport.readCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, this._resourceAdmin(isAdmin, gate.snapshot)), {
                     prefix: safeParams.prefix ?? null,
                     limit: safeParams.limit ?? null,
                     after: safeParams.after ?? null,
@@ -1216,7 +1253,7 @@ export class PortalRuntime {
                 if (!this._canvasKvRateOk(`${safeParams.sessionId}:${who}`, 10, ops.length) || !this._canvasKvRateOk(`${safeParams.sessionId}:${slot}`, 50, ops.length)) {
                     throw Object.assign(new Error("canvas KV write rate exceeded (10 writes/s per viewer, 50/s per canvas)"), { code: "RATE_LIMITED", status: 429 });
                 }
-                return this.transport.writeCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, isAdmin), ops);
+                return this.transport.writeCanvasKv(safeParams.sessionId, slot, this._canvasKvPrincipal(authContext, owner, this._resourceAdmin(isAdmin, gate.snapshot)), ops);
             }
             case "setCanvasKvAccess": {
                 const slot = this._canvasKvSlot(safeParams.slot);
@@ -1463,7 +1500,7 @@ export class PortalRuntime {
             provider: principal.provider,
             subject: principal.subject,
             display: principal.displayName || principal.email || principal.subject,
-            relation: relationFor(snapshot, { isAdmin }),
+            relation: relationFor(snapshot, { isAdmin, adminScope: this.authz.adminScope }),
             origin: allowedOrigins.has(origin) ? origin : "api",
         };
     }
@@ -1504,7 +1541,7 @@ export class PortalRuntime {
         const owner = normalizeSessionOwner(authContext);
         const role = authContext?.authorization?.role;
         const isAdmin = role === "admin" || role === "anonymous";
-        return this.transport.downloadAgentPackage(name, semver ?? null, owner, isAdmin, selector);
+        return this.transport.downloadAgentPackage(name, semver ?? null, owner, this._resourceAdmin(isAdmin), selector);
     }
 
     /** session:read gate for the bespoke (non-dispatched) artifact routes. */
@@ -1528,7 +1565,7 @@ export class PortalRuntime {
     async authorizeLogSubscribe(authContext) {
         const role = authContext?.authorization?.role;
         const isAdmin = role === "admin" || role === "anonymous";
-        if (isAdmin) return;
+        if (this._resourceAdmin(isAdmin)) return;
         this._recordAudit({
             actor: this._auditActor(authContext),
             action: "subscribeLogs",

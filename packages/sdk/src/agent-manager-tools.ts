@@ -30,6 +30,7 @@ import { guardedImportFetch } from "./agent-package-import-fetch.js";
 import { loadImportPolicy, type ImportPolicy } from "./agent-package-import-policy.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { listBundledAgentNames } from "./agent-loader.js";
+import { adminCanAccessResource, type AdminScope } from "../api/src/admin-scope.js";
 
 /**
  * Staging lives in ONE session artifact rather than N.
@@ -76,6 +77,7 @@ export function decideSessionControl(args: {
     /** The calling session's owner, or null when it could not be resolved. */
     caller: { provider?: string; subject?: string } | null;
     callerIsAdmin: boolean;
+    adminScope?: AdminScope;
     /** Lifecycle operations refuse system sessions; messaging does not use this. */
     refuseSystem?: boolean;
 }): { ok: true } | { ok: false; reason: string } {
@@ -100,7 +102,7 @@ export function decideSessionControl(args: {
     if (target.owner?.provider === caller.provider && target.owner?.subject === caller.subject) {
         return { ok: true };
     }
-    if (callerIsAdmin) return { ok: true };
+    if (adminCanAccessResource(callerIsAdmin, args.adminScope, target.isSystem)) return { ok: true };
 
     return { ok: false, reason: `you neither own session ${targetIdLabel} nor hold the admin role` };
 }
@@ -134,7 +136,13 @@ export interface AgentManagerViewer {
     provider: string;
     subject: string;
     isAdmin: boolean;
+    adminScope?: AdminScope;
     isSystemPrincipal: boolean;
+}
+
+/** Package authority is separate from the role used for budgets/configuration. */
+function packageAdmin(viewer: AgentManagerViewer): boolean {
+    return adminCanAccessResource(viewer.isAdmin, viewer.adminScope);
 }
 
 export interface CreateAgentManagerToolsOptions {
@@ -224,7 +232,7 @@ export async function resolveReference(
     const ownerRef = fqn.ownerRef?.trim();
     // Only a cross-owner reference is rescuable, and only for the fleet-wide
     // principals. Everything else keeps the message it already had.
-    if (!ownerRef || !(viewer.isAdmin || viewer.isSystemPrincipal)) return base;
+    if (!ownerRef || !(packageAdmin(viewer) || viewer.isSystemPrincipal)) return base;
 
     let users: Awaited<ReturnType<SessionCatalog["listKnownUsers"]>>;
     try {
@@ -271,7 +279,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         if (!artifactStore) return { error: "no artifact store is configured on this worker." };
         try {
             return await readAgentPackageVersionEntries(
-                { catalog, artifactStore }, name, principalOf(viewer), viewer.isAdmin, selector, semver,
+                { catalog, artifactStore }, name, principalOf(viewer), packageAdmin(viewer), selector, semver,
             );
         } catch (error: any) {
             return { error: error?.message || String(error) };
@@ -286,7 +294,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
         handler: async () => {
             const viewer = await resolveViewer();
             try {
-                const rows = await catalog.listAgentPackages(principalOf(viewer), viewer.isAdmin);
+                const rows = await catalog.listAgentPackages(principalOf(viewer), packageAdmin(viewer));
                 return {
                     packages: rows.map((p) => ({
                         name: p.name, scope: p.scope, enabled: p.enabled, shadowed: p.shadowed,
@@ -306,8 +314,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             "One package with its full version history. Accepts a bare name (your copy, else shared), "
             + "`__shared:<name>` to reach the deployment copy past your own, or `<owner>:<name>` "
             + "naming a person by subject, email, or display name. "
-            + "An administrator reaches every user's packages — a bare name resolving someone else's "
-            + "package is the intended fleet-wide reach, not a leak.",
+            + "Unrestricted administrators can reach other owners; cluster-scoped administrators use ordinary owner/editor permissions.",
         parameters: {
             type: "object" as const,
             properties: { package: { type: "string", description: "Package name or __shared:<name>." } },
@@ -318,7 +325,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `read_agent_package: ${ref.error}` };
             try {
-                const detail = await catalog.getAgentPackage(ref.name, principalOf(viewer), viewer.isAdmin, ref.selector);
+                const detail = await catalog.getAgentPackage(ref.name, principalOf(viewer), packageAdmin(viewer), ref.selector);
                 if (!detail) return { error: `read_agent_package: "${ref.name}" not found, or not visible to you.` };
                 return {
                     name: detail.name, scope: detail.scope, enabled: detail.enabled,
@@ -605,6 +612,10 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             if (!artifactStore || !opts.sessionId) return { error: "publish_agent_package: no artifact store on this session." };
             const staged = await loadStaging();
             if (!staged) return { error: "publish_agent_package: nothing staged. Use stage_agent_package_edit first." };
+            if (staged.targetOwner && !packageAdmin(viewer) && !viewer.isSystemPrincipal
+                && (staged.targetOwner.provider !== viewer.provider || staged.targetOwner.subject !== viewer.subject)) {
+                return { error: "publish_agent_package: you no longer have permission to publish for the staged package's owner." };
+            }
             if (Object.keys(staged.files).length === 0) return { error: "publish_agent_package: the staged tree is empty." };
 
             // The changelog is part of the package, and this version has to be
@@ -649,7 +660,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                 // and the database re-checks creator-or-admin under a row
                 // lock, so this widens nothing on its own.
                 const target = staged.targetOwner;
-                const owner = target && (viewer.isAdmin || viewer.isSystemPrincipal)
+                const owner = target && (packageAdmin(viewer) || viewer.isSystemPrincipal)
                     ? { provider: target.provider, subject: target.subject }
                     : principalOf(viewer);
                 const outcome = await publishAgentPackageDir(
@@ -661,7 +672,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                         // Provenance: a reader must be able to tell an
                         // agent-authored version from a human `agents push`.
                         createdBy: `agent-manager (approved by ${args.approved_by})`,
-                        isAdmin: viewer.isAdmin,
+                        isAdmin: packageAdmin(viewer),
                         validate: {
                             reservedAgentNames: opts.reservedAgentNames ?? listBundledAgentNames(),
                             reservedMcpServerNames: opts.reservedMcpServerNames ?? [],
@@ -709,7 +720,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `set_agent_package_enabled: ${ref.error}` };
             try {
-                await catalog.setAgentPackageEnabled(ref.name, args.enabled, principalOf(viewer), viewer.isAdmin, ref.selector);
+                await catalog.setAgentPackageEnabled(ref.name, args.enabled, principalOf(viewer), packageAdmin(viewer), ref.selector);
                 return { ok: true, package: ref.name, enabled: args.enabled };
             } catch (err: any) {
                 return { error: `set_agent_package_enabled: ${err?.message || String(err)}` };
@@ -731,7 +742,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             const ref = await resolveReference(args.package, viewer, catalog);
             if (ref.error) return { error: `pin_agent_package_version: ${ref.error}` };
             try {
-                await catalog.pinAgentPackageVersion(ref.name, args.semver, principalOf(viewer), viewer.isAdmin, ref.selector);
+                await catalog.pinAgentPackageVersion(ref.name, args.semver, principalOf(viewer), packageAdmin(viewer), ref.selector);
                 return { ok: true, package: ref.name, pinned: args.semver };
             } catch (err: any) {
                 return { error: `pin_agent_package_version: ${err?.message || String(err)}` };

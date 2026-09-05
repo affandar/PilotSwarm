@@ -21,6 +21,7 @@
  */
 
 import fs from "node:fs";
+import { createCopilotClient } from "./copilot-client.js";
 import { TEXT_ARTIFACT_MAX_BYTES } from "./session-store.js";
 import { selectTranscript } from "./transcript-selection.js";
 import os from "node:os";
@@ -654,12 +655,11 @@ export async function runRegenDistill(
     let responseText: string | null = null;
     try {
         responseText = await withDeadline(DISTILL_TIMEOUT_MS, async () => {
-            const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            sdk = new (SdkClient as any)({
+            sdk = createCopilotClient({
                 ...(resolved!.gitHubToken ? { gitHubToken: resolved!.gitHubToken } : {}),
                 logLevel: "error",
                 env: { ...process.env, COPILOT_HOME: tempHome },
-            });
+            }, resolved!.provider);
             await sdk.start();
             const session: any = await sdk.createSession({
                 ...(resolved!.model ? { model: resolved!.model } : {}),

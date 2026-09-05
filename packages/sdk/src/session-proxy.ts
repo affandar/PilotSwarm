@@ -1,4 +1,5 @@
 import nodeCrypto from "node:crypto";
+import { createCopilotClient } from "./copilot-client.js";
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
@@ -12,6 +13,7 @@ import { buildCheckAgentsReport, CHECK_AGENTS_MEMO_EVENT, type CheckAgentsMemo }
 // One predicate, every surface: the portal, the viewer spine and the control
 // bridge all decide "is this principal an admin?" the same way.
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
+import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
@@ -1713,6 +1715,7 @@ export function registerActivities(
         ): Promise<{ ok: true } | { ok: false; reason: string }> => {
             if (!catalog) return { ok: false, reason: "no session catalog on this worker" };
             const target = await catalog.getSession(targetSessionId).catch(() => null);
+            const callerSession = await catalog.getSession(input.sessionId).catch(() => null);
             const me = await resolveEffectiveSpawnOwner(
                 (id) => catalog!.getSession(id),
                 input.sessionId,
@@ -1735,6 +1738,7 @@ export function registerActivities(
                 targetIdLabel: targetSessionId.slice(0, 8),
                 caller: me,
                 callerIsAdmin: isAdmin,
+                adminScope: callerSession?.isSystem ? "unrestricted" : loadAdminScope(),
                 refuseSystem: opts?.refuseSystem,
             });
         };
@@ -4130,8 +4134,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<string> => {
         activityCtx.traceInfo("[listModels] fetching");
         if (githubToken) {
-            const { CopilotClient } = await import("@github/copilot-sdk");
-            const sdk = new CopilotClient({ gitHubToken: githubToken });
+            const sdk = createCopilotClient({ gitHubToken: githubToken });
             try {
                 await sdk.start();
                 const models = await sdk.listModels();
@@ -4263,12 +4266,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             // Use a one-shot CopilotSession to generate the title.
             // Prefer the default provider from the registry (works without GitHub token).
-            const { CopilotClient: SdkClient } = await import("@github/copilot-sdk");
-            const sdk = new SdkClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) });
+            const defaultProvider = sessionManager.resolveDefaultProvider();
+            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider);
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
-                const defaultProvider = sessionManager.resolveDefaultProvider();
                 const sessionOpts: any = {
                     onPermissionRequest: approvePermissionForSession,
                 };

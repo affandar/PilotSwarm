@@ -22,6 +22,10 @@ export function buildCapabilities(ctx: ServerContext) {
         // refused with the reason in the error.
         role: ctx.role ?? null,
         ownership_enforced: ctx.authz?.ownershipEnforced ?? false,
+        admin_scope: ctx.authz?.adminScope ?? "unrestricted",
+        authz_policy_version: ctx.authz?.policyVersion ?? 0,
+        user_resource_bypass: ctx.admin && ctx.authz?.adminScope !== "cluster",
+        system_session_admin: ctx.admin,
         default_visibility: ctx.authz?.defaultVisibility ?? "private",
         // Session groups are private per-user organization: list_session_groups
         // returns only the caller's groups, session views carry viewer_group_id

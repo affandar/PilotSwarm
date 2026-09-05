@@ -29,6 +29,7 @@ test("portal runtime routes personal provider credential updates with the authen
         viewer: {
             principal: { ...authContext.principal, email: null, displayName: null },
             isAdmin: false,
+            adminScope: "unrestricted",
         },
         input: { name: "my-ghcp", credentials: { githubToken: "replacement-token" } },
     }]);

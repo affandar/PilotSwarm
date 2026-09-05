@@ -136,7 +136,7 @@ export function createApiRouter({ runtime, requireAuth }) {
 
     // ── Public routes ───────────────────────────────────────────────────
     router.get("/health", (_req, res) => {
-        res.json({ ok: true, started: runtime.started, mode: runtime.mode, apiVersion: API_VERSION });
+        res.json({ ok: true, started: runtime.started, mode: runtime.mode, apiVersion: API_VERSION, authz: runtime.getAuthorizationPolicy?.() });
     });
 
     router.get("/auth/config", async (req, res) => {

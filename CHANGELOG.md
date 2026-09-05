@@ -1,7 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.5.59 — 2026-09-05
 
+Cluster-scoped administration, Azure/OpenAI request compatibility, updated
+Copilot SDK/CLI, and stable chat previews and warning cards.
+
+- Add operator-controlled `AUTHZ_ADMIN_SCOPE=cluster`: administrators retain
+  health/configuration controls and every user's token accounting, but ordinary
+  session/package ownership and shares apply to their direct content access.
+  System-session admin access and genuine system-agent authority remain unchanged
+  (the system-mediated bypass is explicitly deferred to phase 2).
+- Redact private accounting labels and worker inventories, revalidate open
+  session streams, clear revoked views, and recheck staged package publications.
+  Additive CMS migration 0075 preserves sessions, grants and usage ledgers.
+- Pin Copilot SDK 1.0.13 and CLI 1.0.83, using the SDK's bundled platform runtime
+  through explicitly isolated stdio clients. Strip the leaked top-level `snippy`
+  field only on OpenAI/Azure BYOK chat-completions requests; native GitHub
+  Copilot and Anthropic/WIF transports remain unchanged. Apply the same boundary
+  to durable sessions, titles and distillation, with provider-switch isolation.
+- Add real SDK/CLI protocol tests for all BYOK provider types, streaming and
+  non-streaming tool calls, usage, warm turns, cold resume and rotating WIF
+  credentials, plus a separate credentialed live-provider validation runner.
+- Render attributed question confirmations as one Question card plus the human
+  answer, replacing the optimistic exchange without duplicating it under “You”.
+- Keep API/retry warning cards stable across catalog/detail refreshes and retry
+  count changes, clearing them on recovery or terminal status.
+- Mobile session lists stop scrolling when the finger lifts; remove inertial
+  fling while preserving axis-locked panning and tap selection.
 - Ignore Copilot progress-only notifications when accumulating live text, so
   answers grow smoothly instead of resetting to individual fragments. Empty
   chunks no longer clear retained answers or reasoning or bypass pacing.
@@ -18,6 +43,20 @@
   872K extended prompt tokens inside a 1M total window. Existing GHCP provider
   instances inherit the model; defaults and credentials are unchanged, and
   Copilot entitlement/model policy still apply.
+
+### Validation
+
+- Full `./scripts/run-tests.sh --all-providers` passed before release preparation:
+  1,597 baseline SDK tests, 1,610 HorizonDB-backed SDK tests, and 149 HorizonDB
+  storage tests. Existing skips: 14 baseline and one HorizonDB SDK case.
+- All 113 browser tests passed. Authorization regression suites include private
+  session/package denial, staged publish revocation, exact all-user accounting,
+  and stale HTTP/WebSocket response invalidation.
+- An initial shared-test embedder timeout was resolved after operator-approved
+  cancellation of stale test loops. Data and assertions were preserved; the
+  unchanged complete combined run then passed. See the validation report.
+- The operator approved reusing that full pass for this release. Build and
+  package checks run again; test suites are not rerun for version metadata.
 
 ## 0.5.58 — 2026-09-04
 

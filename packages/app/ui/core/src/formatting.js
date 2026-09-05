@@ -1114,6 +1114,7 @@ export function buildMessageCardLines({
     bodyColor = null,
     fitToContent = false,
     tableMode = null,
+    cardKey = null,
 } = {}) {
     const maxWidth = Math.max(fitToContent ? 12 : 20, Number(width) || (fitToContent ? 12 : 20));
     const maxContentWidth = Math.max(1, maxWidth - 4);
@@ -1138,7 +1139,7 @@ export function buildMessageCardLines({
                 : lineRuns))
             : sentinelBodyLines;
         return [
-            { kind: "cardStart", runs: titleRuns, borderColor },
+            { kind: "cardStart", runs: titleRuns, borderColor, ...(cardKey ? { cardKey } : {}) },
             ...sentinelTinted,
             { kind: "cardEnd" },
             [{ text: "", color: null }],

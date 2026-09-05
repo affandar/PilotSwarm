@@ -2180,6 +2180,7 @@ function buildAdminModelProviderLines(view) {
 
 function buildAdminConsoleLines(view) {
     const lines = [];
+    if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
     lines.push([
         { text: "Signed in as ", color: "gray" },
         { text: formatAdminPrincipalLabelTui(view.principal), color: "white", bold: true },

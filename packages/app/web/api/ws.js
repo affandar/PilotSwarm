@@ -89,11 +89,44 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
         const liveSubscriptions = new Map();
         const liveSubscriptionGeneration = new Map();
         let logUnsubscribe = null;
+        let accessCheckPending = false;
+        // An open socket must not preserve a revoked grant indefinitely.
+        // One bounded check per subscribed session per interval, not per delta;
+        // session/live/canvas subscriptions share the same check.
+        const accessRevalidateTimer = !shareScope && runtime.authz?.enforce
+            ? setInterval(async () => {
+                if (accessCheckPending || ws.readyState !== ws.OPEN) return;
+                accessCheckPending = true;
+                try {
+                    const ids = new Set([...sessionSubscriptions.keys(), ...canvasSubscriptions.keys(), ...liveSubscriptions.keys()]);
+                    for (const sessionId of ids) {
+                        try {
+                            await runtime.authorizeSessionSubscribe(sessionId, auth);
+                        } catch {
+                            sessionSubscriptions.get(sessionId)?.();
+                            sessionSubscriptions.delete(sessionId);
+                            canvasSubscriptions.get(sessionId)?.();
+                            canvasSubscriptions.delete(sessionId);
+                            liveSubscriptions.get(sessionId)?.unsubscribe();
+                            liveSubscriptions.delete(sessionId);
+                            liveSubscriptionGeneration.set(sessionId, (liveSubscriptionGeneration.get(sessionId) || 0) + 1);
+                            send({ type: "error", scope: "session", sessionId, code: "ACCESS_REVOKED", error: "Session not found." });
+                        }
+                    }
+                } finally { accessCheckPending = false; }
+            }, Math.max(1, Number(process.env.PILOTSWARM_SESSION_REVALIDATE_MS) || 5_000))
+            : null;
+        accessRevalidateTimer?.unref?.();
 
         const send = (message) => {
             if (ws.readyState === ws.OPEN) {
                 ws.send(JSON.stringify(message));
             }
+        };
+        const sendSubscriptionError = (scope, sessionId, error) => {
+            const denied = [403, 404].includes(error?.status) || ["FORBIDDEN", "NOT_FOUND"].includes(error?.code);
+            send({ type: "error", scope, sessionId, ...(denied ? { code: "ACCESS_REVOKED" } : {}),
+                error: denied ? "Session not found." : error?.message || String(error) });
         };
 
         send({ type: "ready" });
@@ -116,6 +149,12 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
             }
 
             const type = String(message?.type || "");
+            if (!shareScope && type.startsWith("subscribe")
+                && new Set([...sessionSubscriptions.keys(), ...canvasSubscriptions.keys(), ...liveSubscriptions.keys()]).size >= 64
+                && !sessionSubscriptions.has(message.sessionId) && !canvasSubscriptions.has(message.sessionId) && !liveSubscriptions.has(message.sessionId)) {
+                send({ type: "error", scope: "session", error: "Too many subscriptions." });
+                return;
+            }
             if (shareScope) {
                 // The whole share-scope protocol: subscribe to THE canvas the
                 // token names. No session events, no logs, no other sessions.
@@ -167,7 +206,7 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                     sessionSubscriptions.set(sessionId, unsubscribe);
                     send({ type: "subscribedSession", sessionId });
                 } catch (error) {
-                    send({ type: "error", scope: "session", sessionId, error: error?.message || String(error) });
+                    sendSubscriptionError("session", sessionId, error);
                 }
                 return;
             }
@@ -203,7 +242,7 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                     canvasSubscriptions.set(sessionId, unsubscribe);
                     send({ type: "subscribedCanvas", sessionId });
                 } catch (error) {
-                    send({ type: "error", scope: "canvas", sessionId, error: error?.message || String(error) });
+                    sendSubscriptionError("canvas", sessionId, error);
                 }
                 return;
             }
@@ -303,7 +342,7 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
                         liveSubscriptions.delete(sessionId);
                     }
                     if (liveSubscriptionGeneration.get(sessionId) !== generation) return;
-                    send({ type: "error", scope: "live", sessionId, error: error?.message || String(error) });
+                    sendSubscriptionError("live", sessionId, error);
                 }
                 return;
             }
@@ -356,6 +395,7 @@ export function createConnectionHandler(runtime, { allowThemeMessages = false } 
         });
 
         ws.on("close", () => {
+            if (accessRevalidateTimer) clearInterval(accessRevalidateTimer);
             if (shareRevalidateTimer) clearInterval(shareRevalidateTimer);
             for (const unsubscribe of sessionSubscriptions.values()) {
                 try {

@@ -8,6 +8,8 @@
  * gate that always passes.
  */
 
+import type { AdminScope } from "./admin-scope.js";
+
 export interface SessionAccessSnapshot {
     rootSessionId?: string;
     isSystem: boolean;
@@ -42,19 +44,19 @@ export declare function systemSessionsReadable(env?: Record<string, string | und
 
 export declare function relationFor(
     snapshot: SessionAccessSnapshot | null,
-    opts?: { isAdmin?: boolean },
+    opts?: { isAdmin?: boolean; adminScope?: AdminScope },
 ): "owner" | "admin" | "collaborator";
 
 export declare function evaluateSessionAccess(
     accessClass: SessionAccessClass,
     snapshot: SessionAccessSnapshot | null,
-    opts?: { isAdmin?: boolean; systemReadable?: boolean },
+    opts?: { isAdmin?: boolean; systemReadable?: boolean; adminScope?: AdminScope },
 ): SessionAccessDecision;
 
 /** Archive reads are owner-or-admin ONLY — never a share. See proposal §15 A3. */
 export declare function evaluateArchiveAccess(
     snapshot: SessionAccessSnapshot | null,
-    opts?: { isAdmin?: boolean },
+    opts?: { isAdmin?: boolean; adminScope?: AdminScope },
 ): SessionAccessDecision;
 
 /** A sign-in role observation read from the users table. */

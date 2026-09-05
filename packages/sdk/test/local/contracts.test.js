@@ -114,6 +114,15 @@ const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     "stop_bash",
     "view",
     "web_fetch",
+    // Verified after a real first turn via session.rpc.tools.getCurrentMetadata
+    // on CLI 1.0.83: these are upstream defaults, not model confabulation or
+    // PilotSwarm deployment MCP grants. Keep exact matching on both turns.
+    "web_search",
+    "github-mcp-server-get_copilot_space",
+    "github-mcp-server-get_file_contents",
+    "github-mcp-server-list_copilot_spaces",
+    "github-mcp-server-search_code",
+    "github-mcp-server-search_users",
     // write_agent joined the CLI's built-ins between 1.0.70 and 1.0.73
     // (companion to read_agent, for custom-agent files). Not a PilotSwarm
     // tool; delivered by the CLI to every session.

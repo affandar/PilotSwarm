@@ -1204,6 +1204,7 @@ export interface SessionCatalog {
 
     /** Access snapshot for the enforcement predicate (null = missing/deleted session). */
     getSessionAccess(sessionId: string, viewer: { provider: string; subject: string }): Promise<SessionAccessSnapshot | null>;
+    filterVisibleSessionIds(sessionIds: string[], viewer: { provider: string; subject: string }, systemVisible: boolean): Promise<string[]>;
 
     /** Append one authz audit record. */
     recordAuthzAudit(entry: {
@@ -1451,6 +1452,7 @@ function sqlForSchema(schema: string) {
             revokeSessionShare:         `${s}.cms_revoke_session_share`,
             listSessionShares:          `${s}.cms_list_session_shares`,
             getSessionAccess:           `${s}.cms_get_session_access`,
+            filterVisibleSessionIds:    `${s}.cms_filter_visible_session_ids`,
             recordAuthzAudit:           `${s}.cms_record_authz_audit`,
             listAuthzAudit:             `${s}.cms_list_authz_audit`,
             listSessionsVisible:        `${s}.cms_list_sessions_visible`,
@@ -2022,6 +2024,15 @@ export class PgSessionCatalog implements SessionCatalog {
             grantedAt: new Date(row.granted_at),
             grantedByDisplay: row.granted_by_display ?? null,
         }));
+    }
+
+    async filterVisibleSessionIds(sessionIds: string[], viewer: { provider: string; subject: string }, systemVisible: boolean): Promise<string[]> {
+        if (!sessionIds.length) return [];
+        const { rows } = await this.pool.query(
+            `SELECT * FROM ${this.sql.fn.filterVisibleSessionIds}($1, $2, $3, $4)`,
+            [sessionIds, viewer.provider, viewer.subject, systemVisible],
+        );
+        return rows.map((row: { session_id: string }) => row.session_id);
     }
 
     async getSessionAccess(

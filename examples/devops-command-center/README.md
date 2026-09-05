@@ -222,6 +222,13 @@ devops-command-center/
 
 ## Features Demonstrated
 
+This local mock sample is not a multi-user security boundary. For a shared
+deployment, enable authentication and ownership enforcement. Set
+`AUTHZ_ADMIN_SCOPE=cluster` on workers and the portal to restrict direct admin
+access to private sessions and packages. System-session access and all-user
+token accounting remain available to admins. See the
+[deployment guidance](../../docs/developer/deploy/aks.md#optional-cluster-scoped-administration).
+
 | PilotSwarm Feature | Where |
 |-------------------|-------|
 | Session policy (allowlist) | `session-policy.json` — only 4 agents creatable |

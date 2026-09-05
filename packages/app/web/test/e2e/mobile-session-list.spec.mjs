@@ -6,7 +6,7 @@
 // touch on a row is claimed as a potential drag — which made the list
 // unusable on a phone. Nothing on a desktop viewport can catch that, so these
 // run under a real mobile emulation.
-import { test, expect, devices } from "@playwright/test";
+import { test, expect, devices, chromium } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
 test.use({ ...devices["iPhone 14 Pro"] });
@@ -37,6 +37,53 @@ test("a tap still selects", async ({ page }) => {
     await rows.first().waitFor();
     await rows.nth(2).tap();
     await expect(page.locator(".ps-session-list-button.is-selected")).toHaveCount(1);
+});
+
+async function checkDragStops(page, nativeTouch = false) {
+    await page.goto(base);
+    const list = page.locator(".ps-session-list").first();
+    await list.waitFor();
+    await expect.poll(() => list.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
+    const box = await list.boundingBox();
+    const selected = await page.locator(".ps-session-list-button.is-selected").textContent();
+    const cdp = nativeTouch ? await page.context().newCDPSession(page) : null;
+    const x = Math.round(box.x + box.width / 2);
+    const y = Math.round(box.y + box.height - 15);
+    const touch = async (type, points) => {
+        if (cdp) return cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points });
+        // WebKit has no CDP touch driver. Dispatch the input consumed by our
+        // non-passive handler; Chromium below also verifies native arbitration.
+        await list.evaluate((el, { type, points }) => {
+            const event = new Event(type.toLowerCase(), { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "targetTouches", { value: points.map(p => ({ clientX: p.x, clientY: p.y })) });
+            el.dispatchEvent(event);
+        }, { type, points });
+    };
+    await touch("touchStart", [{ x, y }]);
+    for (const delta of [4, 12, 28, 44, 60]) {
+        await touch("touchMove", [{ x, y: y - delta }]);
+    }
+    await touch("touchEnd", []);
+    const released = await list.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
+    expect(released.y).toBeGreaterThan(20);
+    await page.waitForTimeout(500);
+    expect(await list.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }))).toEqual(released);
+    expect(await page.locator(".ps-session-list-button.is-selected").textContent()).toBe(selected);
+    await cdp?.detach();
+}
+
+test("a thumb drag stops on release without selecting a row", async ({ page }) => {
+    await checkDragStops(page);
+});
+
+test("a thumb drag stops on release without browser inertia in Chromium", async () => {
+    const browser = await chromium.launch();
+    try {
+        const page = await browser.newPage({ ...devices["Pixel 7"] });
+        await checkDragStops(page, true);
+    } finally {
+        await browser.close();
+    }
 });
 
 test("the page never scrolls sideways, in or out of focus mode", async ({ page }) => {

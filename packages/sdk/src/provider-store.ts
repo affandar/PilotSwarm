@@ -635,9 +635,9 @@ export class ProviderStore {
         }));
     }
 
-    async listPaused(viewer: number | null, isAdmin: boolean, limit = 100): Promise<PausedSessionRow[]> {
+    async listPaused(viewer: number | null, isAdmin: boolean, limit = 100, clusterScoped = false): Promise<PausedSessionRow[]> {
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_provider_list_paused")}($1, $2, $3)`, [viewer, isAdmin, limit]);
+            `SELECT * FROM ${this.fn(clusterScoped ? "cms_provider_list_paused_cluster" : "cms_provider_list_paused")}($1, $2, $3)`, [viewer, isAdmin, limit]);
         return rows.map((r) => ({
             sessionId: r.session_id,
             title: r.title ?? null,
@@ -697,10 +697,10 @@ export class ProviderStore {
     async usageBreakdown(
         viewer: number | null, isAdmin: boolean,
         dimension: "session" | "user" | "provider" | "model" | "agent",
-        f: UsageFilters = {}, limit = 40,
+        f: UsageFilters = {}, limit = 40, clusterScoped = false,
     ) {
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_provider_usage_breakdown")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            `SELECT * FROM ${this.fn(clusterScoped ? "cms_provider_usage_breakdown_cluster" : "cms_provider_usage_breakdown")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
             [...this.usageArgs(viewer, isAdmin, f), dimension, limit]);
         return rows.map((r) => ({
             key: r.key,
@@ -737,12 +737,13 @@ export class ProviderStore {
      */
     async usageAgents(
         viewer: number | null, isAdmin: boolean, days = 14, providers: string[] | null = null,
+        clusterScoped = false,
     ): Promise<Record<string, unknown>> {
         const names = Array.isArray(providers)
             ? providers.map((p) => String(p ?? "").trim()).filter(Boolean)
             : [];
         const rows = await this.call(
-            `SELECT ${this.fn("cms_provider_usage_agents")}($1,$2,$3,$4) AS agents`,
+            `SELECT ${this.fn(clusterScoped ? "cms_provider_usage_agents_cluster" : "cms_provider_usage_agents")}($1,$2,$3,$4) AS agents`,
             [viewer, isAdmin, days, names.length ? names : null]);
         const agents = rows[0]?.agents;
         return agents && typeof agents === "object" ? agents : {};

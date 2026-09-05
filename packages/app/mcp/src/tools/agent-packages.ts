@@ -24,7 +24,7 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             title: "List Agent Packages",
             description:
                 "List registry agent packages visible to this credential: shared packages plus your own "
-                + "user-scope ones (admins see all). Each row carries the active version (semver, sha, size) "
+                + "user-scope ones (unrestricted admins see all; cluster-scoped admins use ordinary access). Each row carries the active version (semver, sha, size) "
                 + "and its manifest (agents/skills/tools).",
             inputSchema: {},
         },

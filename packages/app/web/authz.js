@@ -4,7 +4,9 @@ import {
     normalizeVisibility,
     relationFor,
     SESSION_VISIBILITY_VALUES,
+    validateAdminScope,
 } from "pilotswarm-sdk/api";
+import { loadAuthorizationPolicy, resolveAuthProviderId } from "./auth/config.js";
 
 // The session-tree predicate now lives in the SDK so the WORKER evaluates the
 // same rules for agent tools (Agent Manager proposal §4). Re-exported here so
@@ -35,6 +37,10 @@ export function loadAuthzConfig(env = process.env) {
     const rawDefault = String(env.SESSIONS_DEFAULT_VISIBILITY || "").trim().toLowerCase();
     const visibilityValues = new Set(SESSION_VISIBILITY_VALUES);
     return {
+        adminScope: validateAdminScope(env, {
+            authenticationEnabled: resolveAuthProviderId({ env }) !== "none"
+                && !loadAuthorizationPolicy({ env }).allowUnauthenticated,
+        }),
         enforce: parseBooleanEnv(env.AUTHZ_ENFORCE_OWNERSHIP, false),
         defaultVisibility: visibilityValues.has(rawDefault) ? rawDefault : "private",
         // "read" (default): system sessions are metadata/content-visible to
@@ -66,4 +72,3 @@ export function notFoundError() {
 function ownerLabel(snapshot) {
     return snapshot?.owner?.displayName || snapshot?.owner?.email || snapshot?.owner?.subject || "another user";
 }
-

@@ -1,6 +1,12 @@
 # User / Admin Security Model — Ownership, Visibility, and Message Identity
 
 **Status:** Draft / RFC
+
+**Policy update:** [Cluster-scoped administrators](cluster-scoped-admin.md)
+adds `AUTHZ_ADMIN_SCOPE=cluster`. The unrestricted admin behavior described
+below remains the compatibility default; cluster mode removes direct
+non-system session/package bypass while preserving fleet accounting and the
+explicit phase-1 system-session exception.
 **Date:** 2026-07-14
 **Scope:** Web API + portal authorization, session visibility & sharing, message provenance, shared-store scoping
 

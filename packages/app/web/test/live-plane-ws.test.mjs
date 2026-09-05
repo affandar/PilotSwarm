@@ -15,6 +15,41 @@ function fakeSocket() {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test("admin-scope: open subscriptions revalidate once per session, revoke private views, retain system views", async () => {
+    const previous = process.env.PILOTSWARM_SESSION_REVALIDATE_MS;
+    process.env.PILOTSWARM_SESSION_REVALIDATE_MS = "10";
+    const callbacks = new Map();
+    let privateAllowed = true;
+    let checks = 0;
+    let revoke;
+    const revoked = new Promise((resolve) => { revoke = resolve; });
+    const h = await harness({ authz: { enforce: true, adminScope: "cluster" },
+        authorizeSessionSubscribe: async (id) => { checks++; if (id === "private" && !privateAllowed) throw new Error("revoked"); },
+        livePlane: { available: true, subscribe: (id, _topics, callback) => {
+            callbacks.set(id, callback);
+            return () => { callbacks.delete(id); if (id === "private") revoke(); };
+        } },
+    });
+    try {
+        for (const sessionId of ["private", "system"]) {
+            h.ws.emit("message", JSON.stringify({ type: "subscribeLive", sessionId, topics: ["turn"] }));
+        }
+        await tick();
+        const before = checks;
+        for (let seq = 1; seq <= 100; seq++) callbacks.get("private")({ sessionId: "private", topic: "turn", seq, kind: "patch", data: {} });
+        assert.equal(checks, before, "no per-delta database authorization queries");
+        privateAllowed = false;
+        await Promise.race([revoked, new Promise((_, reject) => setTimeout(() => reject(new Error("revocation did not arrive")), 1000).unref())]);
+        await tick();
+        assert.equal(callbacks.has("private"), false);
+        assert.equal(callbacks.has("system"), true);
+        assert.ok(h.ws.sent.some((m) => m.code === "ACCESS_REVOKED" && m.sessionId === "private"));
+    } finally {
+        h.ws.emit("close");
+        if (previous == null) delete process.env.PILOTSWARM_SESSION_REVALIDATE_MS; else process.env.PILOTSWARM_SESSION_REVALIDATE_MS = previous;
+    }
+});
+
 async function harness(overrides = {}) {
     let callback = null;
     let unsubscribeCount = 0;
@@ -75,11 +110,11 @@ test("a queued notification already covered by the burst is not duplicated", asy
 });
 
 test("authorization failure and invalid topics install no relay handler", async () => {
-    const denied = await harness({ authorizeSessionSubscribe: async () => { throw new Error("forbidden"); } });
+    const denied = await harness({ authorizeSessionSubscribe: async () => { throw Object.assign(new Error("forbidden"), { status: 404 }); } });
     denied.ws.emit("message", JSON.stringify({ type: "subscribeLive", sessionId: "s1", topics: ["turn"] }));
     await tick();
     assert.equal(denied.getCallback(), null);
-    assert.ok(denied.ws.sent.some((message) => message.type === "error" && message.scope === "live"));
+    assert.ok(denied.ws.sent.some((message) => message.type === "error" && message.scope === "live" && message.code === "ACCESS_REVOKED"));
 
     const invalid = await harness();
     invalid.ws.emit("message", JSON.stringify({ type: "subscribeLive", sessionId: "s1", topics: ["BAD TOPIC"] }));

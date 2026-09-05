@@ -4720,17 +4720,14 @@ function useStableValue(value) {
  * vote on the diagonal. Vertical stays the default: sideways has to be asked
  * for, by a drag that beats vertical by PAN_HORIZONTAL_RATIO.
  *
- * Driving the scroll ourselves means we also own the part the browser was
- * doing for free, so a flick decays under `releaseFling` instead of stopping
- * dead under the finger. CSS keeps `touch-action: pan-y` as a floor: if these
+ * The list tracks the finger and stops on release: no inertial fling. Chat
+ * and canvas scrolling are independent and keep their native behavior.
+ * CSS keeps `touch-action: pan-y` as a floor: if these
  * listeners ever fail to attach, the list still scrolls vertically the native
  * way rather than becoming inert.
  */
 const PAN_COMMIT_PX = 10;      // ignore the first few px — every swipe starts noisy
 const PAN_HORIZONTAL_RATIO = 1.6;   // |dx| must beat |dy| by this much to go sideways
-const FLING_MIN_VELOCITY = 0.05;    // px/ms below which a lift is a stop, not a flick
-const FLING_FRICTION = 0.95;        // per frame; ~0.35s of glide from a brisk flick
-const FLING_MAX_VELOCITY = 4;       // px/ms ceiling, so a fast flick stays catchable
 
 /**
  * Which axis does this gesture own? Pure, and exported so the rule can be
@@ -4764,38 +4761,20 @@ function useAxisLockedPan(ref, enabled = true) {
         let startY = 0;
         let lastX = 0;
         let lastY = 0;
-        let lastT = 0;
-        let velocity = 0;   // px/ms along the committed axis, sign follows the finger
         let axis = null;    // null = undecided, "x" | "y" = committed, "done" = not ours
-        let flingFrame = null;
         let swallowClick = false;
-
-        const stopFling = () => {
-            if (flingFrame !== null) {
-                cancelAnimationFrame(flingFrame);
-                flingFrame = null;
-            }
-        };
-
-        const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
         const canScroll = (which) => (which === "x"
             ? el.scrollWidth > el.clientWidth + 1
             : el.scrollHeight > el.clientHeight + 1);
 
         const onTouchStart = (event) => {
-            // A tap that lands while the list is still gliding is "stop", not
-            // "open whatever is passing under my finger". Native momentum never
-            // opened a row on the arresting tap; ours must not either.
-            swallowClick = flingFrame !== null;
-            stopFling();
+            swallowClick = false;
             // targetTouches, not touches: a thumb resting elsewhere on the page
             // is not part of this gesture. Two fingers HERE is a pinch.
             if (event.targetTouches.length !== 1) { axis = "done"; return; }
             const touch = event.targetTouches[0];
             startX = lastX = touch.clientX;
             startY = lastY = touch.clientY;
-            lastT = now();
-            velocity = 0;
             axis = null;
         };
 
@@ -4838,7 +4817,8 @@ function useAxisLockedPan(ref, enabled = true) {
                 // Measure from here, so the slop we ignored is not also applied.
                 lastX = touch.clientX;
                 lastY = touch.clientY;
-                lastT = now();
+                // A drag must not select whichever row ends up under the thumb.
+                swallowClick = true;
             }
 
             // Ours: stop the browser doing it as well. A repeat of the
@@ -4848,39 +4828,12 @@ function useAxisLockedPan(ref, enabled = true) {
 
             const stepX = touch.clientX - lastX;
             const stepY = touch.clientY - lastY;
-            const t = now();
-            const elapsed = Math.max(1, t - lastT);
-            const step = axis === "x" ? stepX : stepY;
 
             if (axis === "x") el.scrollLeft -= stepX;
             else el.scrollTop -= stepY;
 
-            // Exponential smoothing: one jittery sample should not decide the
-            // whole flick, and a finger that stops before lifting should decay
-            // to zero rather than fling on a stale reading.
-            const sample = Math.max(-FLING_MAX_VELOCITY, Math.min(FLING_MAX_VELOCITY, step / elapsed));
-            velocity = velocity * 0.7 + sample * 0.3;
-
             lastX = touch.clientX;
             lastY = touch.clientY;
-            lastT = t;
-        };
-
-        const releaseFling = (committed) => {
-            if (Math.abs(velocity) < FLING_MIN_VELOCITY) return;
-            let v = velocity;
-            const tick = () => {
-                v *= FLING_FRICTION;
-                if (Math.abs(v) < FLING_MIN_VELOCITY) { flingFrame = null; return; }
-                const before = committed === "x" ? el.scrollLeft : el.scrollTop;
-                if (committed === "x") el.scrollLeft -= v * 16;
-                else el.scrollTop -= v * 16;
-                const after = committed === "x" ? el.scrollLeft : el.scrollTop;
-                // Hit an end stop — no point animating against it.
-                if (after === before) { flingFrame = null; return; }
-                flingFrame = requestAnimationFrame(tick);
-            };
-            flingFrame = requestAnimationFrame(tick);
         };
 
         const onTouchEnd = (event) => {
@@ -4888,16 +4841,13 @@ function useAxisLockedPan(ref, enabled = true) {
             // its start point belongs to a different gesture, and the commit
             // would land on a large bogus delta. Stay out until all lift.
             if (event.targetTouches.length > 0) { axis = "done"; return; }
-            const committed = axis;
             axis = null;
-            if (committed === "x" || committed === "y") releaseFling(committed);
-            velocity = 0;
         };
 
-        const onTouchCancel = () => { axis = null; velocity = 0; stopFling(); };
+        const onTouchCancel = () => { axis = "done"; };
 
         const onClickCapture = (event) => {
-            if (!swallowClick) return;
+            if (!swallowClick || event.detail === 0) return;
             swallowClick = false;
             event.preventDefault();
             event.stopPropagation();
@@ -4909,7 +4859,6 @@ function useAxisLockedPan(ref, enabled = true) {
         el.addEventListener("touchcancel", onTouchCancel, { passive: true });
         el.addEventListener("click", onClickCapture, true);
         return () => {
-            stopFling();
             el.removeEventListener("touchstart", onTouchStart);
             el.removeEventListener("touchmove", onTouchMove);
             el.removeEventListener("touchend", onTouchEnd);
@@ -5056,6 +5005,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const authPrincipal = viewState.auth?.principal || null;
     const viewerRole = viewState.auth?.authorization?.role;
     const isAdminViewer = viewerRole === "admin" || viewerRole === "anonymous";
+    const resourceAdminViewer = isAdminViewer && viewState.auth?.adminScope !== "cluster";
     const ownsActiveSession = Boolean(
         activeSession?.owner
         && authPrincipal
@@ -5076,7 +5026,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         activeSession && !activeSession.isGroup
         && (activeSession.isSystem
             ? isAdminViewer
-            : (isAdminViewer || ownsActiveSession)),
+            : (resourceAdminViewer || ownsActiveSession)),
     );
     const selectedCount = Array.isArray(viewState.selectedIds) ? viewState.selectedIds.length : 0;
     const isBulkSelection = selectedCount > 1;
@@ -13087,7 +13037,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
     // the way out is the toolbar's Mode cluster (Workspace) \u2014 a \u2715 here was a
     // second, unlabelled way to do the same thing.
     const header = React.createElement("header", { className: "ps-admin-console__header" },
-        React.createElement("h2", null, view.isAdmin ? "Admin Console" : "Settings"));
+        React.createElement("h2", null, view.isAdmin ? "Admin Console" : "Settings"),
+        view.isAdmin ? React.createElement("small", null, view.adminPolicyLabel) : null);
 
     const providerSection = React.createElement(AdminModelProvidersSection, {
         controller,

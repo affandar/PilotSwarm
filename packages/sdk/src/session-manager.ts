@@ -1,4 +1,5 @@
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
+import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
@@ -15,6 +16,7 @@ import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
+import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
 /**
  * How long a resolved inspect viewer may be reused before it is looked up
@@ -364,7 +366,7 @@ export class SessionManager {
     /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
-     * The internal multi-client pool is keyed by GitHub Copilot token (so
+     * The internal pool is keyed by transport and GitHub Copilot token (so
      * per-user keys can override `GITHUB_TOKEN` for a specific session).
      * Tests that predate the pool — and a couple of internal call sites
      * that assume a single shared client — still read or assign
@@ -374,7 +376,9 @@ export class SessionManager {
      * default `GITHUB_TOKEN` was set on the constructor.
      */
     get client(): CopilotClient | undefined {
-        return this.clients.get("") ?? this.clients.get(this.githubToken || "");
+        return this.clients.get("") ?? this.clients.get(this.githubToken || "")
+            ?? this.clients.get(BYOK_CLIENT_PREFIX)
+            ?? this.clients.get(BYOK_CLIENT_PREFIX + (this.githubToken || ""));
     }
     set client(value: CopilotClient | undefined) {
         const providerTokens = new Set<string>();
@@ -387,12 +391,18 @@ export class SessionManager {
         }
         if (value) {
             this.clients.set("", value);
+            this.clients.set(BYOK_CLIENT_PREFIX, value);
             if (this.githubToken) this.clients.set(this.githubToken, value);
+            if (this.githubToken) this.clients.set(BYOK_CLIENT_PREFIX + this.githubToken, value);
             for (const token of providerTokens) this.clients.set(token, value);
+            for (const token of providerTokens) this.clients.set(BYOK_CLIENT_PREFIX + token, value);
         } else {
             this.clients.delete("");
+            this.clients.delete(BYOK_CLIENT_PREFIX);
             if (this.githubToken) this.clients.delete(this.githubToken);
+            if (this.githubToken) this.clients.delete(BYOK_CLIENT_PREFIX + this.githubToken);
             for (const token of providerTokens) this.clients.delete(token);
+            for (const token of providerTokens) this.clients.delete(BYOK_CLIENT_PREFIX + token);
         }
     }
     private sessions = new Map<string, ManagedSession>();
@@ -403,8 +413,8 @@ export class SessionManager {
     }
     /**
      * Records which CopilotClient each warm session is bound to (keyed by
-     * the GitHub Copilot token). When the resolved token for a session
-     * changes (for example the owner edited their per-user key in the
+     * the GitHub Copilot token plus native/BYOK transport namespace). When
+     * the token or transport changes (for example the owner edited their key in the
      * Admin Console), the warm session is destroyed at the start of the
      * next `getOrCreate` call so the next resume binds to the right
      * client. Sessions never appear in this map until they are actually
@@ -453,6 +463,7 @@ export class SessionManager {
     private sessionLocks = new Map<string, Promise<void>>();
     /** Last local activity per session — feeds the autonomous eviction clock. */
     private sessionLastTouchedAt = new Map<string, number>();
+    private readonly adminScope: AdminScope;
 
     constructor(
         private githubToken?: string,
@@ -460,6 +471,7 @@ export class SessionManager {
         workerDefaults?: WorkerDefaults,
         sessionStateDir?: string,
     ) {
+        this.adminScope = validateAdminScope(process.env);
         this.sessionStore = sessionStore ?? null;
         this.workerDefaults = workerDefaults ?? {};
         this.sessionStateDir = sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
@@ -688,7 +700,7 @@ export class SessionManager {
             }
             cacheKey = key;
             try {
-                client = await this.ensureClient(key || undefined);
+                client = await this.ensureClientForKey(key);
             } catch {
                 client = undefined;
             }
@@ -844,7 +856,7 @@ export class SessionManager {
     }
 
     /** Ensure the CopilotClient is started. */
-    private async ensureClient(tokenOverride?: string): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -862,11 +874,11 @@ export class SessionManager {
             }
         }
 
-        const clientKey = token || "";
+        const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
-        const created = new CopilotClient({
+        const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
             logLevel: "error",
             // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
@@ -886,7 +898,7 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        });
+        }, byokOpenAi ? { type: "openai" } : undefined);
         this.clients.set(clientKey, created);
         return created;
     }
@@ -955,18 +967,20 @@ export class SessionManager {
     }
 
     /**
-     * Pick the CopilotClient that was used to create/resume the given
-     * session. Used by destroy / reset paths that operate on a known
-     * session id outside the main getOrCreate flow.
+     * Resolve a pool key without ever passing its transport namespace as an
+     * authentication token. Shared by catalog lookups and session teardown.
      */
+    private async ensureClientForKey(key: string): Promise<CopilotClient> {
+        const cached = this.clients.get(key);
+        if (cached) return cached;
+        return key.startsWith(BYOK_CLIENT_PREFIX)
+            ? this.ensureClient(key.slice(BYOK_CLIENT_PREFIX.length) || undefined, true)
+            : this.ensureClient(key || undefined);
+    }
+
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
-        const cachedKey = this.sessionClientKeys.get(sessionId);
-        if (cachedKey != null) {
-            const cached = this.clients.get(cachedKey);
-            if (cached) return cached;
-            return this.ensureClient(cachedKey || undefined);
-        }
-        return this.ensureClient();
+        const key = this.sessionClientKeys.get(sessionId);
+        return key != null ? this.ensureClientForKey(key) : this.ensureClient();
     }
 
     private _missingSessionStateError(sessionId: string, turnIndex: number, detail?: string): Error {
@@ -1465,11 +1479,12 @@ export class SessionManager {
                 { code: "GHCP_KEY_MISSING", status: 400 },
             );
         }
-        const desiredClientKey = userGithubToken || "";
+        const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
+        const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
-            // Owner changed their per-user GitHub Copilot key (or it was
-            // cleared) since we last warmed this session. Tear down the
+            // The credential or native/BYOK transport changed since we last
+            // warmed this session. Tear down the
             // warm handle so the resume path below binds to the right
             // CopilotClient. The session state on disk is reusable — we
             // only drop the in-memory CopilotSession.
@@ -1477,14 +1492,14 @@ export class SessionManager {
             if (existingWarm) {
                 emitSessionManagerTrace(
                     sessionId,
-                    `github copilot token changed; recycling warm session onto new client`,
+                    `copilot credential or provider transport changed; recycling warm session onto new client`,
                     { trace },
                 );
                 try { await existingWarm.destroy(); } catch {}
                 this.sessions.delete(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -2578,16 +2593,18 @@ export class SessionManager {
      */
     private async _resolveProviderViewer(
         sessionId: string, agentIdentity?: string,
-    ): Promise<{ userId: number | null; isAdmin: boolean }> {
-        if (agentIdentity === "token-manager") return { userId: null, isAdmin: true };
+    ): Promise<{ userId: number | null; isAdmin: boolean; adminScope?: AdminScope }> {
         try {
             const viewer = await this._resolveInspectViewer(sessionId);
+            // A package name is not a service identity. Only catalog-classified
+            // system sessions may take the built-in Token Manager's authority.
+            if (agentIdentity === "token-manager" && viewer.isSystemSession) return { userId: null, isAdmin: true };
             if (viewer.isSystemPrincipal) return { userId: null, isAdmin: true };
             if (!viewer.provider || !viewer.subject) return { userId: null, isAdmin: false };
             const userId = await this.sessionCatalog?.providers?.lookupUserId({
                 provider: viewer.provider, subject: viewer.subject,
             }) ?? null;
-            return { userId, isAdmin: viewer.isAdmin === true };
+            return { userId, isAdmin: viewer.isAdmin === true, adminScope: viewer.adminScope };
         } catch {
             // Fail closed: a viewer with no id and no role can read the
             // shared providers and change nothing.
@@ -2597,7 +2614,9 @@ export class SessionManager {
 
     private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {
         const cached = SessionManager._inspectViewerCache.get(sessionId);
-        if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) return cached.viewer;
+        if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) {
+            return { ...cached.viewer, adminScope: cached.viewer.isSystemSession ? "unrestricted" : this.adminScope };
+        }
 
         let viewer: InspectViewer = NO_VIEWER;
         try {
@@ -2609,6 +2628,8 @@ export class SessionManager {
                 viewer = {
                     provider: owner.provider,
                     subject: owner.subject,
+                    isSystemSession: row?.isSystem === true,
+                    adminScope: row?.isSystem ? "unrestricted" : this.adminScope,
                     // The System principal already reaches everything through
                     // isSystemPrincipal; asking the users table about it would
                     // only add a query whose answer changes nothing.
@@ -2618,7 +2639,7 @@ export class SessionManager {
             } else if (row?.isSystem) {
                 // Ownerless platform sessions act as the System principal, the
                 // same way they already do for credential resolution.
-                viewer = { provider: "system", subject: "system", isAdmin: false, isSystemPrincipal: true };
+                viewer = { provider: "system", subject: "system", isAdmin: false, isSystemPrincipal: true, isSystemSession: true, adminScope: "unrestricted" };
             }
         } catch {
             // Fail closed: NO_VIEWER reads nothing.

@@ -86,16 +86,21 @@ test("a growing live turn preserves its first-seen timestamp", () => {
     assert.equal(history.chat.at(-1).createdAt, 1_000);
 });
 
-test("a committed streamed answer uses the normal Agent prefix instead of a completion announcement", () => {
+test("a successfully completed streamed answer uses the normal Agent prefix without changing its preview key", () => {
     let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live", messageId: "m1", text: "answer", reasoningId: "r1", reasoningText: "thought",
     }, { sessionId: "s1", seq: 1, createdAt: Date.now() - 1000 });
     history = appendEventToHistory(history, evt(2, "assistant.message", { messageId: "m1", content: "answer" }));
+    const interim = selectChatLines(state(history), 100, { tableMode: "sentinel" }).find(line => line?.kind === "assistantPreview");
+    assert.equal(interim.final, false, "saved output alone does not complete a turn");
+    history = appendEventToHistory(history, evt(3, "session.turn_completed", { resultType: "completed" }));
     const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
-    const card = lines.find(line => line?.kind === "cardStart");
-    assert.equal(card.cardVariant, "settling");
-    assert.equal(card.cardKey, "live:m1");
-    assert.match(card.runs.map(run => run.text).join(""), /Agent: /);
+    const card = lines.find(line => line?.kind === "assistantPreview");
+    assert.equal(card.final, true);
+    assert.equal(card.isLive, false);
+    assert.equal(card.previewKey, interim.previewKey);
+    assert.equal(card.previewKey, "assistant:m1");
+    assert.match(card.headerRuns.map(run => run.text).join(""), /Agent: /);
     assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
 });
 
@@ -132,15 +137,21 @@ test("a durable final keeps its live slot ahead of a later streaming message", (
     ]);
 });
 
-test("a final arriving before the reveal threshold skips transient chrome", () => {
+test("a completion before the reveal threshold promotes the same body without live chrome", () => {
     let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live", messageId: "m1", text: "draft", reasoningId: "r1", reasoningText: "brief thought",
     }, { sessionId: "s1", seq: 1, createdAt: Date.now() });
     history = appendEventToHistory(history, evt(1, "assistant.message", { messageId: "m1", content: "final" }));
+    history = appendEventToHistory(history, evt(2, "session.turn_completed", { resultType: "completed" }));
 
     const final = history.chat.find((item) => item.messageId === "m1");
-    assert.equal(final?.streamSettling, undefined);
-    assert.equal(final?.liveReasoningText, undefined);
+    assert.equal(final?.responseFinal, true);
+    assert.equal(final?.liveTurn, undefined);
+    const preview = selectChatLines(state(history), 100, { tableMode: "sentinel" }).find(line => line?.kind === "assistantPreview");
+    assert.equal(preview.final, true);
+    assert.equal(preview.isLive, false);
+    assert.equal(preview.body, "final");
+    assert.equal(preview.reasoningText, "brief thought", "reasoning remains available on demand");
 });
 
 test("idle clears stale live content, including an error path with no durable final", () => {
@@ -195,7 +206,7 @@ test("partial markdown remains visible and carries the streaming caret", () => {
     assert.match(encoded, /streamingCaret/);
 });
 
-test("the browser keeps a stable shaded card around a growing live answer", () => {
+test("the browser receives a stable disclosure and unparsed markdown as the live answer grows", () => {
     const initial = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live",
         messageId: "m1",
@@ -213,17 +224,17 @@ test("the browser keeps a stable shaded card around a growing live answer", () =
 
     for (const history of [initial, updated]) {
         const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
-        const cardStart = lines.find((line) => line?.kind === "cardStart");
-        const cardEndIndex = lines.findIndex((line) => line?.kind === "cardEnd");
-        const caretIndex = lines.findIndex((line) => JSON.stringify(line).includes("streamingCaret"));
-        assert.equal(cardStart?.cardVariant, "live");
-        assert.equal(cardStart?.cardKey, "live:m1");
-        assert.equal(caretIndex, 0, "progress stays in the header, outside markdown syntax");
-        assert.ok(cardEndIndex > caretIndex);
+        const preview = lines.find((line) => line?.kind === "assistantPreview");
+        assert.equal(preview?.previewKey, "assistant:m1");
+        assert.equal(preview?.isLive, true);
+        assert.equal(preview?.final, false);
+        assert.equal(preview?.text, "Message preview", "header must not cycle through delta text");
+        assert.equal(preview?.body, history.chat[0].text);
+        assert.equal(lines.some(line => line?.kind === "cardStart" || line?.kind === "table"), false, "hidden markdown is parsed only when expanded in the browser");
     }
 });
 
-test("live reasoning stays collapsed inside the stable turn card", () => {
+test("live reasoning is carried separately in the stable browser disclosure", () => {
     const history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live",
         messageId: null,
@@ -232,26 +243,31 @@ test("live reasoning stays collapsed inside the stable turn card", () => {
         reasoningText: "considering alternatives",
     }, { sessionId: "s1", seq: 1 });
     const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
-    const cardStart = lines.find((line) => line?.kind === "cardStart");
-    const reasoning = lines.find((line) => line?.kind === "systemNotice");
-    assert.equal(cardStart?.cardKey, "live:reasoning:r1");
-    assert.equal(reasoning?.liveReasoning, true);
-    assert.equal(reasoning?.summary, "In progress");
+    const preview = lines.find((line) => line?.kind === "assistantPreview");
+    assert.equal(preview?.previewKey, "assistant:reasoning:r1");
+    assert.equal(preview?.isLive, true);
+    assert.equal(preview?.body, "");
+    assert.equal(preview?.reasoningText, "considering alternatives");
+    assert.equal(preview?.final, false);
 });
 
-test("a visible live turn settles with the same card key and retained reasoning", () => {
+test("saved interim output and final promotion retain the disclosure key and reasoning", () => {
     let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live", messageId: "m1", text: "draft", reasoningId: "r1", reasoningText: "considered options",
     }, { sessionId: "s1", seq: 1, createdAt: 1_000 });
     history = appendEventToHistory(history, evt(1, "assistant.message", { messageId: "m1", content: "final answer" }));
 
     const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
-    const cardStart = lines.find((line) => line?.kind === "cardStart");
-    const reasoning = lines.find((line) => line?.kind === "systemNotice");
-    assert.equal(cardStart?.cardVariant, "settling");
-    assert.equal(cardStart?.cardKey, "live:m1");
-    assert.equal(reasoning?.summary, "Completed");
-    assert.match(reasoning?.body || "", /considered options/);
+    const preview = lines.find((line) => line?.kind === "assistantPreview");
+    assert.equal(preview?.previewKey, "assistant:m1");
+    assert.equal(preview?.isLive, false);
+    assert.equal(preview?.final, false);
+    assert.equal(preview?.reasoningText, "considered options");
+    history = appendEventToHistory(history, evt(2, "session.turn_completed", { resultType: "completed" }));
+    const final = selectChatLines(state(history), 100, { tableMode: "sentinel" }).find(line => line?.kind === "assistantPreview");
+    assert.equal(final.previewKey, preview.previewKey);
+    assert.equal(final.reasoningText, preview.reasoningText);
+    assert.equal(final.final, true);
 });
 
 test("model.call_start names the model in activity", () => {

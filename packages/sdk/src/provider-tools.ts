@@ -56,6 +56,7 @@ export function holdsProviderTools(agentIdentity?: string | null): boolean {
 export interface ProviderToolsViewer {
     userId: number | null;
     isAdmin: boolean;
+    adminScope?: "unrestricted" | "cluster";
 }
 
 /** A caller the deployment cannot identify, which the procedures read as nobody. */
@@ -516,6 +517,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             return {
                 userId: v.userId === null || v.userId === undefined ? null : Number(v.userId),
                 isAdmin: v.isAdmin === true,
+                adminScope: v.adminScope,
             };
         } catch {
             return NO_VIEWER;
@@ -750,7 +752,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
             const providers = Array.isArray(args?.providers)
                 ? args!.providers.map((p) => text(p)).filter((p): p is string => Boolean(p))
                 : null;
-            return store.usageAgents(v.userId, v.isAdmin, days, providers);
+            return store.usageAgents(v.userId, v.isAdmin, days, providers, v.isAdmin && v.adminScope === "cluster");
         }),
 
         get_provider_usage: async (args: {
@@ -785,7 +787,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
                 store.usageTotals(v.userId, v.isAdmin, filters),
                 store.usageDaily(v.userId, v.isAdmin, filters),
                 // One row more than is returned, so `truncated` is measured.
-                store.usageBreakdown(v.userId, v.isAdmin, dimension, filters, limit + 1),
+                store.usageBreakdown(v.userId, v.isAdmin, dimension, filters, limit + 1, v.isAdmin && v.adminScope === "cluster"),
             ]);
             return {
                 totals,
@@ -797,7 +799,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
         }),
 
         list_paused_sessions: async () => call("list_paused_sessions", async (store, v) => ({
-            sessions: await store.listPaused(v.userId, v.isAdmin),
+            sessions: await store.listPaused(v.userId, v.isAdmin, 100, v.isAdmin && v.adminScope === "cluster"),
         })),
     };
 

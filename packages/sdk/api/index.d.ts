@@ -115,6 +115,9 @@ export interface HttpApiTransportOptions extends ApiClientOptions {
     host?: HttpApiTransportHost;
 }
 
+export { AdminScope, ADMIN_SCOPE_POLICY_VERSION, ADMIN_SCOPES, loadAdminScope, validateAdminScope, adminCanAccessResource, adminCapabilities } from "./src/admin-scope.js";
+export * from "./src/admin-diagnostics.js";
+
 export declare class HttpApiTransport {
     constructor(options: HttpApiTransportOptions);
     api: ApiClient;
@@ -153,14 +156,14 @@ export type SessionAccessClass =
 export declare const SESSION_VISIBILITY_VALUES: readonly string[];
 export declare function normalizeVisibility(value: unknown, fallback: string): string;
 export declare function systemSessionsReadable(env?: Record<string, string | undefined>): boolean;
-export declare function relationFor(snapshot: SessionAccessSnapshot | null, opts?: { isAdmin?: boolean }): "owner" | "admin" | "collaborator";
+export declare function relationFor(snapshot: SessionAccessSnapshot | null, opts?: { isAdmin?: boolean; adminScope?: import("./src/admin-scope.js").AdminScope }): "owner" | "admin" | "collaborator";
 export declare function evaluateSessionAccess(
     accessClass: SessionAccessClass,
     snapshot: SessionAccessSnapshot | null,
-    opts?: { isAdmin?: boolean; systemReadable?: boolean },
+    opts?: { isAdmin?: boolean; systemReadable?: boolean; adminScope?: import("./src/admin-scope.js").AdminScope },
 ): SessionAccessDecision;
 /** Archive reads are owner-or-admin ONLY — never a share. See proposal §15 A3. */
 export declare function evaluateArchiveAccess(
     snapshot: SessionAccessSnapshot | null,
-    opts?: { isAdmin?: boolean },
+    opts?: { isAdmin?: boolean; adminScope?: import("./src/admin-scope.js").AdminScope },
 ): SessionAccessDecision;

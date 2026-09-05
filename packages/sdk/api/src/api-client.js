@@ -277,6 +277,24 @@ export class ApiClient {
             socket.addEventListener("message", (event) => {
                 try {
                     const message = JSON.parse(String(event.data || ""));
+                    if (message.type === "error" && message.code === "ACCESS_REVOKED" && message.sessionId) {
+                        for (const key of this.liveValues.keys()) {
+                            if (key.startsWith(`${message.sessionId}\u0000`)) this.liveValues.delete(key);
+                        }
+                        for (const key of this.liveSubscribers.keys()) {
+                            const [sessionId, topic] = key.split("\u0000");
+                            if (sessionId !== message.sessionId) continue;
+                            // Use the normal invalidation path: besides the
+                            // retained value it invalidates an in-flight gap
+                            // fetch, so its older authorized reply cannot
+                            // repopulate a revoked live-only subscription.
+                            void this.handleLiveMessage({ kind: "unavailable", sessionId, topic, accessRevoked: true });
+                        }
+                        for (const handler of this.sessionSubscribers.get(message.sessionId) || []) {
+                            handler({ eventType: "session.access_revoked", sessionId: message.sessionId });
+                        }
+                        return;
+                    }
                     if (message.type === "sessionEvent") {
                         const handlers = this.sessionSubscribers.get(message.sessionId);
                         if (handlers) {

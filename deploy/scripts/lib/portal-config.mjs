@@ -44,6 +44,7 @@ export const PORTAL_CONFIG_KEYS = [
   { env: "PORTAL_AUTHZ_USER_GROUPS" },
   // Enforce per-owner session access rather than dark-launch audit-only mode.
   { env: "AUTHZ_ENFORCE_OWNERSHIP" },
+  { env: "AUTHZ_ADMIN_SCOPE" },
   // Visibility assigned to newly-created sessions.
   { env: "SESSIONS_DEFAULT_VISIBILITY" },
   // Whether non-admin users may read system sessions.

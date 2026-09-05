@@ -105,7 +105,8 @@ export class HttpApiTransport {
     }
 
     getAuthContext() {
-        return this.bootstrap?.auth || {
+        if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
+        return {
             principal: null,
             authorization: { allowed: false, role: null, reason: "Auth context unavailable", matchedGroups: [] },
         };

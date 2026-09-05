@@ -19,6 +19,14 @@ This guide covers the current implementation built on Ink in [`packages/app/tui/
 
 ## Mental Model
 
+Authorization is server-owned. In Web mode `AUTHZ_ADMIN_SCOPE=cluster` keeps
+admin configuration, accounting and system-session access, but does not grant
+direct access to other private sessions/packages. Carry `adminScope` from
+bootstrap/profile through shared selectors; use current package `canEdit`
+instead of raw role checks. The policy label is read-only. Revocation clears
+content and invalidates pending responses; package identity includes scope and
+owner, not just name. See [the mini spec](../../proposals/cluster-scoped-admin.md).
+
 The TUI has three layers with a strict ownership split:
 
 ```text
@@ -240,6 +248,16 @@ That means:
 - activity summarization belongs there
 - ephemeral streaming/noise filtering belongs there
 
+Asked/answered runtime wrappers have legacy and multi-writer forms (the latter
+adds `(answered by …)`). Parse both in shared history for rendering and
+optimistic reconciliation. The question renders as a Question card, not as
+human-authored prose; the event's sender metadata remains authoritative.
+
+Retry warnings must survive CMS/detail status churn regardless of provider
+error wording. Stable message/card keys preserve the mounted browser card as
+the retry count changes. Explicit clears, newer recovered detail states, and
+terminal transitions resolve it; stale snapshots are not proof of recovery.
+
 Do not put event-shape interpretation in `components.js`.
 
 A good test for ownership:
@@ -274,6 +292,11 @@ Rules:
 ## Scroll And Selection
 
 Scroll offsets are shared state. Selection highlighting is host rendering.
+
+Mobile session-list touch dragging is browser-host behavior: lock to one axis,
+track the finger, and stop immediately on release/cancel with no momentum.
+Keep tap selection and deliberate horizontal panning. Do not apply this rule
+to chat or canvas scrolling, or to desktop drag-to-reorder.
 
 That split matters:
 

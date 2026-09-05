@@ -39,13 +39,15 @@
 
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
-import type { SessionCatalog, SessionEvent } from "./cms.js";
+import type { SessionCatalog, SessionEvent, SessionRow } from "./cms.js";
 import { computeSessionFootprint, FootprintCache } from "./footprint.js";
 import { isEnhancedFactStore } from "./facts-store.js";
 import { formatOwnerBucketLabel, formatSessionOwnerLabel, getSessionOwnerKind, matchesOwnerBucketFilters, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 // One predicate, two surfaces: this is the same function the portal's HTTP
 // layer evaluates for /api/v1 routes.
 import { evaluateSessionAccess, systemSessionsReadable } from "../api/src/session-authz.js";
+import { adminCanAccessResource, type AdminScope } from "../api/src/admin-scope.js";
+import { projectUserAccounting, projectFleetAccounting } from "../api/src/admin-diagnostics.js";
 // MANAGER_AGENT_IDS lives there so the declaration and the per-turn handler
 // in managed-session gate on the SAME list.
 import { createAgentManagerTools, MANAGER_AGENT_IDS } from "./agent-manager-tools.js";
@@ -166,6 +168,9 @@ export interface InspectViewer {
      * fleet-wide reach for as long as their session stayed alive.
      */
     isAdmin: boolean;
+    adminScope?: AdminScope;
+    /** Server-resolved session classification; never inferred from the agent name. */
+    isSystemSession?: boolean;
     /**
      * The first-class System principal (ownerless platform sessions). Reaches
      * everything, as it does today — the sweeper cannot do its job otherwise.
@@ -270,8 +275,14 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     /** RULE 1 — lists. Keep only rows the viewer may read. */
     const scopeSessions = async <T extends { sessionId: string }>(rows: T[]): Promise<T[]> => {
         const viewer = await viewerFor();
-        if (viewer.isSystemPrincipal || viewer.isAdmin) return rows;
+        if (viewer.isSystemPrincipal || adminCanAccessResource(viewer.isAdmin, viewer.adminScope)) return rows;
         if (viewer === NO_VIEWER) return [];
+        if (typeof catalog.filterVisibleSessionIds === "function") {
+            const visible = new Set(await catalog.filterVisibleSessionIds(
+                rows.map((row) => row.sessionId), viewer, viewer.isAdmin || systemSessionsReadable(),
+            ));
+            return rows.filter((row) => visible.has(row.sessionId));
+        }
         const decisions = await Promise.all(rows.map(async (row) => {
             try {
                 const snapshot = await catalog.getSessionAccess(row.sessionId, viewer);
@@ -281,7 +292,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 // here — omit it rather than leak it.
                 if (!snapshot) return false;
                 return evaluateSessionAccess("session:read", snapshot, {
-                    isAdmin: false,
+                    isAdmin: viewer.isAdmin,
+                    adminScope: viewer.adminScope,
                     systemReadable: systemSessionsReadable(),
                 }).allowed;
             } catch {
@@ -315,6 +327,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         if (!snapshot) return { error: `${toolName}: session ${sessionId.slice(0, 8)} not found.` };
         const decision = evaluateSessionAccess(accessClass, snapshot, {
             isAdmin: viewer.isAdmin,
+            adminScope: viewer.adminScope,
             // Same policy the portal applies, from the same env var: a user who
             // can see the PilotSwarm root in their session list must not be
             // told by an agent that it does not exist.
@@ -332,6 +345,10 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
      */
     const requireAdmin = async (toolName: string): Promise<null | { error: string }> => {
         const viewer = await viewerFor();
+        if (!viewer.isSystemPrincipal && viewer.adminScope === "cluster"
+            && !["read_user_stats", "read_fleet_stats"].includes(toolName)) {
+            return { error: `${toolName}: detailed fleet diagnostics are unavailable with cluster-scoped administration; use a readable session's diagnostics.` };
+        }
         if (viewer.isSystemPrincipal || viewer.isAdmin) return null;
         return {
             error:
@@ -566,9 +583,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 // the MODEL's choice and were never enforcement; this is.
                 // Scope first, then apply the model's filters to what is left,
                 // so a filter can only ever narrow an already-legal set.
-                const rows = await scopeSessions(await catalog.listSessions());
                 const filterAgent = (args.agent_id_filter || "").toLowerCase();
-                const filtered = rows.filter((r) => {
+                const matches = (r: SessionRow) => {
                     if (!matchesSessionOwnerFilters(r, {
                         includeSystem,
                         ownerQuery: args.owner_query,
@@ -576,10 +592,38 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     })) return false;
                     if (filterAgent && !(r.agentId ?? "").toLowerCase().includes(filterAgent)) return false;
                     return true;
-                }).slice(0, cap);
+                };
+                const viewer = await viewerFor();
+                let filtered: SessionRow[];
+                let truncated = false;
+                if (!viewer.isSystemPrincipal && !adminCanAccessResource(viewer.isAdmin, viewer.adminScope)
+                    && typeof catalog.listSessionsPage === "function") {
+                    filtered = [];
+                    if (viewer !== NO_VIEWER) {
+                        let cursor: SessionRow | undefined;
+                        // Bound both memory and work for a very selective
+                        // model-authored filter. ACL filtering stays in SQL.
+                        for (let page = 0; page < 20; page++) {
+                            const rows = await catalog.listSessionsPage({ limit: 200,
+                                viewer: { ...viewer, systemVisible: viewer.isAdmin || systemSessionsReadable() },
+                                cursorUpdatedAt: cursor?.updatedAt, cursorSessionId: cursor?.sessionId });
+                            filtered.push(...rows.filter(matches));
+                            if (filtered.length > cap) { truncated = true; break; }
+                            if (rows.length < 200) break;
+                            cursor = rows[rows.length - 1];
+                            truncated = page === 19;
+                        }
+                    }
+                    filtered = filtered.slice(0, cap);
+                } else {
+                    const rows = await scopeSessions(await catalog.listSessions());
+                    filtered = rows.filter(matches);
+                    truncated = filtered.length > cap;
+                    filtered = filtered.slice(0, cap);
+                }
                 return {
                     count: filtered.length,
-                    truncated: rows.length > cap,
+                    truncated,
                     sessions: filtered.map((r) => ({
                         sessionId: r.sessionId,
                         title: r.title ?? null,
@@ -675,7 +719,9 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     if (Number.isNaN(d.getTime())) return { error: "read_user_stats: invalid since_iso" };
                     opts.since = d;
                 }
-                const stats = await catalog.getUserStats(opts);
+                const viewer = await viewerFor();
+                const raw = await catalog.getUserStats(opts);
+                const stats = viewer.adminScope === "cluster" && !viewer.isSystemPrincipal ? projectUserAccounting(raw) : raw;
                 const users = stats.users
                     .filter((bucket) => matchesOwnerBucketFilters(bucket, {
                         ownerQuery: args.owner_query,
@@ -866,7 +912,8 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                     opts.since = d;
                 }
                 const stats = await catalog.getFleetStats(opts);
-                return stats;
+                const viewer = await viewerFor();
+                return viewer.adminScope === "cluster" && !viewer.isSystemPrincipal ? projectFleetAccounting(stats) : stats;
             } catch (err: any) {
                 return { error: `read_fleet_stats: ${err?.message || String(err)}` };
             }

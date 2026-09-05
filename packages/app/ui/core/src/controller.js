@@ -14,7 +14,7 @@ import {
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
-import { shouldKeepRecoverableTransportWarning } from "./session-errors.js";
+import { shouldKeepSessionWarning } from "./session-errors.js";
 import {
     computeLegacyLayout,
     getBaseSessionPaneHeight,
@@ -164,12 +164,12 @@ function classifyNavigationLoadError(error) {
 }
 
 // A 404/NOT_FOUND on a per-session data loop is TERMINAL: the session was
-// deleted (here or elsewhere) and every retry will 404 forever. 403 stays
-// retryable — a transient auth blip must not evict a live pane.
+// deleted or no longer accessible. A permission denial must clear retained
+// content; network/server failures remain retryable.
 function isSessionGoneError(error) {
     const status = Number(error?.status);
     const code = String(error?.code || "").toUpperCase();
-    return status === 404 || code === "NOT_FOUND";
+    return status === 404 || status === 403 || code === "NOT_FOUND" || code === "FORBIDDEN";
 }
 
 async function loadSessionCatalogPageWindow(transport) {
@@ -423,7 +423,7 @@ function buildSessionMergePatch(previousSession, nextSession) {
         patch.waitReason = null;
         changed = true;
     }
-    if (shouldKeepRecoverableTransportWarning(previousSession, nextSession)) {
+    if (shouldKeepSessionWarning(previousSession, nextSession)) {
         if (patch.error !== previousSession.error) {
             patch.error = previousSession.error;
             changed = true;
@@ -2550,6 +2550,8 @@ export class PilotSwarmUiController {
         // A folder row can never be "gone" from the session catalog: it is not
         // a session. Only sessions/groupsLoaded may remove one.
         if (isSessionGroupRowId(sessionId)) return;
+        // An older in-flight catalog read must not undo an access revocation.
+        this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.activeSessionSubscriptionId === sessionId) {
             this.detachActiveSession();
         }
@@ -5745,6 +5747,10 @@ export class PilotSwarmUiController {
 
     mergeSessionEvent(sessionId, event) {
         if (!sessionId || !event) return false;
+        if (event.eventType === "session.access_revoked") {
+            this.handleSessionGone(sessionId);
+            return true;
+        }
         // Plane-synthesized canvas events are TRANSIENT: they update canvas
         // state and nothing else. They carry no seq — letting them into
         // history would corrupt the replay cursor — and they must never

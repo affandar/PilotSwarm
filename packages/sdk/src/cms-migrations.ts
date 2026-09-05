@@ -385,8 +385,173 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "live_access",
             sql: migration_0074_live_access(schema),
         },
+        {
+            version: "0075",
+            name: "cluster_admin_accounting",
+            sql: migration_0075_cluster_admin_accounting(schema),
+        },
     ];
 }
+
+/** Cluster admin accounting projections; all pre-existing procedures remain intact. */
+function migration_0075_cluster_admin_accounting(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- 0075: additive read projections. Never filter token ledger rows by content access.
+CREATE OR REPLACE FUNCTION ${s}.cms_session_content_visible(
+    p_session TEXT, p_viewer BIGINT, p_system_visible BOOLEAN
+) RETURNS BOOLEAN AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM ${s}.sessions ss
+        JOIN ${s}.sessions root ON root.session_id = COALESCE(ss.root_session_id, ss.session_id)
+        LEFT JOIN ${s}.session_owners so ON so.session_id = root.session_id
+        WHERE ss.session_id = p_session
+          AND (so.user_id = p_viewer
+               OR (root.is_system AND p_system_visible)
+               OR (NOT root.is_system AND (
+                    COALESCE(root.visibility, 'private') IN ('shared_read', 'shared_write')
+                    OR EXISTS (SELECT 1 FROM ${s}.session_shares sh
+                               WHERE sh.session_id = root.session_id AND sh.user_id = p_viewer))))
+    );
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_filter_visible_session_ids(
+    p_sessions TEXT[], p_provider TEXT, p_subject TEXT, p_system_visible BOOLEAN
+) RETURNS TABLE(session_id TEXT) AS $$
+    SELECT id FROM unnest(p_sessions) id
+     WHERE ${s}.cms_session_content_visible(id,
+         (SELECT user_id FROM ${s}.users WHERE provider = p_provider AND subject = p_subject),
+         p_system_visible);
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_breakdown_cluster(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER,
+    p_owner BIGINT, p_provider TEXT, p_model TEXT, p_session TEXT, p_class TEXT,
+    p_dim TEXT, p_limit INTEGER
+) RETURNS TABLE(key TEXT, label TEXT, tokens_total BIGINT, turns BIGINT) AS $$
+    WITH visible_sessions AS MATERIALIZED (
+        SELECT ss.session_id FROM ${s}.sessions ss
+         WHERE p_dim = 'session' AND ${s}.cms_session_content_visible(ss.session_id, p_viewer, TRUE)
+    ), rows AS (
+        SELECT l.*,
+               CASE p_dim
+                   WHEN 'session'  THEN CASE WHEN visible.session_id IS NOT NULL
+                                            THEN l.session_id ELSE '(private sessions)' END
+                   WHEN 'provider' THEN COALESCE(l.provider_name, '(none)')
+                   WHEN 'model'    THEN COALESCE(l.model_qualified, '(none)')
+                   WHEN 'agent'    THEN CASE WHEN l.owner_user_id = p_viewer OR l.charge_class = 'system'
+                                            THEN COALESCE(l.agent_id, '(none)') ELSE '(other users agents)' END
+                   WHEN 'user'     THEN COALESCE(l.owner_user_id::TEXT,
+                                          CASE WHEN l.charge_class = 'system'
+                                               THEN '(system)' ELSE '(unowned)' END)
+                   ELSE COALESCE(l.provider_name, '(none)')
+               END AS dim_key
+          FROM ${s}.provider_usage_ledger l
+          LEFT JOIN visible_sessions visible ON visible.session_id = l.session_id
+         WHERE l.created_at >= now() - (COALESCE(p_days, 7) || ' days')::interval
+           AND (COALESCE(p_is_admin, FALSE) OR l.owner_user_id IS NOT DISTINCT FROM p_viewer)
+           AND (p_owner IS NULL OR l.owner_user_id = p_owner)
+           AND (p_provider IS NULL OR l.provider_name = p_provider)
+           -- Nothing from before THIS provider took the name.
+           AND (p_provider IS NULL OR l.created_at >= COALESCE(
+                   (SELECT pi.created_at FROM ${s}.provider_instances pi WHERE pi.name = p_provider),
+                   '-infinity'::timestamptz))
+           AND (p_model IS NULL OR l.model_qualified = p_model)
+           AND (p_session IS NULL OR l.session_id = p_session)
+           AND (p_class IS NULL OR l.charge_class = p_class)
+    )
+    SELECT g.dim_key,
+           CASE p_dim
+               WHEN 'session' THEN COALESCE((SELECT ss.title FROM ${s}.sessions ss
+                                              WHERE ss.session_id = g.dim_key), g.dim_key)
+               WHEN 'user'    THEN COALESCE((SELECT COALESCE(uu.display_name, uu.email, uu.subject)
+                                               FROM ${s}.users uu
+                                              WHERE uu.user_id::TEXT = g.dim_key), g.dim_key)
+               ELSE g.dim_key
+           END,
+           sum(g.tokens_total)::BIGINT, count(*)::BIGINT
+      FROM rows g
+     GROUP BY g.dim_key
+     ORDER BY 3 DESC
+     LIMIT COALESCE(p_limit, 40);
+$$ LANGUAGE sql STABLE;
+
+
+-- The ledger cannot reliably identify a historical package version's ACL.
+-- Keep own and system labels; fold other users' bindings together, before aggregation.
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_summary_rows_cluster(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_since TIMESTAMPTZ, p_providers TEXT[]
+) RETURNS SETOF ${s}.provider_usage_ledger AS $$
+    SELECT l.session_id, l.turn_index, l.provider_name, l.model_qualified,
+           l.owner_user_id, l.charge_class, l.tokens_input, l.tokens_output,
+           l.tokens_cache_read, l.tokens_cache_write, l.tokens_total,
+           CASE WHEN l.owner_user_id = p_viewer OR l.charge_class = 'system'
+                THEN l.agent_id ELSE '(other users agents)' END, l.created_at
+      FROM ${s}.cms_provider_usage_summary_rows(p_viewer, p_is_admin, p_since, p_providers) l;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_usage_agents_cluster(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_days INTEGER, p_providers TEXT[]
+) RETURNS JSONB AS $$
+DECLARE
+    v_days   INTEGER := LEAST(GREATEST(COALESCE(p_days, 14), 1), 365);
+    v_today  DATE := (now() AT TIME ZONE 'UTC')::date;
+    v_from   TIMESTAMPTZ := ((v_today - (v_days - 1)) :: timestamp) AT TIME ZONE 'UTC';
+    v_agents JSONB;
+    v_daily  JSONB;
+BEGIN
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'agent', a.agent, 'turns', a.n, 'sessions', a.sessions,
+               'input', a.i, 'output', a.o, 'cacheRead', a.cr, 'cacheWrite', a.cw, 'total', a.t,
+               'models', a.models, 'daily', a.daily) ORDER BY a.t DESC, a.agent), '[]'::jsonb)
+      INTO v_agents
+      FROM (
+        SELECT g.agent, count(*) n, count(DISTINCT g.session_id) sessions,
+               sum(g.tokens_input) i, sum(g.tokens_output) o,
+               sum(g.tokens_cache_read) cr, sum(g.tokens_cache_write) cw, sum(g.tokens_total) t,
+               (SELECT COALESCE(jsonb_agg(DISTINCT substr(x.model_qualified, position(':' IN x.model_qualified) + 1)), '[]'::jsonb)
+                  FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) x
+                 WHERE COALESCE(x.agent_id, '(none)') = g.agent AND x.model_qualified IS NOT NULL) AS models,
+               (SELECT COALESCE(jsonb_agg(jsonb_build_object('day', to_char(dd.day, 'YYYY-MM-DD'), 'total', dd.t) ORDER BY dd.day), '[]'::jsonb)
+                  FROM (SELECT (y.created_at AT TIME ZONE 'UTC')::date AS day, sum(y.tokens_total) t
+                          FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) y
+                         WHERE COALESCE(y.agent_id, '(none)') = g.agent
+                         GROUP BY 1) dd) AS daily
+          FROM (SELECT r.*, COALESCE(r.agent_id, '(none)') AS agent
+                  FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) r) g
+         GROUP BY g.agent) a;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+               'day', to_char(d.day, 'YYYY-MM-DD'), 'agent', d.agent, 'total', d.t, 'turns', d.n) ORDER BY d.day, d.t DESC), '[]'::jsonb)
+      INTO v_daily
+      FROM (
+        SELECT (r.created_at AT TIME ZONE 'UTC')::date AS day, COALESCE(r.agent_id, '(none)') AS agent,
+               sum(r.tokens_total) t, count(*) n
+          FROM ${s}.cms_provider_usage_summary_rows_cluster(p_viewer, p_is_admin, v_from, p_providers) r
+         GROUP BY 1, 2) d;
+
+    RETURN jsonb_build_object(
+        'days', v_days,
+        'today', to_char(v_today, 'YYYY-MM-DD'),
+        'scope', CASE WHEN COALESCE(p_is_admin, FALSE) THEN 'cluster' ELSE 'mine' END,
+        'agents', v_agents,
+        'daily', v_daily);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+
+CREATE OR REPLACE FUNCTION ${s}.cms_provider_list_paused_cluster(
+    p_viewer BIGINT, p_is_admin BOOLEAN, p_limit INTEGER
+) RETURNS TABLE(
+    session_id TEXT, title TEXT, model TEXT, owner_user_id BIGINT,
+    owner_email TEXT, state TEXT, pause_state JSONB, updated_at TIMESTAMPTZ
+) AS $$
+    SELECT ss.* FROM ${s}.cms_provider_list_paused(p_viewer, p_is_admin, p_limit) ss
+    WHERE ${s}.cms_session_content_visible(ss.session_id, p_viewer, TRUE);
+$$ LANGUAGE sql STABLE;
+`;
+}
+
 
 
 

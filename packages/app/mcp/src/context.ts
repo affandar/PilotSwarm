@@ -92,7 +92,7 @@ interface ServerContextBase {
      * refusal instead of retrying blindly.
      */
     role: string | null;
-    authz: { ownershipEnforced: boolean; defaultVisibility: string; systemVisibility: string };
+    authz: { ownershipEnforced: boolean; defaultVisibility: string; systemVisibility: string; adminScope?: string; policyVersion?: number };
     /** True when running over the Web API (`--api-url`); false in direct mode. */
     webMode: boolean;
     models: ModelProviderRegistry | null;
@@ -145,7 +145,7 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
     let graph: GraphStore | null = null;
     let admin = false;
     let ctxRole: string | null = null;
-    let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read" };
+    let ctxAuthz = { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read", adminScope: "unrestricted", policyVersion: 0 };
     let webAgents: AgentConfig[] | null = null;
 
     if (opts.apiUrl) {
@@ -192,6 +192,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
                     ownershipEnforced: Boolean(boot.authz.ownershipEnforced),
                     defaultVisibility: String(boot.authz.defaultVisibility || "private"),
                     systemVisibility: String(boot.authz.systemVisibility || "read"),
+                    adminScope: String(boot.authz.adminScope || "unrestricted"),
+                    policyVersion: Number(boot.authz.policyVersion) || 0,
                 };
             }
         } catch {

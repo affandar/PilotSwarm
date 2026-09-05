@@ -1,4 +1,5 @@
 import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
+import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
 import { registerActivities } from "./session-proxy.js";
@@ -1254,6 +1255,7 @@ export class PilotSwarmWorker {
         } catch { /* packed layouts without a reachable package.json */ }
         this._registrarInfo = {
             sdkVersion,
+            authz: { adminScope: loadAdminScope(), policyVersion: ADMIN_SCOPE_POLICY_VERSION },
             orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
             consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
             capabilities: {

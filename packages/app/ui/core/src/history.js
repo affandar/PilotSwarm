@@ -250,14 +250,18 @@ function comparableMessageText(message) {
 export function parseAskedAndAnsweredExchange(text) {
     const source = String(text || "").replace(/\r\n/g, "\n").trim();
     const prefix = 'The user was asked: "';
-    const marker = '"\nThe user responded: "';
-
     if (!source.startsWith(prefix) || !source.endsWith('"')) return null;
-    const markerIndex = source.indexOf(marker, prefix.length);
-    if (markerIndex === -1) return null;
+    // Multi-writer sessions include the answering participant in the runtime
+    // wrapper. This is still an agent question followed by a human answer,
+    // not a human-authored copy of the entire question. Identity comes from
+    // the event's sender metadata, never from this display-only wrapper.
+    const marker = /"\nThe user responded(?: \(answered by [^\r\n]+?\))?: "/g;
+    marker.lastIndex = prefix.length;
+    const match = marker.exec(source);
+    if (!match) return null;
 
-    const question = source.slice(prefix.length, markerIndex);
-    const answer = source.slice(markerIndex + marker.length, -1);
+    const question = source.slice(prefix.length, match.index);
+    const answer = source.slice(marker.lastIndex, -1);
     if (!question.trim() || !answer.trim()) return null;
     return { question, answer };
 }

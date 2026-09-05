@@ -120,6 +120,14 @@ tests, and cleanup scripts. See
 
 ## Canonical References
 
+For multi-user deployments, choose the admin policy explicitly.
+`AUTHZ_ADMIN_SCOPE=cluster` requires authentication and
+`AUTHZ_ENFORCE_OWNERSHIP=true` on workers and the portal. Admins retain cluster
+controls and all-user token accounting, but use ordinary session/package
+ownership and shares. Admin access to privileged system sessions remains;
+this mode is not complete isolation from administrators.
+See the AKS guide below for rollout order and the accepted system-session exception.
+
 - Starter Docker quickstart:
   `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
 - CLI guide:

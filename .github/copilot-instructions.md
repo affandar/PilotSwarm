@@ -540,6 +540,10 @@ When a new version of `duroxide` is published to npm (after the Node.js SDK is u
 
 When asked to update Copilot SDK dependencies, update **both** `@github/copilot-sdk` and `@github/copilot` together. Do not bump only one package: the SDK's permission protocol, built-in tools, and generated RPC schemas must stay aligned with the bundled Copilot CLI package. After updating, verify `packages/sdk/package.json` and `package-lock.json` resolve compatible versions of both packages.
 
+Pin both dependencies exactly in the published SDK manifest, not only the workspace lockfile. SDK 1.0.13 bundles its own platform runtime (CLI 1.0.83); verify `getStatus().version` from a fresh tarball install on the target platform. Do not omit optional platform dependencies. Route production client creation through `src/copilot-client.ts`: its explicit stdio connection preserves process/environment isolation, and its OpenAI/Azure completions-only `snippy` workaround must never reach native GitHub Copilot or Anthropic clients. The durable client pool separates those transports even for the same credential.
+
+Run `./scripts/run-tests.sh --all-providers`, including `copilot-provider-compatibility` (real SDK/CLI, synthetic model endpoints), and the separate credentialed `test/live-copilot-providers.mjs` gate for available model providers. Storage-provider phases are not model-provider coverage. Record missing live credentials explicitly; do not claim synthetic Anthropic WIF exchanges validate real identity federation. See [the 1.0.13 migration record](../docs/developer/contributing/copilot-sdk-migration-1.0.13.md) for commands, boundaries and the removal criterion for the shim.
+
 When a new version of the Copilot SDK is pulled in, run the tool-collision regression check **before** rolling the new version to production:
 
 ```bash

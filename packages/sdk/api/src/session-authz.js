@@ -1,3 +1,5 @@
+import { adminCanAccessResource } from "./admin-scope.js";
+
 /**
  * Session-tree access predicate — the ONE implementation, shared by every
  * surface that has to answer "may this principal touch this session?".
@@ -54,9 +56,9 @@ function ownerLabel(snapshot) {
  * The caller's relation to a session tree, recorded on message payloads and
  * shown to the agent in multi-writer sessions.
  */
-export function relationFor(snapshot, { isAdmin } = {}) {
+export function relationFor(snapshot, { isAdmin, adminScope = "unrestricted" } = {}) {
     if (snapshot?.viewerIsOwner) return "owner";
-    if (isAdmin) return "admin";
+    if (adminCanAccessResource(isAdmin, adminScope, snapshot?.isSystem)) return "admin";
     return "collaborator";
 }
 
@@ -68,14 +70,14 @@ export function relationFor(snapshot, { isAdmin } = {}) {
  * @param {{isAdmin?: boolean, systemReadable?: boolean}} [opts]
  * @returns {{allowed: boolean, notFound?: boolean, reason?: string, breakGlass?: boolean}}
  */
-export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, systemReadable = true } = {}) {
+export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, systemReadable = true, adminScope = "unrestricted" } = {}) {
     if (!snapshot) {
         // Missing/deleted session: let the underlying operation produce its
         // own not-found; nothing to protect.
         return { allowed: true };
     }
 
-    if (isAdmin) {
+    if (adminCanAccessResource(isAdmin, adminScope, snapshot.isSystem)) {
         // Admins pass everything; flag break-glass when this would have been
         // invisible to a plain user in the same position.
         const wouldBeInvisible = !snapshot.viewerIsOwner
@@ -120,7 +122,7 @@ export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, 
     // manage / destroy / share: owner only (admin handled above).
     return snapshot.viewerIsOwner
         ? { allowed: true }
-        : { allowed: false, reason: `Only the session owner (${ownerLabel(snapshot)}) or an admin can do this.` };
+        : { allowed: false, reason: `Only the session owner (${ownerLabel(snapshot)})${adminScope === "unrestricted" ? " or an admin" : ""} can do this.` };
 }
 
 /**
@@ -137,9 +139,9 @@ export function evaluateSessionAccess(accessClass, snapshot, { isAdmin = false, 
  * @param {{isAdmin?: boolean}} [opts]
  * @returns {{allowed: boolean, notFound?: boolean, reason?: string, breakGlass?: boolean}}
  */
-export function evaluateArchiveAccess(snapshot, { isAdmin = false } = {}) {
+export function evaluateArchiveAccess(snapshot, { isAdmin = false, adminScope = "unrestricted" } = {}) {
     if (!snapshot) return { allowed: true };
-    if (isAdmin) {
+    if (adminCanAccessResource(isAdmin, adminScope, snapshot.isSystem)) {
         // Reading someone else's raw session state is exactly what the
         // authz_audit table calls a break-glass read.
         return { allowed: true, breakGlass: !snapshot.viewerIsOwner };
@@ -149,7 +151,7 @@ export function evaluateArchiveAccess(snapshot, { isAdmin = false } = {}) {
         return {
             allowed: false,
             reason:
-                "Session archives are available to the session owner and administrators only. "
+                (adminScope === "cluster" ? "Session archives are available to the session owner only. " : "Session archives are available to the session owner and administrators only. ")
                 + "A share grants the conversation, not the raw session state behind it.",
         };
     }

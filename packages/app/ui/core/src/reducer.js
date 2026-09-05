@@ -817,6 +817,9 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 export function appReducer(state, action) {
+    const sessionId = action.sessionId ?? action.session?.sessionId;
+    const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
+    if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
     const next = baseReducer(state, action);
     if (next === state) return next;
     return reconcileSessionView(state, next, action);
@@ -1567,7 +1570,10 @@ function baseReducer(state, action) {
             if (!goneId) return state;
             const hadRow = Boolean(state.sessions.byId[goneId]);
             const wasActive = state.sessions.activeSessionId === goneId;
-            if (!hadRow && !wasActive) return state;
+            const hadContent = state.history.bySessionId.has(goneId)
+                || [state.files, state.canvas, state.orchestration, state.executionHistory, state.outbox, state.sessionStats]
+                    .some((slice) => Object.hasOwn(slice?.bySessionId || {}, goneId));
+            if (!hadRow && !wasActive && !hadContent) return state;
             const evictedById = { ...state.sessions.byId };
             delete evictedById[goneId];
             // Re-derive: the evicted row may have been the running CHILD that
@@ -1578,13 +1584,29 @@ function baseReducer(state, action) {
             const selectedIds = Array.isArray(state.sessions.selectedIds)
                 ? state.sessions.selectedIds.filter((id) => id !== goneId)
                 : state.sessions.selectedIds;
+            const history = new Map(state.history.bySessionId);
+            history.delete(goneId);
+            const discard = (slice) => {
+                if (!slice?.bySessionId) return slice;
+                const bySessionId = { ...slice.bySessionId };
+                delete bySessionId[goneId];
+                return { ...slice, bySessionId };
+            };
             return {
                 ...state,
+                history: { ...state.history, bySessionId: history },
+                files: discard(state.files),
+                orchestration: discard(state.orchestration),
+                executionHistory: discard(state.executionHistory),
+                canvas: discard(state.canvas),
+                outbox: discard(state.outbox),
+                sessionStats: discard(state.sessionStats),
                 sessions: {
                     ...state.sessions,
                     byId,
                     selectedIds,
                     activeSessionId: wasActive ? null : state.sessions.activeSessionId,
+                    goneIds: [...new Set([...(state.sessions.goneIds || []), goneId])].slice(-1000),
                 },
             };
         }
@@ -1681,6 +1703,7 @@ function baseReducer(state, action) {
             const nextSessions = {
                 ...state.sessions,
                 byId: rowStatusById,
+                goneIds: (state.sessions.goneIds || []).filter((id) => !action.sessions.some((row) => row.sessionId === id)),
                 collapsedIds,
                 collapsedIdsExplicit: previousCollapsedIdsExplicit,
                 listingSeen: true,
@@ -2940,7 +2963,10 @@ function baseReducer(state, action) {
             const list = Array.isArray(action.list) ? action.list : [];
             // Keep the selection when the package still exists; otherwise clear
             // the dependent detail/workspace state with it.
-            const stillThere = previous.selectedName && list.some((p) => p.name === previous.selectedName);
+            const selector = previous.selectedSelector;
+            const stillThere = previous.selectedName && list.some((p) => p.name === previous.selectedName
+                && (!selector?.scope || p.scope === selector.scope)
+                && (!selector?.owner || (p.owner?.provider === selector.owner.provider && p.owner?.subject === selector.owner.subject)));
             return {
                 ...state,
                 admin: {
@@ -2954,7 +2980,8 @@ function baseReducer(state, action) {
                         fetchedAt: Date.now(),
                         selectedName: stillThere ? previous.selectedName : null,
                         selectedSelector: stillThere ? (previous.selectedSelector ?? null) : null,
-                        ...(stillThere ? {} : { detail: null, workspace: { ...previous.workspace, tree: null, selectedPath: null, file: null } }),
+                        ...(stillThere ? {} : { selectionSeq: (previous.selectionSeq ?? 0) + 1, detail: null, changelog: null,
+                            workspace: { ...previous.workspace, tree: null, selectedPath: null, file: null } }),
                     },
                 },
             };
