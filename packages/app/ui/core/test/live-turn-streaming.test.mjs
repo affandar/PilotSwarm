@@ -86,6 +86,19 @@ test("a growing live turn preserves its first-seen timestamp", () => {
     assert.equal(history.chat.at(-1).createdAt, 1_000);
 });
 
+test("a committed streamed answer uses the normal Agent prefix instead of a completion announcement", () => {
+    let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
+        phase: "live", messageId: "m1", text: "answer", reasoningId: "r1", reasoningText: "thought",
+    }, { sessionId: "s1", seq: 1, createdAt: Date.now() - 1000 });
+    history = appendEventToHistory(history, evt(2, "assistant.message", { messageId: "m1", content: "answer" }));
+    const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
+    const card = lines.find(line => line?.kind === "cardStart");
+    assert.equal(card.cardVariant, "settling");
+    assert.equal(card.cardKey, "live:m1");
+    assert.match(card.runs.map(run => run.text).join(""), /Agent: /);
+    assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
+});
+
 test("matching durable final replaces live; a different id leaves it until turn completion", () => {
     let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
         phase: "live", messageId: "m1", text: "draft", reasoningId: null, reasoningText: "",

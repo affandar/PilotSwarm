@@ -9649,10 +9649,16 @@ export class PilotSwarmUiController {
                         ...(olderHistory.events || []),
                         ...(history?.events || []),
                     ];
+                    // A page can split an assistant message from its turn
+                    // boundary. Reclassify the combined durable window while
+                    // retaining this visit's preview identity and reasoning.
+                    const existingChatById = new Map((history?.chat || []).map((item) => [item.id, item]));
+                    const combinedHistory = buildHistoryModel(combinedEvents, { requestedLimit: combinedEvents.length });
                     history = {
+                        ...history,
                         chat: dedupeChatMessages([
-                            ...(olderHistory.chat || []),
-                            ...(history?.chat || []),
+                            ...combinedHistory.chat.map((item) => ({ ...existingChatById.get(item.id), ...item })),
+                            ...(history?.chat || []).filter((item) => item.liveTurn || item.optimistic),
                         ]),
                         activity: [
                             ...(olderHistory.activity || []),

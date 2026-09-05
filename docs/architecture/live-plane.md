@@ -31,6 +31,11 @@ per 100 ms; turn/final boundaries may flush immediately. A fast provider cannot
 bypass pacing by emitting large chunks. Repeated explicit deltas append;
 cumulative snapshots do not duplicate already-seen prefixes.
 
+Copilot `assistant.streaming_delta` events carry cumulative byte-progress
+metadata, not answer text. Only `assistant.message_delta` feeds the answer
+accumulator and text-delta counters. Empty/metadata-only chunks must not change
+the active message/reasoning identity, erase accumulated text, or force a flush.
+
 Each text/reasoning preview is capped at 16,384 UTF-16 code units, safely within
 the 256 KiB retained JSON limit even with JSON escaping. The UI labels a
 truncated preview as paused; the durable final answer remains complete.
@@ -61,14 +66,30 @@ reasoning-only rows left behind by a crashed worker with no message ID.
 
 ## Presentation
 
-Shared ui-core owns message identity, final reconciliation and idle cleanup.
-The browser delays provisional chrome by 200 ms, keeps revealed chrome for at
-least 700 ms, then fades decoration for 180 ms. The section, reasoning
-disclosure and content nodes remain mounted; completion does not remove the
-shell or its padding. Fast completed responses skip provisional chrome.
+Shared ui-core owns message identity, interim/final classification and idle
+cleanup. The browser delays live preview reveal by 200 ms, then shows a compact
+canvas-style disclosure, collapsed by default. The summary is a stable label,
+not a rapidly changing snippet. Expanded content occupies a shaded viewport
+that hugs short content and grows only up to min(280px, 35dvh), then scrolls
+independently. It does not reserve empty space for short updates. Scrolling up
+pauses inner auto-follow; scrolling back to the
+bottom resumes it. Wheel/touch events stay inside the preview.
 
-Reasoning stays in an expandable row. Its markdown is parsed only when opened;
-the user's disclosure choice survives answer arrival and settlement.
+A durable `assistant.message` is saved interim output, not proof of a completed
+answer. A successful `session.turn_completed` promotes only the last eligible
+assistant message to normal timestamp/`Agent:` prose. Tool-request/sub-agent
+messages are not eligible. Errors/stops and control-tool continuations keep
+their output as expandable previews. History paging includes the terminal
+events and reclassifies across page seams, so a reload follows the same rule.
+On promotion the same disclosure/body becomes an always-open normal response,
+without a preview height limit or “Agent responded” label. Earlier interim
+messages stay compact. Reasoning remains independently expandable and bounded.
+
+Both hidden answer and reasoning markdown are parsed only on demand. Once
+opened, the preview retains its DOM while closed and catches up on reopening;
+the user's disclosure choice survives deltas and durable message arrival.
+Artifact links use the normal artifact card/viewer in previews and final
+answers, including links inside bold/italic text and headings.
 Unchanged history items reuse cached rendering. An idle tick gives already
 visible content up to 1.2 seconds for its durable replacement, while previews
 that never reached reveal are discarded immediately. Disconnect and session

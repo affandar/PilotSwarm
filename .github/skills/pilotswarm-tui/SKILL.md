@@ -8,12 +8,23 @@ description: Modify or extend the PilotSwarm terminal UI. Covers the shared-firs
 ## Streaming chat contract
 
 For live-plane changes, read `docs/architecture/live-plane.md`. Shared core
-owns provisional identity, durable-final precedence and stream-scoped idle
-cleanup. Browser reveal/dwell/fade is intentionally host-specific, but it
-must preserve card/disclosure/content DOM and geometry at completion. Cache
-unchanged transcript rendering and parse collapsed reasoning only on demand.
-Use `packages/app/web/test/e2e/live-turn.spec.mjs` to verify DOM continuity;
-metadata-only assertions cannot prove smooth settlement.
+owns provisional identity, interim/final classification and stream-scoped idle
+cleanup. Browser previews are canvas-style disclosures, collapsed by default.
+Their expanded viewport hugs its content up to min(280px, 35dvh), then scrolls independently,
+and follows live growth only while the reader remains at its bottom. Keep the
+disclosure, viewport, and content DOM stable across deltas and durable interim
+messages; parse hidden markdown only when opened. A successful durable
+`session.turn_completed` promotes the last eligible assistant message to normal
+timestamp/`Agent:` prose, removing the preview bounds without remounting its
+body. Explicitly remove the max-height on final responses. Earlier messages remain compact. Include completion/stop events when
+paging history so reloads and page boundaries preserve this classification.
+Cache unchanged transcript rendering. Verify disclosure/scroll continuity and
+final promotion with browser coverage before a release; metadata-only checks
+cannot prove smoothness. Never restore an “Agent responded” completion label.
+Preserve nested links when formatting emphasis/headings: artifact hrefs must
+reach the existing artifact card/viewer, not become literal Markdown text.
+Test that interleaved SDK byte-progress notifications never replace accumulated
+answer text or discard its reasoning disclosure.
 
 Use this skill when changing any of:
 

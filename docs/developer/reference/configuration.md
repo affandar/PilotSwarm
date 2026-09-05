@@ -603,6 +603,28 @@ view models never return them. Browser and terminal password drafts are cleared
 on save and cancel; the native UI also removes its draft before awaiting the
 provider create or credential-update request.
 
+### GPT-6 Astra through GitHub Copilot
+
+The shared `github-copilot` type includes `gpt-6-astra`. Existing personal and
+shared instances inherit its models without rewriting provider rows, rotating
+credentials, or changing session defaults. Each user's Copilot entitlement and
+organization model policy still apply; a catalog entry does not grant access.
+
+Capabilities verified against the authenticated Copilot model catalog and CLI
+on 2026-09-04:
+
+- Reasoning: `low`, `medium` (default), `high`, `xhigh`, `max`.
+- Context tiers: `default` (272,000 prompt tokens) and `long_context` (872,000).
+- Maximum total window: 1,000,000 tokens, with up to 128,000 output tokens.
+
+`contextWindowSizes` contains the usable prompt budgets reported by
+`session.usage_info.tokenLimit`, not the full input-plus-output window.
+Both default/medium and extended/max completed a real inference check.
+Copilot's picker-only `supportedReasoningEfforts` field omitted `max`, but its
+capability record and an actual inference confirmed support. No additional
+Astra variant was advertised. Availability announcement:
+[GitHub Copilot changelog](https://github.blog/changelog/2026-09-04-gpt-6-astra-is-generally-available-in-github-copilot/).
+
 ### Providers With No Key: Workload Identity Federation
 
 A provider type declared `anthropic-wif` stores no credential. The worker

@@ -82,6 +82,28 @@
                     }
                 },
                 {
+                    "name": "gpt-6-astra",
+                    "description": "GPT-6 Astra via GitHub Copilot. 272K default or 872K extended prompt budget within a 1M-token total context window.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 872000
+                    }
+                },
+                {
                     "name": "gpt-5.6-sol",
                     "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",

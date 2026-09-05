@@ -26,6 +26,7 @@ import {
     isThemeLight,
     normalizeStoredCanvasPrefs,
     parseTerminalMarkupRuns,
+    parseMarkdownLines,
     PilotSwarmUiController,
     tokenizeInlineMarkdown,
     selectActivityPane,
@@ -819,6 +820,12 @@ function normalizeLines(lines) {
     };
 
     for (const line of lines || []) {
+        if (line?.kind === "assistantPreview") {
+            // Preserve selector-cache identity so another stream's ticks don't
+            // rerender every completed response or recreate its scroll observer.
+            normalized.push(line);
+            continue;
+        }
         if (line?.kind === "markup") {
             // Markup lines carry preformatted art (splash screens). Tag them
             // so the chat renderer keeps each line intact: the pane's
@@ -3189,6 +3196,12 @@ function parseStructuredChatBlocks(lines = []) {
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
 
+        if (currentLine?.kind === "assistantPreview") {
+            blocks.push({ type: "assistantPreview", line: currentLine });
+            index += 1;
+            continue;
+        }
+
         // Preformatted markup lines (splash art) bypass box/table/card
         // detection entirely and render as one preserve block, so no line
         // ever rewraps or gets reinterpreted as a structured element.
@@ -3221,10 +3234,6 @@ function parseStructuredChatBlocks(lines = []) {
             blocks.push({
                 type: "card",
                 cardKey: currentLine.cardKey || null,
-                variant: currentLine.cardVariant || null,
-                liveStartedAt: Number(currentLine.liveStartedAt) || null,
-                settleDelayMs: Number(currentLine.settleDelayMs) || 0,
-                settleAt: Number(currentLine.settleAt) || null,
                 headerRuns: Array.isArray(currentLine.runs) ? currentLine.runs : [],
                 borderColor: currentLine.borderColor || "gray",
                 blocks: parseStructuredChatBlocks(innerLines),
@@ -3498,74 +3507,129 @@ function ArtifactImageStrip({ controller, sessionId, attachments }) {
         }));
 }
 
-function StreamingChatCard({ block, theme, controller }) {
-    const revealDelayMs = 200;
-    const settleDurationMs = 180;
-    const initialAgeMs = block.liveStartedAt ? Math.max(0, Date.now() - block.liveStartedAt) : revealDelayMs;
+const PreviewMessageContent = React.memo(function PreviewMessageContent({ content, width, theme, controller }) {
+    const lines = React.useMemo(
+        () => normalizeLines(parseMarkdownLines(content, { width, tableMode: "sentinel" })),
+        [content, width],
+    );
+    return React.createElement(StructuredChatBlocks, { lines, theme, controller });
+});
+
+const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, theme, controller }) {
+    const [open, setOpen] = React.useState(false);
     const [revealed, setRevealed] = React.useState(
-        block.variant !== "live" || initialAgeMs >= revealDelayMs,
+        !line.liveStartedAt || Date.now() - line.liveStartedAt >= 200,
     );
-    const [settled, setSettled] = React.useState(
-        block.variant === "settling" && block.settleAt && Date.now() >= block.settleAt,
-    );
+    const viewportRef = React.useRef(null);
+    const contentRef = React.useRef(null);
+    const followRef = React.useRef(true);
+    const snapshotRef = React.useRef(null);
+    const expanded = open || line.final;
+    // Keep already-mounted markdown/disclosures when closed, but don't parse
+    // new hidden deltas. Reopening catches up in a single render.
+    if (expanded) snapshotRef.current = line;
+    const snapshot = snapshotRef.current;
 
     React.useEffect(() => {
-        if (block.variant !== "live") return undefined;
-        setSettled(false);
-        if (revealed) return undefined;
-        const ageMs = block.liveStartedAt ? Math.max(0, Date.now() - block.liveStartedAt) : 0;
-        const timer = setTimeout(() => setRevealed(true), Math.max(0, revealDelayMs - ageMs));
+        if (line.final || revealed) return undefined;
+        const timer = setTimeout(() => setRevealed(true), Math.max(0, Math.min(200, 200 - (Date.now() - line.liveStartedAt))));
         return () => clearTimeout(timer);
-    }, [block.variant, block.liveStartedAt, revealed]);
+    }, [line.final, line.liveStartedAt, revealed]);
 
-    React.useEffect(() => {
-        if (block.variant !== "settling") return undefined;
-        setRevealed(true);
-        const remainingMs = block.settleAt
-            ? Math.max(0, block.settleAt - Date.now())
-            : Math.max(0, block.settleDelayMs) + settleDurationMs;
-        const timer = setTimeout(
-            () => setSettled(true),
-            remainingMs,
-        );
-        return () => clearTimeout(timer);
-    }, [block.variant, block.settleAt, block.settleDelayMs]);
+    React.useLayoutEffect(() => {
+        if (!expanded || line.final) return undefined;
+        const follow = () => {
+            const viewport = viewportRef.current;
+            if (viewport && line.isLive && followRef.current) viewport.scrollTop = viewport.scrollHeight;
+        };
+        follow();
+        // Images, tables and an opened reasoning disclosure may resize after
+        // the delta render. Only the inner viewport follows their growth.
+        const observer = new ResizeObserver(follow);
+        if (contentRef.current) observer.observe(contentRef.current);
+        return () => observer.disconnect();
+    }, [expanded, line.final, line.isLive, snapshot]);
 
-    const body = Array.isArray(block.blocks)
-        ? React.createElement(StructuredBlockList, { blocks: block.blocks, theme, controller })
-        : (block.bodyLines || []).map((bodyRuns, bodyIndex) => React.createElement("div", {
-            key: `line:${bodyIndex}`,
-            className: "ps-chat-card-line",
-        }, React.createElement(Runs, { runs: bodyRuns, theme })));
+    // A fast durable answer can beat the preview reveal too. Never flash a
+    // one-frame "Saved" card between its last delta and turn completion.
+    if (!line.final && !revealed) return null;
 
-    // Fade decoration only. Replacing the section with a Fragment remounts
-    // every descendant and loses selection, disclosure state and scroll.
-    if (block.variant === "live" && !revealed) return null;
-
-    const isSettling = block.variant === "settling";
-    const remainingSettleDelayMs = block.settleAt
-        ? Math.max(0, block.settleAt - Date.now() - settleDurationMs)
-        : Math.max(0, block.settleDelayMs);
-    return React.createElement("section", {
-        className: `ps-chat-card is-live${settled ? " is-settled" : isSettling ? " is-settling" : " is-revealing"}`,
-        "aria-busy": isSettling ? undefined : "true",
-        "aria-label": isSettling ? "Agent response complete" : "Agent response streaming",
-        style: {
-            "--ps-chat-card-accent": resolveColor(theme, block.borderColor) || "var(--ps-border)",
-            "--ps-live-settle-delay": `${remainingSettleDelayMs}ms`,
+    return React.createElement("details", {
+        className: `ps-system-notice ps-assistant-preview${line.final ? " is-final" : ""}`,
+        open: expanded,
+        onToggle: (event) => {
+            if (event.target === event.currentTarget && !line.final) setOpen(event.currentTarget.open);
         },
     },
-    React.createElement("header", { className: "ps-chat-card-header" },
-        React.createElement(Runs, { runs: block.headerRuns, theme })),
-    React.createElement("div", { className: "ps-chat-card-body" }, body));
-}
-
+    React.createElement("summary", {
+        className: "ps-system-notice-summary ps-canvas-action-summary",
+        // The completed answer is ordinary transcript, not a collapsible
+        // preview. Keep this same shell/body mounted through promotion.
+        tabIndex: line.final ? -1 : undefined,
+        onClick: (event) => { if (line.final) event.preventDefault(); },
+    }, line.final
+        ? React.createElement(Runs, { runs: line.headerRuns, theme })
+        : React.createElement(React.Fragment, null,
+            React.createElement("span", { className: "ps-canvas-action-tag" }, "Agent"),
+            React.createElement("span", { className: "ps-system-notice-summary-text" }, "Message preview"),
+            React.createElement("span", { className: "ps-preview-status" },
+                line.isLive ? (line.body ? "Responding" : "Thinking") : "Saved"))),
+    React.createElement("div", {
+        ref: viewportRef,
+        className: "ps-assistant-preview-viewport",
+        tabIndex: expanded && !line.final ? 0 : undefined,
+        role: line.final ? undefined : "region",
+        "aria-label": line.final ? undefined : "Agent message preview",
+        onScroll: (event) => {
+            if (!line.final) {
+                event.stopPropagation();
+                followRef.current = getScrollDistanceToBottom(event.currentTarget) <= 24;
+            }
+        },
+        onWheel: (event) => {
+            if (!line.final) {
+                event.stopPropagation();
+                if (event.deltaY < 0) followRef.current = false;
+            }
+        },
+        onTouchStart: (event) => {
+            if (!line.final) { event.stopPropagation(); followRef.current = false; }
+        },
+        onTouchMove: (event) => { if (!line.final) event.stopPropagation(); },
+        onTouchEnd: (event) => { if (!line.final) event.stopPropagation(); },
+        onKeyDown: (event) => {
+            if (!line.final && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+                event.stopPropagation();
+                if (["ArrowUp", "PageUp", "Home"].includes(event.key)) followRef.current = false;
+            }
+        },
+    }, React.createElement("div", { ref: contentRef, className: "ps-assistant-preview-content" },
+        snapshot?.reasoningText ? React.createElement(SystemNoticeLine, {
+            key: "reasoning",
+            line: { text: line.isLive ? "Thinking" : "Thought", body: snapshot.reasoningText, streamReasoning: true },
+            theme,
+        }) : null,
+        snapshot?.body ? React.createElement(PreviewMessageContent, {
+            key: "message", content: snapshot.body, width: snapshot.width, theme, controller,
+        }) : null,
+        snapshot?.truncated && line.isLive
+            ? React.createElement("div", { className: "ps-preview-status" }, "Preview paused — the full answer will appear when complete.")
+            : null)));
+});
 // Renders parsed chat blocks; sentinel card blocks recurse through this list
 // so structured content (box/markdown tables, code fences) inside a card
 // renders exactly the same as it does at top level.
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "assistantPreview") {
+                return React.createElement(AssistantPreviewCard, {
+                    key: block.line.previewKey,
+                    line: block.line,
+                    theme,
+                    controller,
+                });
+            }
             if (block.type === "imageAttachments") {
                 return React.createElement(ArtifactImageStrip, {
                     key: `imageAttachments:${index}`,
@@ -3608,14 +3672,6 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
             }
 
             if (block.type === "card") {
-                if (block.variant === "live" || block.variant === "settling") {
-                    return React.createElement(StreamingChatCard, {
-                        key: `card:${block.cardKey || index}`,
-                        block,
-                        theme,
-                        controller,
-                    });
-                }
                 return React.createElement("section", {
                     key: `card:${block.cardKey || index}`,
                     className: "ps-chat-card",

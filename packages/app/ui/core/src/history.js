@@ -18,6 +18,10 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 export const CHAT_HISTORY_EVENT_TYPES = [
     "user.message",
     "assistant.message",
+    // Needed to distinguish interim assistant output from the final answer
+    // when an older transcript page is loaded.
+    "session.turn_completed",
+    "session.turn_stopped",
     "system.message",
     // Session regeneration boundary — rendered as an inline epoch divider in
     // the transcript, so it must survive backward chat-history paging.
@@ -395,6 +399,11 @@ function sharesClientMessageId(left, right) {
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
+    // Identical text in separate model messages still represents separate
+    // preview slots (and one may later become the final answer).
+    if (left.role === "assistant" && left.messageId && right.messageId) {
+        return left.messageId === right.messageId;
+    }
     // Canvas revision lines are platform-minted, exactly-once (one durable
     // event per rev), and share identical text by design (the artifact://
     // link) — the redelivery time-window below would eat rev N-1 on every
@@ -533,9 +542,10 @@ function buildChatMessage(event, role) {
     const messageId = typeof event?.data?.messageId === "string" && event.data.messageId
         ? event.data.messageId
         : null;
+    const chatRole = deriveChatRole(event, role, text);
     return {
         id: `${event.sessionId}:${event.seq}`,
-        role: deriveChatRole(event, role, text),
+        role: chatRole,
         text,
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
@@ -543,7 +553,36 @@ function buildChatMessage(event, role) {
         ...(sender ? { sender } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(messageId ? { messageId } : {}),
+        ...(chatRole === "assistant" ? {
+            assistantPreview: true,
+            responsePending: true,
+            responseFinal: false,
+            responseCanFinalize: !event?.data?.parentToolCallId && !event?.data?.toolRequests?.length,
+            ...(typeof event?.data?.reasoningText === "string" && event.data.reasoningText
+                ? { liveReasoningText: event.data.reasoningText } : {}),
+        } : {}),
     };
+}
+
+// A saved assistant.message is not necessarily the answer: a single runTurn
+// can contain many tool-loop utterances. Only its successful durable boundary
+// promotes the last eligible message. Use the same rule for replay and append.
+function settleAssistantResponses(chat, event) {
+    const resultType = event?.data?.resultType || event?.data?.result;
+    const successful = event?.eventType === "session.turn_completed"
+        && (!resultType || resultType === "completed");
+    let finalIndex = -1;
+    for (let index = chat.length - 1; index >= 0; index -= 1) {
+        if (chat[index]?.responsePending) {
+            if (successful && chat[index].responseCanFinalize) finalIndex = index;
+            break;
+        }
+    }
+    for (let index = 0; index < chat.length; index += 1) {
+        if (chat[index]?.responsePending) chat[index] = {
+            ...chat[index], responsePending: false, responseFinal: index === finalIndex,
+        };
+    }
 }
 
 /** Apply one transient `turn` topic snapshot without touching durable events/seq. */
@@ -1168,6 +1207,9 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
+        if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
+            settleAssistantResponses(chat, event);
+        }
         if (event.eventType === "user.message") {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const message = buildChatMessage(event, "user");
@@ -1262,6 +1304,10 @@ export function appendEventToHistory(history, event) {
         stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
 
+    if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
+        settleAssistantResponses(next.chat, event);
+    }
+
     // A stopped turn leaves a durable session.turn_stopped carrying the
     // interrupted prompt's clientMessageIds. Record them and retroactively
     // flag any matching transcript message (the user.message usually lands
@@ -1331,22 +1377,14 @@ export function appendEventToHistory(history, event) {
         if (liveIndex >= 0) {
             const settledAt = Date.now();
             const liveStartedAt = Number(liveItem?.liveStartedAt || liveItem?.createdAt) || settledAt;
-            const liveAgeMs = Math.max(0, settledAt - liveStartedAt);
-            // A live surface that never crossed the reveal threshold remains
-            // invisible and the durable answer renders normally. Once it was
-            // eligible to be seen, preserve the key and reasoning long enough
-            // for the browser to morph it smoothly into committed transcript.
-            if (liveAgeMs >= 200) {
-                const streamSettleDelayMs = Math.max(0, 900 - liveAgeMs);
-                Object.assign(message, {
-                    streamSettling: true,
-                    liveKey: liveItem?.liveKey || message.messageId,
-                    liveStartedAt,
-                    liveReasoningText: liveItem?.reasoningText || "",
-                    streamSettleDelayMs,
-                    streamSettleAt: settledAt + streamSettleDelayMs + 180,
-                });
-            }
+            // Keep the disclosure identity even for short streams. Committing
+            // an interim message must not reset expansion or its scroll box.
+            Object.assign(message, {
+                streamSettling: true,
+                liveKey: liveItem?.liveKey || message.messageId,
+                liveStartedAt,
+                liveReasoningText: message.liveReasoningText || liveItem?.reasoningText || "",
+            });
             next.chat.splice(Math.min(liveIndex, next.chat.length), 0, message);
         }
         else next.chat.push(message);

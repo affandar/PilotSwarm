@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
+import { buildRuntimeRegistry, loadProviderTypes } from "../../src/provider-catalog.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +31,7 @@ describe("starter docker model config", () => {
             "gpt-5.4-mini",
             "claude-opus-5",
             "claude-opus-4.8",
+            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-sol-fast",
             "gpt-5.6-luna",
@@ -83,5 +85,55 @@ describe("starter docker model config", () => {
         expect(quickstart).toContain("StrictHostKeyChecking=accept-new");
         expect(quickstart).toContain("/data/ssh");
         expect(quickstart).toContain("ssh-keygen -R '[localhost]:2222'");
+    });
+});
+
+describe("GPT-6 Astra provider type catalog", () => {
+    const catalogs = [
+        ".model_providers.example.json",
+        "deploy/config/model_providers.ghcp.json",
+        "deploy/config/model_providers.local-docker.json",
+        "deploy/gitops/worker/base/model_providers.json",
+    ];
+    const metadata = {
+        supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "medium",
+        supportedContextTiers: ["default", "long_context"],
+        defaultContextTier: "default",
+        contextWindowSizes: { default: 272000, long_context: 872000 },
+    };
+
+    it.each(catalogs)("exposes verified Copilot capabilities in %s", (file) => {
+        const config = JSON.parse(readRepoFile(file));
+        const github = config.providers.find((provider) => provider.id === "github-copilot");
+        expect(github.type).toBe("github");
+        const astra = github.models.filter((model) => model.name === "gpt-6-astra");
+        expect(astra).toHaveLength(1);
+        expect(astra[0]).toMatchObject({ name: "gpt-6-astra", ...metadata });
+        const types = loadProviderTypes(config);
+        expect(types.getDescriptor("github-copilot:gpt-6-astra")).toMatchObject({ modelName: "gpt-6-astra", ...metadata });
+        for (const provider of config.providers.filter((entry) => entry.type !== "github")) {
+            expect(provider.models.some((model) => (model.name ?? model) === "gpt-6-astra")).toBe(false);
+        }
+    });
+
+    it("existing personal providers inherit Astra with their own credentials", () => {
+        const types = loadProviderTypes(loadStarterModelConfig());
+        const instances = ["alice", "bob"].map((name, index) => ({
+            name: `${name}-copilot`, typeId: "github-copilot", class: "personal",
+            ownerUserId: index + 1, baseUrl: null,
+            secretRef: { kind: "githubToken", value: `${name}-test-token` },
+        }));
+        instances.push({ name: "expired-copilot", typeId: "github-copilot", class: "personal",
+            ownerUserId: 3, baseUrl: null, secretRef: {} });
+        const original = structuredClone(instances);
+        const registry = buildRuntimeRegistry(types, instances);
+        for (const name of ["alice", "bob"]) {
+            const ref = `${name}-copilot:gpt-6-astra`;
+            expect(registry.getDescriptor(ref)).toMatchObject({ modelName: "gpt-6-astra", ...metadata });
+            expect(registry.resolve(ref).githubToken).toBe(`${name}-test-token`);
+        }
+        expect(registry.resolve("expired-copilot:gpt-6-astra")).toBeUndefined();
+        expect(instances).toEqual(original);
     });
 });

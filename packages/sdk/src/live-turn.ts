@@ -89,6 +89,10 @@ export class LiveTurnCoalescer {
     }
 
     messageDelta(data: unknown): void {
+        const incoming = eventText(data);
+        // Metadata/empty chunks are not message boundaries. In particular,
+        // Copilot's streaming progress contains bytes, not a message ID/text.
+        if (!incoming.text) return;
         const id = eventId(data, "messageId", "assistant");
         if (this.activeMessageId && this.activeMessageId !== id) {
             this.flushLive();
@@ -98,7 +102,6 @@ export class LiveTurnCoalescer {
             this.truncated = false;
         }
         this.activeMessageId = id;
-        const incoming = eventText(data);
         const before = this.messageText.get(id) || "";
         const after = incoming.delta ? `${before}${incoming.text}` : mergeLiveText(before, incoming.text);
         this.messageText.set(id, this.boundText(after));
@@ -108,6 +111,8 @@ export class LiveTurnCoalescer {
     }
 
     reasoningDelta(data: unknown): void {
+        const incoming = eventText(data);
+        if (!incoming.text) return;
         const id = eventId(data, "reasoningId", "reasoning");
         if (this.activeReasoningId && this.activeReasoningId !== id) {
             this.flushLive();
@@ -117,7 +122,6 @@ export class LiveTurnCoalescer {
             this.truncated = false;
         }
         this.activeReasoningId = id;
-        const incoming = eventText(data);
         const before = this.reasoningText.get(id) || "";
         const after = incoming.delta ? `${before}${incoming.text}` : mergeLiveText(before, incoming.text);
         this.reasoningText.set(id, this.boundText(after));

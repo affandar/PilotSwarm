@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Ignore Copilot progress-only notifications when accumulating live text, so
+  answers grow smoothly instead of resetting to individual fragments. Empty
+  chunks no longer clear retained answers or reasoning or bypass pacing.
+- Streaming and saved interim output use collapsed canvas-style preview cards.
+  Expanded cards fit short content and scroll within a shaded maximum-height
+  box for longer content; reading above the bottom
+  pauses follow mode. Hidden markdown is parsed only on demand. The final answer
+  becomes normal timestamp/`Agent:` prose at the successful turn boundary,
+  preserving its response and reasoning DOM. History reloads follow the same rule.
+- Preserve links inside bold/italic text and headings so artifact links render
+  as the existing artifact viewer cards instead of raw Markdown.
+- Add `gpt-6-astra` to the GitHub Copilot catalogs for local and AKS setups.
+  Reasoning: low, medium (default), high, xhigh, max. Context: 272K default or
+  872K extended prompt tokens inside a 1M total window. Existing GHCP provider
+  instances inherit the model; defaults and credentials are unchanged, and
+  Copilot entitlement/model policy still apply.
+
 ## 0.5.58 — 2026-09-04
 
 Opt-in live chat previews, smooth reasoning-to-answer transitions, enforced

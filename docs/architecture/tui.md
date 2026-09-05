@@ -108,8 +108,10 @@ packages/app/tui/src/index.js
 The optional [ephemeral live plane](live-plane.md) supplies provisional
 reasoning and answer snapshots to Web API transports. Shared history code
 preserves identity across reasoning → answer → durable final, rejects late
-previews, and leaves the durable cursor untouched. Browser-only reveal/dwell
-and decoration fades preserve the actual card DOM; the direct native host
+previews, and leaves the durable cursor untouched. Browser-only collapsed
+preview cards use bounded independent scroll areas and preserve their DOM
+through durable message arrival. A successful turn boundary promotes the final
+answer to ordinary chat; the direct native host
 continues to use durable events. Do not put these reconciliation rules in
 host-specific renderers.
 

@@ -1487,101 +1487,6 @@ body.is-resizing-pane-y iframe {
   margin-top: 6px;
 }
 
-/* A live answer is intentionally not styled like committed transcript text.
-   Its stable shaded shell stays mounted as markdown grows, which both makes
-   the provisional state legible and limits repaints to the streaming body. */
-.ps-chat-card.is-live {
-  border-color: color-mix(in srgb, var(--ps-chat-card-accent) 58%, var(--ps-border));
-  background: color-mix(in srgb, var(--ps-chat-card-accent) 7%, var(--ps-background));
-  box-shadow:
-    inset 3px 0 0 color-mix(in srgb, var(--ps-chat-card-accent) 72%, transparent),
-    0 8px 22px color-mix(in srgb, #000 14%, transparent);
-  isolation: isolate;
-}
-
-.ps-chat-card.is-live .ps-chat-card-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border-bottom-color: color-mix(in srgb, var(--ps-chat-card-accent) 24%, transparent);
-  background: color-mix(in srgb, var(--ps-chat-card-accent) 13%, var(--ps-surface));
-}
-
-.ps-chat-card.is-live .ps-chat-card-header::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--ps-chat-card-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ps-chat-card-accent) 16%, transparent);
-}
-
-.ps-chat-card.is-live .ps-chat-card-body {
-  background: color-mix(in srgb, var(--ps-chat-card-accent) 3%, transparent);
-}
-
-.ps-chat-card.is-live.is-revealing {
-  animation: ps-live-card-reveal 140ms ease-out both;
-}
-
-.ps-chat-card.is-live.is-settling {
-  animation: ps-live-card-settle 180ms ease-in-out var(--ps-live-settle-delay, 0ms) both;
-}
-
-/* Preserve geometry and DOM after commitment; only provisional decoration fades. */
-.ps-chat-card.is-live.is-settled {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-.ps-chat-card.is-live.is-settled .ps-chat-card-header,
-.ps-chat-card.is-live.is-settled .ps-chat-card-body {
-  background: transparent;
-  border-color: transparent;
-}
-.ps-chat-card.is-live.is-settled .ps-chat-card-header::before {
-  background: transparent;
-  box-shadow: none;
-}
-
-.ps-chat-card.is-live.is-settled .ps-system-notice.is-live-reasoning {
-  background: transparent;
-  border-left-color: transparent;
-}
-
-@keyframes ps-live-card-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes ps-live-card-settle {
-  from {
-    border-color: color-mix(in srgb, var(--ps-chat-card-accent) 58%, var(--ps-border));
-    background: color-mix(in srgb, var(--ps-chat-card-accent) 7%, var(--ps-background));
-    box-shadow:
-      inset 3px 0 0 color-mix(in srgb, var(--ps-chat-card-accent) 72%, transparent),
-      0 8px 22px color-mix(in srgb, #000 14%, transparent);
-  }
-  to {
-    border-color: transparent;
-    background: transparent;
-    box-shadow: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ps-chat-card.is-live.is-revealing,
-  .ps-chat-card.is-live.is-settling {
-    animation-duration: 1ms;
-  }
-}
 
 .ps-chat-panel .ps-line,
 .ps-chat-panel .ps-chat-card-line {
@@ -1697,6 +1602,85 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-muted);
   font-size: 0.9em;
   white-space: pre;
+}
+
+/* Short previews hug their content; longer previews scroll within the cap. */
+.ps-system-notice.ps-assistant-preview {
+  margin: 10px 0 12px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--ps-accent) 25%, var(--ps-border));
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-accent) 5%, var(--ps-background));
+  color: var(--ps-foreground);
+}
+
+.ps-assistant-preview > summary {
+  padding: 7px 10px;
+  min-height: 30px;
+  box-sizing: border-box;
+}
+
+.ps-assistant-preview > summary:focus-visible,
+.ps-assistant-preview-viewport:focus-visible {
+  outline: 2px solid var(--ps-accent);
+  outline-offset: -2px;
+}
+
+.ps-preview-status {
+  flex: none;
+  font-size: 0.85em;
+  color: var(--ps-muted);
+}
+
+.ps-assistant-preview-viewport {
+  max-height: min(280px, 35vh);
+  max-height: min(280px, 35dvh);
+  box-sizing: border-box;
+  padding: 10px 12px;
+  overflow: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-top: 1px solid color-mix(in srgb, var(--ps-accent) 18%, var(--ps-border));
+}
+
+.ps-assistant-preview-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Promotion is once per completed turn, never per saved tool-loop message.
+   Keep the details/body DOM, but display the final as ordinary Agent prose. */
+.ps-system-notice.ps-assistant-preview.is-final {
+  border: 0;
+  background: transparent;
+}
+
+.ps-assistant-preview.is-final > summary {
+  padding: 0 0 6px;
+  min-height: 0;
+  font-size: 1em;
+  opacity: 1;
+  cursor: default;
+  user-select: text;
+}
+
+.ps-assistant-preview.is-final > summary::before {
+  display: none;
+}
+
+.ps-assistant-preview.is-final > .ps-assistant-preview-viewport {
+  max-height: none;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+.ps-assistant-preview.is-final .is-live-reasoning > .ps-system-notice-body {
+  max-height: min(240px, 30vh);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .ps-system-notice-body .ps-markdown-preview {

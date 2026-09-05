@@ -617,7 +617,9 @@ export function extractHttpLinks(source = "") {
         .filter((token) => token.href);
 }
 
-function parseInlineMarkdownRuns(source) {
+function parseInlineMarkdownRuns(source, depth = 0) {
+    // Keep pathological model output from exhausting the JS call stack.
+    if (depth >= 32) return [{ text: String(source || ""), color: null, bold: false, underline: false }];
     const tokens = tokenizeInlineMarkdown(source);
     const runs = [];
 
@@ -626,12 +628,16 @@ function parseInlineMarkdownRuns(source) {
             pushTextRun(runs, token.text, { color: "cyan" });
             continue;
         }
-        if (token.type === "strong") {
-            pushTextRun(runs, token.text, { bold: true });
-            continue;
-        }
-        if (token.type === "em") {
-            pushTextRun(runs, token.text, { underline: true });
+        if (token.type === "strong" || token.type === "em") {
+            // Emphasis may contain links (e.g. **[Download](artifact://...)**).
+            // Preserve their href so the portal can render its artifact card;
+            // flattening token.text here leaves raw Markdown in the transcript.
+            for (const run of parseInlineMarkdownRuns(token.text, depth + 1)) {
+                pushTextRun(runs, run.text, {
+                    ...run,
+                    ...(token.type === "strong" ? { bold: true } : { underline: true }),
+                });
+            }
             continue;
         }
         if (token.type === "link") {
@@ -1050,7 +1056,9 @@ export function parseMarkdownLines(input, options = {}) {
 
         const headingMatch = /^(#{1,6})\s+(.*)$/.exec(rawLine);
         if (headingMatch) {
-            lines.push([{ text: headingMatch[2], color: "white", bold: true }]);
+            lines.push(parseInlineMarkdownRuns(headingMatch[2]).map((run) => ({
+                ...run, color: run.color || "white", bold: true,
+            })));
             continue;
         }
 

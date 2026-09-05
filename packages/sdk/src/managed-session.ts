@@ -2828,7 +2828,17 @@ export class ManagedSession {
                             (eventData as Record<string, unknown>).streamingChars = streamingDeltaChars;
                         }
                         turnStartedAtMs = null;
-                    } else if (eventType === "assistant.message_delta" || eventType === "assistant.streaming_delta") {
+                    } else if (eventType === "assistant.streaming_delta") {
+                        // Copilot progress is { totalResponseSizeBytes }, NOT
+                        // text. Feeding it to messageDelta selects a fallback
+                        // message ID and resets the answer between real chunks.
+                        // Keep the raw observer contract, but do not accumulate,
+                        // count or persist these progress-only notifications.
+                        if (opts?.onEvent) {
+                            try { opts.onEvent(captured); } catch {}
+                        }
+                        return;
+                    } else if (eventType === "assistant.message_delta") {
                         // A model that skipped the required tool may stream a
                         // complete-looking answer before we can issue the
                         // correction. Treat those deltas like its provisional

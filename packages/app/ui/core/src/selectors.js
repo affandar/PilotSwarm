@@ -2522,52 +2522,22 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
     // appeared to flash. One keyed card keeps the outer DOM and its shading in
     // place while only the body grows. The TUI deliberately keeps its existing
     // line-oriented rendering.
-    if ((message?.liveTurn || message?.streamSettling) && options.tableMode === "sentinel") {
-        const isLive = message?.liveTurn === true;
-        const reasoningText = String(message?.reasoningText || message?.liveReasoningText || "");
-        const cardLines = buildMessageCardLines({
-            title: isLive
-                ? (message?.text ? "Agent is responding" : "Agent is thinking")
-                : "Agent responded",
+    if ((message?.liveTurn || message?.streamSettling || message?.assistantPreview) && options.tableMode === "sentinel") {
+        // Carry raw markdown: collapsed previews never parse their hidden body.
+        return [{
+            kind: "assistantPreview",
+            width: maxWidth,
+            text: "Message preview",
+            previewKey: `assistant:${message?.liveKey || message?.messageId || message?.id || "active-turn"}`,
             body: decorateArtifactLinksForChat(message?.text || ""),
-            width: Math.max(20, maxWidth),
-            titleColor: "cyan",
-            borderColor: "cyan",
-            tableMode: "sentinel",
-        });
-        const cardEndIndex = cardLines.findIndex((line) => line?.kind === "cardEnd");
-        if (cardEndIndex > 0) {
-            const bodyLines = cardLines.slice(1, cardEndIndex);
-            if (reasoningText) {
-                bodyLines.unshift({
-                    ...buildSystemNoticeLine({
-                        title: isLive ? "Thinking" : "Thought",
-                        summary: isLive ? "In progress" : "Completed",
-                        body: reasoningText,
-                        color: "gray",
-                    }),
-                    liveReasoning: isLive,
-                    streamReasoning: true,
-                });
-            }
-            // Keep the progress marker out of markdown syntax: appending it
-            // to a closing fence or an empty row can change parsing/height.
-            if (isLive) cardLines[0].runs.push({ text: " ▍", color: "cyan", role: "streamingCaret" });
-            if (isLive && message.truncated) bodyLines.push([{ text: "Preview paused — the full answer will appear when complete.", color: "gray" }]);
-            const liveKey = message?.liveKey || message?.messageId || message?.id || "active-turn";
-            return [
-                {
-                    ...cardLines[0],
-                    cardVariant: isLive ? "live" : "settling",
-                    cardKey: `live:${liveKey}`,
-                    liveStartedAt: message?.liveStartedAt || message?.createdAt || Date.now(),
-                    settleDelayMs: Number(message?.streamSettleDelayMs) || 0,
-                    settleAt: Number(message?.streamSettleAt) || null,
-                },
-                ...bodyLines,
-                ...cardLines.slice(cardEndIndex),
-            ];
-        }
+            reasoningText: String(message?.reasoningText || message?.liveReasoningText || ""),
+            isLive: message?.liveTurn === true,
+            final: message?.responseFinal === true,
+            truncated: message?.truncated === true,
+            liveStartedAt: Number(message?.liveStartedAt || message?.createdAt) || 0,
+            time: message?.time || "",
+            headerRuns: buildChatMessagePrefix(message, options),
+        }];
     }
 
     if (message?.liveTurn && options.tableMode !== "sentinel" && message.reasoningText) {

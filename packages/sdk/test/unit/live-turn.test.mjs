@@ -18,6 +18,25 @@ test("explicit delta fragments are always appended, even when they repeat", () =
     live.dispose();
 });
 
+test("empty and metadata-only payloads cannot reset an accumulated live message", () => {
+    const ticks = [];
+    const live = new LiveTurnCoalescer(tick => ticks.push(tick), { intervalMs: 10_000, charThreshold: 10_000 });
+    live.startTurn();
+    live.reasoningDelta({ reasoningId: "r1", deltaContent: "Keep this thought" });
+    live.messageDelta({ messageId: "m1", deltaContent: "Hello" });
+    for (const payload of [{ totalResponseSizeBytes: 20 }, {}, { id: "event-id", deltaContent: "" }, { messageId: "m2", deltaContent: "" }]) {
+        live.messageDelta(payload);
+    }
+    live.reasoningDelta({ reasoningId: "r2", deltaContent: "" });
+    live.messageDelta({ messageId: "m1", deltaContent: " world!" });
+    live.flushLive();
+    live.dispose();
+    assert.equal(ticks.length, 1);
+    assert.equal(ticks[0].messageId, "m1");
+    assert.equal(ticks[0].text, "Hello world!");
+    assert.equal(ticks[0].reasoningText, "Keep this thought");
+});
+
 test("live turn coalescer flushes at the character threshold", () => {
     const ticks = [];
     const live = new LiveTurnCoalescer((tick) => ticks.push(tick), { intervalMs: 10_000, charThreshold: 4 });

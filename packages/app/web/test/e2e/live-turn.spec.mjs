@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
+import { LiveTurnCoalescer } from "../../../../sdk/dist/live-turn.js";
 
 const sessionId = "11111110-2222-3333-4444-555555555550";
 let stub;
@@ -45,6 +46,8 @@ test("reasoning → answer → durable final retains the card, disclosure and ta
     await page.screenshot({ path: test.info().outputPath("live-turn-streaming.png") });
     wire.final(answer);
     await expect(card).toHaveClass(/is-settled/);
+    await expect(card.locator(".ps-chat-card-header")).toContainText("Agent:");
+    await expect(card.locator(".ps-chat-card-header")).not.toContainText("responded");
     await expect(card).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(card).toHaveCSS("border-left-color", "rgba(0, 0, 0, 0)");
     expect(await card.evaluate((element) => element === window.testCard
@@ -68,6 +71,38 @@ test("a response completed before reveal never flashes provisional chrome", asyn
     await page.clock.runFor(2_000);
     await expect(page.locator(".ps-chat-card.is-live")).toHaveCount(0);
     await expect(page.getByText("Brief thought", { exact: false })).toHaveCount(0);
+});
+
+test("interleaved progress leaves one growing answer with its reasoning and DOM intact", async ({ page }) => {
+    const wire = await open(page);
+    const live = new LiveTurnCoalescer(wire.live, { intervalMs: 10_000, charThreshold: 10_000 });
+    try {
+        live.startTurn();
+        live.reasoningDelta({ reasoningId: "r1", deltaContent: "A retained thought." });
+        live.flushLive();
+        const card = page.locator(".ps-chat-card.is-live");
+        await expect(card).toBeVisible();
+        await card.locator("summary").click();
+        await card.evaluate(element => { window.testProgressCard = element; });
+        let answer = "";
+        for (const deltaContent of ["Hello", " world", "! This text grows", " instead of being replaced."]) {
+            answer += deltaContent;
+            live.messageDelta({ totalResponseSizeBytes: answer.length });
+            live.messageDelta({ messageId: "m1", deltaContent });
+            live.messageDelta({ totalResponseSizeBytes: answer.length + 100 });
+            live.flushLive();
+            await expect(card.locator(".ps-chat-card-body")).toContainText(answer);
+            await expect(card.locator("details")).toHaveAttribute("open", "");
+            await expect(card.locator("details")).toContainText("A retained thought.");
+            expect(await card.evaluate(element => element === window.testProgressCard)).toBe(true);
+            await expect(card).toHaveCount(1);
+        }
+        wire.final(answer);
+        await expect(card).toHaveClass(/is-settled/);
+        await expect(card.locator(".ps-chat-card-header")).toContainText("Agent:");
+        await expect(card).not.toContainText("Agent responded");
+        await expect(card.locator(".ps-chat-card-body")).toContainText(answer);
+    } finally { live.dispose(); }
 });
 
 for (const [name, answer] of [

@@ -61,6 +61,49 @@ class FakeCopilotSession {
 }
 
 describe("managed session reasoning snapshots", () => {
+    it("ignores interleaved progress-only notifications without resetting text or reasoning", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const fragments = ["Hello ", "world", "!".repeat(600)];
+        const answer = fragments.join("");
+        let snapshotsBeforeFinal = [];
+        fakeSession.send = async () => {
+            queueMicrotask(() => {
+                fakeSession.emit("assistant.turn_start");
+                fakeSession.emit("assistant.reasoning_delta", { reasoningId: "r1", deltaContent: "Retained thought" });
+                for (const deltaContent of fragments) {
+                    fakeSession.emit("assistant.streaming_delta", { totalResponseSizeBytes: 1000 });
+                    fakeSession.emit("assistant.message_delta", { messageId: "m1", deltaContent });
+                    fakeSession.emit("assistant.streaming_delta", { totalResponseSizeBytes: 2000 });
+                }
+                snapshotsBeforeFinal = events.filter(event => event.eventType === "assistant.live_tick");
+                fakeSession.emit("assistant.message", { messageId: "m1", content: answer });
+                fakeSession.emit("assistant.turn_end");
+                fakeSession.emit("session.idle");
+            });
+        };
+        const events = [];
+        const result = await new ManagedSession("interleaved-progress", fakeSession, {}).runTurn("go", {
+            liveTurn: true, onEvent: event => events.push(event),
+        });
+        expect(result.type).toBe("completed");
+        expect(snapshotsBeforeFinal).toHaveLength(1);
+        expect(snapshotsBeforeFinal[0].data.text).toBe(answer);
+        const ticks = events.filter(event => event.eventType === "assistant.live_tick" && event.data.phase === "live").map(event => event.data);
+        expect(ticks.length).toBeGreaterThan(0);
+        expect(ticks.length).toBeLessThanOrEqual(2);
+        for (const tick of ticks) {
+            expect(tick.messageId).toBe("m1");
+            expect(tick.reasoningText).toBe("Retained thought");
+            expect(answer.startsWith(tick.text)).toBe(true);
+        }
+        expect(ticks.at(-1).text).toBe(answer);
+        const end = events.find(event => event.eventType === "assistant.turn_end");
+        expect(end.data.streamingDeltas).toBe(fragments.length);
+        expect(end.data.streamingChars).toBe(answer.length);
+        expect(events.filter(event => event.eventType === "assistant.streaming_delta")).toHaveLength(fragments.length * 2);
+        expect(result.events.some(event => event.eventType === "assistant.streaming_delta")).toBe(false);
+    });
+
     it("publishes durable assistant.reasoning snapshots from reasoning deltas", async () => {
         const fakeSession = new FakeCopilotSession();
         const managed = new ManagedSession("reasoning-snapshots", fakeSession, {});
