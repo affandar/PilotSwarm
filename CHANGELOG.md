@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Keep plain completed replies beside their timestamp and `Agent:` prefix,
+  without an unnecessary line break. Preserve separate headers for code,
+  tables and reasoning, and retain existing DOM through preview promotion.
+- Present message previews as compact canvas-style disclosure rows instead of
+  bordered cards. Expanded content still fits short replies and scrolls within
+  a bounded viewport; keyboard toggling and reading position are preserved.
+
 ## 0.5.59 — 2026-09-05
 
 Cluster-scoped administration, Azure/OpenAI request compatibility, updated

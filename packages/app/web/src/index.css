@@ -1604,19 +1604,20 @@ body.is-resizing-pane-y iframe {
   white-space: pre;
 }
 
-/* Short previews hug their content; longer previews scroll within the cap. */
+/* Match canvas-action disclosures: one compact row, not an outer card.
+   Expanded previews hug short content and scroll within the existing cap. */
 .ps-system-notice.ps-assistant-preview {
-  margin: 10px 0 12px;
+  margin: 10px 0 11px;
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--ps-accent) 25%, var(--ps-border));
-  border-radius: var(--ps-radius-sm);
-  background: color-mix(in srgb, var(--ps-accent) 5%, var(--ps-background));
-  color: var(--ps-foreground);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ps-muted);
 }
 
 .ps-assistant-preview > summary {
-  padding: 7px 10px;
-  min-height: 30px;
+  padding: 0;
+  min-height: 0;
   box-sizing: border-box;
 }
 
@@ -1636,12 +1637,14 @@ body.is-resizing-pane-y iframe {
   max-height: min(280px, 35vh);
   max-height: min(280px, 35dvh);
   box-sizing: border-box;
-  padding: 10px 12px;
+  margin-top: 8px;
+  padding: 0 12px;
+  color: var(--ps-foreground);
   overflow: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  border-top: 1px solid color-mix(in srgb, var(--ps-accent) 18%, var(--ps-border));
+  border-left: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
 }
 
 .ps-assistant-preview-content {
@@ -1652,6 +1655,7 @@ body.is-resizing-pane-y iframe {
 /* Promotion is once per completed turn, never per saved tool-loop message.
    Keep the details/body DOM, but display the final as ordinary Agent prose. */
 .ps-system-notice.ps-assistant-preview.is-final {
+  display: flow-root;
   border: 0;
   background: transparent;
 }
@@ -1669,8 +1673,19 @@ body.is-resizing-pane-y iframe {
   display: none;
 }
 
+/* A prose answer starts beside its Agent prefix, as ordinary chat did before
+   stable previews. Keep every existing node through promotion. Code, tables
+   and reasoning disclosures still begin below a standalone header. Contain
+   the float in this message so a short reply never affects the next turn. */
+.ps-assistant-preview.is-final:has(> .ps-assistant-preview-viewport > .ps-assistant-preview-content > .ps-line:first-child) > summary {
+  float: left;
+  margin-right: 0.6ch;
+  padding: 0;
+}
+
 .ps-assistant-preview.is-final > .ps-assistant-preview-viewport {
   max-height: none;
+  margin-top: 0;
   padding: 0;
   border: 0;
   overflow: visible;

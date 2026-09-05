@@ -90,6 +90,50 @@ test("a response completed before reveal never flashes provisional chrome", asyn
     await expect(reasoning).toContainText("Brief thought");
 });
 
+test("message previews are compact canvas-style disclosures with bounded scrolling", async ({ page }) => {
+    const wire = await open(page);
+    wire.live({ phase: "live", messageId: "m1", text: Array.from({ length: 80 }, (_, i) => `Preview line ${i}`).join("\n\n") });
+    const preview = page.locator(".ps-assistant-preview");
+    await expect(preview).toBeVisible();
+    await expect(preview).not.toHaveAttribute("open");
+    await expect(preview).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(preview).toHaveCSS("border-top-width", "0px");
+    await expect(preview).toHaveCSS("border-left-width", "0px");
+    expect((await preview.boundingBox()).height).toBeLessThan(40);
+    const summary = preview.locator(":scope > summary");
+    await summary.focus();
+    await summary.press("Enter");
+    const viewport = preview.locator(".ps-assistant-preview-viewport");
+    await expect(viewport).toBeVisible();
+    expect((await viewport.boundingBox()).height).toBeLessThanOrEqual(280);
+    expect(await viewport.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+    await expect(viewport).toHaveCSS("border-top-width", "0px");
+    await summary.press("Enter");
+    await expect(viewport).not.toBeVisible();
+});
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`plain replies share the Agent prefix line without streaming (${viewport.width}px)`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const wire = await open(page);
+        wire.final("pong");
+        const card = page.locator(".ps-assistant-preview.is-final");
+        await expect(card).toBeVisible();
+        const geometry = await card.evaluate(element => {
+            const header = element.querySelector(":scope > summary");
+            const body = element.querySelector(".ps-assistant-preview-content > .ps-line");
+            const range = document.createRange();
+            range.selectNodeContents(body);
+            const text = range.getClientRects()[0];
+            return { header: header.getBoundingClientRect().toJSON(), text: text.toJSON(),
+                height: element.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(body).lineHeight) };
+        });
+        expect(Math.abs(geometry.text.top - geometry.header.top)).toBeLessThan(4);
+        expect(geometry.text.left).toBeGreaterThanOrEqual(geometry.header.right);
+        expect(geometry.height).toBeLessThan(geometry.lineHeight * 1.5);
+    });
+}
+
 test("interleaved progress leaves one growing answer with its reasoning and DOM intact", async ({ page }) => {
     const wire = await open(page);
     const live = new LiveTurnCoalescer(wire.live, { intervalMs: 10_000, charThreshold: 10_000 });
