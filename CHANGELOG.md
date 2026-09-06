@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Distinguish saved intermediate `Agent update` disclosures from live `Message
+  preview` output. Streaming-disabled sessions and old history never show live
+  preview labels or status; final answers retain normal chat formatting.
 - Keep plain completed replies beside their timestamp and `Agent:` prefix,
   without an unnecessary line break. Preserve separate headers for code,
   tables and reasoning, and retain existing DOM through preview promotion.

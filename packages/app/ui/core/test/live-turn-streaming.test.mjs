@@ -93,6 +93,8 @@ test("a successfully completed streamed answer uses the normal Agent prefix with
     history = appendEventToHistory(history, evt(2, "assistant.message", { messageId: "m1", content: "answer" }));
     const interim = selectChatLines(state(history), 100, { tableMode: "sentinel" }).find(line => line?.kind === "assistantPreview");
     assert.equal(interim.final, false, "saved output alone does not complete a turn");
+    assert.equal(interim.text, "Agent update");
+    assert.equal(interim.statusText, "", "saved messages never imply active streaming");
     history = appendEventToHistory(history, evt(3, "session.turn_completed", { resultType: "completed" }));
     const lines = selectChatLines(state(history), 100, { tableMode: "sentinel" });
     const card = lines.find(line => line?.kind === "assistantPreview");
@@ -102,6 +104,47 @@ test("a successfully completed streamed answer uses the normal Agent prefix with
     assert.equal(card.previewKey, "assistant:m1");
     assert.match(card.headerRuns.map(run => run.text).join(""), /Agent: /);
     assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
+});
+
+test("durable-only history renders saved updates, never streaming previews, on append and replay", () => {
+    const events = [
+        evt(1, "user.message", { content: "Check the report" }),
+        evt(2, "assistant.message", { messageId: "m1", content: "Checking the report." }),
+        evt(3, "assistant.message", { messageId: "m2", content: "Preparing the summary." }),
+        evt(4, "assistant.message", { messageId: "m3", content: "The report is ready." }),
+        evt(5, "session.turn_completed", { resultType: "completed" }),
+    ];
+    let appended = buildHistoryModel([], {});
+    for (const event of events) {
+        appended = appendEventToHistory(appended, event);
+        for (const line of selectChatLines(state(appended), 100, { tableMode: "sentinel" })) {
+            if (line.kind !== "assistantPreview") continue;
+            assert.equal(line.text, "Agent update");
+            assert.equal(line.isLive, false);
+            assert.equal(line.statusText, "");
+        }
+    }
+    const replay = buildHistoryModel(events, {});
+    const select = history => selectChatLines(state(history), 100, { tableMode: "sentinel" })
+        .filter(line => line.kind === "assistantPreview");
+    assert.deepEqual(select(replay), select(appended));
+    assert.deepEqual(select(replay).map(line => line.final), [false, false, true]);
+    const native = JSON.stringify(selectChatLines(state(replay), 100));
+    assert.doesNotMatch(native, /Message preview|Responding|streamingCaret/);
+    assert.match(native, /Checking the report/);
+    assert.match(native, /The report is ready/);
+});
+
+test("stopped durable output stays a saved update rather than a live preview or final answer", () => {
+    const history = buildHistoryModel([
+        evt(1, "assistant.message", { messageId: "m1", content: "Progress before the stop." }),
+        evt(2, "session.turn_stopped"),
+    ], {});
+    const line = selectChatLines(state(history), 100, { tableMode: "sentinel" })
+        .find(line => line.kind === "assistantPreview");
+    assert.equal(line.text, "Agent update");
+    assert.equal(line.statusText, "");
+    assert.equal(line.final, false);
 });
 
 test("matching durable final replaces live; a different id leaves it until turn completion", () => {

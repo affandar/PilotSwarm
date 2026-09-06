@@ -26,6 +26,7 @@ async function open(page) {
     } }));
     return {
         live: (data) => socket.send(JSON.stringify({ type: "live", sessionId, topic: "turn", seq: ++seq, kind: "snapshot", data })),
+        event,
         saved: (content) => event("assistant.message", { messageId: "m1", content }),
         complete: () => event("session.turn_completed", { resultType: "completed" }),
         final: (content) => {
@@ -55,7 +56,9 @@ test("reasoning → answer → durable final retains the card, disclosure and ta
     await card.locator("table").evaluate((element) => { window.testTable = element; window.testTableTop = element.getBoundingClientRect().top; });
     await page.screenshot({ path: test.info().outputPath("live-turn-streaming.png") });
     wire.saved(answer);
-    await expect(card.locator(":scope > summary")).toContainText("Saved");
+    await expect(card.locator(":scope > summary")).toContainText("Agent update");
+    await expect(card.locator(":scope > summary")).not.toContainText("Message preview");
+    await expect(card.locator(".ps-preview-status")).toHaveCount(0);
     await expect(card).not.toHaveClass(/is-final/);
     wire.complete();
     await expect(card).toHaveClass(/is-final/);
@@ -111,6 +114,48 @@ test("message previews are compact canvas-style disclosures with bounded scrolli
     await summary.press("Enter");
     await expect(viewport).not.toBeVisible();
 });
+
+for (const delivery of ["events", "history"]) {
+    test(`streaming off: durable ${delivery} shows compact agent updates, not previews`, async ({ page }) => {
+        const events = [
+            { eventType: "assistant.message", data: { messageId: "update1", content: "Checking the report." } },
+            { eventType: "assistant.message", data: { messageId: "update2", content: "Preparing the summary." } },
+            { eventType: "assistant.message", data: { messageId: "answer", content: "The report is ready." } },
+            { eventType: "session.turn_completed", data: { resultType: "completed" } },
+        ].map((event, index) => ({ ...event, sessionId, seq: index + 1, createdAt: Date.now() - 60_000 + index }));
+        if (delivery === "history") {
+            await page.route(`**/sessions/${sessionId}/events?*`, route => route.fulfill({
+                json: { ok: true, result: events },
+            }));
+        }
+        const wire = await open(page);
+        // No live frame is sent in either path. This reproduces a deployment
+        // with publishing disabled, including old messages loaded over REST.
+        if (delivery === "events") for (const event of events) wire.event(event.eventType, event.data);
+        const updates = page.locator(".ps-assistant-preview:not(.is-final)");
+        await expect(updates).toHaveCount(2);
+        for (const update of await updates.all()) {
+            await expect(update.locator(":scope > summary")).toContainText("Agent update");
+            await expect(update.locator(".ps-preview-status")).toHaveCount(0);
+            await expect(update).not.toHaveAttribute("open");
+            await expect(update).toHaveCSS("border-left-width", "0px");
+            await expect(update).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+            expect((await update.boundingBox()).height).toBeLessThan(40);
+        }
+        await updates.first().locator(":scope > summary").click();
+        await expect(updates.first().getByRole("region", { name: "Agent update", exact: true })).toContainText("Checking the report.");
+        const answer = page.locator(".ps-assistant-preview.is-final");
+        await expect(answer).toContainText("The report is ready.");
+        await expect(answer.locator(":scope > summary")).toContainText("Agent:");
+        await expect(page.getByText("Message preview", { exact: true })).toHaveCount(0);
+        await expect(page.locator(".ps-streaming-caret")).toHaveCount(0);
+        if (delivery === "history") {
+            await page.reload();
+            await expect(updates).toHaveCount(2);
+            await expect(page.getByText("Message preview", { exact: true })).toHaveCount(0);
+        }
+    });
+}
 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`plain replies share the Agent prefix line without streaming (${viewport.width}px)`, async ({ page }) => {

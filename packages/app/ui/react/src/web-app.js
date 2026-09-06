@@ -3571,15 +3571,14 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
         ? React.createElement(Runs, { runs: line.headerRuns, theme })
         : React.createElement(React.Fragment, null,
             React.createElement("span", { className: "ps-canvas-action-tag" }, "Agent"),
-            React.createElement("span", { className: "ps-system-notice-summary-text" }, "Message preview"),
-            React.createElement("span", { className: "ps-preview-status" },
-                line.isLive ? (line.body ? "Responding" : "Thinking") : "Saved"))),
+            React.createElement("span", { className: "ps-system-notice-summary-text" }, line.text),
+            line.statusText ? React.createElement("span", { className: "ps-preview-status" }, line.statusText) : null)),
     React.createElement("div", {
         ref: viewportRef,
         className: "ps-assistant-preview-viewport",
         tabIndex: expanded && !line.final ? 0 : undefined,
         role: line.final ? undefined : "region",
-        "aria-label": line.final ? undefined : "Agent message preview",
+        "aria-label": line.final ? undefined : line.text,
         onScroll: (event) => {
             if (!line.final) {
                 event.stopPropagation();

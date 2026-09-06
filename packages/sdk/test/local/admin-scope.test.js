@@ -132,6 +132,28 @@ describe("admin-scope catalog and portal integration", () => {
         expect(JSON.stringify(result)).toContain(CANARY); // accepted phase-1 system-mediated route
     });
 
+    it("admin-only system sessions deny ordinary-user lists, content, subscriptions and agent inspection", async () => {
+        const user = auth(ALICE, "user");
+        expect(await call("getSessionAccess", { sessionId: "foreign" }, ALICE, "user")).toMatchObject({ canWrite: true });
+        expect((await call("listSessions", {}, ALICE, "user")).some(s => s.sessionId === "system")).toBe(false);
+        const page = await call("listSessionsPage", { limit: 200 }, ALICE, "user");
+        expect(page.sessions.some(s => s.sessionId === "system")).toBe(false);
+        for (const method of ["getSession", "getSessionEvents", "getExecutionHistory", "getSessionAccess", "listArtifacts", "getCanvasLive"]) {
+            await expect(call(method, { sessionId: "system" }, ALICE, "user")).rejects.toMatchObject({ status: 404 });
+        }
+        await expect(runtime.authorizeSessionSubscribe("system", user)).rejects.toMatchObject({ status: 404 });
+        await expect(runtime.downloadArtifactBinary("system", "secret.txt", user)).rejects.toMatchObject({ status: 404 });
+        const response = await fetch(`${apiUrl}/api/v1/sessions/system/events`, {
+            headers: { Authorization: "Bearer dev:alice" },
+        });
+        expect(response.status).toBe(404);
+        const worker = createInspectTools({ catalog, sessionId: "foreign", agentIdentity: "agent-manager",
+            resolveViewer: () => ({ ...ALICE, isAdmin: false, isSystemPrincipal: false, adminScope: "cluster" }) });
+        const result = await worker.find(t => t.name === "read_session_info").handler({ session_id: "system" });
+        expect(result).toMatchObject({ error: expect.stringMatching(/not found/i) });
+        expect(await call("getSessionAccess", { sessionId: "system" })).toMatchObject({ canWrite: true, canManage: true });
+    });
+
     it("private packages and all mutation paths do not inherit the admin role", async () => {
         expect((await call("listAgentPackages")).map((p) => p.name).sort()).toEqual(["own-kit", "shared-kit"]);
         expect(await call("getAgentPackage", { name: "private-kit", scope: "user", ownerProvider: "dev", ownerSubject: "alice", isAdmin: true, adminScope: "unrestricted" })).toBeNull();

@@ -10,6 +10,9 @@ description: Modify or extend the PilotSwarm terminal UI. Covers the shared-firs
 For live-plane changes, read `docs/architecture/live-plane.md`. Shared core
 owns provisional identity, interim/final classification and stream-scoped idle
 cleanup. Browser previews are canvas-style disclosures, collapsed by default.
+Saved intermediate messages are `Agent update` rows, never `Message preview`
+or active streaming status. That rule holds for durable-only turns and old
+history. Keep the same disclosure DOM as live output becomes saved output.
 Their expanded viewport hugs its content up to min(280px, 35dvh), then scrolls independently,
 and follows live growth only while the reader remains at its bottom. Keep the
 disclosure, viewport, and content DOM stable across deltas and durable interim

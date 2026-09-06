@@ -79,11 +79,18 @@ A durable `assistant.message` is saved interim output, not proof of a completed
 answer. A successful `session.turn_completed` promotes only the last eligible
 assistant message to normal timestamp/`Agent:` prose. Tool-request/sub-agent
 messages are not eligible. Errors/stops and control-tool continuations keep
-their output as expandable previews. History paging includes the terminal
+their output as expandable saved updates. History paging includes the terminal
 events and reclassifies across page seams, so a reload follows the same rule.
 On promotion the same disclosure/body becomes an always-open normal response,
 without a preview height limit or “Agent responded” label. Earlier interim
 messages stay compact. Reasoning remains independently expandable and bounded.
+
+Saved intermediate messages use the label `Agent update`, without a live status
+badge. Only actual transient output uses `Message preview` and `Responding` or
+`Thinking`. Disabling `PILOTSWARM_LIVE_TURN` stops delta publishing; it does not
+hide saved tool-loop messages. This distinction also applies to old history and
+reloads. Both states share the same borderless disclosure DOM, so saving a
+message does not discard its expansion or scroll position.
 
 Both hidden answer and reasoning markdown are parsed only on demand. Once
 opened, the preview retains its DOM while closed and catches up on reopening;

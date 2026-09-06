@@ -2520,19 +2520,23 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         return buildThinkingCardLines(message, maxWidth);
     }
 
-    // The browser gives an in-flight assistant answer its own stable surface.
-    // Previously it was flattened into the ordinary transcript on every
-    // snapshot. As partial markdown changed shape (plain lines -> table/code
-    // block), React could replace several adjacent nodes and the whole answer
-    // appeared to flash. One keyed card keeps the outer DOM and its shading in
-    // place while only the body grows. The TUI deliberately keeps its existing
-    // line-oriented rendering.
+    // One stable disclosure spans live output, saved updates and the final
+    // answer. Its identity is not evidence of streaming: durable history uses
+    // this shell too, including turns created with PILOTSWARM_LIVE_TURN=0.
+    // Only actual transient content may use preview labels/status. The native
+    // TUI keeps its line-oriented rendering of these same durable messages.
     if ((message?.liveTurn || message?.streamSettling || message?.assistantPreview) && options.tableMode === "sentinel") {
+        // streamSettling also preserves DOM through durable arrival; it does
+        // not mean those saved bytes are still provisional.
+        const provisional = !message?.assistantPreview && Boolean(message?.liveTurn || message?.streamSettling);
         // Carry raw markdown: collapsed previews never parse their hidden body.
         return [{
             kind: "assistantPreview",
             width: maxWidth,
-            text: "Message preview",
+            text: provisional ? "Message preview" : "Agent update",
+            statusText: !provisional ? "" : message?.liveTurn
+                ? (message?.text ? "Responding" : "Thinking")
+                : message?.streamSettling ? "Finishing" : "",
             previewKey: `assistant:${message?.liveKey || message?.messageId || message?.id || "active-turn"}`,
             body: decorateArtifactLinksForChat(message?.text || ""),
             reasoningText: String(message?.reasoningText || message?.liveReasoningText || ""),
