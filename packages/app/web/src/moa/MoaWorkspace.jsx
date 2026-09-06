@@ -7,6 +7,7 @@ import "./moa.css";
 // One icon treatment for MoA actions; names remain available to keyboard and
 // screen-reader users and as hover tooltips.
 const ICON_PATHS = {
+    controls: "M4 7h16 M4 17h16 M8 4v6 M16 14v6",
     info: "M12 16v-4 M12 8h.01 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
     newSession: "M3 3h18v14H9l-6 4z M8 10h8 M12 6v8",
     panel: "M3 3h18v18H3z M12 3v18 M15 12h4 M17 10v4",
@@ -116,7 +117,7 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     </Modal>;
 }
 
-function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, onPanelKey, composerHost, header, onInfo }) {
+function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, onPanelKey, composerHost, header, controlsHost, onControlAction }) {
     const [ready, setReady] = React.useState(null), [error, setError] = React.useState(""), [retry, setRetry] = React.useState(0);
     const themeId = useControllerSelector(parent, s => s.ui.themeId);
     const [actionsOpen, setActionsOpen] = React.useState(false);
@@ -175,7 +176,8 @@ function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, o
         observer.observe(ref.current); return () => observer.disconnect();
     }, [ready]);
     return <>
-        <header>{header.title}{ready && <SessionPane controller={ready} actionsOnly onDialogChange={setActionsOpen} />}<IconButton label="Session information" icon="info" onClick={onInfo} />{header.actions}</header>
+        <header>{header.title}{header.actions}</header>
+        {ready && <SessionPane controller={ready} actionsOnly actionsHost={controlsHost} onAction={onControlAction} onDialogChange={setActionsOpen} />}
         <div ref={ref} className="ps-moa-live">
             {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} fullWidth showComposer={false} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
@@ -260,6 +262,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
     const closePicker = React.useCallback(() => setPicker(null), []), closeMenu = React.useCallback(() => setMenu(null), []), closeShare = React.useCallback(() => setShare(null), []);
     const [name, setName] = React.useState(layout.name), [renaming, setRenaming] = React.useState(false), [clearing, setClearing] = React.useState(false);
     const layoutRef = React.useRef(null);
+    const [controlsHost, setControlsHost] = React.useState(null);
     const [composerHost, setComposerHost] = React.useState(null), [info, setInfo] = React.useState(null), [creating, setCreating] = React.useState(null);
     React.useEffect(() => setName(layout.name), [layout.name, value.activeSlot]);
     const nodes = moaLeaves(layout.tree), selected = nodes.some(n => n.id === focus) ? focus : nodes[0]?.id;
@@ -290,24 +293,15 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         const key = e => { if (e.key === "Escape" && !document.querySelector(".ps-moa-dialog, .ps-modal-backdrop, .ps-share-overlay")) moa.setZen(false); };
         window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
     }, [moa.setZen]);
-    const cyclePanels = (backwards = false) => {
-        const panels = [...(layoutRef.current?.querySelectorAll("[data-moa-panel]") || [])];
-        if (!panels.length) return;
-        const bounds = layoutRef.current.getBoundingClientRect();
-        const cx = bounds.left + bounds.width / 2, cy = bounds.top + bounds.height / 2;
-        // Screen y grows down: ascending atan2 starts at top-left and runs clockwise.
-        const order = panels.map(el => { const r = el.getBoundingClientRect(); return { el, angle: (Math.atan2(r.top + r.height / 2 - cy, r.left + r.width / 2 - cx) + Math.PI * 3 / 4 + Math.PI * 2) % (Math.PI * 2) }; }).sort((a, b) => a.angle - b.angle);
-        const index = order.findIndex(({ el }) => el.dataset.moaPanel === selected);
-        const next = order[(index + (backwards ? -1 : 1) + order.length) % order.length].el;
-        focusPanel(next);
+    const selectedPanel = () => [...(layoutRef.current?.querySelectorAll("[data-moa-panel]") || [])].find(el => el.dataset.moaPanel === selected);
+    const toggleComposer = () => {
+        const footer = composerHost?.closest(".ps-moa-composer-strip");
+        if (footer?.contains(document.activeElement)) selectedPanel()?.focus({ preventScroll: true });
+        else (composerHost?.querySelector("textarea, [contenteditable='true']") || footer)?.focus({ preventScroll: true });
     };
     const focusPanel = next => {
         setFocus(next.dataset.moaPanel);
-        requestAnimationFrame(() => {
-            if (!next.isConnected) return;
-            const composer = composerHost?.querySelector("textarea, [contenteditable='true']");
-            (composer || next).focus({ preventScroll: true });
-        });
+        next.focus({ preventScroll: true });
     };
     const movePanel = direction => {
         const panels = [...(layoutRef.current?.querySelectorAll("[data-moa-panel]") || [])];
@@ -329,20 +323,22 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         // Prefer a panel directly in that direction; stay put at the outside edge.
         if (candidates.length) focusPanel(candidates[0].el);
     };
-    const onPanelKey = (key, backwards = false) => {
+    const onPanelKey = key => {
         if (picker || menu || share || renaming || clearing || info || creating || document.querySelector(".ps-modal-backdrop, .ps-share-overlay") || controller.getState().ui.modal) return;
         if (key === "Escape") moa.setZen(false);
-        if (key === "Tab") cyclePanels(backwards);
-        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) movePanel(key);
+        if (key === "Tab") toggleComposer();
     };
     React.useEffect(() => {
         const key = e => {
             const tab = e.key === "Tab" && !e.ctrlKey;
-            const arrow = e.ctrlKey && !e.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key);
+            const arrow = !e.ctrlKey && !e.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key);
             if ((!tab && !arrow) || e.altKey || e.metaKey || picker || menu || share || renaming || clearing || info || creating || document.querySelector(".ps-modal-backdrop, .ps-share-overlay") || controller.getState().ui.modal) return;
             if (!e.target.closest?.("[data-moa-panel], .ps-moa-composer-strip") && e.target !== document.body) return;
+            if (arrow && e.target.closest?.(".ps-moa-composer-strip, input, textarea, select, [contenteditable='true'], [role='separator']")) return;
             e.preventDefault(); e.stopPropagation();
-            if (arrow) movePanel(e.key); else cyclePanels(e.shiftKey);
+            if (arrow) {
+                movePanel(e.key);
+            } else toggleComposer();
         };
         window.addEventListener("keydown", key, true);
         return () => window.removeEventListener("keydown", key, true);
@@ -358,7 +354,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
         const active = selected === node.id;
         return <section key={node.id} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={node.id} data-session-id={node.sessionId} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onClickCapture={() => setFocus(node.id)} onFocusCapture={e => { if (e.target.matches?.(":focus-visible")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}<button className="ps-mini-button" aria-label="Panel options" onClick={() => setMenu(node)}>⋯</button></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} onPanelKey={onPanelKey} focused={active && !picker && !menu && !share && !renaming && !clearing && !info && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${value.activeSlot}:${node.id}:${node.sessionId}`} composerHost={composerHost} onInfo={() => setInfo(node.sessionId)} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <><button className="ps-mini-button" aria-label="Open panel in main view" onClick={() => zoom(node)}>↗</button><button className="ps-mini-button" aria-label="Panel options" onClick={() => setMenu(node)}>⋯</button></> }} />}
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} onPanelKey={onPanelKey} focused={active && !picker && !menu && !share && !renaming && !clearing && !info && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${value.activeSlot}:${node.id}:${node.sessionId}`} composerHost={composerHost} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <><IconButton label="Open panel in main view" icon="zen" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }
@@ -378,7 +374,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         </nav>}
         {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
         <div ref={layoutRef} id="moa-layout" role="tabpanel" aria-labelledby={`moa-tab-${value.activeSlot}`} className="ps-moa-layout" key={value.activeSlot}>{layout.tree ? draw(layout.tree) : <div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div>}</div>
-        <footer className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
+        <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
             <span className="ps-moa-composer-target">{nodes.find(n => n.id === selected)?.sessionId ? state.sessions.byId[nodes.find(n => n.id === selected).sessionId]?.title || "Selected session" : "Select a session to write a message"}</span>
             <div ref={setComposerHost} className="ps-moa-composer-host" />
         </footer>
@@ -390,7 +386,20 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         </div></Modal>}
         {renaming && <Modal title="Rename MoA" onClose={() => { setRenaming(false); setName(layout.name); }}><form className="ps-moa-menu" onSubmit={e => { e.preventDefault(); saveLayout({ ...layout, name }); setRenaming(false); }}><input aria-label="MoA name" maxLength={64} value={name} onChange={e => setName(e.target.value)} autoFocus /><IconButton label="Save name" icon="check" type="submit" /></form></Modal>}
         {picker && <SessionPicker controller={controller} initial={picker} onCreate={() => { setCreating(picker); setPicker(null); }} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || crypto.randomUUID(), ...binding }; replace(picker.id, next); setFocus(next.id); setPicker(null); }} />}
-        {menu && <Modal title="Panel options" onClose={closeMenu}><div className="ps-moa-menu ps-moa-menu-actions"><IconButton label={`${menu.type === "empty" ? "Choose" : "Replace"} session or canvas…`} icon="replace" onClick={() => { setPicker(menu); setMenu(null); }} /><IconButton label="Split right" icon="right" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "row")} /><IconButton label="Split below" icon="below" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "column")} />{menu.type !== "empty" && <IconButton label="Open in main view" icon="open" onClick={() => { zoom(menu); setMenu(null); }} />}<IconButton label="Remove panel" icon="remove" onClick={() => { replace(menu.id, null); setMenu(null); }} /></div></Modal>}
+        {menu && <Modal title="Session control panel" onClose={closeMenu}><div className="ps-moa-control-panel">
+            <p className="ps-moa-control-title">{state.sessions.byId[menu.sessionId]?.title || "Empty panel"}</p>
+            {menu.type !== "empty" && <section aria-label="Session actions"><h3>Session</h3><div className="ps-moa-control-actions">
+                <div ref={setControlsHost} className="ps-moa-control-actions" />
+                <IconButton label="Session information" icon="info" onClick={() => { setInfo(menu.sessionId); setMenu(null); }} />
+                <IconButton label="Open in main view" icon="open" onClick={() => { zoom(menu); setMenu(null); }} />
+            </div></section>}
+            <section aria-label="Panel layout"><h3>Panel layout</h3><div className="ps-moa-control-actions">
+                <IconButton label={`${menu.type === "empty" ? "Choose" : "Replace"} session or canvas…`} icon="replace" onClick={() => { setPicker(menu); setMenu(null); }} />
+                <IconButton label="Split right" icon="right" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "row")} />
+                <IconButton label="Split below" icon="below" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "column")} />
+                <IconButton label="Remove panel" icon="remove" onClick={() => { replace(menu.id, null); setMenu(null); }} />
+            </div></section>
+        </div></Modal>}
         {share && <Modal title="Share MoA" onClose={closeShare}><div className="ps-moa-menu"><p>This link copies the arrangement. Session access still applies.</p><input aria-label="MoA share link" readOnly value={share} onFocus={e => e.target.select()} /><IconButton label={copied ? "Copied" : "Copy link"} icon={copied ? "check" : "copy"} onClick={async () => { try { await navigator.clipboard.writeText(share); setCopied(true); } catch { setError("Select and copy the link manually."); } }} /></div></Modal>}
     </div>;
 }

@@ -87,12 +87,17 @@ test("focus owns the sole composer, preserves drafts, and sends only to its sess
 test("splitting creates a focused blank panel and right-click opens the familiar session list", async ({ page }) => {
     const f = await fixture(page, [layout(chat(1))]);
     await open(page);
-    await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Split right", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     const blank = page.locator(".ps-moa-panel.is-focused");
     await expect(blank.getByRole("button", { name: "Choose session or canvas" })).toBeVisible();
     await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(0);
+    await blank.focus();
+    await page.keyboard.press("Tab");
+    await expect(page.locator(".ps-moa-composer-strip")).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(blank).toBeFocused();
     await blank.locator(".ps-moa-empty").click({ button: "right" });
     await expect(page.getByRole("dialog", { name: "Sessions", exact: true })).toBeVisible();
     await page.getByRole("dialog", { name: "Sessions", exact: true }).locator(`.ps-session-list-button[data-session-id="${sid(2)}"]`).click();
@@ -208,9 +213,15 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await expect(composer(page)).toBeVisible();
     await expect(composer(page)).toHaveValue("");
     await inside.press("Control+ArrowLeft");
-    await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
-    await page.keyboard.press("Shift+Tab");
     await expect(c).toHaveClass(/is-focused/);
+    await inside.press("Tab");
+    await expect(composer(page)).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(c).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(panel(page, "panel-1")).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(c).toBeFocused();
     await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await inside.click();
     await page.evaluate(() => new Promise(resolve => {
@@ -262,7 +273,7 @@ test("removing a panel during delayed startup cannot resurrect its subscription 
     });
     await open(page);
     await expect.poll(() => requested).toBe(true);
-    await panel(page, "panel-2").getByRole("button", { name: "Panel options" }).click();
+    await panel(page, "panel-2").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Remove panel", exact: true }).click();
     await expect(page.getByRole("button", { name: "Add first MoA panel" })).toBeVisible();
     page.on("request", request => { if (request.url().includes(sid(2)) && /\/(events|events-before|canvas-live)(\?|$)/.test(request.url())) lateRequests.push(request.url()); });
@@ -320,7 +331,7 @@ test("slow profile writes serialize rapid rename and split edits without rolling
     await rename(page, "First pending name");
     await expect.poll(() => started.length).toBe(1);
     await rename(page, "Latest operator desk");
-    await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Split below", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     await page.waitForTimeout(650); // the second debounce expires while the first request is held
@@ -351,7 +362,7 @@ test("replacing a session hides its old composer throughout delayed replacement 
         await gate;
         return route.fallback();
     });
-    await target.getByRole("button", { name: "Panel options" }).click();
+    await target.getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
     await page.getByRole("dialog", { name: "Sessions", exact: true }).locator(`.ps-session-list-button[data-session-id="${sid(2)}"]`).click();
     await page.getByRole("button", { name: "Use chat", exact: true }).click();
@@ -413,51 +424,41 @@ test("named tabs start with one workspace, add up to five, and survive reload", 
     expect(f.errors).toEqual([]);
 });
 
-test("Tab cycles panel focus clockwise and Shift+Tab reverses while retaining each draft", async ({ page }) => {
-    // Depth-first order is TL, BL, TR, BR; the requested visual order differs.
-    const left = { ...split(chat(0, "tl"), chat(1, "bl"), "left"), direction: "column" };
-    const right = { ...split(chat(2, "tr"), chat(3, "br"), "right"), direction: "column" };
-    const f = await fixture(page, [layout(split(left, right))]);
-    await open(page);
-    const tl = panel(page, "tl");
-    await expect(composer(page)).toBeVisible();
-    await composer(page).fill("clockwise draft");
-    for (const expected of ["tr", "br", "bl", "tl"]) {
-        await page.keyboard.press("Tab");
-        await expect(panel(page, expected)).toHaveClass(/is-focused/);
-        await expect(composer(page)).toBeVisible();
-        await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(1);
-    }
-    await expect(composer(page)).toHaveValue("clockwise draft");
-    for (const expected of ["bl", "br", "tr", "tl"]) {
-        await page.keyboard.press("Shift+Tab");
-        await expect(panel(page, expected)).toHaveClass(/is-focused/);
-    }
-    expect(f.sends).toEqual([]);
-    expect(f.errors).toEqual([]);
-});
-
-test("Ctrl+Arrows move spatially, preserve drafts, and stop at edges or dialogs", async ({ page }) => {
+test("arrows select panels while Tab and Shift+Tab toggle composer without losing drafts", async ({ page }) => {
     const left = { ...split(chat(0, "tl"), chat(1, "bl"), "left"), direction: "column" };
     const right = { ...split(chat(2, "tr"), chat(3, "br"), "right"), direction: "column" };
     const f = await fixture(page, [layout(split(left, right))]);
     await open(page);
     await expect(composer(page)).toBeVisible();
     await composer(page).fill("spatial draft");
-    for (const [key, target] of [["Left", "tl"], ["Up", "tl"], ["Right", "tr"], ["Right", "tr"], ["Down", "br"], ["Down", "br"], ["Left", "bl"], ["Up", "tl"]]) {
-        await page.keyboard.press(`Control+Arrow${key}`);
-        await expect(panel(page, target)).toHaveClass(/is-focused/);
-        await expect(page.locator(".ps-moa-composer-strip")).toHaveAttribute("data-session-id", await panel(page, target).getAttribute("data-session-id"));
-    }
-    await expect(composer(page)).toHaveValue("spatial draft");
-    await panel(page, "tl").getByRole("button", { name: "Panel options" }).click();
+    await page.keyboard.press("ArrowLeft");
+    await expect(panel(page, "tl")).toHaveClass(/is-focused/);
+    await expect(composer(page)).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(panel(page, "tl")).toBeFocused();
     await page.keyboard.press("Control+ArrowRight");
+    await expect(panel(page, "tl")).toBeFocused();
+    for (const [key, target] of [["Left", "tl"], ["Up", "tl"], ["Right", "tr"], ["Right", "tr"], ["Down", "br"], ["Down", "br"], ["Left", "bl"], ["Up", "tl"]]) {
+        await page.keyboard.press(`Arrow${key}`);
+        await expect(panel(page, target)).toBeFocused();
+        await expect(panel(page, target)).toHaveClass(/is-focused/);
+        await page.keyboard.press("Tab");
+        await expect(composer(page)).toBeFocused();
+        await page.keyboard.press("Shift+Tab");
+        await expect(panel(page, target)).toBeFocused();
+    }
+    await page.keyboard.press("Shift+Tab");
+    await expect(composer(page)).toBeFocused();
+    await expect(composer(page)).toHaveValue("spatial draft");
+    await panel(page, "tl").getByRole("button", { name: "Session control panel" }).click();
+    await page.keyboard.press("ArrowRight");
     await expect(panel(page, "tl")).toHaveClass(/is-focused/);
     await page.getByRole("button", { name: "Close dialog" }).click();
     await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await composer(page).focus();
-    await page.keyboard.press("Control+ArrowDown");
-    await expect(panel(page, "bl")).toHaveClass(/is-focused/);
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("ArrowDown");
+    await expect(panel(page, "bl")).toBeFocused();
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);
 });
@@ -469,7 +470,7 @@ test("toolbar and session-picker Tab navigation never cycles panels behind them"
     await page.getByRole("button", { name: "Rename MoA", exact: true }).focus();
     await page.keyboard.press("Tab");
     await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
-    await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Sessions", exact: true });
     await expect(dialog.locator(".ps-session-list-button").first()).toBeVisible();
@@ -607,7 +608,7 @@ test("cancelling or failing creation returns to the picker without replacing an 
     const f = await fixture(page, [layout(chat(1))]);
     const { creates } = await mockCreation(page, { fail: true });
     await open(page);
-    await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…" }).click();
     await page.getByRole("button", { name: "Create new session", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
@@ -639,20 +640,25 @@ test("panel info, link, manage and terminate actions retain their own session ta
     });
     await open(page);
     const p = panel(page, "panel-2");
+    await expect(p.locator(":scope > header button")).toHaveCount(2);
     await expect(composer(page)).toBeVisible();
-    await p.getByRole("button", { name: "Session information", exact: true }).click();
+    await p.getByRole("button", { name: "Session control panel", exact: true }).click();
+    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Session information", exact: true }).click();
     const info = page.getByRole("dialog", { name: "Session information", exact: true });
     await expect(info).toContainText(sid(2));
     for (const field of ["Owner", "Model", "Context", "Cron", "Agent", "Updated", "Children", "Access"]) await expect(info.locator(".ps-session-detail-label").getByText(field, { exact: true })).toBeVisible();
     await info.getByRole("button", { name: "Close dialog" }).click();
-    await p.getByRole("button", { name: "Copy link — copy a direct link to this session", exact: true }).click();
+    await p.getByRole("button", { name: "Session control panel", exact: true }).click();
+    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Copy link — copy a direct link to this session", exact: true }).click();
     await expect(page.locator(".ps-link-modal input")).toHaveValue(new RegExp(sid(2)));
     await page.locator(".ps-link-modal").getByRole("button", { name: "Close", exact: true }).click();
-    await p.getByRole("button", { name: "Manage session — rename, switch model, and sharing", exact: true }).click();
+    await p.getByRole("button", { name: "Session control panel", exact: true }).click();
+    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Manage session — rename, switch model, and sharing", exact: true }).click();
     await expect(page.locator(".ps-share-overlay").getByPlaceholder("Session title")).toHaveValue("Session 2");
     await expect.poll(() => paths.some(path => path.includes(sid(2)))).toBe(true);
     await page.locator(".ps-share-overlay").getByRole("button", { name: "Close", exact: true }).click();
-    await p.getByRole("button", { name: "Terminate — mark completed, cancel, or delete this session", exact: true }).click();
+    await p.getByRole("button", { name: "Session control panel", exact: true }).click();
+    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Terminate — mark completed, cancel, or delete this session", exact: true }).click();
     await expect(page.locator(".ps-modal")).toContainText('What should happen to "Session 2"');
     await expect(composer(page)).toHaveCount(0);
     await page.locator(".ps-modal-close").click();
@@ -672,6 +678,11 @@ test("the bottom composer preserves read-only session access", async ({ page }) 
     await panel(page, "panel-2").locator("header").first().click();
     await expect(page.locator(".ps-moa-composer-strip .ps-composer-readonly")).toContainText("view access");
     await expect(composer(page)).toHaveCount(0);
+    await panel(page, "panel-2").focus();
+    await page.keyboard.press("Tab");
+    await expect(page.locator(".ps-moa-composer-strip")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(panel(page, "panel-2")).toBeFocused();
     await panel(page, "panel-1").locator("header").first().click();
     await expect(composer(page)).toHaveValue("Keep this private draft");
     expect(f.sends).toEqual([]);

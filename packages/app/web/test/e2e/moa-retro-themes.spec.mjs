@@ -106,6 +106,14 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await moaCard.locator(":scope > summary").click();
         await previewContrast(moaCard, `${themeId} MoA expanded preview`);
         await page.screenshot({ path: test.info().outputPath(`${themeId}-moa-preview.png`) });
+        await focusedPanel.getByRole("button", { name: "Session control panel", exact: true }).click();
+        const controls = page.getByRole("dialog", { name: "Session control panel", exact: true });
+        await contrast(controls.getByRole("heading", { name: "Session", exact: true }), `${themeId} session controls heading`);
+        await contrast(controls.getByRole("heading", { name: "Panel layout", exact: true }), `${themeId} layout controls heading`);
+        await contrast(controls.getByRole("button", { name: "Session information", exact: true }), `${themeId} info control`);
+        await expect(focusedPanel.locator(":scope > header button")).toHaveCount(2);
+        await page.screenshot({ path: test.info().outputPath(`${themeId}-control-panel.png`) });
+        await controls.getByRole("button", { name: "Close dialog", exact: true }).click();
         await page.getByRole("button", { name: "Rename MoA", exact: true }).click();
         const rename = page.getByRole("dialog", { name: "Rename MoA", exact: true });
         await contrast(rename.locator("header strong"), `${themeId} rename title`);

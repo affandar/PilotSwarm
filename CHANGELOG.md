@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Simplify MoA title bars to maximize and a grouped session control panel.
+  Arrow keys now select panels; Tab/Shift+Tab toggles the panel and composer.
+  Remove Ctrl+Arrow panel shortcuts and preserve normal composer editing.
+
 - Give MoA one bottom composer bound to the focused session; retain per-panel
   drafts and activity. Add session creation, shared session actions and details,
   and Ctrl+Arrow spatial navigation alongside Tab cycling.

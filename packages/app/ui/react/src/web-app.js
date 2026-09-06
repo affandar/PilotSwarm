@@ -2899,7 +2899,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             const bytes = await response.arrayBuffer();
             // Only MoA canvases opt into panel navigation. Ordinary canvases
             // retain native Tab behavior and their exact document bytes.
-            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&((!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape'))||(e.ctrlKey&&!e.shiftKey&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)))){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
             let parts = [bytes];
             if (panelKeys) {
                 const html = new TextDecoder().decode(bytes);
@@ -4900,7 +4900,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, onDialogChange = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -5681,7 +5681,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     return React.createElement(React.Fragment, null,
     dragGhost,
-    actionsOnly ? panelActions : React.createElement(Panel, {
+    actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
@@ -6412,7 +6412,7 @@ function SessionComposer({ controller }) {
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
-        : React.createElement(PromptComposer, { controller, mobile: false, active: true }));
+        : React.createElement(PromptComposer, { controller, mobile: false, active: true, autoFocus: false }));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
@@ -7359,7 +7359,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
             if (!fromLive && !fromStaging) return;
             if (payload.type === "moa-panel-key") {
-                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
+                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
                 return;
             }
             if (payload.type === "canvas-action") {
@@ -8682,7 +8682,7 @@ function formatAttachmentSize(sizeBytes) {
     return `${bytes} B`;
 }
 
-function PromptComposer({ controller, mobile, active = true, onAfterSend = null }) {
+function PromptComposer({ controller, mobile, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -8818,6 +8818,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
+            if (!autoFocus) return;
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
@@ -8837,7 +8838,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         if (inputNode.value === promptState.value && inputNode.selectionStart !== promptState.cursor) {
             inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
         }
-    }, [active, mobile, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
+    }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)

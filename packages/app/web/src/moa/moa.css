@@ -85,3 +85,12 @@
 .ps-moa-panel-title { flex-basis: 100px; }
 .ps-moa-dialog > .ps-session-detail-box { margin: 0; padding: 12px; overflow: auto; }
 .ps-moa-dialog > .ps-session-detail-box .ps-session-detail-collapse { display: none; }
+
+.ps-moa-control-panel { padding: 16px; display: grid; gap: 18px; }
+.ps-moa-control-title { margin: 0; overflow-wrap: anywhere; color: var(--ps-muted); }
+.ps-moa-control-panel h3 { margin: 0 0 8px; font-size: inherit; }
+.ps-moa-control-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.ps-moa-control-panel section + section { border-top: 1px solid var(--ps-border); padding-top: 14px; }
+.ps-moa-panel:focus-visible { outline: 2px solid var(--ps-foreground); outline-offset: -5px; }
+
+.ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }

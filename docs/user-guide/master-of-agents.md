@@ -32,18 +32,23 @@ no composer. Working and queued-message status stays inside each chat panel. Dra
 layouts during the current page session. Read-only sessions retain their normal
 read-only behavior.
 
-Within the panels, **Tab** moves focus clockwise around the screen and
-**Shift+Tab** moves in reverse, including from a canvas. Drafts stay in their
-own panels. Toolbar controls and dialogs keep normal Tab navigation; the
-layout tabs also support Left/Right and Home/End.
+With keyboard focus on a panel, **Left/Right/Up/Down** selects the nearest
+panel in that direction, stopping at the edge. **Tab** or **Shift+Tab** toggles
+between the selected panel and its composer. Inside the composer, arrows edit
+text normally; Ctrl+Arrow does not change panel selection. Tab from inside a
+canvas moves to the composer, and the next Tab returns to its panel.
+Toolbar controls and dialogs keep normal Tab navigation; layout tabs also
+support Left/Right and Home/End.
 
-Each populated panel also has the same **spanner**, **session link**, and
-**trash** controls as the session list. Trash opens the existing lifecycle
-chooser and confirmation; removing a panel remains a separate layout action.
-The **info** icon shows the existing session-details fields.
+Each populated title bar has just **maximize** (open in the main view) and a
+**sliders** icon for the session control panel. Its **Session** group contains
+the existing spanner/manage, link, trash, info, and open-in-main-view actions.
+Trash opens the existing lifecycle chooser and confirmation. Info shows the
+existing session-details fields. Its **Panel layout** group contains replace,
+split right/below, and remove panel. These actions remain icon buttons with
+hover labels. Removing a panel does not delete its session.
 
-Use a panel's **…** menu or right-click a populated panel to replace it,
-split right/below, open it in the main view, or remove it. Splitting immediately
+Use the control-panel icon or right-click a populated panel. Splitting immediately
 creates a focused empty panel; select its content separately with **+** or
 right-click. Drag a divider to resize; a keyboard-focused divider supports
 arrow keys and Home/End. Removing a panel expands its sibling into the freed
@@ -83,5 +88,3 @@ five slots. Replacing an occupied slot requires an explicit second action.
 The copied layout is independent of the original; the session references still
 point to live sessions and retain their existing permissions. Inaccessible
 sessions show a placeholder with Retry, plus the normal Replace action.
-
-Ctrl+Left/Right/Up/Down moves focus to the nearest panel in that direction, including from the composer or a canvas. It stops at the screen edge. Tab and Shift+Tab still cycle clockwise and counterclockwise. These shortcuts pause while dialogs are open.
