@@ -24,7 +24,10 @@ canvas state survive switches. Desktop Tab/Shift+Tab navigation remains intact;
 arrow keys retain native editing behavior. Profile persistence stores only panel
 references and geometry, never transcript content or drafts.
 
-The chat footer reserves a status-line baseline. Status ordering rejects stale
+Mobile Zen and MoA show activity and queue counts in the existing header, with
+a full-size native session selector in Zen. Queued prompt bodies appear once
+in the transcript; these focus views have no reserved footer strip. The normal
+workspace chat footer keeps its status-line baseline. Status ordering rejects stale
 snapshots, while real completion and Stop availability update immediately.
 There is no timer that keeps a completed turn looking busy.
 

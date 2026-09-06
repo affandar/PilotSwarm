@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Move mobile Zen and MoA activity and queue counts into the existing header;
+  remove the reserved footer strip and keep queued prompt bodies in the transcript.
+
 - Expose the active panel control menu in the mobile MoA header so splitting,
   replacing, and removing panels are accessible by tap.
 

@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
+import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
 import { canvasKey, normalizeMoa, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
@@ -115,7 +115,7 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     </Modal>;
 }
 
-function LivePanel({ node, mobile = false, focused, parent, createTransport, drafts, draftKey, onPanelKey, composerHost, header, controlsHost, onControlAction }) {
+function LivePanel({ node, mobile = false, focused, parent, createTransport, drafts, draftKey, onPanelKey, composerHost, header, controlsHost, onControlAction, mobileStatusHost }) {
     const [ready, setReady] = React.useState(null), [error, setError] = React.useState(""), [retry, setRetry] = React.useState(0);
     const themeId = useControllerSelector(parent, s => s.ui.themeId);
     const [actionsOpen, setActionsOpen] = React.useState(false);
@@ -179,8 +179,9 @@ function LivePanel({ node, mobile = false, focused, parent, createTransport, dra
         <header>{header.title}{header.actions}</header>
         {ready && <SessionPane controller={ready} actionsOnly actionsHost={controlsHost} onAction={onControlAction} onDialogChange={setActionsOpen} />}
         <div ref={ref} className="ps-moa-live">
-            {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
+            {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader={mobile} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
+        {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && <ModalLayer controller={ready} />}
         {ready && focused && !actionsOpen && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
     </>;
@@ -267,6 +268,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
     const [headerHost, setHeaderHost] = React.useState(null), [statusHost, setStatusHost] = React.useState(null);
     React.useLayoutEffect(() => { setHeaderHost(document.getElementById("ps-moa-header-slot")); setStatusHost(document.getElementById("ps-moa-status-slot")); });
     const [controlsHost, setControlsHost] = React.useState(null);
+    const [mobileStatusHost, setMobileStatusHost] = React.useState(null);
     const [composerHost, setComposerHost] = React.useState(null), [info, setInfo] = React.useState(null), [creating, setCreating] = React.useState(null);
     const nodes = moaLeaves(layout.tree), selected = nodes.some(n => n.id === focus) ? focus : nodes[0]?.id;
     const geometryRef = React.useRef({ value, update }); geometryRef.current = { value, update };
@@ -351,7 +353,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
         const active = selected === node.id;
         return <section key={node.id} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={node.id} data-session-id={node.sessionId} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onClickCapture={() => setFocus(node.id)} onFocusCapture={e => { if (e.target.matches?.(":focus-visible")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} mobile={mobile} onPanelKey={onPanelKey} focused={active && !picker && !menu && !clearing && !info && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${node.id}:${node.sessionId}`} composerHost={composerHost} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <>{splitButtons(node)}<IconButton label="Open panel in main view" icon="zen" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} mobile={mobile} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={active && !picker && !menu && !clearing && !info && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${node.id}:${node.sessionId}`} composerHost={composerHost} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <>{splitButtons(node)}<IconButton label="Open panel in main view" icon="zen" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }
@@ -376,7 +378,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
     return <div className={`ps-moa-workspace ${mobile ? "is-mobile" : ""} ${moa.zen ? "is-zen" : ""}`}>
         {mobile && <header className="ps-mobile-focus-header" {...swipe}>
             <IconButton label="Back to normal view" icon="restore" onClick={moa.leave} />
-            <span className="ps-moa-panel-title">{state.sessions.byId[selectedNode?.sessionId]?.title || "Master of Agents"}</span>
+            <div className="ps-mobile-session-heading"><span className="ps-mobile-session-name ps-moa-panel-title">{state.sessions.byId[selectedNode?.sessionId]?.title || (selectedNode?.type === "empty" ? "Empty panel" : "Master of Agents")}</span><div ref={setMobileStatusHost} /></div>
             <IconButton label="Session control panel" icon="controls" onClick={() => setMenu(selectedNode || { id: null, type: "empty" })} />
             <IconButton label="Open panel map" icon="map" onClick={() => setMapOpen(true)} />
         </header>}
@@ -457,14 +459,18 @@ export function MobileZen({ controller, onClose, drafts }) {
     return <ControllerContext.Provider value={controller}><div className="ps-mobile-zen">
         <header className="ps-mobile-focus-header">
             <IconButton label="Exit mobile zen" icon="restore" disabled={loading} onClick={() => { drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] }); onClose(); }} />
+            <div className="ps-mobile-session-heading has-select">
+            <span className="ps-mobile-session-name" aria-hidden="true">{state.sessions.byId[active]?.title || "Select session"}<span className="ps-mobile-select-chevron">⌄</span></span>
+            <SessionHeaderStatus controller={controller} />
             <select aria-label="Select session" value={active || ""} disabled={loading} onChange={e => changeSession(e.target.value)}>
                 {!active && <option value="">Select session</option>}
                 {active && !rows.some(row => row.sessionId === active) && <option value={active}>{state.sessions.byId[active]?.title || "Current session"}</option>}
                 {rows.map(row => <option key={row.sessionId} value={row.sessionId}>{state.sessions.byId[row.sessionId]?.title || row.sessionId}</option>)}
             </select>
+            </div>
         </header>
         {error && <div role="alert">{error}</div>}
-        <div className="ps-mobile-zen-chat"><ChatPane controller={controller} mobile fullWidth showComposer={false} /></div>
+        <div className="ps-mobile-zen-chat"><ChatPane controller={controller} mobile fullWidth showComposer={false} activityInHeader /></div>
         <footer className="ps-mobile-zen-composer">{loading ? <span role="status">Opening session…</span> : <SessionComposer controller={controller} mobile compact />}</footer>
         <ModalLayer controller={controller} />
     </div></ControllerContext.Provider>;

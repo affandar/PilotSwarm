@@ -36,6 +36,7 @@ import {
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
+    selectActiveOutboxMessages,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -6421,7 +6422,27 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus: !mobile, active: true }));
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null }) {
+// The compact focus views use their existing header for activity. The same
+// selector powers the desktop footer, so stale-status and elapsed-time rules
+// remain identical; queued prompt bodies stay readable in the transcript.
+function SessionHeaderStatus({ controller }) {
+    const state = useControllerSelector(controller, s => s);
+    const session = state.sessions.byId[state.sessions.activeSessionId];
+    const spinnerFrame = useSpinnerFrame(session?.status === "running");
+    const activity = selectLiveActivityLines(state, { spinnerFrame, maxWidth: 120 });
+    const status = activity[0]?.map(run => run.text || "").join("")
+        || (session ? String(session.status || "idle").replace(/^./, c => c.toUpperCase()) : "");
+    const messages = selectActiveOutboxMessages(state);
+    const queue = ["pending", "queued", "cancelling", "rejected"].map(phase => {
+        const count = messages.filter(message => message.pendingPhase === phase).length;
+        return count ? `${count} ${phase}` : "";
+    }).filter(Boolean).join(" · ");
+    return React.createElement("div", { className: "ps-mobile-session-status", "aria-label": "Session status" },
+        React.createElement("span", { className: "ps-mobile-activity", title: status }, status),
+        queue ? React.createElement("span", { className: "ps-mobile-queue", title: queue }, queue) : null);
+}
+
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -6532,6 +6553,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
         [outboxLines, pinnedActivityLines],
     );
+    const transcriptLines = React.useMemo(
+        () => activityInHeader && outboxLines.length ? [...lines, ...outboxLines] : lines,
+        [activityInHeader, lines, outboxLines],
+    );
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
@@ -6590,9 +6615,9 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
         color: chrome.color,
         focused: viewState.focused,
-        lines,
-        bottomStickyLines: stickyBottom,
-        reserveBottomSticky: true,
+        lines: transcriptLines,
+        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : stickyBottom,
+        reserveBottomSticky: !activityInHeader,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
@@ -15086,4 +15111,4 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
 }
 
 // Browser hosts may compose these existing surfaces with isolated controllers.
-export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, SessionDetailBox, SessionComposer, ScopedModalLayer, ControllerContext };
+export { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionRowContent, SessionDetailBox, SessionComposer, ScopedModalLayer, ControllerContext };
