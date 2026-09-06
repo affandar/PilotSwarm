@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Expose the active panel control menu in the mobile MoA header so splitting,
+  replacing, and removing panels are accessible by tap.
+
 - Align the mobile composer label and input; move Zen entry to the chat header.
   Keep the MoA session picker usable above the phone keyboard and measure
   wrapped tooltips against the visible viewport.

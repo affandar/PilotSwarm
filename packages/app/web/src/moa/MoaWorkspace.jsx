@@ -377,6 +377,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         {mobile && <header className="ps-mobile-focus-header" {...swipe}>
             <IconButton label="Back to normal view" icon="restore" onClick={moa.leave} />
             <span className="ps-moa-panel-title">{state.sessions.byId[selectedNode?.sessionId]?.title || "Master of Agents"}</span>
+            <IconButton label="Session control panel" icon="controls" onClick={() => setMenu(selectedNode || { id: null, type: "empty" })} />
             <IconButton label="Open panel map" icon="map" onClick={() => setMapOpen(true)} />
         </header>}
         {!moa.zen && statusHost && createPortal(saveStatus, statusHost)}

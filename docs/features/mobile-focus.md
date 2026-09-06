@@ -39,3 +39,8 @@ ordering through both polling paths.
 
 This work targets a PilotSwarm AKS test deployment. The application version
 remains 0.5.60; a package release and downstream deployment are separate steps.
+
+The mobile MoA header includes the session control-panel icon beside the map.
+Tap it, then Split right or Split below to create and select an empty panel;
+tap its + to select a session or canvas. The same menu handles replacement
+and removal without requiring a right-click or long press.
