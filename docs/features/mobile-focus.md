@@ -4,7 +4,7 @@ The phone chat header has a full-screen icon beside its status for mobile Zen.
 The normal phone toolbar has the Master of Agents icon for the personal MoA layout. These browser features do not add
 controls to the TUI.
 
-Mobile Zen shows only a restore icon, a session dropdown, the transcript and a
+Mobile Zen shows only a restore icon, a session selector, the transcript and a
 compact composer. The mobile placeholder is “Message…”; input and placeholder
 use the same 16px font. Drafts grow from one line and are capped against the
 visible viewport. Session changes retain drafts during the current page visit.
@@ -25,7 +25,8 @@ arrow keys retain native editing behavior. Profile persistence stores only panel
 references and geometry, never transcript content or drafts.
 
 Mobile Zen and MoA show activity and queue counts in the existing header, with
-a full-size native session selector in Zen. Queued prompt bodies appear once
+a full-size header button opening the shared searchable session picker in Zen.
+The picker includes session details, canvases, and the standard new-session + action. Queued prompt bodies appear once
 in the transcript; these focus views have no reserved footer strip. The normal
 workspace chat footer keeps its status-line baseline. Status ordering rejects stale
 snapshots, while real completion and Stop availability update immediately.

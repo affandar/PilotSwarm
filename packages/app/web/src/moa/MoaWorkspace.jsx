@@ -425,13 +425,13 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
 }
 
 // A deliberately small phone surface. Restoring returns to the normal workspace.
-export function MobileZen({ controller, onClose, drafts }) {
+export function MobileZen({ controller, onClose, drafts, createTransport }) {
     const state = useControllerSelector(controller, s => s);
     const [loading, setLoading] = React.useState(false), [error, setError] = React.useState("");
-    const rows = selectSessionRows(state).filter(row => !row.isGroup);
+    const [picker, setPicker] = React.useState(false), [creating, setCreating] = React.useState(false);
     const active = state.sessions.activeSessionId;
-    const changeSession = async id => {
-        if (!id || id === active || loading) return;
+    const changeSession = async (id, binding) => {
+        if (!id || loading) return;
         drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] });
         setLoading(true); setError("");
         // Clear the outgoing draft before starting asynchronous navigation.
@@ -445,7 +445,13 @@ export function MobileZen({ controller, onClose, drafts }) {
             const draft = drafts.current.get(actual);
             controller.setPrompt(draft?.prompt || "");
             controller.dispatch({ type: "ui/promptAttachments", attachments: draft?.attachments || [] });
-            if (actual !== id) setError("Could not open that session.");
+            if (actual !== id) throw new Error("Could not open that session.");
+            if (binding?.type === "canvas") {
+                await controller.ensureCanvasSnapshot(id);
+                controller.dispatch({ type: "canvas/flip", sessionId: id, slot: binding.slot });
+                controller.dispatch({ type: "ui/canvasMaximized", on: true });
+                onClose();
+            }
         } catch {
             // A history failure can happen after loadSession selected the target.
             // Restore the source before restoring its draft; never send it to the failed target.
@@ -459,19 +465,17 @@ export function MobileZen({ controller, onClose, drafts }) {
     return <ControllerContext.Provider value={controller}><div className="ps-mobile-zen">
         <header className="ps-mobile-focus-header">
             <IconButton label="Exit mobile zen" icon="restore" disabled={loading} onClick={() => { drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] }); onClose(); }} />
-            <div className="ps-mobile-session-heading has-select">
-            <span className="ps-mobile-session-name" aria-hidden="true">{state.sessions.byId[active]?.title || active || "Select session"}<span className="ps-mobile-select-chevron">⌄</span></span>
+            <div className="ps-mobile-session-heading has-selector">
+            <span className="ps-mobile-session-name">{state.sessions.byId[active]?.title || active || "Select session"}<span className="ps-mobile-select-chevron" aria-hidden="true">⌄</span></span>
             <SessionHeaderStatus controller={controller} />
-            <select aria-label="Select session" value={active || ""} disabled={loading} onChange={e => changeSession(e.target.value)}>
-                {!active && <option value="">Select session</option>}
-                {active && !rows.some(row => row.sessionId === active) && <option value={active}>{state.sessions.byId[active]?.title || "Current session"}</option>}
-                {rows.map(row => <option key={row.sessionId} value={row.sessionId}>{state.sessions.byId[row.sessionId]?.title || row.sessionId}</option>)}
-            </select>
+            <button className="ps-mobile-session-trigger" aria-label="Select session" aria-haspopup="dialog" disabled={loading} onClick={() => setPicker(true)} />
             </div>
         </header>
         {error && <div role="alert">{error}</div>}
         <div className="ps-mobile-zen-chat"><ChatPane controller={controller} mobile fullWidth showComposer={false} activityInHeader /></div>
         <footer className="ps-mobile-zen-composer">{loading ? <span role="status">Opening session…</span> : <SessionComposer controller={controller} mobile compact />}</footer>
+        {picker && <SessionPicker controller={controller} initial={{ type: "chat", sessionId: active }} onClose={() => setPicker(false)} onCreate={() => { setPicker(false); setCreating(true); }} onChoose={binding => { setPicker(false); changeSession(binding.sessionId, binding); }} />}
+        {creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setCreating(false); setPicker(true); }} onCreated={created => { controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); setCreating(false); changeSession(created.sessionId); }} />}
         <ModalLayer controller={controller} />
     </div></ControllerContext.Provider>;
 }

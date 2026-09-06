@@ -39,7 +39,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await expect(footer).toBeVisible();
             if (themeId === 'ms-dos') await expect(surface.locator('.ps-mobile-session-name')).toContainText(sessionId);
             if (mode==='zen') {
-                const select=surface.getByRole('combobox',{name:'Select session'});
+                const select=surface.getByRole('button',{name:'Select session'});
                 expect(await select.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el;})).toBe(true);
                 expect((await select.boundingBox()).height).toBe(44);
             }

@@ -152,16 +152,15 @@
 }
 
 /* The status occupies the second line of the existing 44px header content.
-   A full-size native select overlays the Zen label, keeping the whole target
-   tappable without another toolbar row or a custom session-picker gesture. */
+   A full-size button opens the shared session picker from the Zen label. */
 .ps-mobile-session-heading { position: relative; min-width: 0; flex: 1; height: 44px; display: flex; flex-direction: column; justify-content: center; }
 .ps-mobile-session-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 16px/24px var(--ps-mono); }
 .ps-mobile-session-status { display: flex; gap: 5px; height: 18px; min-width: 0; align-items: center; font: 11px/18px var(--ps-mono); color: var(--ps-foreground); }
 .ps-mobile-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 .ps-mobile-queue { flex: 0 1 auto; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ps-foreground); }
-.ps-mobile-session-heading.has-select { padding-right: 18px; }
-.ps-mobile-session-heading.has-select > select { position: absolute; inset: 0; height: 44px; width: 100%; opacity: 0; z-index: 1; }
-.ps-mobile-session-heading.has-select:focus-within { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+.ps-mobile-session-heading.has-selector { padding-right: 18px; }
+.ps-mobile-session-heading.has-selector > .ps-mobile-session-trigger { padding: 0; border: 0; cursor: pointer; position: absolute; inset: 0; height: 44px; width: 100%; opacity: 0; z-index: 1; }
+.ps-mobile-session-heading.has-selector:focus-within { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
 .ps-mobile-select-chevron { position: absolute; right: 1px; top: 10px; }
 .ps-mobile-session-heading > div:empty { height: 18px; }
 .ps-moa-workspace.is-mobile .ps-moa-panel { border: 0; }

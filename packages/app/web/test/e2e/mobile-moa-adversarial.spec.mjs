@@ -1,6 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 
+async function chooseZenSession(page, id) {
+    await page.getByRole('button', { name: 'Select session', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Sessions', exact: true });
+    await picker.locator(`[data-session-id="${id}"]`).click();
+    await picker.getByRole('button', { name: 'Use chat', exact: true }).click();
+    await expect(picker).toBeHidden();
+}
+
 let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4, transcriptTurns: 40 }); });
 test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
@@ -103,12 +111,12 @@ test("mobile Zen retains drafts after exit and re-entry", async ({ page }) => {
     await fixture(page);
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
     await zenComposer(page).fill("do not discard first draft");
-    await page.getByRole("combobox", { name: "Select session", exact: true }).selectOption(sid(1));
+    await chooseZenSession(page, sid(1));
     await expect(zenComposer(page)).toHaveValue("");
     await zenComposer(page).fill("second draft");
     await page.getByRole("button", { name: "Exit mobile zen", exact: true }).click();
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-    await page.getByRole("combobox", { name: "Select session", exact: true }).selectOption(sid(0));
+    await chooseZenSession(page, sid(0));
     await expect(zenComposer(page)).toHaveValue("do not discard first draft");
 });
 
@@ -117,7 +125,7 @@ test("failed Zen session navigation restores the outgoing draft", async ({ page 
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
     await zenComposer(page).fill("draft before denied navigation");
     await page.route(`**/api/v1/sessions/${sid(1)}`, route => route.fulfill({ status: 403, json: { ok: false, error: { code: "FORBIDDEN", message: "Denied" } } }));
-    await page.getByRole("combobox", { name: "Select session", exact: true }).selectOption(sid(1));
+    await chooseZenSession(page, sid(1));
     await expect(page.locator(".ps-mobile-zen [role=alert]")).toBeVisible();
     await expect(zenComposer(page)).toHaveValue("draft before denied navigation");
 });
@@ -130,7 +138,7 @@ test("read-only MoA panel and Zen session never mount a writable composer", asyn
     await expect(moaComposer(page)).toHaveCount(0);
     await page.getByRole("button", { name: "Back to normal view", exact: true }).click();
     await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
-    await page.getByRole("combobox", { name: "Select session", exact: true }).selectOption(sid(2));
+    await chooseZenSession(page, sid(2));
     await expect(page.locator(".ps-mobile-zen-composer .ps-composer-readonly")).toContainText("view access");
     await expect(zenComposer(page)).toHaveCount(0);
     expect(f.sends).toEqual([]);

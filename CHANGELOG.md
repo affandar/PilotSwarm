@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Mobile Zen now opens the shared searchable session picker from its header, including session details, canvases, and the new-session + action.
+
 - Move mobile Zen and MoA activity and queue counts into the existing header;
   remove the reserved footer strip and keep queued prompt bodies in the transcript.
 
