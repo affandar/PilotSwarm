@@ -5,7 +5,8 @@ Master of Agents is an alternate **desktop browser** workspace. Use the
 in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay available in MoA, except in zen. It is unavailable on
 screens 920 pixels wide or narrower and in the TUI.
 
-Start with one named tab. Use **+** beside the tabs to add another, up to five.
+Dashboard tabs sit inside the PilotSwarm header. Start with one named tab.
+Use **+** beside the tabs to add another; no more than five dashboards can be saved.
 Double-click a tab or use **Rename MoA** to name it. Existing saved layouts
 automatically appear as tabs. Layouts remember
 session and canvas references, split directions, and divider proportions.
@@ -20,7 +21,8 @@ The picker mounts the same Sessions pane as the normal workspace: rows,
 folders, owner badges, pinning, scrolling, and the expandable detail box.
 Its selection stays local to the picker; choosing content does not navigate
 the default chat. Arrow keys navigate the list; select chat or canvas below it.
-The new-session icon at the top opens the existing model/agent creation flow.
+The **Create New Session** row at the top of the list opens the existing
+model/agent creation flow, including when the list is filtered or empty.
 Creating fills that panel and keeps the default workspace’s selection.
 Cancelling returns to the picker; failed creation leaves the panel intact.
 
@@ -42,7 +44,8 @@ support Left/Right and Home/End.
 
 Each populated title bar has just **maximize** (open in the main view) and a
 **sliders** icon for the session control panel. Its **Session** group contains
-the existing spanner/manage, link, trash, info, and open-in-main-view actions.
+the existing spanner/manage, link, trash, and info actions. Zoom is available
+only in the session title bar.
 Trash opens the existing lifecycle chooser and confirmation. Info shows the
 existing session-details fields. Its **Panel layout** group contains replace,
 split right/below, and remove panel. These actions remain icon buttons with

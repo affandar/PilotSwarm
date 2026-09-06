@@ -5697,11 +5697,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ref: sessionListRef,
         onKeyDown: selection ? event => {
             if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
-            const current = rows.findIndex(row => row.sessionId === selection.sessionId);
-            const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
-            const row = rows[next]; if (!row) return;
+            const buttons = [...sessionListRef.current.querySelectorAll(".ps-session-list-button")];
+            const current = buttons.indexOf(event.target.closest(".ps-session-list-button"));
+            const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
+            const button = buttons[next]; if (!button) return;
             event.preventDefault(); event.stopPropagation();
-            selection.onSelect(row.sessionId); sessionButtonRefs.current.get(row.sessionId)?.focus();
+            if (button.dataset.sessionId) selection.onSelect(button.dataset.sessionId);
+            button.focus();
         } : undefined,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
         // Clicking empty space below the rows clears the list selection while
@@ -5715,6 +5717,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             else controller.dispatch({ type: "sessions/listDeselect" });
         },
     },
+        selection?.onCreate ? React.createElement("button", {
+            className: "ps-session-list-button ps-moa-create-session", type: "button", onClick: selection.onCreate,
+        }, "Create New Session") : null,
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -9484,14 +9489,14 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         ...pick(["theme"]),
     ];
 
-    const toolbar = React.createElement("div", { className: "ps-toolbar" },
+    const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
         // Three columns: left rail | main controls | right rail. Full-screen
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
             canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
-            canvasMaximized ? null : leftCluster),
+            moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
             // The portal header parks its version/status meta here, LEFT of
             // the tool buttons, and its sign-out glyph in the slot after

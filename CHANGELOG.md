@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Move MoA tabs and controls into the PilotSwarm header, capped at five
+  dashboards. Make Create New Session the first picker row and keep zoom
+  only in the panel title bar.
+
 - Simplify MoA title bars to maximize and a grouped session control panel.
   Arrow keys now select panels; Tab/Shift+Tab toggles the panel and composer.
   Remove Ctrl+Arrow panel shortcuts and preserve normal composer editing.

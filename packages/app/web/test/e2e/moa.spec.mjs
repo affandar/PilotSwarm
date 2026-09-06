@@ -407,16 +407,27 @@ test("zen Escape and zoom back restore the saved arrangement and chat draft", as
 test("named tabs start with one workspace, add up to five, and survive reload", async ({ page }) => {
     const f = await fixture(page);
     await open(page);
-    await expect(page.getByRole("tab")).toHaveCount(1);
+    await expect(page.locator(".portal-header").getByRole("tab")).toHaveCount(1);
     for (let i = 0; i < 5; i++) {
         if (i > 0) await page.getByRole("button", { name: "Add MoA tab", exact: true }).click();
         await expect(page.getByRole("tab")).toHaveCount(i + 1);
         await rename(page, `Agent desk ${i + 1}`);
         await expect(page.getByRole("tab", { name: `Agent desk ${i + 1}`, exact: true })).toHaveAttribute("aria-selected", "true");
     }
+    await expect(page.locator(".portal-header").getByRole("tab")).toHaveCount(5);
+    for (const width of [1600, 1024, 921]) {
+        await page.setViewportSize({ width, height: 1000 });
+        const header = await page.locator(".portal-header").boundingBox();
+        expect(header.height).toBeLessThan(95);
+        const grid = await page.locator(".ps-moa-layout").boundingBox();
+        expect(grid.y - header.y - header.height).toBeLessThan(20);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
+    }
     const add = page.getByRole("button", { name: "Add MoA tab", exact: true });
     if (await add.count()) await expect(add).toBeDisabled();
     await expect.poll(() => f.settings().moa.slots[4].name).toBe("Agent desk 5");
+    await page.setViewportSize({ width: 1600, height: 1000 });
     await page.reload();
     await open(page);
     await expect(page.getByRole("tab")).toHaveCount(5);
@@ -474,7 +485,7 @@ test("toolbar and session-picker Tab navigation never cycles panels behind them"
     await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Sessions", exact: true });
     await expect(dialog.locator(".ps-session-list-button").first()).toBeVisible();
-    await expect(dialog.locator(".ps-session-list-button")).toHaveCount(4);
+    await expect(dialog.locator(".ps-session-list-button")).toHaveCount(5);
     for (let i = 0; i < 6; i++) {
         await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab");
         expect(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')))).toBe(true);
@@ -585,8 +596,12 @@ test("create from the picker uses the standard dialog and binds only its target 
     const { freshId, creates } = await mockCreation(page);
     await open(page);
     await panel(page, "new").getByRole("button", { name: "Choose session or canvas" }).click();
-    await expect(page.getByRole("dialog", { name: "Sessions", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Create new session", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
+    await expect(picker.locator(".ps-session-list-button").first()).toHaveText("Create New Session");
+    await picker.locator(".ps-session-list-button").nth(1).focus();
+    await page.keyboard.press("Home");
+    await expect(page.getByRole("button", { name: "Create New Session", exact: true })).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await page.keyboard.press("Enter");
     await expect(panel(page, "new")).toHaveAttribute("data-session-id", freshId);
@@ -610,12 +625,12 @@ test("cancelling or failing creation returns to the picker without replacing an 
     await open(page);
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…" }).click();
-    await page.getByRole("button", { name: "Create new session", exact: true }).click();
+    await page.getByRole("button", { name: "Create New Session", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Sessions", exact: true })).toBeVisible();
     expect(creates).toHaveLength(0);
-    await page.getByRole("button", { name: "Create new session", exact: true }).click();
+    await page.getByRole("button", { name: "Create New Session", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await page.keyboard.press("Enter");
     const error = page.getByRole("dialog", { name: "Create new session", exact: true });
@@ -643,6 +658,7 @@ test("panel info, link, manage and terminate actions retain their own session ta
     await expect(p.locator(":scope > header button")).toHaveCount(2);
     await expect(composer(page)).toBeVisible();
     await p.getByRole("button", { name: "Session control panel", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Open in main view", exact: true })).toHaveCount(0);
     await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Session information", exact: true }).click();
     const info = page.getByRole("dialog", { name: "Session information", exact: true });
     await expect(info).toContainText(sid(2));

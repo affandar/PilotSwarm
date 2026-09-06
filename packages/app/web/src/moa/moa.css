@@ -94,3 +94,18 @@
 .ps-moa-panel:focus-visible { outline: 2px solid var(--ps-foreground); outline-offset: -5px; }
 
 .ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }
+
+/* MoA uses the existing header row; only its tabs can scroll on small desktops. */
+.ps-toolbar.is-moa:not(.is-mobile) { display: flex; gap: 8px; min-width: 0; }
+.ps-toolbar.is-moa > .ps-toolbar-side.is-left { display: none; }
+.ps-toolbar.is-moa > .ps-toolbar-actions { flex: 1; min-width: 0; }
+.ps-toolbar.is-moa > .ps-toolbar-side.is-right { flex: 0 0 auto; }
+.ps-toolbar.is-moa .ps-toolbar-meta-slot { display: none; }
+#ps-moa-header-slot { flex: 1; min-width: 0; }
+#ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; color: var(--ps-foreground); font: var(--ps-font-size-base)/1.3 var(--ps-mono); gap: 4px; }
+#ps-moa-header-slot .ps-moa-tabs { flex: 0 1 auto; }
+#ps-moa-header-slot .ps-moa-tab { min-width: 60px; padding: 6px 9px; flex-shrink: 0; max-width: 160px; }
+#ps-moa-header-slot .ps-moa-save { font-size: 0; margin: 0 auto 0 0; }
+#ps-moa-header-slot .ps-moa-toolbar > button { flex-shrink: 0; }
+.portal-header:has(#ps-moa-header-slot) .portal-header-brand { max-width: 180px; }
+.ps-moa-create-session { font-weight: bold; border-bottom: 1px solid var(--ps-border); }
