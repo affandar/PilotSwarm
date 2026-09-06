@@ -77,3 +77,11 @@
 .ps-moa-icon-button svg { display: block; flex-shrink: 0; }
 .ps-moa-icon-button.ps-moa-zen-exit { width: 36px; height: 26px; padding: 3px 8px; }
 .ps-moa-menu-actions { flex-direction: row; flex-wrap: wrap; }
+
+.ps-moa-composer-strip { min-height: 80px; box-sizing: border-box; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); background: var(--ps-chrome); }
+.ps-moa-composer-target { display: block; padding: 4px 12px 0; color: var(--ps-muted); font-size: var(--ps-font-size-dense); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ps-moa-composer-host .ps-chat-composer { margin: 0; }
+.ps-moa-panel > header { flex-wrap: wrap; }
+.ps-moa-panel-title { flex-basis: 100px; }
+.ps-moa-dialog > .ps-session-detail-box { margin: 0; padding: 12px; overflow: auto; }
+.ps-moa-dialog > .ps-session-detail-box .ps-session-detail-collapse { display: none; }

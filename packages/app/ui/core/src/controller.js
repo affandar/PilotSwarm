@@ -3255,6 +3255,8 @@ export class PilotSwarmUiController {
      */
     revealCreatedSession() {
         if (this.getState().admin?.visible) this.closeAdminConsole();
+        this.closeBudget();
+        this.dispatch({ type: "ui/revealCreatedSession", sessionId: this.getState().sessions.activeSessionId });
         this.setFocus(FOCUS_REGIONS.PROMPT);
     }
 
@@ -5454,7 +5456,9 @@ export class PilotSwarmUiController {
             return;
         }
         await this.ensureSessionHistory(sessionId, { force: true });
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
         await this.syncSessionDetail(sessionId).catch(() => {});
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
         this.ensureInspectorData().catch(() => {});
         // Canvas snapshot rides the selection burst. Invalidate-then-fetch on
@@ -6012,15 +6016,42 @@ export class PilotSwarmUiController {
         this.maybeFlushQueuedOutbox(sessionId, session);
     }
 
+    async openCreatedSession(created, options = {}) {
+        const sessionId = created.sessionId;
+        // Creation is explicit navigation, even if a paged/stale catalog or
+        // the current filters omit the new row. Seed the response, preserve
+        // the outgoing draft, and latch the same visibility rules as a link.
+        // Invalidate catalog reads that started before this row existed.
+        this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
+        if (this.getState().ui.promptEdit) this.exitPendingPromptEdit({ restoreDraft: true });
+        this.dispatch({ type: "sessions/selected", sessionId });
+        this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+        this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+        this.dispatch({ type: "sessions/navigationIntent", sessionId });
+        this.dispatch({ type: "sessions/merged", session: normalizeSessionListRow({
+            ...created,
+            ...(options.groupId ? { viewerGroupId: options.groupId } : {}),
+        }) });
+        this.revealCreatedSession();
+        this.dispatch({ type: "ui/status", text: `Created session ${sessionId.slice(0, 8)}` });
+        // A follow-up read failure must not masquerade as a failed create and
+        // invite a duplicate. The regular refresh loop can finish hydration.
+        try {
+            await this.loadSession(sessionId);
+        } catch (error) {
+            if (this.getState().sessions.activeSessionId === sessionId) {
+                this.dispatch({ type: "ui/status", text: `Created session ${sessionId.slice(0, 8)}; could not load it yet: ${error?.message || error}` });
+            }
+        }
+        this.scheduleSessionsRefresh(0);
+    }
+
     async createSession(options = {}) {
         try {
             const requestOptions = this.applyActiveGroupDefault(options);
             const created = await this.transport.createSession(requestOptions);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
-            await this.refreshSessions();
-            await this.loadSession(created.sessionId);
-            this.revealCreatedSession();
-            this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
+            await this.openCreatedSession(created, requestOptions);
             return created;
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
@@ -6040,13 +6071,7 @@ export class PilotSwarmUiController {
             // session that was just created, and a lost count only reorders a list.
             this._recordAgentPickerUse(agentName);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
-            await this.refreshSessions();
-            await this.loadSession(created.sessionId);
-            this.revealCreatedSession();
-            this.dispatch({
-                type: "ui/status",
-                text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
-            });
+            await this.openCreatedSession(created, requestOptions);
             return created;
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });

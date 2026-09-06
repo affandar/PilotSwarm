@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Give MoA one bottom composer bound to the focused session; retain per-panel
+  drafts and activity. Add session creation, shared session actions and details,
+  and Ctrl+Arrow spatial navigation alongside Tab cycling.
+
+- Shrink the mobile composer after send acknowledgement changes its wrapped
+  placeholder. Keep long drafts bounded and internally scrollable.
+- Select and open newly created sessions despite stale catalogs or filters.
+  Preserve drafts and prevent an older load from taking over the subscription.
+- Keep warnings in chronological chat history after recovery. New messages
+  appear below them without a reload; retry updates preserve the card's DOM.
+
 - Distinguish saved intermediate `Agent update` disclosures from live `Message
   preview` output. Streaming-disabled sessions and old history never show live
   preview labels or status; final answers retain normal chat formatting.

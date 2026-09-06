@@ -2899,7 +2899,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             const bytes = await response.arrayBuffer();
             // Only MoA canvases opt into panel navigation. Ordinary canvases
             // retain native Tab behavior and their exact document bytes.
-            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&((!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape'))||(e.ctrlKey&&!e.shiftKey&&['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)))){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
             let parts = [bytes];
             if (panelKeys) {
                 const html = new TextDecoder().decode(bytes);
@@ -4900,7 +4900,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -5015,6 +5015,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             setManageOpen(true);
         }
     }, [modelFlowOpen]);
+    React.useEffect(() => { onDialogChange?.(manageOpen || Boolean(linkModal) || modelFlowOpen); }, [manageOpen, linkModal, modelFlowOpen, onDialogChange]);
     const requestSwitchModel = () => {
         reopenManageRef.current = true;
         setManageOpen(false);
@@ -5553,14 +5554,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
-        isBulkSelection
+        !actionsOnly && isBulkSelection
             ? React.createElement("span", {
                 className: "ps-mini-button-label",
                 style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
                 title: "Multiple sessions selected. Move to group or cancel selected sessions; click Clear to exit.",
             }, `${selectedCount} selected`)
             : null,
-        isBulkSelection
+        !actionsOnly && (isBulkSelection
             ? React.createElement(IconButton, {
                 className: "ps-mini-button",
                 icon: "✕",
@@ -5576,8 +5577,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 label: canPinActiveSession
                     ? (isActivePinned ? "Unpin this session" : "Pin this session to the top of the list")
                     : "Only top-level non-system sessions can be pinned",
-            }),
-        React.createElement(IconButton, {
+            })),
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: groupableIds.length > 1
                 ? React.createElement("span", { className: "ps-icon-badge" },
@@ -5680,7 +5681,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     return React.createElement(React.Fragment, null,
     dragGhost,
-    React.createElement(Panel, {
+    actionsOnly ? panelActions : React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
@@ -6399,6 +6400,19 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     }, "Apply"))
                 : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
+}
+
+function SessionComposer({ controller }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
+    const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    if (!session || session.isGroup || modal) return null;
+    const readOnly = session.serviceKind || access?.canWrite === false;
+    return React.createElement("div", { className: "ps-chat-composer" }, readOnly
+        ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
+            ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+            : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+        : React.createElement(PromptComposer, { controller, mobile: false, active: true }));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
@@ -7345,7 +7359,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
             if (!fromLive && !fromStaging) return;
             if (payload.type === "moa-panel-key") {
-                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
+                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
                 return;
             }
             if (payload.type === "canvas-action") {
@@ -8697,6 +8711,20 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedReadOnly = selectedQueued || selectedCancelling;
+    const placeholder = promptState.answerMode
+        ? "Type an answer and press Enter"
+        : promptState.editingPending
+            ? selectedCancelling
+                ? "Cancellation requested"
+                : selectedQueued
+                    ? "Queued message selected"
+                    : "Edit the pending message, then send or cancel it"
+            : promptState.hasOutbox
+                ? "Type a message and press Enter to queue it behind the pending batch"
+                : "Type a message and press Enter";
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
@@ -8724,7 +8752,10 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const mayHaveShrunk = length <= lastPromptLengthRef.current;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
-    }, [growInput, promptState.value]);
+        // Empty textareas measure their placeholder too. Send briefly shows
+        // the long outbox hint; acknowledgement shortens it without changing
+        // the value or width, so neither input nor ResizeObserver will fire.
+    }, [growInput, promptState.value, placeholder]);
     React.useEffect(() => {
         // Width changes re-wrap the content; re-measure on viewport resizes
         // (covers rotation and the on-screen keyboard shrinking the pane).
@@ -8843,9 +8874,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         : promptState.hasOutbox
             ? "+"
             : "❯";
-    const selectedQueued = promptState.selectedOutboxPhase === "queued";
-    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
-    const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
         className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
@@ -8915,17 +8943,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             rows: 1,
             value: promptState.value,
             readOnly: selectedReadOnly,
-            placeholder: promptState.answerMode
-                ? "Type an answer and press Enter"
-                : promptState.editingPending
-                    ? selectedCancelling
-                        ? "Cancellation requested"
-                        : selectedQueued
-                        ? "Queued message selected"
-                        : "Edit the pending message, then send or cancel it"
-                    : promptState.hasOutbox
-                        ? "Type a message and press Enter to queue it behind the pending batch"
-                : "Type a message and press Enter",
+            placeholder,
             // On touch, Enter inserts a newline (the chevron sends) — the
             // keyboard must not advertise a send that will not happen.
             enterKeyHint: mobile ? "enter" : "send",
@@ -12671,6 +12689,14 @@ function DistillerModelPickers({ controller, extras }) {
     );
 }
 
+function ScopedModalLayer({ controller }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    // Isolated MoA controllers own keyboard commands only while their dialog
+    // is open. They must never install normal-workspace shortcuts globally.
+    useKeyboardShortcuts(controller, false, !modal);
+    return React.createElement(ModalLayer, { controller });
+}
+
 function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
         if (suspended) return undefined;
@@ -14301,6 +14327,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
         activeSessionId: rootState.sessions.activeSessionId || null,
+        revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",
         // The two optional desktop columns, independent of each other.
@@ -14356,6 +14383,20 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
     useKeyboardShortcuts(controller, mobile, suspended);
+
+    const lastCreatedSessionRef = React.useRef(state.revealedCreatedSessionId);
+    React.useEffect(() => {
+        if (lastCreatedSessionRef.current === state.revealedCreatedSessionId) return;
+        lastCreatedSessionRef.current = state.revealedCreatedSessionId;
+        if (!state.revealedCreatedSessionId || state.activeSessionId !== state.revealedCreatedSessionId) return;
+        if (mobile) {
+            setMobilePane("workspace");
+            setMobileMainLayout("chat");
+        }
+        // Creation opens the ordinary session workspace, without modifying
+        // any of the user's saved Master of Agents panels.
+        if (moa?.active) moa.leave();
+    }, [state.revealedCreatedSessionId, state.activeSessionId, mobile, moa]);
 
     // Tell the reducer which device slot of the per-session views this tab
     // owns. Only a desktop applies and records them; a phone keeps its
@@ -15010,4 +15051,4 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
 }
 
 // Browser hosts may compose these existing surfaces with isolated controllers.
-export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, ControllerContext };
+export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, SessionDetailBox, SessionComposer, ScopedModalLayer, ControllerContext };

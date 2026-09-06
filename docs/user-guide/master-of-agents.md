@@ -20,10 +20,15 @@ The picker mounts the same Sessions pane as the normal workspace: rows,
 folders, owner badges, pinning, scrolling, and the expandable detail box.
 Its selection stays local to the picker; choosing content does not navigate
 the default chat. Arrow keys navigate the list; select chat or canvas below it.
+The new-session icon at the top opens the existing model/agent creation flow.
+Creating fills that panel and keeps the default workspace’s selection.
+Cancelling returns to the picker; failed creation leaves the panel intact.
 
-Only the focused chat displays a composer. Click a panel or focus one of its
-controls to focus it; its border and title bar highlight. Focusing a canvas or
-empty panel hides all chat composers. Drafts remain when switching focus or
+One full-width composer sits below all panels, including in zen. It targets
+the focused panel’s session, whether the panel shows chat or a canvas. Click
+a panel or focus one of its controls to select it; its border and title bar
+highlight, and the composer names its target. Empty or unavailable panels have
+no composer. Working and queued-message status stays inside each chat panel. Drafts remain when switching focus or
 layouts during the current page session. Read-only sessions retain their normal
 read-only behavior.
 
@@ -31,6 +36,11 @@ Within the panels, **Tab** moves focus clockwise around the screen and
 **Shift+Tab** moves in reverse, including from a canvas. Drafts stay in their
 own panels. Toolbar controls and dialogs keep normal Tab navigation; the
 layout tabs also support Left/Right and Home/End.
+
+Each populated panel also has the same **spanner**, **session link**, and
+**trash** controls as the session list. Trash opens the existing lifecycle
+chooser and confirmation; removing a panel remains a separate layout action.
+The **info** icon shows the existing session-details fields.
 
 Use a panel's **…** menu or right-click a populated panel to replace it,
 split right/below, open it in the main view, or remove it. Splitting immediately
@@ -73,3 +83,5 @@ five slots. Replacing an occupied slot requires an explicit second action.
 The copied layout is independent of the original; the session references still
 point to live sessions and retain their existing permissions. Inaccessible
 sessions show a placeholder with Retry, plus the normal Replace action.
+
+Ctrl+Left/Right/Up/Down moves focus to the nearest panel in that direction, including from the composer or a canvas. It stops at the screen edge. Tab and Shift+Tab still cycle clockwise and counterclockwise. These shortcuts pause while dialogs are open.

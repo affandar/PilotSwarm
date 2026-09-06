@@ -89,7 +89,7 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await expect(card.locator(".ps-assistant-preview-viewport")).toHaveCSS("max-height", "none");
 
         await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
-        await expect(page.locator('[data-moa-panel="chat"] textarea')).toBeVisible();
+        await expect(page.locator(".ps-moa-composer-strip textarea")).toBeVisible();
         const focusedPanel = page.locator('[data-moa-panel="chat"]');
         await contrast(focusedPanel, `${themeId} focus border against pane`, { property: "borderTopColor", minimum: 3 });
         const focusBorder = await focusedPanel.evaluate(el => getComputedStyle(el).borderTopColor);
