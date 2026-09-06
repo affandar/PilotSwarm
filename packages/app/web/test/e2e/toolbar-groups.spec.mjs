@@ -59,7 +59,7 @@ test.describe("desktop", () => {
         expect(t.left[1]).toBe("Filter sessions");
         expect(t.left[2]).toMatch(/^(Show canvas|Hide the canvas)$/);
         expect(t.left[3]).toMatch(/^(Show|Hide) diagnostics/);
-        expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Workspace — se", "Budget — provi", "Admin console", "Master of Agen", "Theme"]);
+        expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Workspace — se", "Master of Agen", "Budget — provi", "Admin console", "Theme"]);
     });
 
     test("a fresh profile opens as sessions + chat only, even on a wide desktop with a canvas to show", async ({ page }) => {

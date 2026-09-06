@@ -1,8 +1,8 @@
 # Master of Agents (MoA)
 
 Master of Agents is an alternate **desktop browser** workspace. Use the
-**Master of Agents** tiled-panel icon beside Workspace, Budget, and Admin/Settings
-in the PilotSwarm header. Those view buttons stay available in MoA, except in zen. It is unavailable on
+**Master of Agents** tiled-panel icon between Workspace and Budget
+in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay available in MoA, except in zen. It is unavailable on
 screens 920 pixels wide or narrower and in the TUI.
 
 Start with one named tab. Use **+** beside the tabs to add another, up to five.

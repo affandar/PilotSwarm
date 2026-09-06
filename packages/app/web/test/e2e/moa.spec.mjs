@@ -461,6 +461,8 @@ test("MoA stays in the workspace/budget/admin mode cluster and those modes remai
     for (const button of [launcher, workspace, budget, admin]) await expect(button).toBeVisible();
     const positions = await Promise.all([launcher, workspace, budget, admin].map(button => button.boundingBox()));
     expect(Math.max(...positions.map(b => b.y)) - Math.min(...positions.map(b => b.y))).toBeLessThan(10);
+    expect(positions[1].x + positions[1].width).toBeLessThanOrEqual(positions[0].x);
+    expect(positions[0].x + positions[0].width).toBeLessThanOrEqual(positions[2].x);
     await budget.click();
     await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Close budget", exact: true })).toBeVisible();

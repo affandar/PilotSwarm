@@ -9432,7 +9432,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const PANELS = ["canvas", "diagnostics"];
-    const MODES = ["workspace", "budget", "admin", "moa"];
+    const MODES = ["workspace", "moa", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
