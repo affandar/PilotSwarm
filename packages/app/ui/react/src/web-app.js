@@ -9099,6 +9099,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     React.useLayoutEffect(() => {
         if (!tip || !tipRef.current || !btnRef.current) return;
         const el = tipRef.current, viewport = window.visualViewport;
+        const update = () => {
         const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
         const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
         const margin = 6, r = btnRef.current.getBoundingClientRect();
@@ -9113,6 +9114,10 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
         const y = Math.max(top + margin, Math.min(below ? r.bottom + margin : r.top - box.height - margin, top + height - box.height - margin));
         el.style.transform = "none";
         el.style.left = `${x}px`; el.style.top = `${y}px`;
+        };
+        update(); viewport?.addEventListener("resize", update); viewport?.addEventListener("scroll", update);
+        window.addEventListener("resize", update);
+        return () => { viewport?.removeEventListener("resize", update); viewport?.removeEventListener("scroll", update); window.removeEventListener("resize", update); };
     }, [tip]);
 
     const reveal = (preferAbove = false) => {

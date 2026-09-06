@@ -25,6 +25,9 @@ for (const browserName of ['chromium', 'webkit']) {
  await main.dispatchEvent('pointerdown',{pointerType:'touch',clientX:330,clientY:100});
  const tip=page.getByRole('tooltip'); await expect(tip).toBeVisible();
  const box=await tip.boundingBox(); expect(box.x).toBeGreaterThanOrEqual(0);expect(box.y).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(390);expect(box.y+box.height).toBeLessThanOrEqual(844);
+ await page.evaluate(()=>{const v=window.visualViewport;Object.defineProperties(v,{height:{configurable:true,value:250},offsetTop:{configurable:true,value:120}});v.dispatchEvent(new Event('resize'));});
+ const moved=await tip.boundingBox();expect(moved.y).toBeGreaterThanOrEqual(120);expect(moved.y+moved.height).toBeLessThanOrEqual(370);
+ await page.evaluate(()=>{const v=window.visualViewport;delete v.height;delete v.offsetTop;v.dispatchEvent(new Event('resize'));});
  await main.dispatchEvent('pointerup',{pointerType:'touch'});
  await maximize.click(); await expect(page.locator('.ps-mobile-zen')).toBeVisible();
  await page.getByRole('button',{name:'Exit mobile zen'}).click();
@@ -35,6 +38,12 @@ for (const browserName of ['chromium', 'webkit']) {
  await expect(page.locator('.ps-moa-session-picker .ps-session-list-button').first()).toBeVisible();
  await page.setViewportSize({width:390,height:360}); await search.focus();
  await expect.poll(async()=>{const dialog=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();return dialog.y+dialog.height;}).toBeLessThanOrEqual(360);
+ // iOS keeps its layout viewport while the keyboard shrinks/pans only
+ // visualViewport. Exercise that event path separately from layout resize.
+ await page.setViewportSize({width:390,height:844});
+ await page.evaluate(()=>{const v=window.visualViewport;Object.defineProperties(v,{height:{configurable:true,value:360},offsetTop:{configurable:true,value:90}});v.dispatchEvent(new Event('resize'));v.dispatchEvent(new Event('scroll'));});
+ await expect.poll(async()=>{const d=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();return d.y+d.height;}).toBeLessThanOrEqual(450);
+ const shifted=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();expect(shifted.y).toBeGreaterThanOrEqual(90);
  const list=await page.locator('.ps-moa-session-picker .ps-session-list').boundingBox();expect(list.height).toBeGreaterThan(60);
  await expect(page.getByRole('button',{name:'Close dialog'})).toBeVisible();
  await search.fill('Session');
