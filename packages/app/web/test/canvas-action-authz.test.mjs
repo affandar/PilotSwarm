@@ -53,7 +53,7 @@ test("the predicate: owner, admin and writers pass; readers, strangers and unres
 
 test("the client no longer pre-refuses non-owners: the server decides", () => {
     const CONTROLLER = fs.readFileSync(path.join(__dirname, "..", "..", "ui", "core", "src", "controller.js"), "utf8");
-    const start = CONTROLLER.indexOf("submitCanvasAction(sessionId, message)");
+    const start = CONTROLLER.indexOf("submitCanvasAction(sessionId, message, slot = 1)");
     assert.ok(start >= 0);
     const body = CONTROLLER.slice(start, start + 2500);
     assert.doesNotMatch(body, /only the session's creator can use canvas controls/,

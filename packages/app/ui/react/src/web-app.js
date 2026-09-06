@@ -6,6 +6,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
+    normalizeMoa,
     UI_COMMANDS,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
@@ -286,6 +287,7 @@ function clearBrowserPreferenceCache() {
 function normalizeProfileSettings(settings) {
     const candidate = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
     const normalized = {};
+    if (hasOwn(candidate, "moa")) normalized.moa = normalizeMoa(candidate.moa);
     if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
         normalized.themeId = candidate.themeId.trim();
     }
@@ -431,8 +433,18 @@ function hasOwn(value, key) {
     return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
+function profileViewState(root) {
+    return {
+        ...root.ui, ...root.ui.layout,
+        ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
+        manualOrder: root.sessions.manualOrder, collapsedSessionIds: root.sessions.collapsedIds,
+        activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
+    };
+}
+
 function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
     return normalizeProfileSettings({
+        ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
         [touchScaleKey()]: state.touchScale,
         sessionDetailCollapsed: state.sessionDetailCollapsed,
@@ -498,6 +510,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
 
 function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null) {
     return normalizeProfileSettings({
+        ...(state?.ui?.moa ? { moa: state.ui.moa } : {}),
         themeId: state?.ui?.themeId,
         [touchScaleKey()]: state?.ui?.touchScale,
         sessionDetailCollapsed: state?.ui?.sessionDetailCollapsed,
@@ -541,6 +554,7 @@ function materializeProfileSettings(remoteSettings, defaults) {
     // the server has not persisted yet. An omitted key leaves the
     // profileSettings/apply guards preserving the current value.
     return normalizeProfileSettings({
+        ...(hasOwn(normalizedRemote, "moa") ? { moa: normalizedRemote.moa } : {}),
         themeId: hasOwn(normalizedRemote, "themeId")
             ? normalizedRemote.themeId
             : normalizedDefaults.themeId,
@@ -611,11 +625,18 @@ function materializeProfileSettings(remoteSettings, defaults) {
     });
 }
 
+const profileSaveQueues = new WeakMap();
 async function saveProfileSettings(controller, settings) {
     if (typeof controller?.transport?.setCurrentUserProfileSettings !== "function") return null;
-    return controller.transport.setCurrentUserProfileSettings({
+    // Whole-document writes must arrive in edit order. A slow earlier request
+    // must never land after a newer layout and erase it.
+    const previous = profileSaveQueues.get(controller) || Promise.resolve();
+    const next = previous.catch(() => {}).then(() => controller.transport.setCurrentUserProfileSettings({
         settings: normalizeProfileSettings(settings),
-    });
+    }));
+    profileSaveQueues.set(controller, next);
+    try { return await next; }
+    finally { if (profileSaveQueues.get(controller) === next) profileSaveQueues.delete(controller); }
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -993,10 +1014,11 @@ function applyDocumentTheme(themeId) {
     root.dataset.psTheme = theme.id;
 }
 
-function useMeasuredViewport(ref) {
+function useMeasuredViewport(ref, suspended = false) {
     const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
 
     React.useLayoutEffect(() => {
+        if (suspended) return undefined;
         const element = ref.current;
         if (!element) return undefined;
 
@@ -1015,7 +1037,7 @@ function useMeasuredViewport(ref) {
             observer.disconnect();
             window.removeEventListener("resize", update);
         };
-    }, [ref]);
+    }, [ref, suspended]);
 
     return viewport;
 }
@@ -7286,7 +7308,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             if (!fromLive && !fromStaging) return;
             if (payload.type === "canvas-action") {
                 if (!fromLive) return;
-                controller.submitCanvasAction(sessionId, payload).then((result) => {
+                controller.submitCanvasAction(sessionId, payload, slot).then((result) => {
                     if (result && result.ok === false && typeof console !== "undefined") {
                         console.warn(`canvas action rejected: ${result.reason}`);
                     }
@@ -12595,8 +12617,9 @@ function DistillerModelPickers({ controller, extras }) {
     );
 }
 
-function useKeyboardShortcuts(controller, mobile) {
+function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
+        if (suspended) return undefined;
         const handler = (event) => {
             // A focused control that handled the key owns it. The diagnostics
             // seam answers ArrowUp/ArrowDown itself; letting the same keydown
@@ -12941,7 +12964,7 @@ function useKeyboardShortcuts(controller, mobile) {
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [controller, mobile]);
+    }, [controller, mobile, suspended]);
 }
 
 function formatAdminPrincipalLabel(principal) {
@@ -14142,11 +14165,11 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller }) {
+export function PilotSwarmWebApp({ controller, suspended = false }) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
-    const viewport = useMeasuredViewport(viewportRef);
-    const mainGridViewport = useMeasuredViewport(mainGridRef);
+    const viewport = useMeasuredViewport(viewportRef, suspended);
+    const mainGridViewport = useMeasuredViewport(mainGridRef, suspended);
     const gridViewport = computeGridViewport(viewport);
 
     // Publish the real viewport in character cells. Without this the ui-core
@@ -14208,6 +14231,7 @@ export function PilotSwarmWebApp({ controller }) {
     // toolbar button). Desktop has real columns and needs no such cycle.
     const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
     const state = useControllerSelector(controller, (rootState) => ({
+        moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
@@ -14277,7 +14301,7 @@ export function PilotSwarmWebApp({ controller }) {
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
-    useKeyboardShortcuts(controller, mobile);
+    useKeyboardShortcuts(controller, mobile, suspended);
 
     // Tell the reducer which device slot of the per-session views this tab
     // owns. Only a desktop applies and records them; a phone keeps its
@@ -14439,7 +14463,7 @@ export function PilotSwarmWebApp({ controller }) {
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -14447,7 +14471,8 @@ export function PilotSwarmWebApp({ controller }) {
                     && currentSettingsBeforeApplyJson !== lastProfileSettingsJsonRef.current;
                 const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current)
                     || profileSettingsSaveInFlightRef.current
-                    || hasUnpersistedLocalChange;
+                    || hasUnpersistedLocalChange
+                    || controller.getState().ui.moaDirty === true;
                 if (!hasPendingLocalWrite && appliedProfileSettingsJsonRef.current !== settingsJson) {
                     controller.dispatch({ type: "profileSettings/apply", settings });
                     appliedProfileSettingsJsonRef.current = settingsJson;
@@ -14482,7 +14507,7 @@ export function PilotSwarmWebApp({ controller }) {
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -14526,14 +14551,20 @@ export function PilotSwarmWebApp({ controller }) {
         profileSettingsSaveTimerRef.current = setTimeout(() => {
             profileSettingsSaveTimerRef.current = null;
             profileSettingsSaveInFlightRef.current = true;
+            const moaRevision = controller.getState().ui.moaRevision;
+            controller.dispatch({ type: "ui/moaSaveStatus", status: "saving" });
             saveProfileSettings(controller, settings)
-                .catch(() => {})
+                .then(() => controller.dispatch({ type: "ui/moaSaveStatus", status: "saved", revision: moaRevision }))
+                .catch(() => {
+                    lastProfileSettingsJsonRef.current = null;
+                    controller.dispatch({ type: "ui/moaSaveStatus", status: "error" });
+                })
                 .finally(() => {
                     profileSettingsSaveInFlightRef.current = false;
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -14644,7 +14675,7 @@ export function PilotSwarmWebApp({ controller }) {
         Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || 380));
     // Escape steps down one rung: full screen -> zen -> normal workspace.
     React.useEffect(() => {
-        if (!canvasMaximized && !zenActive) return undefined;
+        if (suspended || (!canvasMaximized && !zenActive)) return undefined;
         const onKey = (e) => {
             if (e.key !== "Escape") return;
             controller.dispatch(canvasMaximized
@@ -14653,7 +14684,7 @@ export function PilotSwarmWebApp({ controller }) {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [controller, canvasMaximized, zenActive]);
+    }, [controller, canvasMaximized, zenActive, suspended]);
 
     // The right block is exactly as wide as the columns in it. Pixels, not a
     // share of the window: when a column closes, its pixels go to chat and
@@ -14876,6 +14907,7 @@ export function PilotSwarmWebApp({ controller }) {
         })
         : null;
 
+    if (suspended) return null;
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // The phone's toolbar carries its NAVIGATION (the three view modes,
@@ -14920,3 +14952,6 @@ export function PilotSwarmWebApp({ controller }) {
             : null,
         React.createElement(ModalLayer, { controller })));
 }
+
+// Browser hosts may compose these existing surfaces with isolated controllers.
+export { ChatPane, CanvasFrame, SessionRowContent, ControllerContext };

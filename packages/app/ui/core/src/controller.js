@@ -5590,8 +5590,9 @@ export class PilotSwarmUiController {
      * history pipeline recognizes the canonical prefix and keeps it out of
      * the portal chat pane; the transcript still records it for provenance.
      */
-    submitCanvasAction(sessionId, message) {
+    submitCanvasAction(sessionId, message, slot = 1) {
         if (!sessionId) return Promise.resolve({ ok: false, reason: "no session" });
+        if (!Number.isInteger(slot) || slot < 1 || slot > 5) return Promise.resolve({ ok: false, reason: "invalid canvas slot" });
         // Creator-only, mirrored from the server's enforcement (the server is
         // the authority; this is the friendly refusal). The canvas mutates —
         // a shared viewer may be looking at a different revision than the one
@@ -5601,7 +5602,7 @@ export class PilotSwarmUiController {
         // longer pre-refuses non-owners: a write-shared collaborator's click
         // must reach the agent, and the server's refusal for a read-only
         // viewer comes back as the result's reason.
-        const contract = this.getState().canvas.bySessionId[sessionId]?.responseContract || null;
+        const contract = this.getState().canvas.bySessionId[canvasPrefKey(sessionId, slot)]?.responseContract || null;
         const verdict = validateCanvasAction(contract, message);
         if (!verdict.ok) return Promise.resolve(verdict);
         if (!this.canvasActionLimiters) this.canvasActionLimiters = new Map();

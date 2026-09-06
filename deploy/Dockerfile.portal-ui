@@ -1,0 +1,10 @@
+# Browser/UI-only rollout on the exact currently deployed runtime. Build the
+# browser bundle first, pass an immutable BASE_IMAGE digest and source revision.
+# This preserves the stamp's runtime dependencies and packaged plugin metadata.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION}
+COPY packages/app/ui/core/src/ /app/packages/app/ui/core/src/
+COPY packages/app/ui/react/src/ /app/packages/app/ui/react/src/
+COPY packages/app/web/dist/ /app/packages/app/web/dist/

@@ -1,3 +1,4 @@
+import { normalizeMoa } from "./moa.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -995,6 +996,10 @@ function baseReducer(state, action) {
             if (Boolean(action.collapsed) === Boolean(state.ui.sessionDetailCollapsed)) return state;
             return { ...state, ui: { ...state.ui, sessionDetailCollapsed: Boolean(action.collapsed) } };
 
+        case "ui/moaSaveStatus":
+            return { ...state, ui: { ...state.ui, moaSaveStatus: action.status, moaDirty: action.status === "saved" && state.ui.moaRevision === action.revision ? false : state.ui.moaDirty } };
+        case "ui/moa":
+            return { ...state, ui: { ...state.ui, moa: normalizeMoa(action.value), moaDirty: true, moaRevision: (state.ui.moaRevision || 0) + 1 } };
         case "profileSettings/apply": {
             const settings = action.settings && typeof action.settings === "object" && !Array.isArray(action.settings)
                 ? action.settings
@@ -1098,6 +1103,8 @@ function baseReducer(state, action) {
                 sessions: selection.sessions,
                 ui: {
                     ...selection.ui,
+                    moa: !state.ui.moaDirty && Object.prototype.hasOwnProperty.call(settings, "moa") ? normalizeMoa(settings.moa) : selection.ui.moa,
+                    moaLoaded: true,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     sessionDetailCollapsed: hasSessionDetailCollapsed

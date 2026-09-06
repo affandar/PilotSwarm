@@ -1,3 +1,4 @@
+import { useMoa, MoaWorkspace, MoaImport, stashMoaLink } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins } from "pilotswarm/ui-react";
@@ -466,7 +467,7 @@ function useBuildFreshness() {
     return stale;
 }
 
-function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
+function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null, moaControl = null }) {
     const buildStale = useBuildFreshness();
     // The desktop toolbar (portalled into this header) exposes two slots so
     // the right side reads as ONE cluster: version/status · bug · settings ·
@@ -506,6 +507,7 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
         // Slot the workspace toolbar portals into when the rich UI is on, so
         // the app has ONE top bar instead of a header plus a button strip.
         // Always rendered (empty otherwise) so the portal target is stable.
+        moaControl,
         React.createElement("div", { className: "portal-header-slot", id: "ps-header-toolbar-slot" }),
         (() => {
             const metaNode = (versionLabel || statusText || buildStale)
@@ -617,6 +619,11 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         // in the Add/Update package dialog follows it.
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
+    const moa = useMoa(controller);
+    const createPanelTransport = React.useCallback(() => new BrowserPortalTransport({
+        getAccessToken: auth.getAccessToken, getResourceToken: auth.getResourceToken,
+        onUnauthorized: auth.handleUnauthorized,
+    }), [auth.getAccessToken, auth.getResourceToken, auth.handleUnauthorized]);
     const statusText = usePortalControllerStatusText(controller);
     const themeIcon = useThemeIcon(controller);
     // Dismissing hides the mobile status row until a *different* message
@@ -683,7 +690,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         };
     }, [controller, deepLinkTarget, initialSessionId, transport]);
 
-    return React.createElement("div", { className: `portal-app-shell${chromeHidden ? " is-chromeless" : ""}`, style: shellStyle },
+    return React.createElement("div", { className: `portal-app-shell${chromeHidden ? " is-chromeless" : ""}${moa.zen ? " is-moa-zen" : ""}`, style: shellStyle },
         // The dev-auth banner survives chrome hiding on purpose: it warns that
         // the deployment is running an auth mode with no real identity behind
         // it, and a cosmetic display option is not a reason to suppress a
@@ -721,6 +728,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             versionLabel: PILOTSWARM_PORTAL_VERSION_LABEL,
             statusText,
             themeIcon,
+            moaControl: moa.desktop && !moa.active ? React.createElement("button", { className: `ps-mini-button ps-moa-launch${moa.returnTo ? " ps-moa-return" : ""}`, disabled: !moa.loaded, onClick: () => { controller.dispatch({ type: "ui/canvasMaximized", on: false }); moa.open(); } }, moa.returnTo ? "← Back to MoA" : "Master of Agents") : null,
         }),
         chromeHidden
             ? null
@@ -729,7 +737,9 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 onDismiss: () => setDismissedStatus(statusText),
             }),
         React.createElement("main", { className: "portal-main" },
-            React.createElement(PilotSwarmWebApp, { controller })),
+            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active }),
+            moa.active ? React.createElement(MoaWorkspace, { controller, moa, createTransport: createPanelTransport }) : null,
+            moa.shared ? React.createElement(MoaImport, { moa, controller }) : null),
     );
 }
 
@@ -931,7 +941,7 @@ export default function App() {
     // URL param directly, and stashing then would leave a stale id behind.
     const showSignInGate = !publicConfig.loading && !auth.loading && !auth.signedIn;
     React.useEffect(() => {
-        if (showSignInGate) stashDeepLinkTarget();
+        if (showSignInGate) { stashDeepLinkTarget(); stashMoaLink(); }
     }, [showSignInGate]);
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }
