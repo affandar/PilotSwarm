@@ -2884,7 +2884,7 @@ function useElementBox(ref) {
     return box;
 }
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename) {
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -2897,7 +2897,18 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename) {
             // would otherwise make the iframe offer a download instead of
             // rendering, and a missing charset would mojibake UTF-8 content.
             const bytes = await response.arrayBuffer();
-            return URL.createObjectURL(new Blob([bytes], { type: "text/html;charset=utf-8" }));
+            // Only MoA canvases opt into panel navigation. Ordinary canvases
+            // retain native Tab behavior and their exact document bytes.
+            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            let parts = [bytes];
+            if (panelKeys) {
+                const html = new TextDecoder().decode(bytes);
+                // Keep the doctype first so panel navigation cannot change
+                // the canvas from standards mode into quirks mode.
+                const prolog = /^(?:\uFEFF|\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
+                parts = [html.slice(0, prolog.length), bridge, html.slice(prolog.length)];
+            }
+            return URL.createObjectURL(new Blob(parts, { type: "text/html;charset=utf-8" }));
         });
 }
 
@@ -4889,7 +4900,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -4915,23 +4926,23 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const sessionButtonRefs = React.useRef(new Map());
     const viewState = useControllerSelector(controller, (state) => ({
         branding: state.branding,
-        activeSessionId: state.sessions.activeSessionId,
+        activeSessionId: selection ? selection.sessionId : state.sessions.activeSessionId,
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
-        filterQuery: state.sessions.filterQuery || "",
+        filterQuery: selection ? selection.query || "" : state.sessions.filterQuery || "",
         ownerFilter: state.sessions.ownerFilter,
         pinnedIds: state.sessions.pinnedIds,
         manualOrder: state.sessions.manualOrder,
-        selectedIds: state.sessions.selectedIds,
-        selectMode: state.sessions.selectMode,
+        selectedIds: selection ? [] : state.sessions.selectedIds,
+        selectMode: selection ? false : state.sessions.selectMode,
         auth: state.auth,
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
-        focused: state.ui.focusRegion === "sessions",
+        focused: selection ? true : state.ui.focusRegion === "sessions",
         // Clicking empty space clears the list highlight; the row VM reads it,
         // so the reconstruction below must carry it or the click does nothing
         // visible (the same omission that blinded the Node Map).
-        listDeselected: Boolean(state.sessions.listDeselected),
+        listDeselected: selection ? !selection.sessionId : Boolean(state.sessions.listDeselected),
         // The canvas markers read these. This synthetic state is exactly the
         // trap the branding comment below describes: omit a slice here and
         // every row computes as if it were empty — the markers were null on
@@ -5097,7 +5108,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // rows/viewState from a ref that is refreshed on every render instead of
     // closing over them.
     const clickEnv = React.useRef(null);
-    clickEnv.current = { rows, viewState, controller };
+    clickEnv.current = { rows, viewState, controller, selection };
     // ── Drag sessions into / out of groups ────────────────────────────
     // Pointer-driven so it works from <button> rows, can render a collection
     // ghost for a multi-selection, and can highlight the destination folder.
@@ -5422,7 +5433,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }), [dragState.dragging, dragState.overGroupId, dragState.insertBeforeId, dragState.insertAfterId]);
 
     const handleRowClick = React.useCallback((event, row) => {
-        const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
+        const { rows: currentRows, viewState: current, controller: ctl, selection: pick } = clickEnv.current;
+        if (pick) {
+            if (row.isGroup || (row.hasChildren && row.active)) ctl.dispatch({ type: row.collapsed ? "sessions/expand" : "sessions/collapse", sessionId: row.sessionId });
+            if (!row.isGroup) pick.onSelect(row.sessionId);
+            return;
+        }
         // Cmd/Ctrl-click toggles multi-selection (any row).
         if (event.metaKey || event.ctrlKey) {
             event.preventDefault();
@@ -5669,11 +5685,23 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         color: "yellow",
         focused: viewState.focused,
         theme,
-        actions: panelActions,
+        actions: selection ? React.createElement(React.Fragment, null,
+            React.createElement(IconButton, { className: "ps-mini-button ps-pin-icon", icon: React.createElement(PinGlyph), disabled: !canPinActiveSession, active: isActivePinned,
+                label: isActivePinned ? "Unpin this session" : "Pin this session to the top of the list",
+                onClick: () => controller.dispatch({ type: "sessions/pinToggle", sessionId: activeSession.sessionId }) }), actions) : panelActions,
         className: combinedPanelClassName,
     },
+    selection ? React.createElement("input", { className: "ps-modal-input", "aria-label": "Find a session", placeholder: "Find a session…", value: selection.query || "", onChange: e => selection.onQuery?.(e.target.value) }) : null,
     React.createElement("div", {
         ref: sessionListRef,
+        onKeyDown: selection ? event => {
+            if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+            const current = rows.findIndex(row => row.sessionId === selection.sessionId);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
+            const row = rows[next]; if (!row) return;
+            event.preventDefault(); event.stopPropagation();
+            selection.onSelect(row.sessionId); sessionButtonRefs.current.get(row.sessionId)?.focus();
+        } : undefined,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
         // Clicking empty space below the rows clears the list selection while
         // the other panes keep showing the session. With nothing selected the
@@ -5682,7 +5710,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             // Empty space only: a click that lands on a row bubbles here too.
             const onRow = event.target instanceof Element && event.target.closest(".ps-session-list-button");
             if (onRow) return;
-            controller.dispatch({ type: "sessions/listDeselect" });
+            if (selection) selection.onSelect(null);
+            else controller.dispatch({ type: "sessions/listDeselect" });
         },
     },
         rows.length === 0
@@ -5699,7 +5728,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 setRef: setSessionButtonRef,
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
-                drag: touchInput ? null : dragHandlers,
+                drag: selection || touchInput ? null : dragHandlers,
             }))),
     (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
@@ -5919,6 +5948,13 @@ function SidebarGlyph() {
 // icon size without a label.
 // The Main pane, whatever layout it is in: a frame with a list rail and a
 // conversation beside it. Constant across the three-way cycle.
+// A tiled command surface: one tall pane beside two stacked panes.
+function MoaGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("rect", { x: 3, y: 4, width: 7, height: 16, rx: 1 }),
+        React.createElement("rect", { x: 13, y: 4, width: 8, height: 6.5, rx: 1 }),
+        React.createElement("rect", { x: 13, y: 13.5, width: 8, height: 6.5, rx: 1 }));
+}
 function MainLayoutGlyph() {
     return React.createElement(Glyph, null,
     React.createElement("rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }),
@@ -7254,7 +7290,9 @@ function RestoreGlyph() {
  * loads hidden-but-painted behind the live frame and is promoted on load, so
  * a live redraw is a composite swap of something already drawn.
  */
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+    const panelKeyRef = React.useRef(onPanelKey); panelKeyRef.current = onPanelKey;
+    const panelKeys = Boolean(onPanelKey);
     const [live, setLive] = React.useState(null);       // { url, rev }
     const [staging, setStaging] = React.useState(null); // { url, rev }
     const [loadError, setLoadError] = React.useState(null); // { rev }
@@ -7306,6 +7344,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // window that asked). Writes and actions stay live-frame only.
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "moa-panel-key") {
+                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
+                return;
+            }
             if (payload.type === "canvas-action") {
                 if (!fromLive) return;
                 controller.submitCanvasAction(sessionId, payload, slot).then((result) => {
@@ -7393,7 +7435,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (!controller || !sessionId || !latestRev) return undefined;
         let cancelled = false;
         let retryTimer = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`)
+        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`, panelKeys)
             .then((url) => {
                 if (cancelled) { URL.revokeObjectURL(url); return; }
                 // A staging revision that never loaded is superseded here —
@@ -7421,7 +7463,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [controller, sessionId, slot, latestRev, retryTick]);
+    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys]);
 
     // Session switch / unmount: drop both frames — a different session is a
     // different document, and showing the old canvas under a new session is a
@@ -9156,7 +9198,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -9295,9 +9337,20 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             icon: React.createElement(MainLayoutGlyph),
             label: "Workspace — sessions, chat and panels",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {}),
-            active: !adminVisible && !budgetOpen,
+            active: !moa?.active && !adminVisible && !budgetOpen,
         }]),
     ];
+
+    if (!mobile && moa?.desktop) buttonDefs.push({
+        key: "moa", icon: React.createElement(MoaGlyph),
+        label: moa.returnTo ? "Back to MoA — Master of Agents" : "Master of Agents",
+        active: moa.active, disabled: !moa.loaded,
+        onClick: () => {
+            controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {});
+            moa.open();
+        },
+    });
 
     const renderButton = (def) => {
         const button = React.createElement(IconButton, {
@@ -9376,10 +9429,10 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     // mode. Budget and the Admin Console replace the workspace; nothing on
     // the left applies there. Modes are exclusive (the controller closes one
     // when the other opens) and the Workspace button is the way back.
-    const mode = adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
+    const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const PANELS = ["canvas", "diagnostics"];
-    const MODES = ["workspace", "budget", "admin"];
+    const MODES = ["workspace", "budget", "admin", "moa"];
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
@@ -9387,10 +9440,11 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     // it — is the confusing half of every full-screen mode. The Canvas toggle
     // is exempt: it already means "put the canvas away", and closing drops
     // the flag in the reducer.
-    const withRestore = (def) => (!canvasMaximized || def.key === "canvas" ? def : {
+    const withRestore = (def) => ((!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
         ...def,
         onClick: (...args) => {
             controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            if (moa?.active && ["workspace", "budget", "admin"].includes(def.key)) moa.leave();
             return def.onClick?.(...args);
         },
     });
@@ -14165,7 +14219,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller, suspended = false }) {
+export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
@@ -14907,14 +14961,16 @@ export function PilotSwarmWebApp({ controller, suspended = false }) {
         })
         : null;
 
-    if (suspended) return null;
+    if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
+        React.createElement(Toolbar, { controller, mobile: false, moa }),
+        React.createElement(ModalLayer, { controller }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // The phone's toolbar carries its NAVIGATION (the three view modes,
         // plus the Main layout cycle), so it renders on every pane — hiding it
         // anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
-            controller,
+            controller, moa,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
@@ -14954,4 +15010,4 @@ export function PilotSwarmWebApp({ controller, suspended = false }) {
 }
 
 // Browser hosts may compose these existing surfaces with isolated controllers.
-export { ChatPane, CanvasFrame, SessionRowContent, ControllerContext };
+export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, ControllerContext };

@@ -155,3 +155,14 @@ test("canvas actions validate the frame's pinned slot, independent of another sl
     assert.deepEqual(sent.map((s) => s.sessionId), ["s1", "s1"]);
     assert.match(sent[0].prompt, /"second"/);
 });
+
+test("tab migration preserves populated and renamed legacy slots and bounds added tabs", () => {
+    assert.equal(normalizeMoa(null).tabCount, 1);
+    const legacy = normalizeMoa({ slots: [null, null, layout()] });
+    assert.equal(legacy.tabCount, 3);
+    assert.deepEqual(legacy.slots[2], layout());
+    assert.equal(normalizeMoa({ slots: [{name:'Planning',tree:null}], tabCount:3 }).tabCount, 3);
+    assert.equal(normalizeMoa({ tabCount:999 }).tabCount, 5);
+    assert.equal(normalizeMoa({ tabCount:-1 }).tabCount, 1);
+    assert.equal(normalizeMoa({ activeSlot:4, tabCount:1 }).tabCount, 5);
+});

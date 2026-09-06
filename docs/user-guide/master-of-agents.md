@@ -1,10 +1,13 @@
 # Master of Agents (MoA)
 
 Master of Agents is an alternate **desktop browser** workspace. Use the
-**Master of Agents** button in the PilotSwarm header. It is unavailable on
+**Master of Agents** tiled-panel icon beside Workspace, Budget, and Admin/Settings
+in the PilotSwarm header. Those view buttons stay available in MoA, except in zen. It is unavailable on
 screens 920 pixels wide or narrower and in the TUI.
 
-Each user has five named layouts, saved in their profile. Layouts remember
+Start with one named tab. Use **+** beside the tabs to add another, up to five.
+Double-click a tab or use **Rename MoA** to name it. Existing saved layouts
+automatically appear as tabs. Layouts remember
 session and canvas references, split directions, and divider proportions.
 Changes save automatically; the toolbar reports a failed save and offers Retry.
 The active slot is remembered. Enter MoA explicitly after reloading the portal.
@@ -13,14 +16,21 @@ The active slot is remembered. Enter MoA explicitly after reloading the portal.
 
 A new layout starts empty. Click **+** or right-click the empty area to select
 from your session list, then choose the chat or one of that session's canvases.
-The picker uses the same rows, folders, owner badges, and access-filtered
-catalog as the normal workspace.
+The picker mounts the same Sessions pane as the normal workspace: rows,
+folders, owner badges, pinning, scrolling, and the expandable detail box.
+Its selection stays local to the picker; choosing content does not navigate
+the default chat. Arrow keys navigate the list; select chat or canvas below it.
 
 Only the focused chat displays a composer. Click a panel or focus one of its
 controls to focus it; its border and title bar highlight. Focusing a canvas or
 empty panel hides all chat composers. Drafts remain when switching focus or
 layouts during the current page session. Read-only sessions retain their normal
 read-only behavior.
+
+Within the panels, **Tab** moves focus clockwise around the screen and
+**Shift+Tab** moves in reverse, including from a canvas. Drafts stay in their
+own panels. Toolbar controls and dialogs keep normal Tab navigation; the
+layout tabs also support Left/Right and Home/End.
 
 Use a panel's **…** menu or right-click a populated panel to replace it,
 split right/below, open it in the main view, or remove it. Splitting immediately
@@ -40,7 +50,8 @@ session. Each populated panel has an isolated session controller/subscription.
 handle and Escape restore the regular MoA view. Panel controls remain available.
 
 **Open in main view** opens that panel's session, or maximizes its chosen
-canvas. **Back to MoA** in the header restores the saved arrangement.
+canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
+the saved arrangement.
 Resizing to a mobile screen exits MoA and releases its panel subscriptions.
 Returning to desktop does not automatically reopen it.
 

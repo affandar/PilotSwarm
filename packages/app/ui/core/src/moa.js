@@ -30,7 +30,11 @@ export function normalizeMoa(value) {
     const slots = Array.from({ length: MOA_SLOTS }, (_, i) => {
         try { return normalizeMoaLayout(value?.slots?.[i]); } catch { return { name: `MoA ${i + 1}`, tree: null }; }
     });
-    return { version: 1, activeSlot: Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0, slots };
+    const activeSlot = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
+    // Migrate existing layouts without hiding populated or renamed slots.
+    const used = slots.reduce((count, slot, i) => slot.tree || slot.name !== `MoA ${i + 1}` ? i + 1 : count, 1);
+    const tabCount = Math.max(used, activeSlot + 1, Number.isInteger(value?.tabCount) ? Math.max(1, Math.min(5, value.tabCount)) : 1);
+    return { version: 1, activeSlot, tabCount, slots };
 }
 export function replaceMoaNode(tree, nodeId, next) {
     if (!tree) return null;

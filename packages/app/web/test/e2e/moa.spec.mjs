@@ -4,7 +4,7 @@ import { normalizeMoa, encodeMoaShare } from "../../../ui/core/src/moa.js";
 
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4 }); base = `http://127.0.0.1:${stub.port}`; });
-test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
+test.afterAll(async () => { if (stub) await new Promise(resolve => stub.server.close(resolve)); });
 
 const sid = i => `1111111${i}-2222-3333-4444-55555555555${i}`;
 const chat = (i, id = `panel-${i}`) => ({ id, type: "chat", sessionId: sid(i) });
@@ -38,6 +38,20 @@ async function fixture(page, slots = [], hash = "") {
 async function open(page) {
     await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
     await expect(page.getByRole("navigation", { name: "Master of Agents" })).toBeVisible();
+}
+
+async function rename(page, name, type = false) {
+    await page.getByRole("button", { name: "Rename MoA", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Rename MoA", exact: true });
+    const input = dialog.getByRole("textbox", { name: "MoA name", exact: true });
+    await input.fill(type ? "" : name);
+    if (type) await input.pressSequentially(name);
+    await dialog.getByRole("button", { name: "Save name", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+}
+
+async function expectActiveName(page, name) {
+    await expect(page.getByRole("tab", { name, exact: true })).toHaveAttribute("aria-selected", "true");
 }
 
 test("focus owns the sole composer, preserves drafts, and sends only to its session", async ({ page }) => {
@@ -74,8 +88,7 @@ test("splitting creates a focused blank panel and right-click opens the familiar
     await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(0);
     await blank.locator(".ps-moa-empty").click({ button: "right" });
     await expect(page.getByRole("dialog", { name: "Sessions", exact: true })).toBeVisible();
-    await page.getByRole("textbox", { name: "Find a session" }).fill("Session 2");
-    await page.locator(".ps-moa-session-row").filter({ hasText: "Session 2" }).click();
+    await page.getByRole("dialog", { name: "Sessions", exact: true }).locator(`.ps-session-list-button[data-session-id="${sid(2)}"]`).click();
     await page.getByRole("button", { name: "Use chat", exact: true }).click();
     await expect(page.locator(`.ps-moa-panel.is-focused[data-session-id="${sid(2)}"] textarea`)).toBeVisible();
     await expect.poll(() => f.settings().moa.slots[0].tree?.type).toBe("split");
@@ -92,21 +105,19 @@ test("all five saved slots and resized proportions survive reload", async ({ pag
     await seam.press("ArrowRight");
     await expect(seam).toHaveAttribute("aria-valuenow", "54");
     await expect.poll(() => f.settings().moa.slots[0].tree.ratio).toBe(54);
-    await page.getByRole("button", { name: "MoA 5: Room 5", exact: true }).click();
-    await page.getByRole("textbox", { name: "MoA name" }).fill("");
-    await page.getByRole("textbox", { name: "MoA name" }).pressSequentially("Night shift");
-    await page.getByRole("textbox", { name: "MoA name" }).press("Enter");
+    await page.getByRole("tab", { name: "Room 5", exact: true }).click();
+    await rename(page, "Night shift", true);
     await expect.poll(() => f.settings().moa.slots[4].name).toBe("Night shift");
     await page.reload();
     await open(page);
-    await expect(page.getByRole("textbox", { name: "MoA name" })).toHaveValue("Night shift");
+    await expectActiveName(page, "Night shift");
     for (let i = 0; i < 5; i++) {
         const name = i === 4 ? "Night shift" : `Room ${i + 1}`;
-        await page.getByRole("button", { name: `MoA ${i + 1}: ${name}`, exact: true }).click();
-        await expect(page.getByRole("textbox", { name: "MoA name" })).toHaveValue(name);
+        await page.getByRole("tab", { name, exact: true }).click();
+        await expectActiveName(page, name);
         await expect(page.locator("[data-moa-panel]")).toHaveCount(i === 0 ? 2 : 1);
     }
-    await page.getByRole("button", { name: "MoA 1: Room 1", exact: true }).click();
+    await page.getByRole("tab", { name: "Room 1", exact: true }).click();
     await expect(page.getByRole("separator", { name: "Resize MoA panels" })).toHaveAttribute("aria-valuenow", "54");
     expect(f.errors).toEqual([]);
 });
@@ -148,10 +159,9 @@ test("importing an occupied slot requires explicit replacement and copies indepe
     await expect(dialog.getByRole("alert")).toContainText("Existing operations");
     expect(f.settings().moa.slots[0].tree).toEqual(chat(1));
     await dialog.getByRole("button", { name: "Replace arrangement", exact: true }).click();
-    await expect(page.getByRole("textbox", { name: "MoA name" })).toHaveValue("Shared operations");
+    await expectActiveName(page, "Shared operations");
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
-    await page.getByRole("textbox", { name: "MoA name" }).fill("My operations");
-    await page.getByRole("textbox", { name: "MoA name" }).press("Enter");
+    await rename(page, "My operations");
     await expect.poll(() => f.settings().moa.slots[0].name).toBe("My operations");
     expect(source.name).toBe("Shared operations");
     expect(new URL(page.url()).hash).toBe("");
@@ -169,7 +179,7 @@ test("canvas focus hides every composer and the pinned slot loads its own docume
         }
         if (url.pathname.includes("/artifacts/") && /canvas(?:2)?\.html/.test(url.pathname)) {
             downloads.push(url.pathname);
-            return route.fulfill({ contentType: "text/html", body: '<!doctype html><button id="inside">Canvas two</button>' });
+            return route.fulfill({ contentType: "text/html", body: '<!doctype html><button id="inside">Canvas two</button><button id="next">Next native</button>' });
         }
         return route.fallback();
     });
@@ -179,11 +189,42 @@ test("canvas focus hides every composer and the pinned slot loads its own docume
     const c = panel(page, "canvas-panel");
     await expect(c.locator("iframe").first()).toBeAttached();
     await expect.poll(() => downloads.some(p => p.includes("canvas2.html"))).toBe(true);
-    await c.locator("iframe").first().contentFrame().getByRole("button", { name: "Canvas two" }).click();
+    const inside = c.locator("iframe").first().contentFrame().getByRole("button", { name: "Canvas two" });
+    await expect.poll(() => inside.evaluate(el => el.ownerDocument.compatMode)).toBe("CSS1Compat");
+    await page.evaluate(() => new Promise(resolve => {
+        window.postMessage({ type: "moa-panel-key", key: "Tab" }, "*");
+        setTimeout(resolve, 50);
+    }));
+    await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
+    await inside.click();
     await expect(c).toHaveClass(/is-focused/);
     await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(0);
+    await inside.press("Tab");
+    await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
+    await page.keyboard.press("Shift+Tab");
+    await expect(c).toHaveClass(/is-focused/);
+    await page.getByRole("button", { name: "Zen ↗", exact: true }).click();
+    await inside.click();
+    await page.evaluate(() => new Promise(resolve => {
+        window.postMessage({ type: "moa-panel-key", key: "Escape" }, "*");
+        setTimeout(resolve, 50);
+    }));
+    await expect(page.locator(".ps-moa-workspace")).toHaveClass(/is-zen/);
+    await inside.press("Escape");
+    await expect(page.locator(".ps-moa-workspace")).not.toHaveClass(/is-zen/);
     await panel(page, "panel-1").locator("header").first().click();
     await expect(panel(page, "panel-1").locator("textarea")).toHaveValue("draft while canvas open");
+    await page.getByRole("button", { name: /^Workspace/ }).click();
+    await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
+    const showCanvas = page.getByRole("button", { name: "Show canvas", exact: true });
+    if (await showCanvas.count()) await showCanvas.click();
+    const nativeFrame = page.locator(".ps-canvas-layer:not(.is-hidden) iframe").first().contentFrame();
+    const nativeButton = nativeFrame.getByRole("button", { name: "Canvas two", exact: true });
+    await expect(nativeButton).toBeVisible();
+    expect(await nativeButton.evaluate(el => el.ownerDocument.compatMode)).toBe("CSS1Compat");
+    await nativeButton.click();
+    await nativeButton.press("Tab");
+    await expect(nativeFrame.getByRole("button", { name: "Next native", exact: true })).toBeFocused();
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);
 });
@@ -238,15 +279,13 @@ test("a failed profile save survives the next server poll and explicit retry per
         ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: { code: "UNAVAILABLE", message: "Profile unavailable" } }) })
         : route.fallback());
     page.on("response", response => { if (new URL(response.url()).pathname === "/api/v1/me/profile") polls++; });
-    const name = page.getByRole("textbox", { name: "MoA name" });
-    await name.fill("Unsaved incident desk");
-    await name.press("Enter");
+    await rename(page, "Unsaved incident desk");
     const retry = page.getByRole("button", { name: "Save failed · Retry", exact: true });
     await expect(retry).toBeVisible();
     expect(f.settings().moa.slots[0].name).toBe("Control room");
     await expect.poll(() => polls, { timeout: 7000 }).toBeGreaterThan(0);
     await page.waitForTimeout(100); // the completed poll's React effects have run
-    await expect(name).toHaveValue("Unsaved incident desk");
+    await expectActiveName(page, "Unsaved incident desk");
     await expect(retry).toBeVisible();
     fail = false;
     await retry.click();
@@ -254,7 +293,7 @@ test("a failed profile save survives the next server poll and explicit retry per
     await expect(retry).toHaveCount(0);
     await page.reload();
     await open(page);
-    await expect(name).toHaveValue("Unsaved incident desk");
+    await expectActiveName(page, "Unsaved incident desk");
     expect(f.errors).toEqual([]);
 });
 
@@ -270,12 +309,9 @@ test("slow profile writes serialize rapid rename and split edits without rolling
         if (started.length === 1) await gate;
         return route.fallback();
     });
-    const name = page.getByRole("textbox", { name: "MoA name" });
-    await name.fill("First pending name");
-    await name.press("Enter");
+    await rename(page, "First pending name");
     await expect.poll(() => started.length).toBe(1);
-    await name.fill("Latest operator desk");
-    await name.press("Enter");
+    await rename(page, "Latest operator desk");
     await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
     await page.getByRole("button", { name: "Split below", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
@@ -289,7 +325,7 @@ test("slow profile writes serialize rapid rename and split edits without rolling
     expect(started.at(-1).moa.slots[0].name).toBe("Latest operator desk");
     await page.reload();
     await open(page);
-    await expect(name).toHaveValue("Latest operator desk");
+    await expectActiveName(page, "Latest operator desk");
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     expect(f.errors).toEqual([]);
 });
@@ -309,8 +345,7 @@ test("replacing a session hides its old composer throughout delayed replacement 
     });
     await target.getByRole("button", { name: "Panel options" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
-    await page.getByRole("textbox", { name: "Find a session" }).fill("Session 2");
-    await page.locator(".ps-moa-session-row").filter({ hasText: "Session 2" }).click();
+    await page.getByRole("dialog", { name: "Sessions", exact: true }).locator(`.ps-session-list-button[data-session-id="${sid(2)}"]`).click();
     await page.getByRole("button", { name: "Use chat", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     await expect(target).toHaveAttribute("data-session-id", sid(2));
@@ -343,9 +378,106 @@ test("zen Escape and zoom back restore the saved arrangement and chat draft", as
     const sessionRow = page.locator(".ps-session-list-button").first();
     await expect(sessionRow).toBeVisible();
     await expect.poll(async () => (await sessionRow.boundingBox())?.width || 0).toBeGreaterThan(150);
-    await page.getByRole("button", { name: "← Back to MoA", exact: true }).click();
+    await page.getByRole("button", { name: "Back to MoA — Master of Agents", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     await expect(page.getByRole("separator", { name: "Resize MoA panels" })).toHaveAttribute("aria-valuenow", "63");
     await expect(a.locator("textarea")).toHaveValue("draft before zoom");
+    expect(f.errors).toEqual([]);
+});
+
+test("named tabs start with one workspace, add up to five, and survive reload", async ({ page }) => {
+    const f = await fixture(page);
+    await open(page);
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    for (let i = 0; i < 5; i++) {
+        if (i > 0) await page.getByRole("button", { name: "Add MoA tab", exact: true }).click();
+        await expect(page.getByRole("tab")).toHaveCount(i + 1);
+        await rename(page, `Agent desk ${i + 1}`);
+        await expect(page.getByRole("tab", { name: `Agent desk ${i + 1}`, exact: true })).toHaveAttribute("aria-selected", "true");
+    }
+    const add = page.getByRole("button", { name: "Add MoA tab", exact: true });
+    if (await add.count()) await expect(add).toBeDisabled();
+    await expect.poll(() => f.settings().moa.slots[4].name).toBe("Agent desk 5");
+    await page.reload();
+    await open(page);
+    await expect(page.getByRole("tab")).toHaveCount(5);
+    for (let i = 0; i < 5; i++) await expect(page.getByRole("tab", { name: `Agent desk ${i + 1}`, exact: true })).toBeVisible();
+    expect(f.errors).toEqual([]);
+});
+
+test("Tab cycles panel focus clockwise and Shift+Tab reverses while retaining each draft", async ({ page }) => {
+    // Depth-first order is TL, BL, TR, BR; the requested visual order differs.
+    const left = { ...split(chat(0, "tl"), chat(1, "bl"), "left"), direction: "column" };
+    const right = { ...split(chat(2, "tr"), chat(3, "br"), "right"), direction: "column" };
+    const f = await fixture(page, [layout(split(left, right))]);
+    await open(page);
+    const tl = panel(page, "tl");
+    await expect(tl.locator("textarea")).toBeVisible();
+    await tl.locator("textarea").fill("clockwise draft");
+    for (const expected of ["tr", "br", "bl", "tl"]) {
+        await page.keyboard.press("Tab");
+        await expect(panel(page, expected)).toHaveClass(/is-focused/);
+        await expect(panel(page, expected).locator("textarea")).toBeVisible();
+        await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(1);
+    }
+    await expect(tl.locator("textarea")).toHaveValue("clockwise draft");
+    for (const expected of ["bl", "br", "tr", "tl"]) {
+        await page.keyboard.press("Shift+Tab");
+        await expect(panel(page, expected)).toHaveClass(/is-focused/);
+    }
+    expect(f.sends).toEqual([]);
+    expect(f.errors).toEqual([]);
+});
+
+test("toolbar and session-picker Tab navigation never cycles panels behind them", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1), chat(2)))]);
+    await open(page);
+    await expect(panel(page, "panel-1").locator("textarea")).toBeVisible();
+    await page.getByRole("button", { name: "Rename MoA", exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
+    await panel(page, "panel-1").getByRole("button", { name: "Panel options" }).click();
+    await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Sessions", exact: true });
+    await expect(dialog.locator(".ps-session-list-button").first()).toBeVisible();
+    await expect(dialog.locator(".ps-session-list-button")).toHaveCount(4);
+    for (let i = 0; i < 6; i++) {
+        await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab");
+        expect(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')))).toBe(true);
+        await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
+    }
+    await dialog.getByRole("button", { name: "Close dialog" }).click();
+    expect(f.errors).toEqual([]);
+});
+
+test("MoA stays in the workspace/budget/admin mode cluster and those modes remain usable outside zen", async ({ page }) => {
+    const f = await fixture(page, [layout(chat(1))]);
+    const launcher = page.getByRole("button", { name: "Master of Agents", exact: true });
+    const workspace = page.getByRole("button", { name: /^Workspace/ });
+    const budget = page.getByRole("button", { name: /^Budget|^Close budget$/ });
+    const admin = page.getByRole("button", { name: /^(Admin console|Settings|Close admin console|Close settings)$/ });
+    await expect(launcher.locator("xpath=ancestor::*[contains(@class,'ps-toolbar-actions')][1]")).toHaveClass(/is-tools/);
+    await open(page);
+    for (const button of [launcher, workspace, budget, admin]) await expect(button).toBeVisible();
+    const positions = await Promise.all([launcher, workspace, budget, admin].map(button => button.boundingBox()));
+    expect(Math.max(...positions.map(b => b.y)) - Math.min(...positions.map(b => b.y))).toBeLessThan(10);
+    await budget.click();
+    await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Close budget", exact: true })).toBeVisible();
+    await launcher.click();
+    await expect(page.locator(".ps-moa-workspace")).toBeVisible();
+    await admin.click();
+    await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
+    await expect(page.locator(".ps-admin-console__header h2")).toBeVisible();
+    await launcher.click();
+    await expect(page.locator(".ps-moa-workspace")).toBeVisible();
+    await workspace.click();
+    await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
+    await expect(page.locator(".ps-session-list-button").first()).toBeVisible();
+    await launcher.click();
+    await page.getByRole("button", { name: "Zen ↗", exact: true }).click();
+    for (const button of [launcher, workspace, budget, admin]) await expect(button).not.toBeVisible();
+    await page.keyboard.press("Escape");
+    for (const button of [launcher, workspace, budget, admin]) await expect(button).toBeVisible();
     expect(f.errors).toEqual([]);
 });
