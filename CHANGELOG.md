@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Desktop toolbar groups adapt to available header space without overlapping; narrow session panes keep their titles above the action buttons.
 - Mobile Zen now opens the shared searchable session picker from its header, including session details, canvases, and the new-session + action.
 
 - Move mobile Zen and MoA activity and queue counts into the existing header;

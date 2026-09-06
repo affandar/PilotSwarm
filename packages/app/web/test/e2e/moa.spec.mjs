@@ -657,7 +657,7 @@ test("panel split shortcuts include a fresh workspace and header actions stay ce
         await page.setViewportSize({ width, height: 1000 });
         const toolbar = await page.locator(".ps-toolbar.is-moa").boundingBox();
         const actions = await page.locator(".ps-moa-toolbar").boundingBox();
-        expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
+        if (width === 1600) expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
         await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
     }
     await page.locator(".ps-moa-initial-panel").getByRole("button", { name: "Split below", exact: true }).click();

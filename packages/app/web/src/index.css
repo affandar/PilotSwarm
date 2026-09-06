@@ -9318,3 +9318,37 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
 .ps-prompt-shell.is-compact .ps-send-button { min-width: 44px; min-height: 44px; }
+
+/* Let toolbar groups use their actual width before centering them. Equal
+   zero-minimum rails allowed the right-hand icons to paint over the center. */
+@media (min-width: 921px) {
+  .portal-header-brand { max-width: min(28vw, 320px); }
+  .portal-header-slot { container: header-tools / inline-size; }
+  .ps-toolbar:not(.is-mobile) {
+    grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+    column-gap: 12px;
+  }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; overflow: hidden; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-button { flex-shrink: 0; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: max-content; }
+}
+@container header-tools (max-width: 760px) {
+  .ps-toolbar:not(.is-mobile) { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left:empty { display: none; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-actions { margin-inline: auto; flex: 0 0 auto; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { margin-left: auto; flex-wrap: wrap; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 100px; }
+}
+/* A pane can be narrow even on a wide monitor. Give its title a full row
+   before moving the intact action buttons below it; never crop the actions. */
+.ps-session-pane { container: session-pane / inline-size; }
+@container session-pane (max-width: 360px) {
+  .ps-session-pane > .ps-panel-header {
+    height: auto; max-height: none; flex-basis: auto; flex-wrap: wrap;
+    gap: 4px; padding-block: 4px;
+  }
+  .ps-session-pane > .ps-panel-header > .ps-panel-title { flex: 1 0 100%; }
+  .ps-session-pane > .ps-panel-header > .ps-panel-header-right { width: 100%; min-width: 0; flex: 1 1 100%; justify-content: flex-end; }
+  .ps-session-pane > .ps-panel-header .ps-panel-actions { min-width: 0; max-width: 100%; flex: 0 1 auto; flex-wrap: wrap; }
+  .ps-session-pane > .ps-panel-header .ps-mini-button { min-width: 32px; padding-inline: 6px; flex-shrink: 0; }
+}
