@@ -246,3 +246,9 @@ token accounting remain available to admins. See the
 | Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
 | TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |
 | Management client | Rename sessions, cancel, delete |
+
+### Monitoring several sessions
+
+In the shipped desktop portal, use Master of Agents to arrange incident chats
+and canvases together. The layout saves to your profile. Tab and Shift+Tab
+select a panel and focus its composer. The sample needs no extra configuration.

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.59** — Cluster-scoped admin access with all-user token accounting; Copilot SDK 1.0.13 / CLI 1.0.83 and Azure/OpenAI request compatibility; stable expandable previews, warning cards, and mobile session scrolling.
+> **Latest release: v0.5.60** — Personal desktop Master of Agents workspace with resizable chat/canvas panels, one focused composer, and zen mode; reliable session creation, warning history, and mobile composer sizing.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

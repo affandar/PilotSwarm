@@ -260,3 +260,9 @@ Docs: [Quick Start](https://github.com/affandar/pilotswarm/blob/main/docs/quicks
 [MCP Setup](https://github.com/affandar/pilotswarm/blob/main/docs/user-guide/mcp-local-setup.md) ·
 [Web API Reference](https://github.com/affandar/pilotswarm/blob/main/docs/api/reference.md) ·
 [Architecture / Layering](https://github.com/affandar/pilotswarm/blob/main/docs/architecture/layering.md)
+
+## Master of Agents
+
+The desktop portal includes a personal multi-session workspace with resizable
+chat/canvas panels, one focused composer, and zen mode. Layouts save automatically.
+See the [MoA guide](https://github.com/affandar/PilotSwarm/blob/main/docs/user-guide/master-of-agents.md).

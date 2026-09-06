@@ -6,6 +6,7 @@ import React from "react";
 import { createPortal } from "react-dom";
 import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./chat-status.js";
 import {
+    normalizeMoa,
     UI_COMMANDS,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
@@ -286,6 +287,7 @@ function clearBrowserPreferenceCache() {
 function normalizeProfileSettings(settings) {
     const candidate = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
     const normalized = {};
+    if (hasOwn(candidate, "moa")) normalized.moa = normalizeMoa(candidate.moa);
     if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
         normalized.themeId = candidate.themeId.trim();
     }
@@ -431,8 +433,18 @@ function hasOwn(value, key) {
     return Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
 }
 
+function profileViewState(root) {
+    return {
+        ...root.ui, ...root.ui.layout,
+        ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
+        manualOrder: root.sessions.manualOrder, collapsedSessionIds: root.sessions.collapsedIds,
+        activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
+    };
+}
+
 function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
     return normalizeProfileSettings({
+        ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
         [touchScaleKey()]: state.touchScale,
         sessionDetailCollapsed: state.sessionDetailCollapsed,
@@ -498,6 +510,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
 
 function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null) {
     return normalizeProfileSettings({
+        ...(state?.ui?.moa ? { moa: state.ui.moa } : {}),
         themeId: state?.ui?.themeId,
         [touchScaleKey()]: state?.ui?.touchScale,
         sessionDetailCollapsed: state?.ui?.sessionDetailCollapsed,
@@ -541,6 +554,7 @@ function materializeProfileSettings(remoteSettings, defaults) {
     // the server has not persisted yet. An omitted key leaves the
     // profileSettings/apply guards preserving the current value.
     return normalizeProfileSettings({
+        ...(hasOwn(normalizedRemote, "moa") ? { moa: normalizedRemote.moa } : {}),
         themeId: hasOwn(normalizedRemote, "themeId")
             ? normalizedRemote.themeId
             : normalizedDefaults.themeId,
@@ -611,11 +625,18 @@ function materializeProfileSettings(remoteSettings, defaults) {
     });
 }
 
+const profileSaveQueues = new WeakMap();
 async function saveProfileSettings(controller, settings) {
     if (typeof controller?.transport?.setCurrentUserProfileSettings !== "function") return null;
-    return controller.transport.setCurrentUserProfileSettings({
+    // Whole-document writes must arrive in edit order. A slow earlier request
+    // must never land after a newer layout and erase it.
+    const previous = profileSaveQueues.get(controller) || Promise.resolve();
+    const next = previous.catch(() => {}).then(() => controller.transport.setCurrentUserProfileSettings({
         settings: normalizeProfileSettings(settings),
-    });
+    }));
+    profileSaveQueues.set(controller, next);
+    try { return await next; }
+    finally { if (profileSaveQueues.get(controller) === next) profileSaveQueues.delete(controller); }
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -993,10 +1014,11 @@ function applyDocumentTheme(themeId) {
     root.dataset.psTheme = theme.id;
 }
 
-function useMeasuredViewport(ref) {
+function useMeasuredViewport(ref, suspended = false) {
     const [viewport, setViewport] = React.useState({ width: 0, height: 0 });
 
     React.useLayoutEffect(() => {
+        if (suspended) return undefined;
         const element = ref.current;
         if (!element) return undefined;
 
@@ -1015,7 +1037,7 @@ function useMeasuredViewport(ref) {
             observer.disconnect();
             window.removeEventListener("resize", update);
         };
-    }, [ref]);
+    }, [ref, suspended]);
 
     return viewport;
 }
@@ -2862,7 +2884,7 @@ function useElementBox(ref) {
     return box;
 }
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename) {
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -2875,7 +2897,18 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename) {
             // would otherwise make the iframe offer a download instead of
             // rendering, and a missing charset would mojibake UTF-8 content.
             const bytes = await response.arrayBuffer();
-            return URL.createObjectURL(new Blob([bytes], { type: "text/html;charset=utf-8" }));
+            // Only MoA canvases opt into panel navigation. Ordinary canvases
+            // retain native Tab behavior and their exact document bytes.
+            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            let parts = [bytes];
+            if (panelKeys) {
+                const html = new TextDecoder().decode(bytes);
+                // Keep the doctype first so panel navigation cannot change
+                // the canvas from standards mode into quirks mode.
+                const prolog = /^(?:\uFEFF|\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
+                parts = [html.slice(0, prolog.length), bridge, html.slice(prolog.length)];
+            }
+            return URL.createObjectURL(new Blob(parts, { type: "text/html;charset=utf-8" }));
         });
 }
 
@@ -4867,7 +4900,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -4893,23 +4926,23 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     const sessionButtonRefs = React.useRef(new Map());
     const viewState = useControllerSelector(controller, (state) => ({
         branding: state.branding,
-        activeSessionId: state.sessions.activeSessionId,
+        activeSessionId: selection ? selection.sessionId : state.sessions.activeSessionId,
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
-        filterQuery: state.sessions.filterQuery || "",
+        filterQuery: selection ? selection.query || "" : state.sessions.filterQuery || "",
         ownerFilter: state.sessions.ownerFilter,
         pinnedIds: state.sessions.pinnedIds,
         manualOrder: state.sessions.manualOrder,
-        selectedIds: state.sessions.selectedIds,
-        selectMode: state.sessions.selectMode,
+        selectedIds: selection ? [] : state.sessions.selectedIds,
+        selectMode: selection ? false : state.sessions.selectMode,
         auth: state.auth,
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
-        focused: state.ui.focusRegion === "sessions",
+        focused: selection ? true : state.ui.focusRegion === "sessions",
         // Clicking empty space clears the list highlight; the row VM reads it,
         // so the reconstruction below must carry it or the click does nothing
         // visible (the same omission that blinded the Node Map).
-        listDeselected: Boolean(state.sessions.listDeselected),
+        listDeselected: selection ? !selection.sessionId : Boolean(state.sessions.listDeselected),
         // The canvas markers read these. This synthetic state is exactly the
         // trap the branding comment below describes: omit a slice here and
         // every row computes as if it were empty — the markers were null on
@@ -4982,6 +5015,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             setManageOpen(true);
         }
     }, [modelFlowOpen]);
+    React.useEffect(() => { onDialogChange?.(manageOpen || Boolean(linkModal) || modelFlowOpen); }, [manageOpen, linkModal, modelFlowOpen, onDialogChange]);
     const requestSwitchModel = () => {
         reopenManageRef.current = true;
         setManageOpen(false);
@@ -5075,7 +5109,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // rows/viewState from a ref that is refreshed on every render instead of
     // closing over them.
     const clickEnv = React.useRef(null);
-    clickEnv.current = { rows, viewState, controller };
+    clickEnv.current = { rows, viewState, controller, selection };
     // ── Drag sessions into / out of groups ────────────────────────────
     // Pointer-driven so it works from <button> rows, can render a collection
     // ghost for a multi-selection, and can highlight the destination folder.
@@ -5400,7 +5434,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }), [dragState.dragging, dragState.overGroupId, dragState.insertBeforeId, dragState.insertAfterId]);
 
     const handleRowClick = React.useCallback((event, row) => {
-        const { rows: currentRows, viewState: current, controller: ctl } = clickEnv.current;
+        const { rows: currentRows, viewState: current, controller: ctl, selection: pick } = clickEnv.current;
+        if (pick) {
+            if (row.isGroup || (row.hasChildren && row.active)) ctl.dispatch({ type: row.collapsed ? "sessions/expand" : "sessions/collapse", sessionId: row.sessionId });
+            if (!row.isGroup) pick.onSelect(row.sessionId);
+            return;
+        }
         // Cmd/Ctrl-click toggles multi-selection (any row).
         if (event.metaKey || event.ctrlKey) {
             event.preventDefault();
@@ -5515,14 +5554,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
-        isBulkSelection
+        !actionsOnly && isBulkSelection
             ? React.createElement("span", {
                 className: "ps-mini-button-label",
                 style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
                 title: "Multiple sessions selected. Move to group or cancel selected sessions; click Clear to exit.",
             }, `${selectedCount} selected`)
             : null,
-        isBulkSelection
+        !actionsOnly && (isBulkSelection
             ? React.createElement(IconButton, {
                 className: "ps-mini-button",
                 icon: "✕",
@@ -5538,8 +5577,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 label: canPinActiveSession
                     ? (isActivePinned ? "Unpin this session" : "Pin this session to the top of the list")
                     : "Only top-level non-system sessions can be pinned",
-            }),
-        React.createElement(IconButton, {
+            })),
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: groupableIds.length > 1
                 ? React.createElement("span", { className: "ps-icon-badge" },
@@ -5580,9 +5619,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                         ? "Rename folder"
                         : !canModifyActiveSession
                             ? "Only this session's owner or an admin can manage it"
-                            : "Manage session — rename, switch model, and sharing",
+                            : actionsOnly ? "Manage session — rename and switch model" : "Manage session — rename, switch model, and sharing",
         }),
-        React.createElement(IconButton, {
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: React.createElement(LinkGlyph),
             onClick: () => {
@@ -5642,16 +5681,31 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     return React.createElement(React.Fragment, null,
     dragGhost,
-    React.createElement(Panel, {
+    actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
         theme,
-        actions: panelActions,
+        actions: selection ? React.createElement(React.Fragment, null,
+            selection.onCreate ? React.createElement(IconButton, {
+                className: "ps-mini-button", icon: React.createElement(PlusGlyph),
+                label: "Create New Session", onClick: selection.onCreate,
+            }) : null, actions) : panelActions,
         className: combinedPanelClassName,
     },
+    selection ? React.createElement("input", { className: "ps-modal-input", "aria-label": "Find a session", placeholder: "Find a session…", value: selection.query || "", onChange: e => selection.onQuery?.(e.target.value) }) : null,
     React.createElement("div", {
         ref: sessionListRef,
+        onKeyDown: selection ? event => {
+            if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+            const buttons = [...sessionListRef.current.querySelectorAll(".ps-session-list-button")];
+            const current = buttons.indexOf(event.target.closest(".ps-session-list-button"));
+            const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
+            const button = buttons[next]; if (!button) return;
+            event.preventDefault(); event.stopPropagation();
+            if (button.dataset.sessionId) selection.onSelect(button.dataset.sessionId);
+            button.focus();
+        } : undefined,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
         // Clicking empty space below the rows clears the list selection while
         // the other panes keep showing the session. With nothing selected the
@@ -5660,9 +5714,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             // Empty space only: a click that lands on a row bubbles here too.
             const onRow = event.target instanceof Element && event.target.closest(".ps-session-list-button");
             if (onRow) return;
-            controller.dispatch({ type: "sessions/listDeselect" });
+            if (selection) selection.onSelect(null);
+            else controller.dispatch({ type: "sessions/listDeselect" });
         },
     },
+
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -5677,7 +5733,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 setRef: setSessionButtonRef,
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
-                drag: touchInput ? null : dragHandlers,
+                drag: selection || touchInput ? null : dragHandlers,
             }))),
     (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
@@ -5699,6 +5755,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             controller,
             sessionId: activeSession.sessionId,
             initialTitle: activeSession.title || "",
+            allowSharing: !actionsOnly,
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
             principal: viewState.auth?.principal || null,
@@ -5897,6 +5954,13 @@ function SidebarGlyph() {
 // icon size without a label.
 // The Main pane, whatever layout it is in: a frame with a list rail and a
 // conversation beside it. Constant across the three-way cycle.
+// A tiled command surface: one tall pane beside two stacked panes.
+function MoaGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("rect", { x: 3, y: 4, width: 7, height: 16, rx: 1 }),
+        React.createElement("rect", { x: 13, y: 4, width: 8, height: 6.5, rx: 1 }),
+        React.createElement("rect", { x: 13, y: 13.5, width: 8, height: 6.5, rx: 1 }));
+}
 function MainLayoutGlyph() {
     return React.createElement(Glyph, null,
     React.createElement("rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }),
@@ -6081,7 +6145,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -6100,20 +6164,20 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
             .catch(() => {});
         // Member directory for name autocomplete (excludes synthetic principals).
-        if (typeof controller.transport.listKnownUsers === "function") {
+        if (allowSharing && typeof controller.transport.listKnownUsers === "function") {
             controller.transport.listKnownUsers({ limit: 500 })
                 .then((users) => { if (!cancelled) setDirectory(Array.isArray(users) ? users : []); })
                 .catch(() => {});
         }
         return () => { cancelled = true; };
-    }, [controller, sessionId]);
+    }, [controller, sessionId, allowSharing]);
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
             .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
             .catch(() => { setShares([]); setDraftShares([]); });
     }, [controller, sessionId]);
-    React.useEffect(() => { loadShares(); }, [loadShares]);
+    React.useEffect(() => { if (allowSharing) loadShares(); }, [loadShares, allowSharing]);
 
     const run = async (fn) => {
         setBusy(true); setError(null);
@@ -6219,7 +6283,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     // only rename/switch model on their own session.
     const tabs = [
         { id: "general", label: "General" },
-        ...(canManage ? [{ id: "access", label: "Access" }] : []),
+        ...(allowSharing && canManage ? [{ id: "access", label: "Access" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
     // Regenerate is a change-this-session action, so it belongs here rather
@@ -6341,6 +6405,20 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
                     }, "Apply"))
                 : null,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
+}
+
+function SessionComposer({ controller, onReadOnlyFocus = null }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
+    const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const readOnly = session?.serviceKind || access?.canWrite === false;
+    React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
+    if (!session || session.isGroup || modal) return null;
+    return React.createElement("div", { className: "ps-chat-composer" }, readOnly
+        ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
+            ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+            : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+        : React.createElement(PromptComposer, { controller, mobile: false, active: true }));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
@@ -7232,7 +7310,9 @@ function RestoreGlyph() {
  * loads hidden-but-painted behind the live frame and is promoted on load, so
  * a live redraw is a composite swap of something already drawn.
  */
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+    const panelKeyRef = React.useRef(onPanelKey); panelKeyRef.current = onPanelKey;
+    const panelKeys = Boolean(onPanelKey);
     const [live, setLive] = React.useState(null);       // { url, rev }
     const [staging, setStaging] = React.useState(null); // { url, rev }
     const [loadError, setLoadError] = React.useState(null); // { rev }
@@ -7284,9 +7364,13 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             // window that asked). Writes and actions stay live-frame only.
             const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "moa-panel-key") {
+                if (fromLive && document.activeElement === frameEl && ["Tab", "Escape"].includes(payload.key)) panelKeyRef.current?.(payload.key, payload.backwards === true);
+                return;
+            }
             if (payload.type === "canvas-action") {
                 if (!fromLive) return;
-                controller.submitCanvasAction(sessionId, payload).then((result) => {
+                controller.submitCanvasAction(sessionId, payload, slot).then((result) => {
                     if (result && result.ok === false && typeof console !== "undefined") {
                         console.warn(`canvas action rejected: ${result.reason}`);
                     }
@@ -7371,7 +7455,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         if (!controller || !sessionId || !latestRev) return undefined;
         let cancelled = false;
         let retryTimer = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`)
+        fetchArtifactHtmlObjectUrl(controller, sessionId, slot <= 1 ? "canvas.html" : `canvas${slot}.html`, panelKeys)
             .then((url) => {
                 if (cancelled) { URL.revokeObjectURL(url); return; }
                 // A staging revision that never loaded is superseded here —
@@ -7399,7 +7483,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [controller, sessionId, slot, latestRev, retryTick]);
+    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys]);
 
     // Session switch / unmount: drop both frames — a different session is a
     // different document, and showing the old canvas under a new session is a
@@ -8604,7 +8688,7 @@ function formatAttachmentSize(sizeBytes) {
     return `${bytes} B`;
 }
 
-function PromptComposer({ controller, mobile, active = true, onAfterSend = null }) {
+function PromptComposer({ controller, mobile, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -8633,6 +8717,20 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedReadOnly = selectedQueued || selectedCancelling;
+    const placeholder = promptState.answerMode
+        ? "Type an answer and press Enter"
+        : promptState.editingPending
+            ? selectedCancelling
+                ? "Cancellation requested"
+                : selectedQueued
+                    ? "Queued message selected"
+                    : "Edit the pending message, then send or cancel it"
+            : promptState.hasOutbox
+                ? "Type a message and press Enter to queue it behind the pending batch"
+                : "Type a message and press Enter";
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
@@ -8660,7 +8758,10 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const mayHaveShrunk = length <= lastPromptLengthRef.current;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
-    }, [growInput, promptState.value]);
+        // Empty textareas measure their placeholder too. Send briefly shows
+        // the long outbox hint; acknowledgement shortens it without changing
+        // the value or width, so neither input nor ResizeObserver will fire.
+    }, [growInput, promptState.value, placeholder]);
     React.useEffect(() => {
         // Width changes re-wrap the content; re-measure on viewport resizes
         // (covers rotation and the on-screen keyboard shrinking the pane).
@@ -8723,6 +8824,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
+            if (!autoFocus) return;
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
@@ -8742,7 +8844,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         if (inputNode.value === promptState.value && inputNode.selectionStart !== promptState.cursor) {
             inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
         }
-    }, [active, mobile, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
+    }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
@@ -8779,9 +8881,6 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         : promptState.hasOutbox
             ? "+"
             : "❯";
-    const selectedQueued = promptState.selectedOutboxPhase === "queued";
-    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
-    const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
         className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
@@ -8851,17 +8950,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             rows: 1,
             value: promptState.value,
             readOnly: selectedReadOnly,
-            placeholder: promptState.answerMode
-                ? "Type an answer and press Enter"
-                : promptState.editingPending
-                    ? selectedCancelling
-                        ? "Cancellation requested"
-                        : selectedQueued
-                        ? "Queued message selected"
-                        : "Edit the pending message, then send or cancel it"
-                    : promptState.hasOutbox
-                        ? "Type a message and press Enter to queue it behind the pending batch"
-                : "Type a message and press Enter",
+            placeholder,
             // On touch, Enter inserts a newline (the chevron sends) — the
             // keyboard must not advertise a send that will not happen.
             enterKeyHint: mobile ? "enter" : "send",
@@ -9134,7 +9223,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -9273,9 +9362,20 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
             icon: React.createElement(MainLayoutGlyph),
             label: "Workspace — sessions, chat and panels",
             onClick: () => controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {}),
-            active: !adminVisible && !budgetOpen,
+            active: !moa?.active && !adminVisible && !budgetOpen,
         }]),
     ];
+
+    if (!mobile && moa?.desktop) buttonDefs.push({
+        key: "moa", icon: React.createElement(MoaGlyph),
+        label: moa.returnTo ? "Back to MoA — Master of Agents" : "Master of Agents",
+        active: moa.active, disabled: !moa.loaded,
+        onClick: () => {
+            controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            controller.handleCommand(UI_COMMANDS.OPEN_WORKSPACE).catch(() => {});
+            moa.open();
+        },
+    });
 
     const renderButton = (def) => {
         const button = React.createElement(IconButton, {
@@ -9354,10 +9454,10 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     // mode. Budget and the Admin Console replace the workspace; nothing on
     // the left applies there. Modes are exclusive (the controller closes one
     // when the other opens) and the Workspace button is the way back.
-    const mode = adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
+    const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const PANELS = ["canvas", "diagnostics"];
-    const MODES = ["workspace", "budget", "admin"];
+    const MODES = ["workspace", "moa", "budget", "admin"];
 
     // While the canvas is full screen, ANY other button first drops full
     // screen and then does its own job. Pressing Filter and watching nothing
@@ -9365,10 +9465,11 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
     // it — is the confusing half of every full-screen mode. The Canvas toggle
     // is exempt: it already means "put the canvas away", and closing drops
     // the flag in the reducer.
-    const withRestore = (def) => (!canvasMaximized || def.key === "canvas" ? def : {
+    const withRestore = (def) => ((!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
         ...def,
         onClick: (...args) => {
             controller.dispatch({ type: "ui/canvasMaximized", on: false });
+            if (moa?.active && ["workspace", "budget", "admin"].includes(def.key)) moa.leave();
             return def.onClick?.(...args);
         },
     });
@@ -9389,14 +9490,14 @@ function Toolbar({ controller, mobile, canvasPaneOpen = false, onToggleCanvasPan
         ...pick(["theme"]),
     ];
 
-    const toolbar = React.createElement("div", { className: "ps-toolbar" },
+    const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
         // Three columns: left rail | main controls | right rail. Full-screen
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            canvasMaximized ? leftCluster : null),
+            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
-            canvasMaximized ? null : leftCluster),
+            moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
             // The portal header parks its version/status meta here, LEFT of
             // the tool buttons, and its sign-out glyph in the slot after
@@ -12595,8 +12696,17 @@ function DistillerModelPickers({ controller, extras }) {
     );
 }
 
-function useKeyboardShortcuts(controller, mobile) {
+function ScopedModalLayer({ controller }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    // Isolated MoA controllers own keyboard commands only while their dialog
+    // is open. They must never install normal-workspace shortcuts globally.
+    useKeyboardShortcuts(controller, false, !modal);
+    return React.createElement(ModalLayer, { controller });
+}
+
+function useKeyboardShortcuts(controller, mobile, suspended = false) {
     React.useEffect(() => {
+        if (suspended) return undefined;
         const handler = (event) => {
             // A focused control that handled the key owns it. The diagnostics
             // seam answers ArrowUp/ArrowDown itself; letting the same keydown
@@ -12941,7 +13051,7 @@ function useKeyboardShortcuts(controller, mobile) {
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [controller, mobile]);
+    }, [controller, mobile, suspended]);
 }
 
 function formatAdminPrincipalLabel(principal) {
@@ -14142,11 +14252,11 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller }) {
+export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
-    const viewport = useMeasuredViewport(viewportRef);
-    const mainGridViewport = useMeasuredViewport(mainGridRef);
+    const viewport = useMeasuredViewport(viewportRef, suspended);
+    const mainGridViewport = useMeasuredViewport(mainGridRef, suspended);
     const gridViewport = computeGridViewport(viewport);
 
     // Publish the real viewport in character cells. Without this the ui-core
@@ -14208,6 +14318,7 @@ export function PilotSwarmWebApp({ controller }) {
     // toolbar button). Desktop has real columns and needs no such cycle.
     const [mobileMainLayout, setMobileMainLayout] = React.useState("split");
     const state = useControllerSelector(controller, (rootState) => ({
+        moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
@@ -14223,6 +14334,7 @@ export function PilotSwarmWebApp({ controller }) {
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
         activeSessionId: rootState.sessions.activeSessionId || null,
+        revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",
         // The two optional desktop columns, independent of each other.
@@ -14277,7 +14389,21 @@ export function PilotSwarmWebApp({ controller }) {
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
-    useKeyboardShortcuts(controller, mobile);
+    useKeyboardShortcuts(controller, mobile, suspended);
+
+    const lastCreatedSessionRef = React.useRef(state.revealedCreatedSessionId);
+    React.useEffect(() => {
+        if (lastCreatedSessionRef.current === state.revealedCreatedSessionId) return;
+        lastCreatedSessionRef.current = state.revealedCreatedSessionId;
+        if (!state.revealedCreatedSessionId || state.activeSessionId !== state.revealedCreatedSessionId) return;
+        if (mobile) {
+            setMobilePane("workspace");
+            setMobileMainLayout("chat");
+        }
+        // Creation opens the ordinary session workspace, without modifying
+        // any of the user's saved Master of Agents panels.
+        if (moa?.active) moa.leave();
+    }, [state.revealedCreatedSessionId, state.activeSessionId, mobile, moa]);
 
     // Tell the reducer which device slot of the per-session views this tab
     // owns. Only a desktop applies and records them; a phone keeps its
@@ -14439,7 +14565,7 @@ export function PilotSwarmWebApp({ controller }) {
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -14447,7 +14573,8 @@ export function PilotSwarmWebApp({ controller }) {
                     && currentSettingsBeforeApplyJson !== lastProfileSettingsJsonRef.current;
                 const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current)
                     || profileSettingsSaveInFlightRef.current
-                    || hasUnpersistedLocalChange;
+                    || hasUnpersistedLocalChange
+                    || controller.getState().ui.moaDirty === true;
                 if (!hasPendingLocalWrite && appliedProfileSettingsJsonRef.current !== settingsJson) {
                     controller.dispatch({ type: "profileSettings/apply", settings });
                     appliedProfileSettingsJsonRef.current = settingsJson;
@@ -14482,7 +14609,7 @@ export function PilotSwarmWebApp({ controller }) {
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -14526,14 +14653,20 @@ export function PilotSwarmWebApp({ controller }) {
         profileSettingsSaveTimerRef.current = setTimeout(() => {
             profileSettingsSaveTimerRef.current = null;
             profileSettingsSaveInFlightRef.current = true;
+            const moaRevision = controller.getState().ui.moaRevision;
+            controller.dispatch({ type: "ui/moaSaveStatus", status: "saving" });
             saveProfileSettings(controller, settings)
-                .catch(() => {})
+                .then(() => controller.dispatch({ type: "ui/moaSaveStatus", status: "saved", revision: moaRevision }))
+                .catch(() => {
+                    lastProfileSettingsJsonRef.current = null;
+                    controller.dispatch({ type: "ui/moaSaveStatus", status: "error" });
+                })
                 .finally(() => {
                     profileSettingsSaveInFlightRef.current = false;
                 });
         }, 400);
         return undefined;
-    }, [controller, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
@@ -14644,7 +14777,7 @@ export function PilotSwarmWebApp({ controller }) {
         Number(state.canvasPrefs?.[state.activeSessionId]?.zenRailPx) || 380));
     // Escape steps down one rung: full screen -> zen -> normal workspace.
     React.useEffect(() => {
-        if (!canvasMaximized && !zenActive) return undefined;
+        if (suspended || (!canvasMaximized && !zenActive)) return undefined;
         const onKey = (e) => {
             if (e.key !== "Escape") return;
             controller.dispatch(canvasMaximized
@@ -14653,7 +14786,7 @@ export function PilotSwarmWebApp({ controller }) {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [controller, canvasMaximized, zenActive]);
+    }, [controller, canvasMaximized, zenActive, suspended]);
 
     // The right block is exactly as wide as the columns in it. Pixels, not a
     // share of the window: when a column closes, its pixels go to chat and
@@ -14876,13 +15009,16 @@ export function PilotSwarmWebApp({ controller }) {
         })
         : null;
 
+    if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
+        React.createElement(Toolbar, { controller, mobile: false, moa }),
+        React.createElement(ModalLayer, { controller }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // The phone's toolbar carries its NAVIGATION (the three view modes,
         // plus the Main layout cycle), so it renders on every pane — hiding it
         // anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
-            controller,
+            controller, moa,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
@@ -14920,3 +15056,6 @@ export function PilotSwarmWebApp({ controller }) {
             : null,
         React.createElement(ModalLayer, { controller })));
 }
+
+// Browser hosts may compose these existing surfaces with isolated controllers.
+export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, SessionDetailBox, SessionComposer, ScopedModalLayer, ControllerContext };

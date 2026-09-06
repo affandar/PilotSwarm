@@ -50,6 +50,16 @@ test("repeated calls with the same inputs reuse the result", () => {
     assert.equal(b, a, "identical inputs recomputed the whole transcript");
 });
 
+test("raw activity alone does not re-wrap an ordinary transcript", () => {
+    const state = makeState({ chat: CHAT });
+    const before = selectChatLines(state, 100);
+    const history = state.history.bySessionId.get(SESSION_ID);
+    const next = { ...state, history: { bySessionId: new Map([[SESSION_ID, {
+        ...history, events: [{ sessionId: SESSION_ID, seq: 1, eventType: "model.call_start" }],
+    }]]) } };
+    assert.equal(selectChatLines(next, 100), before);
+});
+
 test("a width change is not served from cache", () => {
     const state = makeState({ chat: CHAT });
     const wide = selectChatLines(state, 200);

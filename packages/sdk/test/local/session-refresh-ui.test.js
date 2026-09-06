@@ -372,11 +372,13 @@ describe("session refresh UI recovery", () => {
 
         const afterRecoverySession = store.getState().sessions.byId["retry-session"];
         assertEqual(afterRecoverySession.error, null, "non-running refresh should clear the stale recoverable warning");
+        const historicalWarning = selectActiveChat(store.getState()).find((message) => message.cardTitle === "Warning");
         assertEqual(
-            selectActiveChat(store.getState()).some((message) => message.cardTitle === "Warning"),
-            false,
-            "warning card should disappear after the retry cycle recovers",
+            historicalWarning?.id,
+            beforeWarning?.id,
+            "recovery should retain the same historical warning card",
         );
+        assertEqual(afterRecoverySession.chatWarnings.at(-1).active, false, "the historical warning is no longer active");
     });
 
     it("shows agent-prefixed session titles with the uniquifier first", () => {

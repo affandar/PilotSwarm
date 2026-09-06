@@ -7,7 +7,7 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
-test("retry refreshes update a mounted warning in place and recovery clears it", async ({ page }) => {
+test("retry warnings stay mounted, retain their place, and do not block later chat", async ({ page }) => {
     let detail = { status: "error", error, statusVersion: 10 };
     let reads = 0;
     let socket;
@@ -52,6 +52,37 @@ test("retry refreshes update a mounted warning in place and recovery clears it",
     socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: {
         sessionId, seq: ++seq, eventType: "session.turn_completed", createdAt: Date.now(), data: { resultType: "completed" },
     } }));
-    await expect(card).toHaveCount(0);
+    await expect(card).toBeVisible();
+    for (const [eventType, data] of [
+        ["user.message", { content: "Try once more" }],
+        ["assistant.message", { content: "The model recovered and this is the new reply.", messageId: "recovered" }],
+        ["session.turn_completed", { resultType: "completed" }],
+    ]) {
+        socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: {
+            sessionId, seq: ++seq, eventType, createdAt: Date.now(), data,
+        } }));
+    }
+    const reply = page.getByText("The model recovered and this is the new reply.", { exact: true });
+    await expect(reply).toBeVisible();
+    expect(await card.evaluate(el => el === window.warningCard && !window.warningRemoved)).toBe(true);
+    const warningBox = await card.boundingBox();
+    const replyBox = await reply.boundingBox();
+    expect(replyBox.y).toBeGreaterThan(warningBox.y + warningBox.height);
+    // Continue far enough that the old warning must scroll out of view. New
+    // output must remain reachable without reloading or hiding the warning.
+    for (let turn = 0; turn < 16; turn++) {
+        for (const [eventType, data] of [
+            ["user.message", { content: `Follow-up ${turn}` }],
+            ["assistant.message", { content: `Reply ${turn}: the session continues normally.`, messageId: `reply-${turn}` }],
+            ["session.turn_completed", { resultType: "completed" }],
+        ]) {
+            socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: {
+                sessionId, seq: ++seq, eventType, createdAt: Date.now(), data,
+            } }));
+        }
+    }
+    await expect(page.getByText("Reply 15: the session continues normally.", { exact: true })).toBeInViewport();
+    await expect(card).not.toBeInViewport();
+    expect(await card.evaluate(el => el === window.warningCard && !window.warningRemoved)).toBe(true);
     await page.evaluate(() => window.warningObserver.disconnect());
 });

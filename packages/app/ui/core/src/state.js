@@ -436,6 +436,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             agentPickerUsage: {},
             modal: null,
             fullscreenPane: null,
+            revealedCreatedSessionId: null,
             layout: {
                 ...initialLayoutAdjustments,
                 viewportWidth: 120,

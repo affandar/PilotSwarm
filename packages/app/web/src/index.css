@@ -9284,3 +9284,25 @@ textarea.ps-link-input {
   white-space: nowrap;
   text-align: right;
 }
+
+/* Keep intermediate agent previews distinct on Win95's light chat surface.
+   Final messages and other system notices retain their existing presentation. */
+:root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) > summary {
+  color: #000;
+  opacity: 1;
+}
+:root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) > summary::before { color: #000080; }
+:root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) .ps-canvas-action-tag {
+  color: #fff;
+  background: #000080;
+  border-color: #000080;
+  border-radius: 0;
+  font-size: 1em;
+  letter-spacing: 0;
+}
+:root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) .ps-preview-status { color: #4a4a4a; font-size: 1em; }
+:root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) > .ps-assistant-preview-viewport {
+  background: #fff;
+  color: #000;
+  border-left: 2px solid #808080;
+}

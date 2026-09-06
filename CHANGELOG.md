@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.5.60 — 2026-09-06
+
+Personal desktop Master of Agents, session-navigation reliability, and chat UX.
+
+- Replace obsolete ZIP-extractor tests with coverage of the shipped tar.gz
+  extractor, including traversal, link, and unsupported-format rejection.
+- Keep routine MoA autosave status hidden. Show a retry icon only if saving fails.
+
+- Move MoA split-right/below shortcuts into panel headers, including the empty
+  workspace. Center reset and zen in the header. Replace the session-picker pin
+  with the standard new-session plus icon and restore its confirm checkmark.
+
+- Make MoA one personal workspace, with no dashboard tabs, names, sharing,
+  or links. Migrate the selected populated legacy layout, falling back to the
+  first populated layout. Keep clear and zen icons centered in the header.
+- Give MoA one bottom composer bound to the focused session; Tab/Shift+Tab
+  cycles panels with automatic composer focus. Arrow keys retain native editing.
+  Add Create New Session to the picker and group session/panel controls behind
+  a sliders icon. Keep zoom in the panel title bar. Normal session sharing is
+  unchanged; MoA omits sharing and link controls.
+
+- Shrink the mobile composer after send acknowledgement changes its wrapped
+  placeholder. Keep long drafts bounded and internally scrollable.
+- Select and open newly created sessions despite stale catalogs or filters.
+  Preserve drafts and prevent an older load from taking over the subscription.
+- Keep warnings in chronological chat history after recovery. New messages
+  appear below them without a reload; retry updates preserve the card's DOM.
 
 - Distinguish saved intermediate `Agent update` disclosures from live `Message
   preview` output. Streaming-disabled sessions and old history never show live

@@ -2,6 +2,7 @@ import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessi
 import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { buildSessionWarning } from "./session-errors.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -16,6 +17,7 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 // noisy sessions (thousands of tool/orchestration events between messages)
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
+    "session.error",
     "user.message",
     "assistant.message",
     // Needed to distinguish interim assistant output from the final answer
@@ -412,7 +414,8 @@ function areMessagesEquivalent(left, right) {
     // event per rev), and share identical text by design (the artifact://
     // link) — the redelivery time-window below would eat rev N-1 on every
     // reload, making the transcript disagree with what live append showed.
-    if (left.kind === "canvas-update" || right.kind === "canvas-update") {
+    if (left.kind === "canvas-update" || right.kind === "canvas-update"
+        || left.kind === "session-warning" || right.kind === "session-warning") {
         return left.kind === right.kind && left.id === right.id;
     }
 
@@ -1211,6 +1214,10 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
+        if (event.eventType === "session.error") {
+            const warning = buildSessionWarning(event);
+            if (warning) chat.push(warning);
+        }
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
@@ -1307,6 +1314,13 @@ export function appendEventToHistory(history, event) {
         // clamps/reloads.
         stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
+
+    if (event.eventType === "session.error") {
+        const warning = buildSessionWarning(event);
+        if (warning && !next.chat.some(item => item.id === warning.id)) {
+            next.chat = clampHistoryItems([...next.chat, warning], loadedEventLimit);
+        }
+    }
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

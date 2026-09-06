@@ -28,6 +28,7 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { withSessionWarnings } from "./session-errors.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -1894,13 +1895,15 @@ export function selectActiveChat(state) {
         ? buildPendingQuestionMessage(session, events)
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
-    const sessionErrorMessage = buildSessionErrorMessage(session, events);
+    // Legacy/synthetic selector callers may not have passed through the
+    // reducer that captures status-only notices. Keep their fallback too.
+    const sessionErrorMessage = session?.chatWarnings?.length ? null : buildSessionErrorMessage(session, events);
 
-    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage) {
+    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage && !session?.chatWarnings?.length) {
         return createSplashCard(state.branding, session);
     }
 
-    const messages = chat.length > 0 ? [...chat] : createSplashCard(state.branding, session);
+    const messages = withSessionWarnings(chat.length > 0 ? chat : createSplashCard(state.branding, session), session, events);
     if (pendingQuestionMessage) {
         messages.push(pendingQuestionMessage);
     }
@@ -1908,7 +1911,8 @@ export function selectActiveChat(state) {
         messages.push(answeredQuestionMessage);
     }
     if (sessionErrorMessage) {
-        messages.push(sessionErrorMessage);
+        const index = messages.findIndex(message => sessionErrorMessage.createdAt != null && message.createdAt > sessionErrorMessage.createdAt);
+        messages.splice(index < 0 ? messages.length : index, 0, sessionErrorMessage);
     }
     return messages;
 }
@@ -2975,11 +2979,16 @@ let chatLinesMemo = [];
 
 export function selectChatLines(state, maxWidth = 80, options = {}) {
     const memoSessionId = state?.sessions?.activeSessionId ?? null;
+    const memoSession = memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null;
     const memoKey = {
         sessionId: memoSessionId,
-        session: memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null,
+        session: memoSession,
         byId: state?.sessions?.byId ?? null,
         chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
+        // Raw tool activity affects warning/question reconciliation, but must
+        // not re-wrap an ordinary, unchanged transcript on every event.
+        events: memoSession?.chatWarnings?.length || memoSession?.error || memoSession?.pendingQuestion
+            ? state?.history?.bySessionId?.get?.(memoSessionId)?.events ?? null : null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
         maxWidth,
@@ -2990,6 +2999,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.session === memoKey.session
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
+            && entry.events === memoKey.events
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal

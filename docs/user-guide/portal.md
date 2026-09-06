@@ -19,6 +19,10 @@ For deployments with Entra ID auth enabled, you'll see a sign-in flow first.
 With identity-aware proxy auth, the proxy completes sign-in before the portal
 loads. For local development, sign-in is normally bypassed.
 
+For several sessions at once, open the desktop-only
+[Master of Agents workspace](./master-of-agents.md). It saves one personal
+chat/canvas arrangement and uses a single composer for the focused panel.
+
 ## Layout overview
 
 When the portal opens you see three panes:

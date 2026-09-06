@@ -1,3 +1,5 @@
+import { normalizeMoa } from "./moa.js";
+import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -995,6 +997,10 @@ function baseReducer(state, action) {
             if (Boolean(action.collapsed) === Boolean(state.ui.sessionDetailCollapsed)) return state;
             return { ...state, ui: { ...state.ui, sessionDetailCollapsed: Boolean(action.collapsed) } };
 
+        case "ui/moaSaveStatus":
+            return { ...state, ui: { ...state.ui, moaSaveStatus: action.status, moaDirty: action.status === "saved" && state.ui.moaRevision === action.revision ? false : state.ui.moaDirty } };
+        case "ui/moa":
+            return { ...state, ui: { ...state.ui, moa: normalizeMoa(action.value), moaDirty: true, moaRevision: (state.ui.moaRevision || 0) + 1 } };
         case "profileSettings/apply": {
             const settings = action.settings && typeof action.settings === "object" && !Array.isArray(action.settings)
                 ? action.settings
@@ -1098,6 +1104,8 @@ function baseReducer(state, action) {
                 sessions: selection.sessions,
                 ui: {
                     ...selection.ui,
+                    moa: !state.ui.moaDirty && Object.prototype.hasOwnProperty.call(settings, "moa") ? normalizeMoa(settings.moa) : selection.ui.moa,
+                    moaLoaded: true,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
@@ -1624,7 +1632,8 @@ function baseReducer(state, action) {
             }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
-                byId[session.sessionId] = mergeDefinedSessionFields(previous, session);
+                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
+                    state.history.bySessionId.get(session.sessionId)?.events, nowMs);
             }
             if (
                 state.sessions.activeSessionId
@@ -1807,7 +1816,8 @@ function baseReducer(state, action) {
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
-            const mergedSession = mergeDefinedSessionFields(previousSession, action.session);
+            const mergedSession = retainSessionWarnings(previousSession, mergeDefinedSessionFields(previousSession, action.session),
+                state.history.bySessionId.get(action.session.sessionId)?.events);
             // A single session going running/idle changes its ANCESTORS' counts
             // and therefore their visual status, so both passes run over the
             // whole map rather than the one row. buildSessionTree below is
@@ -1938,6 +1948,13 @@ function baseReducer(state, action) {
                 },
             };
         }
+
+        case "ui/revealCreatedSession":
+            return {
+                ...state,
+                files: { ...state.files, fullscreen: false, paneOpen: false },
+                ui: { ...state.ui, revealedCreatedSessionId: action.sessionId, fullscreenPane: null },
+            };
 
         case "ui/fullscreenPane": {
             const fullscreenPane = normalizeFullscreenPane(action.fullscreenPane);
