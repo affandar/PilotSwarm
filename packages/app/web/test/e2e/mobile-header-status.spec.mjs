@@ -12,7 +12,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
         page.on('pageerror', error => errors.push(error.message));
         let snapshot = { status: 'idle', statusVersion: 6, updatedAt: T0 };
         let reads = 0, sends = 0;
-        const row = () => ({ sessionId, title: 'Footer regression', model: 'github-copilot:claude-sonnet-5',
+        const row = () => ({ sessionId, title: themeId === 'ms-dos' ? '' : 'Footer regression', model: 'github-copilot:claude-sonnet-5',
             owner: { provider: 'none', subject: 'test', email: 'test@example.com', displayName: 'Test User' },
             createdAt: T0, ...snapshot });
         try {
@@ -37,6 +37,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             const input = surface.locator('textarea');
             await expect(input).toBeVisible();
             await expect(footer).toBeVisible();
+            if (themeId === 'ms-dos') await expect(surface.locator('.ps-mobile-session-name')).toContainText(sessionId);
             if (mode==='zen') {
                 const select=surface.getByRole('combobox',{name:'Select session'});
                 expect(await select.evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el;})).toBe(true);

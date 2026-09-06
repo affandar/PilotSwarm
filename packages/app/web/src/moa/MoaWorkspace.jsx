@@ -378,7 +378,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
     return <div className={`ps-moa-workspace ${mobile ? "is-mobile" : ""} ${moa.zen ? "is-zen" : ""}`}>
         {mobile && <header className="ps-mobile-focus-header" {...swipe}>
             <IconButton label="Back to normal view" icon="restore" onClick={moa.leave} />
-            <div className="ps-mobile-session-heading"><span className="ps-mobile-session-name ps-moa-panel-title">{state.sessions.byId[selectedNode?.sessionId]?.title || (selectedNode?.type === "empty" ? "Empty panel" : "Master of Agents")}</span><div ref={setMobileStatusHost} /></div>
+            <div className="ps-mobile-session-heading"><span className="ps-mobile-session-name ps-moa-panel-title">{state.sessions.byId[selectedNode?.sessionId]?.title || selectedNode?.sessionId || (selectedNode?.type === "empty" ? "Empty panel" : "Master of Agents")}</span><div ref={setMobileStatusHost} /></div>
             <IconButton label="Session control panel" icon="controls" onClick={() => setMenu(selectedNode || { id: null, type: "empty" })} />
             <IconButton label="Open panel map" icon="map" onClick={() => setMapOpen(true)} />
         </header>}
@@ -460,7 +460,7 @@ export function MobileZen({ controller, onClose, drafts }) {
         <header className="ps-mobile-focus-header">
             <IconButton label="Exit mobile zen" icon="restore" disabled={loading} onClick={() => { drafts.current.set(active, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] }); onClose(); }} />
             <div className="ps-mobile-session-heading has-select">
-            <span className="ps-mobile-session-name" aria-hidden="true">{state.sessions.byId[active]?.title || "Select session"}<span className="ps-mobile-select-chevron">⌄</span></span>
+            <span className="ps-mobile-session-name" aria-hidden="true">{state.sessions.byId[active]?.title || active || "Select session"}<span className="ps-mobile-select-chevron">⌄</span></span>
             <SessionHeaderStatus controller={controller} />
             <select aria-label="Select session" value={active || ""} disabled={loading} onChange={e => changeSession(e.target.value)}>
                 {!active && <option value="">Select session</option>}
