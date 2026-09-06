@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
-import { normalizeMoa, encodeMoaShare } from "../../../ui/core/src/moa.js";
+import { normalizeMoa } from "../../../ui/core/src/moa.js";
 
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4 }); base = `http://127.0.0.1:${stub.port}`; });
@@ -14,7 +14,7 @@ const composer = page => page.locator(".ps-moa-composer-strip textarea");
 const panel = (page, id) => page.locator(`[data-moa-panel="${id}"]`);
 
 async function fixture(page, slots = [], hash = "") {
-    let settings = { themeId: "terminal-green", moa: normalizeMoa({ slots }) };
+    let settings = { themeId: "terminal-green", moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
     const sends = [], writes = [], errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.route("**/api/v1/**", async route => {
@@ -39,20 +39,6 @@ async function fixture(page, slots = [], hash = "") {
 async function open(page) {
     await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
     await expect(page.getByRole("navigation", { name: "Master of Agents" })).toBeVisible();
-}
-
-async function rename(page, name, type = false) {
-    await page.getByRole("button", { name: "Rename MoA", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Rename MoA", exact: true });
-    const input = dialog.getByRole("textbox", { name: "MoA name", exact: true });
-    await input.fill(type ? "" : name);
-    if (type) await input.pressSequentially(name);
-    await dialog.getByRole("button", { name: "Save name", exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-}
-
-async function expectActiveName(page, name) {
-    await expect(page.getByRole("tab", { name, exact: true })).toHaveAttribute("aria-selected", "true");
 }
 
 test("focus owns the sole composer, preserves drafts, and sends only to its session", async ({ page }) => {
@@ -103,35 +89,20 @@ test("splitting creates a focused blank panel and right-click opens the familiar
     await page.getByRole("dialog", { name: "Sessions", exact: true }).locator(`.ps-session-list-button[data-session-id="${sid(2)}"]`).click();
     await page.getByRole("button", { name: "Use chat", exact: true }).click();
     await expect(composer(page)).toBeVisible();
-    await expect.poll(() => f.settings().moa.slots[0].tree?.type).toBe("split");
+    await expect.poll(() => f.settings().moa.tree?.type).toBe("split");
     expect(f.errors).toEqual([]);
 });
 
-test("all five saved slots and resized proportions survive reload", async ({ page }) => {
-    const slots = Array.from({ length: 5 }, (_, i) => layout(i === 0 ? split(chat(1), chat(2)) : chat(i % 4, `saved-${i}`), `Room ${i + 1}`));
-    const f = await fixture(page, slots);
+test("the personal layout and resized proportions survive reload", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1), chat(2)))]);
     await open(page);
     const seam = page.getByRole("separator", { name: "Resize MoA panels" });
-    await seam.focus();
-    await seam.press("ArrowRight");
-    await seam.press("ArrowRight");
-    await expect(seam).toHaveAttribute("aria-valuenow", "54");
-    await expect.poll(() => f.settings().moa.slots[0].tree.ratio).toBe(54);
-    await page.getByRole("tab", { name: "Room 5", exact: true }).click();
-    await rename(page, "Night shift", true);
-    await expect.poll(() => f.settings().moa.slots[4].name).toBe("Night shift");
-    await page.reload();
-    await open(page);
-    await expectActiveName(page, "Night shift");
-    for (let i = 0; i < 5; i++) {
-        const name = i === 4 ? "Night shift" : `Room ${i + 1}`;
-        await page.getByRole("tab", { name, exact: true }).click();
-        await expectActiveName(page, name);
-        await expect(page.locator("[data-moa-panel]")).toHaveCount(i === 0 ? 2 : 1);
-    }
-    await page.getByRole("tab", { name: "Room 1", exact: true }).click();
+    await seam.focus(); await seam.press("ArrowRight"); await seam.press("ArrowRight");
+    await expect.poll(() => f.settings().moa.tree.ratio).toBe(54);
+    await page.reload(); await open(page);
     await expect(page.getByRole("separator", { name: "Resize MoA panels" })).toHaveAttribute("aria-valuenow", "54");
-    expect(f.errors).toEqual([]);
+    await expect(page.getByRole("tab")).toHaveCount(0);
+    expect(f.settings().moa).toEqual({ version: 2, tree: split(chat(1), chat(2), "split", 54) });
 });
 
 test("mobile resize suspends MoA and preserves layouts without automatically reopening", async ({ page }) => {
@@ -145,38 +116,20 @@ test("mobile resize suspends MoA and preserves layouts without automatically reo
     await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
     await open(page);
     await expect(composer(page)).toBeVisible();
-    expect(f.settings().moa.slots[0].tree.sessionId).toBe(sid(1));
+    expect(f.settings().moa.tree.sessionId).toBe(sid(1));
     expect(f.errors).toEqual([]);
 });
 
-test("malformed shared links report an error and cannot modify saved layouts", async ({ page }) => {
-    const f = await fixture(page, [layout(chat(1))], "#moa=not-a-layout");
-    const dialog = page.getByRole("dialog", { name: "Invalid MoA link" });
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("alert")).toContainText("Invalid");
-    await expect(dialog.getByRole("button", { name: "Copy to my slot" })).toHaveCount(0);
-    await dialog.getByRole("button", { name: "Close dialog" }).click();
-    expect(f.settings().moa.slots[0].tree).toEqual(chat(1));
-    expect(f.errors).toEqual([]);
-});
-
-test("importing an occupied slot requires explicit replacement and copies independently", async ({ page }) => {
-    const source = layout(split(chat(2), { id: "shared-empty", type: "empty" }), "Shared operations");
-    const encoded = encodeMoaShare(source);
-    const f = await fixture(page, [layout(chat(1), "Existing operations")], `#moa=${encoded}`);
-    const dialog = page.getByRole("dialog", { name: "Shared MoA · Shared operations", exact: true });
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("combobox", { name: "Destination MoA slot" }).selectOption("0");
-    await dialog.getByRole("button", { name: "Copy to my slot", exact: true }).click();
-    await expect(dialog.getByRole("alert")).toContainText("Existing operations");
-    expect(f.settings().moa.slots[0].tree).toEqual(chat(1));
-    await dialog.getByRole("button", { name: "Replace arrangement", exact: true }).click();
-    await expectActiveName(page, "Shared operations");
-    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
-    await rename(page, "My operations");
-    await expect.poll(() => f.settings().moa.slots[0].name).toBe("My operations");
-    expect(source.name).toBe("Shared operations");
-    expect(new URL(page.url()).hash).toBe("");
+test("legacy MoA links and stashed imports cannot replace a personal layout", async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem("pilotswarm.moa.shared", "legacy-import"));
+    const wire = Buffer.from(JSON.stringify({ version: 1, ...layout(chat(3)) })).toString("base64url");
+    const f = await fixture(page, [layout(chat(1))], `/#moa=${wire}`);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await open(page);
+    await expect(panel(page, "panel-1")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Share|Copy.*link|Add MoA tab|Rename MoA/i })).toHaveCount(0);
+    expect(f.settings().moa.tree).toEqual(chat(1));
+    expect(await page.evaluate(() => sessionStorage.getItem("pilotswarm.moa.shared"))).toBeNull();
     expect(f.errors).toEqual([]);
 });
 
@@ -296,25 +249,25 @@ test("a failed profile save survives the next server poll and explicit retry per
         ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: { code: "UNAVAILABLE", message: "Profile unavailable" } }) })
         : route.fallback());
     page.on("response", response => { if (new URL(response.url()).pathname === "/api/v1/me/profile") polls++; });
-    await rename(page, "Unsaved incident desk");
+    await page.getByRole("button", { name: "Add panel", exact: true }).click();
     const retry = page.getByRole("button", { name: "Save failed · Retry", exact: true });
     await expect(retry).toBeVisible();
-    expect(f.settings().moa.slots[0].name).toBe("Control room");
+    expect(f.settings().moa.tree.type).toBe("chat");
     await expect.poll(() => polls, { timeout: 7000 }).toBeGreaterThan(0);
     await page.waitForTimeout(100); // the completed poll's React effects have run
-    await expectActiveName(page, "Unsaved incident desk");
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     await expect(retry).toBeVisible();
     fail = false;
     await retry.click();
-    await expect.poll(() => f.settings().moa.slots[0].name).toBe("Unsaved incident desk");
+    await expect.poll(() => f.settings().moa.tree.type).toBe("split");
     await expect(retry).toHaveCount(0);
     await page.reload();
     await open(page);
-    await expectActiveName(page, "Unsaved incident desk");
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     expect(f.errors).toEqual([]);
 });
 
-test("slow profile writes serialize rapid rename and split edits without rolling back the newest layout", async ({ page }) => {
+test("slow profile writes serialize rapid split edits without rolling back the newest layout", async ({ page }) => {
     const f = await fixture(page, [layout(chat(1))]);
     await open(page);
     await page.waitForTimeout(600);
@@ -326,24 +279,21 @@ test("slow profile writes serialize rapid rename and split edits without rolling
         if (started.length === 1) await gate;
         return route.fallback();
     });
-    await rename(page, "First pending name");
+    await page.getByRole("button", { name: "Add panel", exact: true }).click();
     await expect.poll(() => started.length).toBe(1);
-    await rename(page, "Latest operator desk");
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Split below", exact: true }).click();
-    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
     await page.waitForTimeout(650); // the second debounce expires while the first request is held
     const concurrentWrites = started.length;
     release();
     expect(concurrentWrites, "a stale request cannot finish after a newer request").toBe(1);
-    await expect.poll(() => f.settings().moa.slots[0].name).toBe("Latest operator desk");
-    await expect.poll(() => f.settings().moa.slots[0].tree.type).toBe("split");
-    expect(f.settings().moa.slots[0].tree.direction).toBe("column");
-    expect(started.at(-1).moa.slots[0].name).toBe("Latest operator desk");
+    await expect.poll(() => f.settings().moa.tree.type).toBe("split");
+    expect(f.settings().moa.tree.first.direction).toBe("column");
+    expect(started.at(-1).moa.tree.first.direction).toBe("column");
     await page.reload();
     await open(page);
-    await expectActiveName(page, "Latest operator desk");
-    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
     expect(f.errors).toEqual([]);
 });
 
@@ -402,35 +352,27 @@ test("zen Escape and zoom back restore the saved arrangement and chat draft", as
     expect(f.errors).toEqual([]);
 });
 
-test("named tabs start with one workspace, add up to five, and survive reload", async ({ page }) => {
-    const f = await fixture(page);
+test("one personal workspace migrates a blank active tab and has no dashboard controls", async ({ page }) => {
+    const f = await fixture(page, { version: 1, activeSlot: 3, tabCount: 5, slots: [layout(split(chat(1), chat(2))), layout(chat(3)), null, layout(null), null] });
     await open(page);
-    await expect(page.locator(".portal-header").getByRole("tab")).toHaveCount(1);
-    for (let i = 0; i < 5; i++) {
-        if (i > 0) await page.getByRole("button", { name: "Add MoA tab", exact: true }).click();
-        await expect(page.getByRole("tab")).toHaveCount(i + 1);
-        await rename(page, `Agent desk ${i + 1}`);
-        await expect(page.getByRole("tab", { name: `Agent desk ${i + 1}`, exact: true })).toHaveAttribute("aria-selected", "true");
-    }
-    await expect(page.locator(".portal-header").getByRole("tab")).toHaveCount(5);
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    await expect(page.getByRole("tab")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Add MoA tab|Rename MoA|Share|Copy.*link/i })).toHaveCount(0);
     for (const width of [1600, 1024, 921]) {
         await page.setViewportSize({ width, height: 1000 });
         const header = await page.locator(".portal-header").boundingBox();
-        expect(header.height).toBeLessThan(95);
         const grid = await page.locator(".ps-moa-layout").boundingBox();
+        expect(header.height).toBeLessThan(95);
         expect(grid.y - header.y - header.height).toBeLessThan(20);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
     }
-    const add = page.getByRole("button", { name: "Add MoA tab", exact: true });
-    if (await add.count()) await expect(add).toBeDisabled();
-    await expect.poll(() => f.settings().moa.slots[4].name).toBe("Agent desk 5");
+    await page.getByRole("button", { name: "Add panel", exact: true }).click();
+    await expect.poll(() => f.settings().moa.version).toBe(2);
+    expect(Object.keys(f.settings().moa).sort()).toEqual(["tree", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.reload();
-    await open(page);
-    await expect(page.getByRole("tab")).toHaveCount(5);
-    for (let i = 0; i < 5; i++) await expect(page.getByRole("tab", { name: `Agent desk ${i + 1}`, exact: true })).toBeVisible();
-    expect(f.errors).toEqual([]);
+    await page.reload(); await open(page);
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
 });
 
 test("Tab and Shift+Tab cycle panels clockwise and reverse with the composer automatically focused", async ({ page }) => {
@@ -476,7 +418,7 @@ test("toolbar and session-picker Tab navigation never cycles panels behind them"
     const f = await fixture(page, [layout(split(chat(1), chat(2)))]);
     await open(page);
     await expect(composer(page)).toBeVisible();
-    await page.getByRole("button", { name: "Rename MoA", exact: true }).focus();
+    await page.getByRole("button", { name: "Add panel", exact: true }).focus();
     await page.keyboard.press("Tab");
     await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
@@ -535,7 +477,7 @@ test("icon actions clear only the current layout after confirmation and persist 
         if (request.method() !== "GET" && /\/sessions\//.test(request.url())) destructive.push(request.url());
     });
     await open(page);
-    for (const name of ["Add panel", "Clear MoA layout", "Share", "Enter zen"]) {
+    for (const name of ["Add panel", "Clear MoA layout", "Enter zen"]) {
         const button = page.getByRole("button", { name, exact: true });
         await expect(button).toHaveText("");
         await expect(button).toHaveAttribute("title", name);
@@ -543,23 +485,18 @@ test("icon actions clear only the current layout after confirmation and persist 
     }
     await page.getByRole("button", { name: "Clear MoA layout", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Clear MoA layout", exact: true });
-    await expect(dialog).toContainText("Sessions, canvases, and other MoA tabs stay intact");
+    await expect(dialog).toContainText("Your sessions and canvases stay intact");
     await page.getByRole("button", { name: "Cancel clear", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     await page.getByRole("button", { name: "Clear MoA layout", exact: true }).click();
     await page.getByRole("button", { name: "Confirm clear layout", exact: true }).click();
     await expect(page.getByRole("button", { name: "Add first MoA panel", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Clear MoA layout", exact: true })).toBeDisabled();
-    await expect.poll(() => f.settings().moa.slots[0].tree).toBe(null);
-    expect(f.settings().moa.slots[0].name).toBe("Operations");
-    expect(f.settings().moa.slots[1].tree.sessionId).toBe(sid(3));
+    await expect.poll(() => f.settings().moa.tree).toBe(null);
     expect(destructive).toEqual([]);
     await page.reload();
     await open(page);
-    await expectActiveName(page, "Operations");
     await expect(page.getByRole("button", { name: "Add first MoA panel", exact: true })).toBeVisible();
-    await page.getByRole("tab", { name: "Keep me", exact: true }).click();
-    await expect(panel(page, "panel-3")).toBeVisible();
     await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     const exit = page.getByRole("button", { name: "Exit zen", exact: true });
     await expect(exit).toHaveText("");
@@ -640,8 +577,7 @@ test("cancelling or failing creation returns to the picker without replacing an 
     expect(f.errors).toEqual([]);
 });
 
-test("panel info, link, manage and terminate actions retain their own session target", async ({ page, context }) => {
-    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+test("panel info, personal manage and terminate actions retain their own session target", async ({ page, context }) => {
     await page.route("**/api/v1/bootstrap", route => route.fulfill({ json: { ok: true, result: {
         auth: { principal: { provider: "none", subject: "test" }, authorization: { role: "admin" } },
     } } }));
@@ -656,18 +592,15 @@ test("panel info, link, manage and terminate actions retain their own session ta
     await expect(p.locator(":scope > header button")).toHaveCount(2);
     await expect(composer(page)).toBeVisible();
     await p.getByRole("button", { name: "Session control panel", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Open in main view", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: /Open in main view|link|shar/i })).toHaveCount(0);
     await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Session information", exact: true }).click();
     const info = page.getByRole("dialog", { name: "Session information", exact: true });
     await expect(info).toContainText(sid(2));
     for (const field of ["Owner", "Model", "Context", "Cron", "Agent", "Updated", "Children", "Access"]) await expect(info.locator(".ps-session-detail-label").getByText(field, { exact: true })).toBeVisible();
     await info.getByRole("button", { name: "Close dialog" }).click();
     await p.getByRole("button", { name: "Session control panel", exact: true }).click();
-    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Copy link — copy a direct link to this session", exact: true }).click();
-    await expect(page.locator(".ps-link-modal input")).toHaveValue(new RegExp(sid(2)));
-    await page.locator(".ps-link-modal").getByRole("button", { name: "Close", exact: true }).click();
-    await p.getByRole("button", { name: "Session control panel", exact: true }).click();
-    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Manage session — rename, switch model, and sharing", exact: true }).click();
+    await page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: "Manage session — rename and switch model", exact: true }).click();
+    await expect(page.getByRole("tab", { name: "Access", exact: true })).toHaveCount(0);
     await expect(page.locator(".ps-share-overlay").getByPlaceholder("Session title")).toHaveValue("Session 2");
     await expect.poll(() => paths.some(path => path.includes(sid(2)))).toBe(true);
     await page.locator(".ps-share-overlay").getByRole("button", { name: "Close", exact: true }).click();
@@ -678,6 +611,12 @@ test("panel info, link, manage and terminate actions retain their own session ta
     await page.locator(".ps-modal-close").click();
     await expect(composer(page)).toBeVisible();
     await expect(page.locator(".ps-moa-composer-strip")).toHaveAttribute("data-session-id", sid(2));
+    // The normal session view keeps its original link and sharing controls.
+    await page.getByRole("button", { name: /^Workspace/ }).click();
+    await page.locator(".ps-session-list-button").filter({ hasText: "Session 2" }).first().click();
+    await expect(page.getByRole("button", { name: "Copy link — copy a direct link to this session", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Manage session — rename, switch model, and sharing", exact: true }).click();
+    await expect(page.getByRole("tab", { name: "Access", exact: true })).toBeVisible();
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);
 });

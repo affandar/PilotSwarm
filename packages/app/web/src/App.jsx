@@ -1,4 +1,4 @@
-import { useMoa, MoaWorkspace, MoaImport, stashMoaLink } from "./moa/MoaWorkspace.jsx";
+import { useMoa, MoaWorkspace } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins } from "pilotswarm/ui-react";
@@ -736,8 +736,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             }),
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active, moa }),
-            moa.active ? React.createElement(MoaWorkspace, { controller, moa, createTransport: createPanelTransport }) : null,
-            moa.shared ? React.createElement(MoaImport, { moa, controller }) : null),
+            moa.active ? React.createElement(MoaWorkspace, { controller, moa, createTransport: createPanelTransport }) : null),
     );
 }
 
@@ -939,7 +938,7 @@ export default function App() {
     // URL param directly, and stashing then would leave a stale id behind.
     const showSignInGate = !publicConfig.loading && !auth.loading && !auth.signedIn;
     React.useEffect(() => {
-        if (showSignInGate) { stashDeepLinkTarget(); stashMoaLink(); }
+        if (showSignInGate) { stashDeepLinkTarget(); }
     }, [showSignInGate]);
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }

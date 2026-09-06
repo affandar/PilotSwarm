@@ -5,13 +5,17 @@ Master of Agents is an alternate **desktop browser** workspace. Use the
 in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay available in MoA, except in zen. It is unavailable on
 screens 920 pixels wide or narrower and in the TUI.
 
-Dashboard tabs sit inside the PilotSwarm header. Start with one named tab.
-Use **+** beside the tabs to add another; no more than five dashboards can be saved.
-Double-click a tab or use **Rename MoA** to name it. Existing saved layouts
-automatically appear as tabs. Layouts remember
+MoA is one personal workspace saved to your user profile. There are no dashboard
+tabs, names, sharing controls, or MoA links. The header holds just add panel,
+clear layout, and zen alongside the existing view controls. Layouts remember
 session and canvas references, split directions, and divider proportions.
 Changes save automatically; the toolbar reports a failed save and offers Retry.
-The active slot is remembered. Enter MoA explicitly after reloading the portal.
+Enter MoA explicitly after reloading the portal.
+
+Existing multi-dashboard profiles migrate to the selected populated layout.
+If the selected dashboard is blank or invalid, the first populated layout is
+retained. Other dashboards are no longer available. Old MoA links and pending
+imports are ignored; they cannot replace your personal workspace.
 
 ## Panels and focus
 
@@ -31,19 +35,20 @@ the focused panel’s session, whether the panel shows chat or a canvas. Click
 a panel or focus one of its controls to select it; its border and title bar
 highlight, and the composer names its target. Empty or unavailable panels have
 no composer. Working and queued-message status stays inside each chat panel. Drafts remain when switching focus or
-layouts during the current page session. Read-only sessions retain their normal
+views during the current page session. Read-only sessions retain their normal
 read-only behavior.
 
 **Tab** moves to the next panel clockwise; **Shift+Tab** moves in reverse.
 The selected session’s composer is automatically focused and ready to type,
 including after clicking a different panel. Drafts stay with their sessions.
 Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
-native. Empty or read-only panels cannot accept prompts. Toolbar controls,
-layout tabs, and dialogs retain their normal keyboard navigation.
+native. Empty or read-only panels cannot accept prompts. Toolbar controls
+and dialogs retain their normal keyboard navigation.
 
 Each populated title bar has just **maximize** (open in the main view) and a
 **sliders** icon for the session control panel. Its **Session** group contains
-the existing spanner/manage, link, trash, and info actions. Zoom is available
+the existing spanner/manage, trash, and info actions. MoA omits session-link
+and sharing controls; those remain available in the normal session view. Zoom is available
 only in the session title bar.
 Trash opens the existing lifecycle chooser and confirmation. Info shows the
 existing session-details fields. Its **Panel layout** group contains replace,
@@ -64,9 +69,9 @@ session. Each populated panel has an isolated session controller/subscription.
 ## Zen and opening a session
 
 The toolbar uses icons with hover labels: add panel, clear layout (eraser),
-share link, and enter zen (expand corners). **Clear MoA layout** asks for
-confirmation, then returns only the current tab to its blank **+** screen.
-Its name, other tabs, sessions, and canvases are preserved.
+and enter zen (expand corners). **Clear MoA layout** asks for
+confirmation, then returns your workspace to its blank **+** screen.
+Sessions and canvases are preserved.
 
 **Zen** hides the PilotSwarm header and MoA toolbar. The small **Exit zen**
 handle and Escape restore the regular MoA view. Panel controls remain available.
@@ -76,17 +81,3 @@ canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) r
 the saved arrangement.
 Resizing to a mobile screen exits MoA and releases its panel subscriptions.
 Returning to desktop does not automatically reopen it.
-
-## Sharing a layout
-
-**Share** creates a snapshot link. Its URL fragment contains only the layout
-name, panel IDs, session IDs, canvas slot numbers, and split geometry. It does
-not contain transcripts, session titles, canvas documents, credentials, or
-access grants. It can be copied before anyone opens it; no new sharing service
-or public session permission is created.
-
-Recipients sign in normally, preview the arrangement, and choose one of their
-five slots. Replacing an occupied slot requires an explicit second action.
-The copied layout is independent of the original; the session references still
-point to live sessions and retain their existing permissions. Inaccessible
-sessions show a placeholder with Retry, plus the normal Replace action.

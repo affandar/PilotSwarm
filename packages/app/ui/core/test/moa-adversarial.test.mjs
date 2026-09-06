@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     normalizeMoa, normalizeMoaLayout, replaceMoaNode, moaLeaves,
-    emptyMoaPanel, encodeMoaShare, decodeMoaShare, MOA_SHARE_LIMIT,
+    emptyMoaPanel,
 } from "../src/moa.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
@@ -10,27 +10,20 @@ const chat = (id = "p1", sessionId = "session-1") => ({ id, type: "chat", sessio
 const canvas = (id = "p2", slot = 2) => ({ id, type: "canvas", sessionId: "session-1", slot });
 const split = (first = chat(), second = canvas()) => ({ id: "split", type: "split", direction: "row", ratio: 37, first, second });
 const layout = (tree = split()) => ({ name: "Operations", tree });
-const encodeRaw = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-
-test("malformed saved profiles recover five independent empty slots", () => {
-    for (const bad of [null, undefined, [], false, "garbage", { slots: [layout({ type: "chat" })] }]) {
-        const normalized = normalizeMoa(bad);
-        assert.equal(normalized.slots.length, 5);
-        assert.equal(normalized.activeSlot, 0);
-        assert.ok(normalized.slots.every((s) => s.tree === null));
-        assert.notEqual(normalized.slots[0], normalized.slots[1]);
+test("malformed profiles recover one empty personal workspace", () => {
+    for (const bad of [null, undefined, [], false, "garbage", { version: 2, tree: { type: "chat" } }]) {
+        assert.deepEqual(normalizeMoa(bad), { version: 2, tree: null });
     }
-    const value = normalizeMoa({ activeSlot: 90, slots: Array.from({ length: 8 }, () => layout()) });
-    assert.equal(value.activeSlot, 4);
-    assert.equal(value.slots.length, 5);
-    assert.equal(normalizeMoa({ activeSlot: -2 }).activeSlot, 0);
 });
 
-test("one corrupt slot cannot destroy the other saved layouts", () => {
-    const value = normalizeMoa({ activeSlot: 1, slots: [layout(), layout({ type: "unknown" }), layout(chat("p3"))] });
-    assert.deepEqual(value.slots[0], layout());
-    assert.equal(value.slots[1].tree, null);
-    assert.deepEqual(value.slots[2], layout(chat("p3")));
+test("legacy migration keeps the selected populated layout or the first valid populated layout", () => {
+    const slots = [layout(), layout({ type: "unknown" }), layout(chat("p3")), layout(null)];
+    assert.deepEqual(normalizeMoa({ slots, activeSlot: 2 }), { version: 2, tree: chat("p3") });
+    for (const activeSlot of [1, 3, 99, -1]) assert.deepEqual(normalizeMoa({ slots, activeSlot }), { version: 2, tree: split() });
+    assert.deepEqual(normalizeMoa({ slots: [null, null, layout(canvas())], activeSlot: 0 }).tree, canvas());
+    const cleared = normalizeMoa({ version: 2, tree: null, slots });
+    assert.deepEqual(cleared, { version: 2, tree: null });
+    assert.deepEqual(normalizeMoa(cleared), cleared);
 });
 
 test("profile hydration preserves desktop layouts when an older or mobile payload omits MoA", () => {
@@ -53,30 +46,13 @@ test("saving a layout cannot change the default app's active session or prompt",
     assert.equal(next.sessions, state.sessions);
 });
 
-test("shared layouts contain only normalized references, geometry, and the workspace name", () => {
-    const secret = "PRIVATE-CONTENT";
-    const source = { ...layout(), accessToken: secret, grants: [secret], transcript: secret };
-    source.tree.first = { ...source.tree.first, title: secret, prompt: secret, owner: secret, html: secret, url: "javascript:alert(1)" };
-    source.tree.second = { ...source.tree.second, canvasShareToken: secret, access: "public" };
-    const wire = encodeMoaShare(source);
-    const decoded = decodeMoaShare(wire);
-    assert.deepEqual(decoded, layout());
-    assert.ok(!Buffer.from(wire, "base64url").toString().includes(secret));
-    decoded.tree.first.sessionId = "someone-else";
-    assert.equal(source.tree.first.sessionId, "session-1", "copied layout owns its references");
-});
-
-test("Unicode workspace names survive a share round trip", () => {
-    const value = { ...layout(), name: "🧭 故障対応 · équipe" };
-    assert.deepEqual(decodeMoaShare(encodeMoaShare(value)), value);
-    assert.equal(normalizeMoaLayout({ ...value, name: "  " }).name, "Untitled MoA");
-    assert.equal(normalizeMoaLayout({ ...value, name: "a".repeat(1000) }).name.length, 64);
-});
-
-test("malformed, oversize, unsupported, and invalid UTF-8 links fail closed", () => {
-    for (const bad of [null, "", "%%%", "abc=", "a".repeat(MOA_SHARE_LIMIT + 1), "_w", encodeRaw(null), encodeRaw({ version: 2, ...layout() }), encodeRaw({ version: 1, tree: chat("p", "../secret") })]) {
-        assert.throws(() => decodeMoaShare(bad));
-    }
+test("personal profiles serialize only panel references and geometry", () => {
+    const source = { version: 2, name: "discard", slots: [layout()], tree: { ...split(), first: { ...chat(), transcript: "SECRET", token: "SECRET" } }, grants: ["SECRET"] };
+    const normalized = normalizeMoa(source);
+    assert.deepEqual(normalized, { version: 2, tree: split() });
+    assert.ok(!JSON.stringify(normalized).includes("SECRET"));
+    normalized.tree.first.sessionId = "other";
+    assert.equal(source.tree.first.sessionId, "session-1");
 });
 
 test("duplicate panel or split identities are rejected before rendering", () => {
@@ -154,15 +130,4 @@ test("canvas actions validate the frame's pinned slot, independent of another sl
     assert.equal((await controller.submitCanvasAction("s1", action("first"), 0)).ok, false);
     assert.deepEqual(sent.map((s) => s.sessionId), ["s1", "s1"]);
     assert.match(sent[0].prompt, /"second"/);
-});
-
-test("tab migration preserves populated and renamed legacy slots and bounds added tabs", () => {
-    assert.equal(normalizeMoa(null).tabCount, 1);
-    const legacy = normalizeMoa({ slots: [null, null, layout()] });
-    assert.equal(legacy.tabCount, 3);
-    assert.deepEqual(legacy.slots[2], layout());
-    assert.equal(normalizeMoa({ slots: [{name:'Planning',tree:null}], tabCount:3 }).tabCount, 3);
-    assert.equal(normalizeMoa({ tabCount:999 }).tabCount, 5);
-    assert.equal(normalizeMoa({ tabCount:-1 }).tabCount, 1);
-    assert.equal(normalizeMoa({ activeSlot:4, tabCount:1 }).tabCount, 5);
 });

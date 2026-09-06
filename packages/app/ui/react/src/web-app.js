@@ -5619,9 +5619,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                         ? "Rename folder"
                         : !canModifyActiveSession
                             ? "Only this session's owner or an admin can manage it"
-                            : "Manage session — rename, switch model, and sharing",
+                            : actionsOnly ? "Manage session — rename and switch model" : "Manage session — rename, switch model, and sharing",
         }),
-        React.createElement(IconButton, {
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: React.createElement(LinkGlyph),
             onClick: () => {
@@ -5756,6 +5756,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             controller,
             sessionId: activeSession.sessionId,
             initialTitle: activeSession.title || "",
+            allowSharing: !actionsOnly,
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
             principal: viewState.auth?.principal || null,
@@ -6145,7 +6146,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -6164,20 +6165,20 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
             .catch(() => {});
         // Member directory for name autocomplete (excludes synthetic principals).
-        if (typeof controller.transport.listKnownUsers === "function") {
+        if (allowSharing && typeof controller.transport.listKnownUsers === "function") {
             controller.transport.listKnownUsers({ limit: 500 })
                 .then((users) => { if (!cancelled) setDirectory(Array.isArray(users) ? users : []); })
                 .catch(() => {});
         }
         return () => { cancelled = true; };
-    }, [controller, sessionId]);
+    }, [controller, sessionId, allowSharing]);
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
             .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
             .catch(() => { setShares([]); setDraftShares([]); });
     }, [controller, sessionId]);
-    React.useEffect(() => { loadShares(); }, [loadShares]);
+    React.useEffect(() => { if (allowSharing) loadShares(); }, [loadShares, allowSharing]);
 
     const run = async (fn) => {
         setBusy(true); setError(null);
@@ -6283,7 +6284,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     // only rename/switch model on their own session.
     const tabs = [
         { id: "general", label: "General" },
-        ...(canManage ? [{ id: "access", label: "Access" }] : []),
+        ...(allowSharing && canManage ? [{ id: "access", label: "Access" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
     // Regenerate is a change-this-session action, so it belongs here rather

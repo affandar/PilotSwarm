@@ -37,9 +37,6 @@
 .ps-moa-menu { padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
 .ps-moa-menu > .ps-mini-button { align-self: flex-start; }
 .ps-moa-menu p { margin: 0 0 6px; }
-.ps-moa-import-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.ps-moa-import-preview > div { border: 1px solid var(--ps-border); padding: 10px; overflow-wrap: anywhere; }
-.ps-moa-import-preview small { display: block; color: var(--ps-muted); }
 .ps-moa-error, .ps-moa-mobile-notice { padding: 8px; display: flex; gap: 8px; align-items: center; background: var(--ps-chrome); }
 @media (max-width: 920px) { .ps-moa-workspace { display: none !important; } }
 
@@ -47,11 +44,6 @@
 .ps-moa-live > .ps-html-preview-host { flex: 1; min-height: 0; }
 
 .ps-moa-toolbar { flex-wrap: nowrap; }
-.ps-moa-tabs { display: flex; align-self: stretch; align-items: stretch; gap: 3px; min-width: 0; overflow-x: auto; }
-.ps-moa-tab { border: 1px solid var(--ps-border); border-bottom: 3px solid transparent; border-radius: 5px 5px 0 0; background: var(--ps-background); color: var(--ps-muted); padding: 8px 15px; font: inherit; cursor: pointer; max-width: 220px; min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ps-moa-tab[aria-selected=true] { background: var(--ps-background); color: var(--ps-foreground); border-bottom-color: var(--ps-selection-background); }
-.ps-moa-tab:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: -3px; }
-.ps-moa-new-tab { font-size: 20px; }
 .ps-moa-session-picker { display: flex; flex-direction: column; flex: 1; min-height: 0; height: min(70dvh, 740px); border: 0; }
 .ps-moa-session-picker .ps-panel-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ps-moa-session-picker .ps-session-list { flex: 1; min-height: 100px; }
@@ -60,10 +52,7 @@
 
 /* Win95 desktop teal is an outer desktop, not a readable control surface. */
 :root[data-ps-theme="win95"] .ps-moa-panel,
-:root[data-ps-theme="win95"] .ps-moa-dialog,
-:root[data-ps-theme="win95"] .ps-moa-tab { background: var(--w95-face); color: #000; border-radius: 0; }
-:root[data-ps-theme="win95"] .ps-moa-tab { border-color: #fff #000 #808080 #fff; }
-:root[data-ps-theme="win95"] .ps-moa-tab[aria-selected=true] { border-bottom-color: #000080; font-weight: bold; }
+:root[data-ps-theme="win95"] .ps-moa-dialog { background: var(--w95-face); color: #000; border-radius: 0; }
 :root[data-ps-theme="win95"] .ps-moa-workspace input,
 :root[data-ps-theme="win95"] .ps-moa-dialog input,
 :root[data-ps-theme="win95"] .ps-moa-dialog select { background: #fff; color: #000; border-radius: 0; border-color: #808080 #fff #fff #808080; }
@@ -71,7 +60,6 @@
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused .ps-moa-focus-label { color: #fff; }
 /* Winamp's dark blue selection fill needs a brighter outline on black panes. */
 :root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: var(--ps-foreground); box-shadow: inset 0 0 0 1px var(--ps-foreground); }
-:root[data-ps-theme="winamp"] .ps-moa-tab[aria-selected=true] { border-bottom-color: var(--ps-foreground); }
 
 .ps-moa-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 36px; height: 34px; padding: 6px; }
 .ps-moa-icon-button svg { display: block; flex-shrink: 0; }
@@ -95,7 +83,7 @@
 
 .ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }
 
-/* MoA uses the existing header row; only its tabs can scroll on small desktops. */
+/* MoA uses the existing header row for save status and workspace actions. */
 .ps-toolbar.is-moa:not(.is-mobile) { display: flex; gap: 8px; min-width: 0; }
 .ps-toolbar.is-moa > .ps-toolbar-side.is-left { display: none; }
 .ps-toolbar.is-moa > .ps-toolbar-actions { flex: 1; min-width: 0; }
@@ -103,9 +91,8 @@
 .ps-toolbar.is-moa .ps-toolbar-meta-slot { display: none; }
 #ps-moa-header-slot { flex: 1; min-width: 0; }
 #ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; color: var(--ps-foreground); font: var(--ps-font-size-base)/1.3 var(--ps-mono); gap: 4px; }
-#ps-moa-header-slot .ps-moa-tabs { flex: 0 1 auto; }
-#ps-moa-header-slot .ps-moa-tab { min-width: 60px; padding: 6px 9px; flex-shrink: 0; max-width: 160px; }
-#ps-moa-header-slot .ps-moa-save { font-size: 0; margin: 0 auto 0 0; }
+#ps-moa-header-slot .ps-moa-save { font-size: var(--ps-font-size-dense); margin: 0 auto 0 0; }
 #ps-moa-header-slot .ps-moa-toolbar > button { flex-shrink: 0; }
 .portal-header:has(#ps-moa-header-slot) .portal-header-brand { max-width: 180px; }
 .ps-moa-create-session { font-weight: bold; border-bottom: 1px solid var(--ps-border); }
+:root[data-ps-theme="win95"] #ps-moa-header-slot .ps-moa-save { color: #fff; }

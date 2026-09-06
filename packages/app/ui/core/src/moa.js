@@ -1,9 +1,6 @@
-// Saved desktop layouts contain references only. Never serialize session titles,
-// transcripts, credentials, canvas HTML or access grants into a shared link.
-export const MOA_SLOTS = 5;
+// One personal desktop layout, containing references and geometry only.
 export const MOA_MAX_PANELS = 16;
 export const MOA_BREAKPOINT = 920;
-export const MOA_SHARE_LIMIT = 24000;
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(v);
 export const emptyMoaPanel = () => ({ id: crypto.randomUUID(), type: "empty" });
@@ -27,14 +24,17 @@ export function normalizeMoaLayout(value) {
     return { name: typeof value.name === "string" ? value.name.trim().slice(0, 64) || "Untitled MoA" : "Untitled MoA", tree: value.tree == null ? null : walk(value.tree) };
 }
 export function normalizeMoa(value) {
-    const slots = Array.from({ length: MOA_SLOTS }, (_, i) => {
-        try { return normalizeMoaLayout(value?.slots?.[i]); } catch { return { name: `MoA ${i + 1}`, tree: null }; }
-    });
-    const activeSlot = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
-    // Migrate existing layouts without hiding populated or renamed slots.
-    const used = slots.reduce((count, slot, i) => slot.tree || slot.name !== `MoA ${i + 1}` ? i + 1 : count, 1);
-    const tabCount = Math.max(used, activeSlot + 1, Number.isInteger(value?.tabCount) ? Math.max(1, Math.min(5, value.tabCount)) : 1);
-    return { version: 1, activeSlot, tabCount, slots };
+    const safeTree = layout => { try { return normalizeMoaLayout(layout).tree; } catch { return null; } };
+    // Version 2 has one layout. A deliberately cleared layout must stay empty.
+    if (value?.version === 2 || (object(value) && Object.hasOwn(value, "tree"))) {
+        return { version: 2, tree: safeTree(value) };
+    }
+    // Migrate the selected legacy dashboard when populated; otherwise keep
+    // the first populated dashboard rather than a previously selected blank tab.
+    const slots = Array.isArray(value?.slots) ? value.slots.slice(0, 5) : [];
+    const active = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
+    const tree = safeTree(slots[active]) || slots.map(safeTree).find(Boolean) || null;
+    return { version: 2, tree };
 }
 export function replaceMoaNode(tree, nodeId, next) {
     if (!tree) return null;
@@ -44,19 +44,4 @@ export function replaceMoaNode(tree, nodeId, next) {
     if (!first) return second;
     if (!second) return first;
     return first === tree.first && second === tree.second ? tree : { ...tree, first, second };
-}
-export function encodeMoaShare(layout) {
-    const bytes = new TextEncoder().encode(JSON.stringify({ version: 1, ...normalizeMoaLayout(layout) }));
-    const encoded = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    if (encoded.length > MOA_SHARE_LIMIT) throw new Error("This MoA link is too large.");
-    return encoded;
-}
-export function decodeMoaShare(encoded) {
-    if (typeof encoded !== "string" || !encoded || encoded.length > MOA_SHARE_LIMIT || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("Invalid MoA link.");
-    try {
-        const json = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)));
-        const data = JSON.parse(json);
-        if (data.version !== 1) throw new Error("version");
-        return normalizeMoaLayout(data);
-    } catch { throw new Error("Invalid or unsupported MoA link."); }
 }

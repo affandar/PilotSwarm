@@ -2,20 +2,14 @@
 
 ## Unreleased
 
-- Restore Tab/Shift+Tab cycling around MoA panels with automatic composer
-  focus for the active session. Remove arrow-key panel navigation.
-
-- Move MoA tabs and controls into the PilotSwarm header, capped at five
-  dashboards. Make Create New Session the first picker row and keep zoom
-  only in the panel title bar.
-
-- Simplify MoA title bars to maximize and a grouped session control panel.
-  Arrow keys now select panels; Tab/Shift+Tab toggles the panel and composer.
-  Remove Ctrl+Arrow panel shortcuts and preserve normal composer editing.
-
-- Give MoA one bottom composer bound to the focused session; retain per-panel
-  drafts and activity. Add session creation, shared session actions and details,
-  and Ctrl+Arrow spatial navigation alongside Tab cycling.
+- Make MoA one personal workspace, with no dashboard tabs, names, sharing,
+  or links. Migrate the selected populated legacy layout, falling back to the
+  first populated layout. Keep add-panel, clear, and zen icons in the header.
+- Give MoA one bottom composer bound to the focused session; Tab/Shift+Tab
+  cycles panels with automatic composer focus. Arrow keys retain native editing.
+  Add Create New Session to the picker and group session/panel controls behind
+  a sliders icon. Keep zoom in the panel title bar. Normal session sharing is
+  unchanged; MoA omits sharing and link controls.
 
 - Shrink the mobile composer after send acknowledgement changes its wrapped
   placeholder. Keep long drafts bounded and internally scrollable.
