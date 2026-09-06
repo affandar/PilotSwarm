@@ -41,7 +41,7 @@ import type {
 } from "./provider-store.js";
 import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
-import { PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -3290,36 +3290,7 @@ export class PilotSwarmManagementClient {
      * exactly what it is for.
      */
     private async _wakeProvidersPaused(providerName: string): Promise<void> {
-        const store = this._catalog?.providers;
-        if (!store || !this._duroxideClient) return;
-        try {
-            const sessionIds = await store.pausedFor(providerName);
-            for (const sessionId of sessionIds) {
-                try {
-                    // The orchestration id is DERIVED, not stored: getSession
-                    // builds this same string at its top and then returns a
-                    // view that does not carry it. Reading it back off that
-                    // view gave undefined every time, so `if (!orchId)
-                    // continue` skipped every session and this whole function
-                    // has never woken anything. Releasing a hold, raising a
-                    // limit, widening an allowance, removing a limit and
-                    // creating a provider were all silent no-ops behind the
-                    // catch below, leaving the 6-hour backstop as the only
-                    // real release.
-                    const orchId = `session-${sessionId}`;
-                    await this._catalog!.updateSession(sessionId, {
-                        state: "running", waitReason: null, lastActiveAt: new Date(),
-                    }).catch(() => {});
-                    await this._duroxideClient.enqueueEvent(orchId, "messages", JSON.stringify({
-                        prompt: PROVIDER_BUDGET_WAKE_PROMPT,
-                    }));
-                } catch {
-                    // One unreachable session must not stop the others.
-                }
-            }
-        } catch {
-            // The backstop timer still covers every one of them.
-        }
+        await wakeProviderPausedSessions(this._catalog, this._duroxideClient, providerName);
     }
 
     /**

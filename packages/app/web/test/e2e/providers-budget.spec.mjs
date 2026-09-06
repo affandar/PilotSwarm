@@ -953,3 +953,63 @@ test("a selected row shows what its used figures are made of, and every cell say
         await stub.close();
     }
 });
+
+// The HTTP model catalog names runtime pools, unlike the direct type catalog.
+test("limit model choices match runtime pool names and retain retired model caps", async ({ page }) => {
+    await withStub({ models: [
+        { catalogKind: "runtime_provider", providerId: "azure-prod", providerType: "azure-openai", modelName: "opus-new" },
+        { catalogKind: "runtime_provider", providerId: "azure-openai", providerType: "azure-openai", modelName: "other-pool-only" },
+    ] }, async (stub) => {
+        await openBudget(page, stub);
+        await selectProvider(page, "azure-prod");
+        await actions(page).getByRole("button", { name: "Edit usage policy" }).click();
+        const s = sheet(page);
+        await s.getByRole("button", { name: "one model", exact: true }).click();
+        const options = s.getByRole("combobox", { name: "Model this limit applies to" });
+        await expect(options.locator('option[value="azure-prod:opus-new"]')).toHaveCount(1);
+        await expect(options.locator('option[value="azure-prod:gpt-5.4"]')).toHaveCount(1);
+        await expect(options.locator('option[value*="other-pool-only"]')).toHaveCount(0);
+        await options.selectOption("azure-prod:opus-new");
+        await s.getByRole("textbox", { name: "Tokens" }).fill("30M");
+        await s.getByRole("button", { name: "Save limit", exact: true }).click();
+        await expect.poll(() => stub.calls.length).toBe(1);
+        expect(stub.calls[0]).toMatchObject({ op: "setProviderLimit", name: "azure-prod", body: { model: "azure-prod:opus-new", tokens: 30_000_000 } });
+    });
+});
+
+test("catalog failure preserves existing model limit removal and offers retry", async ({ page }) => {
+    const fail = { listModels: "catalog temporarily unavailable" };
+    await withStub({ fail }, async (stub) => {
+        await openBudget(page, stub);
+        await selectProvider(page, "azure-prod");
+        await actions(page).getByRole("button", { name: "Edit usage policy" }).click();
+        const s = sheet(page);
+        await expect(s.getByRole("status")).toContainText("Could not load the model catalog");
+        await s.getByRole("button", { name: "one model", exact: true }).click();
+        const options = s.getByRole("combobox", { name: "Model this limit applies to" });
+        await options.selectOption("azure-prod:gpt-5.4");
+        await expect(s.getByRole("textbox", { name: "Tokens" })).toHaveValue("5,000,000");
+        delete fail.listModels;
+        await s.getByRole("button", { name: "Retry", exact: true }).click();
+        await expect(s.getByRole("status")).toHaveCount(0);
+        await expect(options).toHaveValue("azure-prod:gpt-5.4");
+        await s.getByRole("button", { name: "Remove the Daily · azure-prod:gpt-5.4 limit", exact: true }).click();
+        await expect.poll(() => stub.calls.length).toBe(1);
+        expect(stub.calls[0]).toMatchObject({ op: "removeProviderLimit", name: "azure-prod", query: { model: "azure-prod:gpt-5.4", period: "day" } });
+    });
+});
+
+
+test("direct provider-type catalog models are qualified with the selected pool", async ({ page }) => {
+    await withStub({ models: [
+        { catalogKind: "provider_type", providerId: "azure-openai", modelName: "catalog-only-model" },
+    ] }, async (stub) => {
+        await openBudget(page, stub);
+        await selectProvider(page, "my-sandbox");
+        await actions(page).getByRole("button", { name: "Edit usage policy" }).click();
+        const s = sheet(page);
+        await s.getByRole("button", { name: "one model", exact: true }).click();
+        await expect(s.getByRole("combobox", { name: "Model this limit applies to" })
+            .locator('option[value="my-sandbox:catalog-only-model"]')).toHaveCount(1);
+    });
+});

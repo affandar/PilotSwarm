@@ -3104,7 +3104,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-input {
-  font-size: 1.25rem;
+  font-size: 16px;
   line-height: 1.25;
   /* Cap against the VISUAL viewport — the keyboard already took half the
    * screen; the transcript must keep the rest. --ps-app-height tracks
@@ -9306,3 +9306,12 @@ textarea.ps-link-input {
   color: #000;
   border-left: 2px solid #808080;
 }
+
+/* Keep the live status baseline stable without delaying completion or Stop. */
+.ps-chat-panel .ps-panel-bottom-sticky.is-reserved { min-height: calc(1.24rem + 13px); flex-shrink: 0; }
+.ps-prompt-shell.is-mobile .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
+.ps-prompt-shell.is-compact { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-compact .ps-prompt-label.is-default { display: none; }
+.ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
+.ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
+.ps-prompt-shell.is-compact .ps-send-button { min-width: 44px; min-height: 44px; }

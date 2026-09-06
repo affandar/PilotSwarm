@@ -3979,7 +3979,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4098,9 +4098,9 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme, controller })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
         ),
-        normalizedBottomSticky.length > 0
+        (normalizedBottomSticky.length > 0 || reserveBottomSticky)
             ? React.createElement("div", {
-                className: "ps-panel-bottom-sticky",
+                className: `ps-panel-bottom-sticky${reserveBottomSticky ? " is-reserved" : ""}`,
             },
                 normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
             )
@@ -6407,7 +6407,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
-function SessionComposer({ controller, onReadOnlyFocus = null }) {
+function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
     const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
@@ -6418,7 +6418,7 @@ function SessionComposer({ controller, onReadOnlyFocus = null }) {
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
-        : React.createElement(PromptComposer, { controller, mobile: false, active: true }));
+        : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus: !mobile, active: true }));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
@@ -6592,6 +6592,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         focused: viewState.focused,
         lines,
         bottomStickyLines: stickyBottom,
+        reserveBottomSticky: true,
         scrollOffset: viewState.scroll,
         scrollMode: "bottom",
         paneKey: "chat",
@@ -8688,7 +8689,7 @@ function formatAttachmentSize(sizeBytes) {
     return `${bytes} B`;
 }
 
-function PromptComposer({ controller, mobile, active = true, onAfterSend = null, autoFocus = true }) {
+function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -8720,7 +8721,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null,
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
     const selectedReadOnly = selectedQueued || selectedCancelling;
-    const placeholder = promptState.answerMode
+    const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
         ? "Type an answer and press Enter"
         : promptState.editingPending
             ? selectedCancelling
@@ -8883,7 +8884,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null,
             : "❯";
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
         ...(canAttachImages ? {
             onDragOver: (event) => {
                 if (event.dataTransfer?.types?.includes?.("Files")) {
@@ -9001,7 +9002,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null,
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            canAttachImages
+            canAttachImages && !compact
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
                         ref: attachInputRef,
@@ -9038,7 +9039,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null,
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
-            promptState.canStopTurn || stoppingTurn
+            !compact && (promptState.canStopTurn || stoppingTurn)
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
@@ -9366,7 +9367,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         }]),
     ];
 
-    if (!mobile && moa?.desktop) buttonDefs.push({
+    if (moa) buttonDefs.push({
         key: "moa", icon: React.createElement(MoaGlyph),
         label: moa.returnTo ? "Back to MoA — Master of Agents" : "Master of Agents",
         active: moa.active, disabled: !moa.loaded,
@@ -9430,8 +9431,10 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
-                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.map(renderButton)),
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.filter(def => def.key !== "moa").map(renderButton),
+                    moa ? React.createElement(IconButton, { icon: React.createElement("span", { "aria-hidden": true }, "⛶"), label: "Enter mobile zen", onClick: moa.openMobileZen }) : null),
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
+                    ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
                         key: def.id === "workspace" ? "workspace" : "diagnostics",
                         icon: React.createElement(def.icon),
@@ -10229,32 +10232,30 @@ function budgetPlural(n, one, many) {
     return `${n} ${n === 1 ? one : many}`;
 }
 
-/**
- * A model reference a session can run: `<provider>:<model>`.
- *
- * The catalog's `providerId` is the TYPE ("azure-openai"); a provider is an
- * instance of that type with a name of its own, and both a model-scoped limit
- * and a default tuple are refused by the database unless the model half names
- * the provider it belongs to.
- */
-function budgetModelsForProvider(models, provider) {
-    if (!provider?.typeId) return [];
-    return models
-        .filter((model) => model.providerId === provider.typeId)
-        .map((model) => ({
-            qualifiedName: `${provider.name}:${model.modelName}`,
-            modelName: model.modelName,
-        }));
-}
-
-/** The provider TYPES this deployment can instantiate, from its model catalog. */
-function budgetProviderTypes(models) {
-    const seen = new Map();
+/** Runtime catalogs name a pool; type catalogs name a provider template. */
+function budgetModelsForProvider(models, provider, rawRows = []) {
+    if (!provider?.name) return [];
+    const choices = new Map();
     for (const model of models) {
-        if (!model.providerId || seen.has(model.providerId)) continue;
-        seen.set(model.providerId, { id: model.providerId, type: model.providerType || model.providerId });
+        const matches = model.catalogKind === "runtime_provider"
+            ? model.providerId === provider.name
+            : model.catalogKind === "provider_type"
+                ? model.providerId === provider.typeId
+                : model.providerId === provider.name || model.providerId === provider.typeId;
+        if (!matches) continue;
+        const qualifiedName = `${provider.name}:${model.modelName}`;
+        choices.set(qualifiedName, { qualifiedName, modelName: model.modelName });
     }
-    return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
+    // Existing caps remain editable even when the catalog is unavailable or a
+    // model was retired. Never borrow a model reference from another pool.
+    for (const row of rawRows) {
+        if (row.providerName !== provider.name || row.rowKind !== "model"
+            || !String(row.scope || "").startsWith(`${provider.name}:`)) continue;
+        choices.set(row.scope, {
+            qualifiedName: row.scope, modelName: row.scope.slice(provider.name.length + 1),
+        });
+    }
+    return [...choices.values()];
 }
 
 /** listModels() is flat on the web transport and grouped on the direct one. */
@@ -10264,15 +10265,18 @@ function budgetNormalizeModels(raw) {
         : (Array.isArray(raw?.providers) ? raw.providers : (Array.isArray(raw?.models) ? raw.models : []));
     const flat = top.flatMap((entry) => (
         Array.isArray(entry?.models)
-            ? entry.models.map((model) => ({ ...model, providerId: model.providerId || entry.providerId }))
+            ? entry.models.map((model) => ({
+                ...model, providerId: model.providerId || entry.providerId,
+                catalogKind: model.catalogKind || entry.catalogKind,
+            }))
             : [entry]
     ));
     return flat
         .filter((model) => model && (model.modelName || model.qualifiedName))
         .map((model) => ({
-            modelName: model.modelName || String(model.qualifiedName).split(":").pop(),
+            modelName: model.modelName || String(model.qualifiedName).split(":").slice(1).join(":"),
             providerId: model.providerId || "",
-            providerType: model.providerType || model.providerId || "",
+            catalogKind: model.catalogKind || null,
         }));
 }
 
@@ -10810,7 +10814,7 @@ function ProviderSystemSpend({ view }) {
  * reachable.
  */
 function EditProviderSheet({
-    row, rawRows, models, isAdmin, busy, error, onCancel, onRun,
+    row, rawRows, models, modelsLoading, modelsError, onRetryModels, isAdmin, busy, error, onCancel, onRun,
     initialPeriod = "day", initialScope = "*",
 }) {
     const shared = row.class === "shared";
@@ -10954,10 +10958,13 @@ function EditProviderSheet({
                 className: "ps-budget-input", "aria-label": "Model this limit applies to",
                 value: model, onChange: (event) => setModel(event.target.value),
             }, models.length === 0
-                ? React.createElement("option", { value: "" }, "No models are listed for this provider's type")
+                ? React.createElement("option", { value: "" }, modelsLoading ? "Loading models…" : modelsError ? "Model catalog unavailable" : "No models listed for this provider")
                 : models.map((option) => React.createElement("option", {
                     key: option.qualifiedName, value: option.qualifiedName,
-                }, option.qualifiedName))) : null),
+                }, option.qualifiedName))) : null,
+            modelsError ? React.createElement("div", { className: "ps-budget-note is-warn", role: "status" },
+                "Could not load the model catalog. Existing model limits remain editable. ",
+                React.createElement("button", { type: "button", onClick: onRetryModels, disabled: modelsLoading }, "Retry")) : null),
         React.createElement(SheetField, {
             label: "Tokens",
             hint: parsed
@@ -11743,6 +11750,9 @@ function ProviderBudgetView({ controller }) {
     // a failure is not fatal — the controls that need it say they have nothing
     // to offer.
     const [models, setModels] = React.useState([]);
+    const [modelsLoading, setModelsLoading] = React.useState(true);
+    const [modelsError, setModelsError] = React.useState(false);
+    const [modelsRequest, setModelsRequest] = React.useState(0);
     const [providerTypes, setProviderTypes] = React.useState(new Map());
     const [defaults, setDefaults] = React.useState(null);
     const readDefaults = React.useCallback(() => {
@@ -11753,11 +11763,14 @@ function ProviderBudgetView({ controller }) {
     }, [controller]);
     React.useEffect(() => {
         let live = true;
-        if (typeof controller.transport.listModels === "function") {
-            Promise.resolve(controller.transport.listModels())
-                .then((rows) => { if (live) setModels(budgetNormalizeModels(rows)); })
-                .catch(() => {});
-        }
+        setModelsLoading(true);
+        Promise.resolve().then(() => {
+            if (typeof controller.transport.listModels !== "function") throw new Error("Model catalog unavailable");
+            return controller.transport.listModels();
+        }).then((rows) => {
+            if (live) { setModels(budgetNormalizeModels(rows)); setModelsError(false); }
+        }).catch(() => { if (live) setModelsError(true); })
+            .finally(() => { if (live) setModelsLoading(false); });
         if (typeof controller.transport.listProviders === "function") {
             Promise.resolve(controller.transport.listProviders())
                 .then((rows) => {
@@ -11770,7 +11783,7 @@ function ProviderBudgetView({ controller }) {
         }
         readDefaults();
         return () => { live = false; };
-    }, [controller, readDefaults]);
+    }, [controller, readDefaults, modelsRequest]);
 
     // Opened by the toolbar, which loads it. Mounting with nothing behind it —
     // a restored state, a second mount — reads once rather than showing zeros.
@@ -11855,13 +11868,14 @@ function ProviderBudgetView({ controller }) {
     const modelsForSelected = selected
         ? budgetModelsForProvider(models, {
             name: selected.providerName, typeId: providerTypes.get(selected.providerName) || "",
-        })
+        }, rawRows)
         : [];
 
     let sheetEl = null;
     if (sheet?.kind === "edit" && selectedProvider) {
         sheetEl = React.createElement(EditProviderSheet, {
             row: selectedProvider, rawRows, models: modelsForSelected, isAdmin: view.isAdmin,
+            modelsLoading, modelsError, onRetryModels: () => setModelsRequest((value) => value + 1),
             // MAJOR 17: the sheet opens on the limit the reader was standing
             // on, rather than always on Daily / all models.
             initialPeriod: sheet.period || "day",

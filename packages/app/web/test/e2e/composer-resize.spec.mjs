@@ -31,14 +31,14 @@ for (const browserName of ["chromium", "webkit"]) {
                 await expect.poll(height).toBeGreaterThan(idleHeight);
                 await page.getByRole("button", { name: "Send prompt", exact: true }).click();
                 await expect(input).toHaveValue("");
-                await expect(input).toHaveAttribute("placeholder", /pending batch/);
-                await expect.poll(height).toBeGreaterThan(idleHeight);
+                await expect(input).toHaveAttribute("placeholder", "Message…");
+                await expect.poll(height).toBeLessThanOrEqual(idleHeight + 1);
                 await expect.poll(() => Boolean(sent)).toBe(true);
                 socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: {
                     sessionId, seq: 1, eventType: "user.message", createdAt: Date.now(),
                     data: { content: prompt, clientMessageIds: sent.clientMessageIds },
                 } }));
-                await expect(input).toHaveAttribute("placeholder", "Type a message and press Enter");
+                await expect(input).toHaveAttribute("placeholder", "Message…");
                 await expect.poll(height).toBeLessThanOrEqual(idleHeight + 1);
                 // A huge draft still caps and scrolls, then deleting it shrinks.
                 await input.fill("Long draft with soft wrapped lines. ".repeat(150));

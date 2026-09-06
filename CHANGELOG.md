@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Align desktop Zen restore at the right edge in a shorter strip; show panel
+  title-bar controls only for the focused panel, with a brighter theme-aware ring.
+
+- Add mobile Zen with a session dropdown, restore button, and compact composer.
+- Bring the personal MoA workspace to phones: one panel at a time, a minimap
+  preserving saved desktop geometry, and clockwise/reverse swipe navigation.
+  Keep drafts and scroll positions while switching; protect native horizontal
+  scrolling and retain a full-sized selection list for tiny map panels.
+- Use a short mobile composer placeholder and matching 16px input text.
+- Reject stale status snapshots in both directions, preserve status ordering
+  through detail polling, and reserve the chat status baseline to prevent flicker.
+- Match budget models to runtime provider pools, retain existing capped models
+  without a catalog, and expose catalog errors with retry. Agent-driven budget
+  changes now wake affected paused sessions to recheck admission.
+
+
 ## 0.5.60 — 2026-09-06
 
 Personal desktop Master of Agents, session-navigation reliability, and chat UX.
