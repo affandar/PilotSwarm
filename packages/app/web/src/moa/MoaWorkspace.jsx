@@ -59,9 +59,20 @@ export function useMoa(controller) {
 
 function Modal({ title, onClose, children, hideHeader = false, dismissible = true }) {
     const ref = React.useRef(null), closeRef = React.useRef(onClose); closeRef.current = dismissible ? onClose : () => {};
+    React.useLayoutEffect(() => {
+        const viewport = window.visualViewport;
+        const update = () => {
+            const backdrop = ref.current?.parentElement;
+            if (!backdrop || !viewport) return;
+            Object.assign(backdrop.style, { top: `${viewport.offsetTop}px`, left: `${viewport.offsetLeft}px`, width: `${viewport.width}px`, height: `${viewport.height}px`, bottom: "auto", right: "auto" });
+            backdrop.style.setProperty("--ps-moa-viewport-height", `${viewport.height}px`);
+        };
+        update(); viewport?.addEventListener("resize", update); viewport?.addEventListener("scroll", update);
+        return () => { viewport?.removeEventListener("resize", update); viewport?.removeEventListener("scroll", update); };
+    }, []);
     React.useEffect(() => {
         const previous = document.activeElement;
-        (ref.current?.querySelector("input:not(:disabled)") || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus();
+        ((window.innerWidth > MOA_BREAKPOINT && ref.current?.querySelector("input:not(:disabled)")) || ref.current?.querySelector("button:not(:disabled),select:not(:disabled)"))?.focus({ preventScroll: true });
         const key = e => {
             if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeRef.current(); }
             if (e.key !== "Tab") return;

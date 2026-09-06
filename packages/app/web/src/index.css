@@ -3065,6 +3065,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-label {
+  align-self: center;
   padding: 0 2px 0 0;
 }
 
@@ -4337,7 +4338,9 @@ body.is-resizing-pane-y iframe {
    inline left/top are the button's horizontal center and the chosen edge. */
 .ps-icon-tooltip {
   position: fixed;
-  max-width: 220px;
+  max-width: min(220px, calc(100vw - 12px));
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
   white-space: normal;
   text-align: center;
   background: var(--ps-foreground);

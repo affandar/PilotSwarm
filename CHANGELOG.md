@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Align the mobile composer label and input; move Zen entry to the chat header.
+  Keep the MoA session picker usable above the phone keyboard and measure
+  wrapped tooltips against the visible viewport.
+
 - Align desktop Zen restore at the right edge in a shorter strip; show panel
   title-bar controls only for the focused panel, with a brighter theme-aware ring.
 

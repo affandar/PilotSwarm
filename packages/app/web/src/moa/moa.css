@@ -134,3 +134,19 @@
 :root[data-ps-theme="ms-dos"] .ps-moa-panel.is-focused { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
 .ps-moa-icon-button.ps-moa-zen-exit { align-self: flex-end; margin-right: 4px; width: 36px; height: 20px; min-height: 20px; padding: 1px 8px; border-radius: 0 0 4px 4px; }
 .ps-moa-zen-exit svg { width: 14px; height: 14px; }
+
+/* A definite picker height avoids Safari shrinking its flex list to zero.
+   The body portal follows the visual viewport when the keyboard opens. */
+.ps-moa-backdrop { box-sizing: border-box; }
+.ps-moa-dialog:has(.ps-moa-session-picker) { height: min(850px, calc(var(--ps-moa-viewport-height, 100dvh) - 40px)); }
+.ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 40px); }
+.ps-moa-dialog > .ps-moa-session-picker { flex: 1 1 0; height: auto; min-height: 0; }
+.ps-moa-session-picker > .ps-panel-header, .ps-moa-picker-detail { flex-shrink: 0; }
+.ps-moa-session-picker .ps-panel-body > .ps-session-list { min-height: 0; flex: 1 1 0; }
+@media (max-width: 920px) {
+  .ps-moa-dialog:has(.ps-moa-session-picker) { height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-session-picker .ps-session-detail-box { max-height: min(100px, calc(var(--ps-moa-viewport-height, 100dvh) * .15)); }
+  .ps-moa-picker-detail { padding: 6px 10px; gap: 4px; }
+  .ps-moa-session-picker .ps-modal-input { font-size: 16px; }
+}

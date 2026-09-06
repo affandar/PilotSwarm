@@ -6421,7 +6421,7 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus: !mobile, active: true }));
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -6587,7 +6587,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
-        actions: null,
+        actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
         color: chrome.color,
         focused: viewState.focused,
         lines,
@@ -6942,7 +6942,7 @@ function useKeyboardTakeover(enabled) {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split" }) {
+function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
     const sessionPane = React.createElement(SessionPane, {
         controller,
         panelClassName: "ps-mobile-session-pane",
@@ -6950,7 +6950,7 @@ function MobileWorkspace({ controller, layout = "split" }) {
     if (layout === "chat") {
         return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
             React.createElement("div", { className: "ps-mobile-chat-pane" },
-                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true })));
+                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
     }
     if (layout === "sessions") {
         return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
@@ -6963,7 +6963,7 @@ function MobileWorkspace({ controller, layout = "split" }) {
     return React.createElement("div", { className: "ps-mobile-workspace" },
         sessionPane,
         React.createElement("div", { className: "ps-mobile-chat-pane" },
-            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true })));
+            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
 }
 
 /** Frame-and-easel glyph for the Canvas toggle. */
@@ -9095,14 +9095,24 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     const timerRef = React.useRef(null);
     const longPressRef = React.useRef(false);
 
-    // Keep the tooltip within the viewport horizontally — the leftmost/rightmost
-    // buttons would otherwise clip off the edge (the tooltip is center-anchored).
+    // Measure wrapped text against the visual viewport, including the keyboard.
     React.useLayoutEffect(() => {
-        if (!tip || !tipRef.current || typeof window === "undefined") return;
-        const half = tipRef.current.offsetWidth / 2;
-        const margin = 6;
-        const clampedX = Math.max(half + margin, Math.min(tip.x, window.innerWidth - half - margin));
-        tipRef.current.style.left = `${clampedX}px`;
+        if (!tip || !tipRef.current || !btnRef.current) return;
+        const el = tipRef.current, viewport = window.visualViewport;
+        const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+        const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+        const margin = 6, r = btnRef.current.getBoundingClientRect();
+        el.style.width = "max-content";
+        el.style.maxWidth = `${Math.min(220, width - 2 * margin)}px`;
+        el.style.maxHeight = `${height - 2 * margin}px`;
+        const box = el.getBoundingClientRect();
+        let below = tip.placement === "below";
+        if (!below && r.top - box.height - margin < top) below = true;
+        if (below && r.bottom + box.height + margin > top + height && r.top - box.height - margin >= top) below = false;
+        const x = Math.max(left + margin, Math.min(r.left + r.width / 2 - box.width / 2, left + width - box.width - margin));
+        const y = Math.max(top + margin, Math.min(below ? r.bottom + margin : r.top - box.height - margin, top + height - box.height - margin));
+        el.style.transform = "none";
+        el.style.left = `${x}px`; el.style.top = `${y}px`;
     }, [tip]);
 
     const reveal = (preferAbove = false) => {
@@ -9431,8 +9441,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
-                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.filter(def => def.key !== "moa").map(renderButton),
-                    moa ? React.createElement(IconButton, { icon: React.createElement("span", { "aria-hidden": true }, "⛶"), label: "Enter mobile zen", onClick: moa.openMobileZen }) : null),
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.filter(def => def.key !== "moa").map(renderButton)),
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
                     ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
@@ -15008,7 +15017,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout });
+    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the

@@ -1,7 +1,7 @@
 # Mobile focus views
 
-The normal phone toolbar has a full-screen icon for mobile Zen and the Master
-of Agents icon for the personal MoA layout. These browser features do not add
+The phone chat header has a full-screen icon beside its status for mobile Zen.
+The normal phone toolbar has the Master of Agents icon for the personal MoA layout. These browser features do not add
 controls to the TUI.
 
 Mobile Zen shows only a restore icon, a session dropdown, the transcript and a
