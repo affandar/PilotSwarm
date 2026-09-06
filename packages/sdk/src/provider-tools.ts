@@ -35,6 +35,7 @@ import type { SessionCatalog } from "./cms.js";
 import type { ProviderStore, ChargeClass } from "./provider-store.js";
 import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
+import { wakeProviderPausedSessions, type ProviderWakeClient } from "./provider-wake.js";
 
 /**
  * Agent ids that hold these tools.
@@ -72,6 +73,8 @@ const MAX_BREAKDOWN_LIMIT = 200;
 
 export interface CreateProviderToolsOptions {
     catalog: SessionCatalog;
+    /** Worker queue client: budget changes wake parked work after authorization. */
+    duroxideClient?: ProviderWakeClient;
     /**
      * Resolved per call, never stamped at session start: a session outlives
      * the role that created it, so caching would let a demoted administrator
@@ -614,6 +617,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
                 secretRef: args.credentials ?? null,
                 baseUrl: text(args.base_url),
             }, v.userId, v.isAdmin);
+            await wakeProviderPausedSessions(catalog, opts.duroxideClient, args.name);
             return created;
         }),
 
@@ -625,21 +629,30 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
         }) => call("set_provider_limit", async (store, v) => {
             const model = text(args.model);
             if (args.tokens === null || args.tokens === undefined) {
-                return { removed: await store.removeLimit(args.provider, args.period, model, v.userId, v.isAdmin) };
+                const removed = await store.removeLimit(args.provider, args.period, model, v.userId, v.isAdmin);
+                await wakeProviderPausedSessions(catalog, opts.duroxideClient, args.provider);
+                return { removed };
             }
-            return store.setLimit({
+            const tokens = Number(args.tokens);
+            if (!Number.isSafeInteger(tokens) || tokens < 0) {
+                throw new ProviderError("PROVIDER_INVALID", "A limit is a whole number of tokens, zero or more.");
+            }
+            const saved = await store.setLimit({
                 name: args.provider,
                 period: args.period,
                 modelQualified: model,
-                limitTokens: Number(args.tokens),
+                limitTokens: tokens,
             }, v.userId, v.isAdmin);
+            await wakeProviderPausedSessions(catalog, opts.duroxideClient, args.provider);
+            return saved;
         }),
 
         set_provider_allowance: async (args: { provider: string; pct: number }) =>
-            call("set_provider_allowance", async (store, v) => ({
-                name: args.provider,
-                allowancePct: await store.setAllowance(args.provider, Number(args.pct), v.userId, v.isAdmin),
-            })),
+            call("set_provider_allowance", async (store, v) => {
+                const allowancePct = await store.setAllowance(args.provider, Number(args.pct), v.userId, v.isAdmin);
+                await wakeProviderPausedSessions(catalog, opts.duroxideClient, args.provider);
+                return { name: args.provider, allowancePct };
+            }),
 
         provider_hold: async (args: { provider: string; action: "hold" | "release"; until_utc?: string }) =>
             call("provider_hold", async (store, v) => {
@@ -647,6 +660,7 @@ export function createProviderTools(opts: CreateProviderToolsOptions): Tool<any>
                 const untilUtc = release ? null : text(args.until_utc);
                 const indefinite = !release && !untilUtc;
                 await store.setHold(args.provider, { untilUtc, indefinite }, v.userId, v.isAdmin);
+                await wakeProviderPausedSessions(catalog, opts.duroxideClient, args.provider);
                 return { name: args.provider, holdUntilUtc: untilUtc, holdIndefinite: indefinite };
             }),
 

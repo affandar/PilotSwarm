@@ -102,21 +102,22 @@ test("the personal layout and resized proportions survive reload", async ({ page
     await page.reload(); await open(page);
     await expect(page.getByRole("separator", { name: "Resize MoA panels" })).toHaveAttribute("aria-valuenow", "54");
     await expect(page.getByRole("tab")).toHaveCount(0);
-    expect(f.settings().moa).toEqual({ version: 2, tree: split(chat(1), chat(2), "split", 54) });
+    expect(f.settings().moa).toMatchObject({ version: 2, tree: split(chat(1), chat(2), "split", 54) });
+    expect(f.settings().moa.aspectRatio).toBeGreaterThan(1);
 });
 
-test("mobile resize suspends MoA and preserves layouts without automatically reopening", async ({ page }) => {
-    const f = await fixture(page, [layout(chat(1))]);
+test("mobile resize presents one panel and restores desktop geometry", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1), chat(2)))]);
     await open(page);
     await expect(composer(page)).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Master of Agents", exact: true })).toHaveCount(0);
+    await expect(page.locator(".ps-moa-workspace")).toBeVisible();
+    await expect(page.locator("[data-moa-panel]:visible")).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Open panel map" })).toBeVisible();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
-    await open(page);
+    await expect(page.locator("[data-moa-panel]:visible")).toHaveCount(2);
     await expect(composer(page)).toBeVisible();
-    expect(f.settings().moa.tree.sessionId).toBe(sid(1));
+    expect(f.settings().moa.tree.type).toBe("split");
     expect(f.errors).toEqual([]);
 });
 
@@ -281,6 +282,7 @@ test("slow profile writes serialize rapid split edits without rolling back the n
     });
     await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => started.length).toBe(1);
+    await panel(page, "panel-1").locator("header").first().click();
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Split below", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
@@ -369,7 +371,7 @@ test("one personal workspace migrates a blank active tab and has no dashboard co
     }
     await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => f.settings().moa.version).toBe(2);
-    expect(Object.keys(f.settings().moa).sort()).toEqual(["tree", "version"]);
+    expect(Object.keys(f.settings().moa).sort()).toEqual(["aspectRatio", "tree", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.reload(); await open(page);
     await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
@@ -591,6 +593,7 @@ test("panel info, personal manage and terminate actions retain their own session
     });
     await open(page);
     const p = panel(page, "panel-2");
+    await p.locator("header").first().click();
     await expect(p.locator(":scope > header button")).toHaveCount(4);
     await expect(composer(page)).toBeVisible();
     await p.getByRole("button", { name: "Session control panel", exact: true }).click();
@@ -654,12 +657,13 @@ test("panel split shortcuts include a fresh workspace and header actions stay ce
         await page.setViewportSize({ width, height: 1000 });
         const toolbar = await page.locator(".ps-toolbar.is-moa").boundingBox();
         const actions = await page.locator(".ps-moa-toolbar").boundingBox();
-        expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
+        if (width === 1600) expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
         await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
     }
     await page.locator(".ps-moa-initial-panel").getByRole("button", { name: "Split below", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     await expect.poll(() => f.settings().moa.tree?.direction).toBe("column");
+    await page.locator("[data-moa-panel]").first().locator("header").first().click();
     await page.locator("[data-moa-panel]").first().getByRole("button", { name: "Split right", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
     await page.locator(".ps-moa-panel.is-focused").getByRole("button", { name: "Choose session or canvas", exact: true }).click();

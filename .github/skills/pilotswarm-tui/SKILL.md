@@ -93,7 +93,13 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the portal desktop Sessions column, row data is structured: title and collapse count stay on the primary line, timestamps/member counts render as muted metadata, cron/context badges render on their own badge line, and the selected row may reveal richer status/model/context metadata. Mobile Main Sessions keeps the flattened clipped single-line row path; mobile Chat Focus Sessions may use the same structured rows as desktop, with horizontal scrolling where needed. Keep the native TUI flattening path available for terminal rows.
 - System session actions are restart actions: Done prompts for `Complete & Restart`, Cancel prompts for `Terminate & Restart`, and Delete prompts for `Hard Delete & Restart`. They all route through `restartSystemSession`, not ordinary `completeSession` / `cancelSession` / `deleteSession`. In the portal Sessions pane, the ordinary `Terminate` button becomes `Restart` for system sessions and opens a disposition picker with those three restart choices.
 - In the chat pane, `s` toggles between the transcript and the current session summary view; keep the portal top-toolbar `Summary` / `Chat` toggle and TUI keybinding help in sync. Do not add a second Chat/Summary control inside the chat pane header. Summary and group details are read-only views: the portal hides/disables the prompt composer and suppresses transient live-progress labels there.
-- On mobile portal layouts, the top toolbar stays on exactly two rows: `New/Model/Switch/Filter` on row 1, and `Theme/Chat-or-Summary/Focus/Admin` on row 2. Portal connection/status text lives in the app header under the version pill, not in the toolbar.
+- On mobile portal layouts, the normal workspace toolbar stays on exactly two
+  rows. It includes New, Model, Switch, Filter, Theme, Chat-or-Summary, Focus,
+  Master of Agents, and Admin when the viewer has access. Portal
+  connection/status text lives in the app header under the version pill, not
+  in the toolbar. Mobile Zen replaces that toolbar with only restore and the
+  shared session picker; mobile MoA shows one panel at a time with its map and
+  focused-panel controls.
 - Theme picker selection previews immediately in both portal and shared UI state. `Apply Theme` commits the previewed theme; `Cancel`, `Close`, backdrop click, or `Esc` restores the theme that was active when the picker opened.
 - In chat-focus mode, the Sessions pane supports horizontal scrolling so long session titles are fully readable; do not force focus-mode session rows to truncate with ellipses.
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.

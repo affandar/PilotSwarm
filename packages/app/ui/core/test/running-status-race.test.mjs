@@ -11,6 +11,8 @@ import {
     appReducer,
     canStopSessionTurn,
     selectLiveActivityLines,
+    createStore,
+    PilotSwarmUiController,
 } from "../src/index.js";
 
 const T0 = 1_700_000_000_000;
@@ -177,4 +179,159 @@ test("without statusVersions the timestamp fallback still applies", () => {
         sessions: [{ sessionId: "s1", title: "T", status: "idle", updatedAt: T0 + 5_000 }],
     });
     assert.equal(statusOf(state), "running", "same-timestamp downgrade held when no versions");
+});
+
+// Reverse race reported on mobile: idle v6 -> stale running v5 -> idle v6.
+// Test both network paths and observe the actual footer/Stop selectors.
+for (const actionType of ["sessions/loaded", "sessions/merged"]) {
+    function apply(state, session) {
+        const row = { sessionId: "s1", title: "T", ...session };
+        return appReducer(state, actionType === "sessions/loaded"
+            ? { type: actionType, sessions: [row] }
+            : { type: actionType, session: row });
+    }
+    test(`${actionType}: older running cannot revive idle, even with a newer timestamp`, () => {
+        let state = withSession({ status: "idle", statusVersion: 6, updatedAt: T0 });
+        for (const session of [
+            { status: "running", statusVersion: 5, updatedAt: T0 + 5000 },
+            { status: "idle", statusVersion: 6, updatedAt: T0 },
+            { status: "running", statusVersion: 6, updatedAt: T0 + 9000 },
+        ]) {
+            state = apply(state, session);
+            assert.equal(statusOf(state), "idle");
+            assert.equal(state.sessions.byId.s1.statusVersion, 6);
+            assert.equal(canStopSessionTurn(state.sessions.byId.s1), false);
+            assert.equal(selectLiveActivityLines(state, { spinnerFrame: "*", now: T0 + 6000 }).length, 0);
+        }
+    });
+
+    test(`${actionType}: a rejected update must not lower the version or change run controls`, () => {
+        const question = { question: "Proceed?" };
+        const pause = { reason: "limit", scope: "model" };
+        let state = withSession({ status: "input_required", statusVersion: 8, updatedAt: T0,
+            pendingQuestion: question, waitReason: "Your answer", pauseState: pause });
+        state = apply(state, { status: "idle", statusVersion: 5, updatedAt: T0 - 500,
+            pendingQuestion: null, pauseState: null, waitReason: null });
+        state = apply(state, { status: "running", statusVersion: 7, updatedAt: T0 + 500 });
+        assert.equal(statusOf(state), "input_required");
+        assert.equal(state.sessions.byId.s1.statusVersion, 8);
+        assert.equal(state.sessions.byId.s1.updatedAt, T0);
+        assert.deepEqual(state.sessions.byId.s1.pendingQuestion, question);
+        assert.deepEqual(state.sessions.byId.s1.pauseState, pause);
+        assert.equal(state.sessions.byId.s1.waitReason, "Your answer");
+    });
+
+    test(`${actionType}: genuine new turns and completion outrank timestamps`, () => {
+        let state = withSession({ status: "idle", statusVersion: 6, updatedAt: T0 + 9000 });
+        state = apply(state, { status: "running", statusVersion: 7, updatedAt: T0 });
+        assert.equal(statusOf(state), "running");
+        assert.equal(canStopSessionTurn(state.sessions.byId.s1), true);
+        for (const terminal of ["completed", "failed", "cancelled", "error"]) {
+            const older = apply(state, { status: terminal, statusVersion: 6, updatedAt: T0 + 9999 });
+            assert.equal(statusOf(older), "running", "old terminal belongs to a previous turn");
+            const equal = apply(state, { status: terminal, statusVersion: 7, updatedAt: T0 });
+            assert.equal(statusOf(equal), terminal, "terminal orchestration state can precede a new custom-status write");
+            const next = apply(state, { status: terminal, statusVersion: 8, updatedAt: T0 - 100 });
+            assert.equal(statusOf(next), terminal);
+            assert.equal(canStopSessionTurn(next.sessions.byId.s1), false);
+        }
+    });
+}
+
+test("absent and invalid counters cannot erase the known version; unversioned live events still land", () => {
+    for (const statusVersion of [undefined, null, "", 0, -1, NaN, false, 1.5]) {
+        let state = withSession({ status: "idle", statusVersion: 6, updatedAt: T0 });
+        state = appReducer(state, { type: "sessions/merged", session: {
+            sessionId: "s1", status: "running", statusVersion,
+        } });
+        assert.equal(statusOf(state), "running", String(statusVersion));
+        assert.equal(state.sessions.byId.s1.statusVersion, 6);
+        state = appReducer(state, { type: "sessions/merged", session: {
+            sessionId: "s1", status: "idle", statusVersion: 7, updatedAt: T0 - 5000,
+        } });
+        assert.equal(statusOf(state), "idle", "the next server version must still finish the turn");
+    }
+});
+
+test("legacy stale running is rejected without blocking a new turn", () => {
+    let state = withSession({ status: "idle", updatedAt: T0 });
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", status: "running", updatedAt: T0 - 1000,
+    } });
+    assert.equal(statusOf(state), "idle");
+    assert.equal(state.sessions.byId.s1.updatedAt, T0);
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", status: "running", updatedAt: T0 + 1000,
+    } });
+    assert.equal(statusOf(state), "running");
+});
+
+test("detail sync keeps unchanged version metadata on a conflicting status patch", async () => {
+    const store = createStore(appReducer, withSession({ status: "idle", statusVersion: 6, updatedAt: T0 }));
+    let detail = { sessionId: "s1", status: "running", statusVersion: 6, updatedAt: T0 };
+    const controller = new PilotSwarmUiController({ store, transport: { getSession: async () => detail } });
+    await controller.syncSessionDetail("s1");
+    assert.equal(statusOf(store.getState()), "idle");
+    detail = { ...detail, statusVersion: 7 };
+    await controller.syncSessionDetail("s1");
+    assert.equal(statusOf(store.getState()), "running");
+    detail = { ...detail, status: "idle", statusVersion: 8 };
+    await controller.syncSessionDetail("s1");
+    assert.equal(statusOf(store.getState()), "idle");
+});
+
+test("status reconciliation preserves per-session outbox items and unrelated metadata", () => {
+    let state = withSession({ status: "running", statusVersion: 7, updatedAt: T0 });
+    const items = [{ id: "q1", sessionId: "s1", text: "Next task", phase: "queued" }];
+    state = appReducer(state, { type: "outbox/setSessionItems", sessionId: "s1", items });
+    const outbox = state.outbox;
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", title: "Renamed", status: "idle", statusVersion: 6,
+    } });
+    assert.equal(state.outbox, outbox);
+    assert.equal(state.sessions.byId.s1.title, "Renamed");
+    assert.equal(canStopSessionTurn(state.sessions.byId.s1), true);
+});
+
+
+test("an unversioned start at the same timestamp still enables Stop", () => {
+    let state = withSession({ status: "idle", updatedAt: T0 });
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", status: "running", updatedAt: T0,
+    } });
+    assert.equal(canStopSessionTurn(state.sessions.byId.s1), true);
+});
+
+
+for (const [name, initial, expected] of [
+    ["durable wait", { status: "waiting", waitReason: "Budget cap" }, { waitReason: null }],
+    ["input question", { status: "input_required", pendingQuestion: { question: "Proceed?" } }, { pendingQuestion: null }],
+    ["cron wait", { status: "waiting", cronActive: true, cronReason: "Later", cronInterval: 60 },
+        { cronActive: false, cronReason: null, cronInterval: null }],
+]) {
+    test(`detail sync ends ${name} on a newer version with an older timestamp`, async () => {
+        const store = createStore(appReducer, withSession({ ...initial, statusVersion: 6, updatedAt: T0 + 2000 }));
+        const detail = { sessionId: "s1", status: "idle", statusVersion: 7, updatedAt: T0 + 1000, cronActive: false };
+        const controller = new PilotSwarmUiController({ store, transport: { getSession: async () => detail } });
+        await controller.syncSessionDetail("s1");
+        for (const [key, value] of Object.entries({ status: "idle", statusVersion: 7, ...expected })) {
+            assert.deepEqual(store.getState().sessions.byId.s1[key], value, key);
+        }
+        // Repeated list/detail reads cannot cement a rewritten waiting v7.
+        store.dispatch({ type: "sessions/loaded", sessions: [detail] });
+        await controller.syncSessionDetail("s1");
+        assert.equal(statusOf(store.getState()), "idle");
+    });
+}
+
+test("a same-version duplicate cannot lower the timestamp and admit a stale legacy start", () => {
+    let state = withSession({ status: "idle", statusVersion: 6, updatedAt: T0 + 2000 });
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", status: "idle", statusVersion: 6, updatedAt: T0,
+    } });
+    assert.equal(state.sessions.byId.s1.updatedAt, T0 + 2000);
+    state = appReducer(state, { type: "sessions/merged", session: {
+        sessionId: "s1", status: "running", updatedAt: T0 + 1000,
+    } });
+    assert.equal(statusOf(state), "idle");
 });

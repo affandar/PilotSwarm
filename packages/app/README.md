@@ -263,6 +263,7 @@ Docs: [Quick Start](https://github.com/affandar/pilotswarm/blob/main/docs/quicks
 
 ## Master of Agents
 
-The desktop portal includes a personal multi-session workspace with resizable
-chat/canvas panels, one focused composer, and zen mode. Layouts save automatically.
+The portal includes a personal multi-session workspace with resizable desktop
+chat/canvas panels, one focused composer, and zen mode. Phones show one panel
+at a time with a layout minimap and swipe navigation. Layouts save automatically.
 See the [MoA guide](https://github.com/affandar/PilotSwarm/blob/main/docs/user-guide/master-of-agents.md).

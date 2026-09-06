@@ -870,3 +870,43 @@ describe("the provider list describes each provider truthfully", () => {
         expect(rows).toEqual([{ name: "team", usable_by_me: true }]);
     });
 });
+
+// Drive the agent handler through the real SQL authority and admission gate.
+describe("agent budget release", () => {
+    it("wakes only the authorized pool and still enforces remaining caps before admitting", async () => {
+        const { ProviderStore } = await import("../../src/provider-store.ts");
+        const { createProviderTools } = await import("../../src/provider-tools.ts");
+        const { PROVIDER_BUDGET_WAKE_PROMPT } = await import("../../src/provider-budgets.ts");
+        const alice = await makeUser("alice"), bob = await makeUser("bob");
+        await createPersonal("alice-pool", alice);
+        await createPersonal("bob-pool", bob);
+        await createShared("team");
+        for (const [id, provider, owner] of [["a", "alice-pool", alice], ["b", "bob-pool", bob], ["t", "team", alice]]) {
+            await makeSession(id, { model: `${provider}:opus`, userId: owner });
+            await setLimit(provider, "month", `${provider}:opus`, 10, { actor: owner, isAdmin: true });
+            await settle(id, 0, { provider, model: `${provider}:opus`, owner, input: 20 });
+            expect((await check(id)).verdict).toBe("paused");
+        }
+        await setLimit("alice-pool", "day", null, 10, { actor: alice });
+        const store = new ProviderStore(pool, SCHEMA);
+        const wakes = [];
+        const tools = new Map(createProviderTools({
+            catalog: { providers: store }, resolveViewer: () => ({ userId: alice, isAdmin: false }),
+            duroxideClient: { enqueueEvent: async (id, queue, payload) => wakes.push({ id, queue, payload }) },
+        }).map((tool) => [tool.name, tool]));
+        const remove = (provider, period, model) => tools.get("set_provider_limit").handler({ provider, period, model, tokens: null });
+        expect(await remove("bob-pool", "month", "bob-pool:opus")).toMatchObject({ code: "PROVIDER_NOT_FOUND" });
+        expect(await remove("team", "month", "team:opus")).toMatchObject({ code: "PROVIDER_FORBIDDEN" });
+        expect(wakes).toEqual([]);
+        expect(await remove("alice-pool", "month", "alice-pool:opus")).toEqual({ removed: true });
+        expect(wakes).toEqual([{ id: "session-a", queue: "messages", payload: JSON.stringify({ prompt: PROVIDER_BUDGET_WAKE_PROMPT }) }]);
+        expect((await check("a")).verdict).toBe("paused");
+        expect(await remove("alice-pool", "day", undefined)).toEqual({ removed: true });
+        expect((await check("a")).verdict).toBe("clear");
+        expect((await check("b")).verdict).toBe("paused");
+        expect((await check("t")).verdict).toBe("paused");
+        expect(wakes).toHaveLength(2);
+        await remove("alice-pool", "day", undefined);
+        expect(wakes).toHaveLength(2);
+    });
+});

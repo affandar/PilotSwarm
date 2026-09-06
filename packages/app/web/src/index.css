@@ -3065,6 +3065,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-label {
+  align-self: center;
   padding: 0 2px 0 0;
 }
 
@@ -3104,7 +3105,7 @@ body.is-resizing-pane-y iframe {
 }
 
 .ps-prompt-shell.is-mobile .ps-prompt-input {
-  font-size: 1.25rem;
+  font-size: 16px;
   line-height: 1.25;
   /* Cap against the VISUAL viewport — the keyboard already took half the
    * screen; the transcript must keep the rest. --ps-app-height tracks
@@ -4337,7 +4338,9 @@ body.is-resizing-pane-y iframe {
    inline left/top are the button's horizontal center and the chosen edge. */
 .ps-icon-tooltip {
   position: fixed;
-  max-width: 220px;
+  max-width: min(220px, calc(100vw - 12px));
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
   white-space: normal;
   text-align: center;
   background: var(--ps-foreground);
@@ -9305,4 +9308,47 @@ textarea.ps-link-input {
   background: #fff;
   color: #000;
   border-left: 2px solid #808080;
+}
+
+/* Keep the live status baseline stable without delaying completion or Stop. */
+.ps-chat-panel .ps-panel-bottom-sticky.is-reserved { min-height: calc(1.24rem + 13px); flex-shrink: 0; }
+.ps-prompt-shell.is-mobile .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
+.ps-prompt-shell.is-compact { grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.ps-prompt-shell.is-compact .ps-prompt-label.is-default { display: none; }
+.ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
+.ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
+.ps-prompt-shell.is-compact .ps-send-button { min-width: 44px; min-height: 44px; }
+
+/* Let toolbar groups use their actual width before centering them. Equal
+   zero-minimum rails allowed the right-hand icons to paint over the center. */
+@media (min-width: 921px) {
+  .portal-header-brand { max-width: min(28vw, 320px); }
+  .portal-header-slot { container: header-tools / inline-size; }
+  .ps-toolbar:not(.is-mobile) {
+    grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+    column-gap: 12px;
+  }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; overflow: hidden; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-button { flex-shrink: 0; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: max-content; }
+}
+@container header-tools (max-width: 760px) {
+  .ps-toolbar:not(.is-mobile) { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left:empty { display: none; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-actions { margin-inline: auto; flex: 0 0 auto; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { margin-left: auto; flex-wrap: wrap; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 100px; }
+}
+/* A pane can be narrow even on a wide monitor. Give its title a full row
+   before moving the intact action buttons below it; never crop the actions. */
+.ps-session-pane { container: session-pane / inline-size; }
+@container session-pane (max-width: 360px) {
+  .ps-session-pane > .ps-panel-header {
+    height: auto; max-height: none; flex-basis: auto; flex-wrap: wrap;
+    gap: 4px; padding-block: 4px;
+  }
+  .ps-session-pane > .ps-panel-header > .ps-panel-title { flex: 1 0 100%; }
+  .ps-session-pane > .ps-panel-header > .ps-panel-header-right { width: 100%; min-width: 0; flex: 1 1 100%; justify-content: flex-end; }
+  .ps-session-pane > .ps-panel-header .ps-panel-actions { min-width: 0; max-width: 100%; flex: 0 1 auto; flex-wrap: wrap; }
+  .ps-session-pane > .ps-panel-header .ps-mini-button { min-width: 32px; padding-inline: 6px; flex-shrink: 0; }
 }

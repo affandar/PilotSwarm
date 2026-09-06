@@ -362,6 +362,16 @@ function timestampMs(value) {
 }
 
 function isSameOrOlderSessionUpdate(previousSession, nextSession) {
+    // Detail patch construction must use the same ordering as the reducer.
+    // Client event timestamps can exceed the server's next status write.
+    const version = (value) => {
+        if (value == null || value === "" || typeof value === "boolean") return null;
+        const number = Number(value);
+        return Number.isSafeInteger(number) && number > 0 ? number : null;
+    };
+    const previousVersion = version(previousSession?.statusVersion);
+    const nextVersion = version(nextSession?.statusVersion);
+    if (previousVersion != null && nextVersion != null) return nextVersion <= previousVersion;
     const previousUpdatedAt = timestampMs(previousSession?.updatedAt);
     const nextUpdatedAt = timestampMs(nextSession?.updatedAt);
     return previousUpdatedAt > 0 && nextUpdatedAt > 0 && nextUpdatedAt <= previousUpdatedAt;
@@ -473,6 +483,13 @@ function buildSessionMergePatch(previousSession, nextSession) {
         changed = true;
     }
 
+    // Ordering metadata is required even when unchanged. A conflicting status
+    // at the same version must not masquerade as an unversioned live event.
+    if (changed) {
+        for (const key of ["statusVersion", "updatedAt"]) {
+            if (nextSession[key] !== undefined) patch[key] = nextSession[key];
+        }
+    }
     return changed ? patch : null;
 }
 

@@ -27,7 +27,7 @@ export function normalizeMoa(value) {
     const safeTree = layout => { try { return normalizeMoaLayout(layout).tree; } catch { return null; } };
     // Version 2 has one layout. A deliberately cleared layout must stay empty.
     if (value?.version === 2 || (object(value) && Object.hasOwn(value, "tree"))) {
-        return { version: 2, tree: safeTree(value) };
+        return { version: 2, tree: safeTree(value), ...(Number.isFinite(value.aspectRatio) && value.aspectRatio >= 0.2 && value.aspectRatio <= 8 ? { aspectRatio: value.aspectRatio } : {}) };
     }
     // Migrate the selected legacy dashboard when populated; otherwise keep
     // the first populated dashboard rather than a previously selected blank tab.

@@ -1,9 +1,9 @@
 # Master of Agents (MoA)
 
-Master of Agents is an alternate **desktop browser** workspace. Use the
+Master of Agents is an alternate browser workspace. On desktop, use the
 **Master of Agents** tiled-panel icon between Workspace and Budget
-in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay available in MoA, except in zen. It is unavailable on
-screens 920 pixels wide or narrower and in the TUI.
+in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay
+available in MoA, except in zen. It is unavailable in the native TUI.
 
 MoA is one personal workspace saved to your user profile. There are no dashboard
 tabs, names, sharing controls, or MoA links. The header centers clear layout and zen, with the existing view controls on the right. Layouts remember
@@ -80,5 +80,22 @@ handle and Escape restore the regular MoA view. Panel controls remain available.
 **Open in main view** opens that panel's session, or maximizes its chosen
 canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
 the saved arrangement.
-Resizing to a mobile screen exits MoA and releases its panel subscriptions.
-Returning to desktop does not automatically reopen it.
+
+## Phone layout
+
+On phones, MoA keeps the saved desktop split geometry but displays one panel
+at a time. Tap the map icon to see a minimap with the same proportions as the
+desktop layout, then tap a tile or its full-size session row to select it.
+Swipe left to move clockwise and right to move counter-clockwise. Swipes that
+start on text selection, controls, horizontally scrolling content, or a canvas
+iframe keep their native behavior.
+
+The phone header exposes the map and the focused panel's control menu. Use the
+control menu to split right or below, replace content, or remove the panel.
+Hidden panels stay mounted so drafts, transcript positions, and canvas state
+survive panel changes. The compact composer always targets the visible panel.
+
+Mobile Zen reduces the view to a restore control, the shared searchable session
+picker, the transcript, and the compact composer. The picker includes session
+details, canvases, and the standard new-session action. Activity and queued
+prompt counts appear in the header instead of reserving a footer strip.

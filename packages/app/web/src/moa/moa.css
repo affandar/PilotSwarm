@@ -38,7 +38,7 @@
 .ps-moa-menu > .ps-mini-button { align-self: flex-start; }
 .ps-moa-menu p { margin: 0 0 6px; }
 .ps-moa-error, .ps-moa-mobile-notice { padding: 8px; display: flex; gap: 8px; align-items: center; background: var(--ps-chrome); }
-@media (max-width: 920px) { .ps-moa-workspace { display: none !important; } }
+
 
 .ps-moa-live > .ps-chat-panel { flex: 1; min-height: 0; }
 .ps-moa-live > .ps-html-preview-host { flex: 1; min-height: 0; }
@@ -90,3 +90,78 @@
 #ps-moa-status-slot { min-width: 0; overflow: hidden; }
 #ps-moa-status-slot .ps-moa-save { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 :root[data-ps-theme="win95"] #ps-moa-status-slot .ps-moa-save { color: #fff; }
+
+.ps-mobile-zen { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--ps-foreground); background: var(--ps-background); }
+.ps-mobile-focus-header { display: flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 6px max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left)); border-bottom: 1px solid var(--ps-border); background: var(--ps-chrome); min-height: 56px; touch-action: pan-y; }
+.ps-mobile-focus-header button { min-width: 44px; min-height: 44px; }
+.ps-mobile-focus-header select { flex: 1; min-width: 0; width: 100%; height: 44px; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); font: 16px var(--ps-mono); }
+.ps-mobile-zen-chat { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.ps-mobile-zen-chat > .ps-chat-panel { flex: 1; border: 0; }
+.ps-mobile-zen-chat .ps-panel-header { display: none; }
+.ps-mobile-zen-composer { flex-shrink: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--ps-border); }
+.ps-mobile-zen-composer .ps-chat-composer { border: 0; padding: 0; }
+.ps-moa-map-body { padding: 12px; min-height: 0; overflow-y: auto; }
+.ps-moa-map { position: relative; width: 100%; border: 1px solid var(--ps-border); }
+.ps-moa-map button { position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; overflow: hidden; padding: 4px; border: 2px solid var(--ps-border); background: var(--ps-background); color: var(--ps-foreground); font: 12px var(--ps-mono); text-align: left; }
+.ps-moa-map button.is-selected { background: var(--ps-selection-background); color: var(--ps-selection-foreground); border-color: var(--ps-selection-foreground); }
+.ps-moa-map button span { overflow: hidden; max-width: 100%; }
+.ps-moa-map-list { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
+.ps-moa-map-list button { min-height: 44px; text-align: left; padding: 8px; border: 1px solid var(--ps-border); color: var(--ps-foreground); background: var(--ps-background); font: inherit; }
+.ps-moa-map-list button[aria-current] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
+.ps-moa-panel[hidden] { display: none !important; }
+@media (max-width: 920px) {
+  .ps-moa-workspace.is-mobile { display: flex !important; }
+  .ps-moa-workspace.is-mobile .ps-moa-layout { padding: 0; }
+  .ps-moa-workspace.is-mobile .ps-moa-panel > header { display: none; }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-target { display: none; }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-strip { min-height: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-host .ps-chat-composer { padding: 0; }
+  .ps-moa-backdrop { padding: 8px; }
+  .ps-moa-dialog { max-height: calc(var(--ps-app-height, 100dvh) - 16px); }
+  .ps-toolbar.is-mobile .ps-toolbar-row-primary { flex-wrap: wrap; }
+}
+
+/* Desktop controls follow the focused panel without shrinking inactive headers. */
+.ps-moa-panel > header { min-height: 44px; box-sizing: border-box; }
+.ps-moa-panel:not(.is-focused):not(.ps-moa-initial-panel) > header > button { display: none; }
+.ps-moa-workspace { --ps-moa-focus-ring: color-mix(in srgb, var(--ps-selection-background) 55%, #fff); }
+.ps-moa-panel.is-focused {
+  border-color: var(--ps-moa-focus-ring);
+  box-shadow: 0 0 0 1px var(--ps-moa-focus-ring), 0 0 8px color-mix(in srgb, var(--ps-moa-focus-ring) 35%, transparent);
+}
+:root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: #8fff5a; box-shadow: 0 0 0 1px #8fff5a, 0 0 8px #8fff5a55; }
+:root[data-ps-theme="win95"] .ps-moa-panel.is-focused { border-color: #000080; box-shadow: 0 0 0 1px #fff; }
+:root[data-ps-theme="ms-dos"] .ps-moa-panel.is-focused { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+.ps-moa-icon-button.ps-moa-zen-exit { align-self: flex-end; margin-right: 4px; width: 36px; height: 20px; min-height: 20px; padding: 1px 8px; border-radius: 0 0 4px 4px; }
+.ps-moa-zen-exit svg { width: 14px; height: 14px; }
+
+/* A definite picker height avoids Safari shrinking its flex list to zero.
+   The body portal follows the visual viewport when the keyboard opens. */
+.ps-moa-backdrop { box-sizing: border-box; }
+.ps-moa-dialog:has(.ps-moa-session-picker) { height: min(850px, calc(var(--ps-moa-viewport-height, 100dvh) - 40px)); }
+.ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 40px); }
+.ps-moa-dialog > .ps-moa-session-picker { flex: 1 1 0; height: auto; min-height: 0; }
+.ps-moa-session-picker > .ps-panel-header, .ps-moa-picker-detail { flex-shrink: 0; }
+.ps-moa-session-picker .ps-panel-body > .ps-session-list { min-height: 0; flex: 1 1 0; }
+@media (max-width: 920px) {
+  .ps-moa-dialog:has(.ps-moa-session-picker) { height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-session-picker .ps-session-detail-box { max-height: min(100px, calc(var(--ps-moa-viewport-height, 100dvh) * .15)); }
+  .ps-moa-picker-detail { padding: 6px 10px; gap: 4px; }
+  .ps-moa-session-picker .ps-modal-input { font-size: 16px; }
+}
+
+/* The status occupies the second line of the existing 44px header content.
+   A full-size button opens the shared session picker from the Zen label. */
+.ps-mobile-session-heading { position: relative; min-width: 0; flex: 1; height: 44px; display: flex; flex-direction: column; justify-content: center; }
+.ps-mobile-session-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 16px/24px var(--ps-mono); }
+.ps-mobile-session-status { display: flex; gap: 5px; height: 18px; min-width: 0; align-items: center; font: 11px/18px var(--ps-mono); color: var(--ps-foreground); }
+.ps-mobile-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.ps-mobile-queue { flex: 0 1 auto; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ps-foreground); }
+.ps-mobile-session-heading.has-selector { padding-right: 18px; }
+.ps-mobile-session-heading.has-selector > .ps-mobile-session-trigger { padding: 0; border: 0; cursor: pointer; position: absolute; inset: 0; height: 44px; width: 100%; opacity: 0; z-index: 1; }
+.ps-mobile-session-heading.has-selector:focus-within { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+.ps-mobile-select-chevron { position: absolute; right: 1px; top: 10px; }
+.ps-mobile-session-heading > div:empty { height: 18px; }
+.ps-moa-workspace.is-mobile .ps-moa-panel { border: 0; }
+.ps-moa-workspace.is-mobile .ps-moa-panel.is-focused { box-shadow: none; }

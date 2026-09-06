@@ -249,6 +249,7 @@ token accounting remain available to admins. See the
 
 ### Monitoring several sessions
 
-In the shipped desktop portal, use Master of Agents to arrange incident chats
-and canvases together. The layout saves to your profile. Tab and Shift+Tab
-select a panel and focus its composer. The sample needs no extra configuration.
+In the shipped portal, use Master of Agents to arrange incident chats and
+canvases together. The layout saves to your profile. On desktop, Tab and
+Shift+Tab select a panel and focus its composer. On phones, use the minimap or
+swipe between panels. The sample needs no extra configuration.
