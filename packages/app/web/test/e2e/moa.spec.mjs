@@ -74,7 +74,7 @@ test("splitting creates a focused blank panel and right-click opens the familiar
     const f = await fixture(page, [layout(chat(1))]);
     await open(page);
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
-    await page.getByRole("button", { name: "Split right", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Split right", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
     const blank = page.locator(".ps-moa-panel.is-focused");
     await expect(blank.getByRole("button", { name: "Choose session or canvas" })).toBeVisible();
@@ -249,7 +249,7 @@ test("a failed profile save survives the next server poll and explicit retry per
         ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, error: { code: "UNAVAILABLE", message: "Profile unavailable" } }) })
         : route.fallback());
     page.on("response", response => { if (new URL(response.url()).pathname === "/api/v1/me/profile") polls++; });
-    await page.getByRole("button", { name: "Add panel", exact: true }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     const retry = page.getByRole("button", { name: "Save failed · Retry", exact: true });
     await expect(retry).toBeVisible();
     expect(f.settings().moa.tree.type).toBe("chat");
@@ -279,10 +279,10 @@ test("slow profile writes serialize rapid split edits without rolling back the n
         if (started.length === 1) await gate;
         return route.fallback();
     });
-    await page.getByRole("button", { name: "Add panel", exact: true }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => started.length).toBe(1);
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
-    await page.getByRole("button", { name: "Split below", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Split below", exact: true }).click();
     await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
     await page.waitForTimeout(650); // the second debounce expires while the first request is held
     const concurrentWrites = started.length;
@@ -367,7 +367,7 @@ test("one personal workspace migrates a blank active tab and has no dashboard co
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
     }
-    await page.getByRole("button", { name: "Add panel", exact: true }).click();
+    await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => f.settings().moa.version).toBe(2);
     expect(Object.keys(f.settings().moa).sort()).toEqual(["tree", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
@@ -418,14 +418,14 @@ test("toolbar and session-picker Tab navigation never cycles panels behind them"
     const f = await fixture(page, [layout(split(chat(1), chat(2)))]);
     await open(page);
     await expect(composer(page)).toBeVisible();
-    await page.getByRole("button", { name: "Add panel", exact: true }).focus();
+    await page.getByRole("button", { name: "Clear MoA layout", exact: true }).focus();
     await page.keyboard.press("Tab");
     await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
     await panel(page, "panel-1").getByRole("button", { name: "Session control panel" }).click();
     await page.getByRole("button", { name: "Replace session or canvas…", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Sessions", exact: true });
     await expect(dialog.locator(".ps-session-list-button").first()).toBeVisible();
-    await expect(dialog.locator(".ps-session-list-button")).toHaveCount(5);
+    await expect(dialog.locator(".ps-session-list-button")).toHaveCount(4);
     for (let i = 0; i < 6; i++) {
         await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab");
         expect(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')))).toBe(true);
@@ -477,7 +477,7 @@ test("icon actions clear only the current layout after confirmation and persist 
         if (request.method() !== "GET" && /\/sessions\//.test(request.url())) destructive.push(request.url());
     });
     await open(page);
-    for (const name of ["Add panel", "Clear MoA layout", "Enter zen"]) {
+    for (const name of ["Clear MoA layout", "Enter zen"]) {
         const button = page.getByRole("button", { name, exact: true });
         await expect(button).toHaveText("");
         await expect(button).toHaveAttribute("title", name);
@@ -532,10 +532,12 @@ test("create from the picker uses the standard dialog and binds only its target 
     await open(page);
     await panel(page, "new").getByRole("button", { name: "Choose session or canvas" }).click();
     const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
-    await expect(picker.locator(".ps-session-list-button").first()).toHaveText("Create New Session");
-    await picker.locator(".ps-session-list-button").nth(1).focus();
-    await page.keyboard.press("Home");
-    await expect(page.getByRole("button", { name: "Create New Session", exact: true })).toBeFocused();
+    await expect(picker.getByRole("button", { name: /pin/i })).toHaveCount(0);
+    const create = picker.getByRole("button", { name: "Create New Session", exact: true });
+    await expect(create).toHaveText("");
+    await expect(create.locator("svg line")).toHaveCount(2);
+    await page.screenshot({ path: test.info().outputPath("moa-session-picker.png") });
+    await create.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await page.keyboard.press("Enter");
@@ -589,7 +591,7 @@ test("panel info, personal manage and terminate actions retain their own session
     });
     await open(page);
     const p = panel(page, "panel-2");
-    await expect(p.locator(":scope > header button")).toHaveCount(2);
+    await expect(p.locator(":scope > header button")).toHaveCount(4);
     await expect(composer(page)).toBeVisible();
     await p.getByRole("button", { name: "Session control panel", exact: true }).click();
     await expect(page.getByRole("dialog", { name: "Session control panel", exact: true }).getByRole("button", { name: /Open in main view|link|shar/i })).toHaveCount(0);
@@ -639,4 +641,26 @@ test("the bottom composer preserves read-only session access", async ({ page }) 
     await panel(page, "panel-1").locator("header").first().click();
     await expect(composer(page)).toHaveValue("Keep this private draft");
     expect(f.sends).toEqual([]);
+});
+
+
+test("panel split shortcuts include a fresh workspace and header actions stay centered", async ({ page }) => {
+    const f = await fixture(page);
+    await open(page);
+    await expect(page.getByRole("button", { name: "Add panel", exact: true })).toHaveCount(0);
+    for (const width of [1600, 1024, 921]) {
+        await page.setViewportSize({ width, height: 1000 });
+        const toolbar = await page.locator(".ps-toolbar.is-moa").boundingBox();
+        const actions = await page.locator(".ps-moa-toolbar").boundingBox();
+        expect(Math.abs(actions.x + actions.width / 2 - toolbar.x - toolbar.width / 2)).toBeLessThan(2);
+        await expect(page.getByRole("button", { name: "Enter zen", exact: true })).toBeInViewport();
+    }
+    await page.locator(".ps-moa-initial-panel").getByRole("button", { name: "Split below", exact: true }).click();
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    await expect.poll(() => f.settings().moa.tree?.direction).toBe("column");
+    await page.locator("[data-moa-panel]").first().getByRole("button", { name: "Split right", exact: true }).click();
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(3);
+    await page.locator(".ps-moa-panel.is-focused").getByRole("button", { name: "Choose session or canvas", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Use chat", exact: true }).locator("svg path")).toHaveAttribute("d", /.+/);
+    expect(f.errors).toEqual([]);
 });

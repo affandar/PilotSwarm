@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- Move MoA split-right/below shortcuts into panel headers, including the empty
+  workspace. Center reset and zen in the header. Replace the session-picker pin
+  with the standard new-session plus icon and restore its confirm checkmark.
+
 - Make MoA one personal workspace, with no dashboard tabs, names, sharing,
   or links. Migrate the selected populated legacy layout, falling back to the
-  first populated layout. Keep add-panel, clear, and zen icons in the header.
+  first populated layout. Keep clear and zen icons centered in the header.
 - Give MoA one bottom composer bound to the focused session; Tab/Shift+Tab
   cycles panels with automatic composer focus. Arrow keys retain native editing.
   Add Create New Session to the picker and group session/panel controls behind

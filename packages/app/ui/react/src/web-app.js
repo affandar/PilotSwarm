@@ -5687,9 +5687,10 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         focused: viewState.focused,
         theme,
         actions: selection ? React.createElement(React.Fragment, null,
-            React.createElement(IconButton, { className: "ps-mini-button ps-pin-icon", icon: React.createElement(PinGlyph), disabled: !canPinActiveSession, active: isActivePinned,
-                label: isActivePinned ? "Unpin this session" : "Pin this session to the top of the list",
-                onClick: () => controller.dispatch({ type: "sessions/pinToggle", sessionId: activeSession.sessionId }) }), actions) : panelActions,
+            selection.onCreate ? React.createElement(IconButton, {
+                className: "ps-mini-button", icon: React.createElement(PlusGlyph),
+                label: "Create New Session", onClick: selection.onCreate,
+            }) : null, actions) : panelActions,
         className: combinedPanelClassName,
     },
     selection ? React.createElement("input", { className: "ps-modal-input", "aria-label": "Find a session", placeholder: "Find a session…", value: selection.query || "", onChange: e => selection.onQuery?.(e.target.value) }) : null,
@@ -5717,9 +5718,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             else controller.dispatch({ type: "sessions/listDeselect" });
         },
     },
-        selection?.onCreate ? React.createElement("button", {
-            className: "ps-session-list-button ps-moa-create-session", type: "button", onClick: selection.onCreate,
-        }, "Create New Session") : null,
+
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -9496,7 +9495,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            canvasMaximized ? leftCluster : null),
+            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
             moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },

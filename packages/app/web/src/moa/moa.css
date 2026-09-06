@@ -83,16 +83,10 @@
 
 .ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }
 
-/* MoA uses the existing header row for save status and workspace actions. */
-.ps-toolbar.is-moa:not(.is-mobile) { display: flex; gap: 8px; min-width: 0; }
-.ps-toolbar.is-moa > .ps-toolbar-side.is-left { display: none; }
-.ps-toolbar.is-moa > .ps-toolbar-actions { flex: 1; min-width: 0; }
-.ps-toolbar.is-moa > .ps-toolbar-side.is-right { flex: 0 0 auto; }
+/* Reuse the workspace header's left/status, center/actions, right/modes grid. */
+.ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; min-width: 0; }
 .ps-toolbar.is-moa .ps-toolbar-meta-slot { display: none; }
-#ps-moa-header-slot { flex: 1; min-width: 0; }
-#ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; color: var(--ps-foreground); font: var(--ps-font-size-base)/1.3 var(--ps-mono); gap: 4px; }
-#ps-moa-header-slot .ps-moa-save { font-size: var(--ps-font-size-dense); margin: 0 auto 0 0; }
-#ps-moa-header-slot .ps-moa-toolbar > button { flex-shrink: 0; }
-.portal-header:has(#ps-moa-header-slot) .portal-header-brand { max-width: 180px; }
-.ps-moa-create-session { font-weight: bold; border-bottom: 1px solid var(--ps-border); }
-:root[data-ps-theme="win95"] #ps-moa-header-slot .ps-moa-save { color: #fff; }
+#ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; gap: 4px; }
+#ps-moa-status-slot { min-width: 0; overflow: hidden; }
+#ps-moa-status-slot .ps-moa-save { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root[data-ps-theme="win95"] #ps-moa-status-slot .ps-moa-save { color: #fff; }

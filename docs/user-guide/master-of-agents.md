@@ -6,8 +6,8 @@ in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay av
 screens 920 pixels wide or narrower and in the TUI.
 
 MoA is one personal workspace saved to your user profile. There are no dashboard
-tabs, names, sharing controls, or MoA links. The header holds just add panel,
-clear layout, and zen alongside the existing view controls. Layouts remember
+tabs, names, sharing controls, or MoA links. The header centers clear layout and zen, with save status on the left
+and the existing view controls on the right. Layouts remember
 session and canvas references, split directions, and divider proportions.
 Changes save automatically; the toolbar reports a failed save and offers Retry.
 Enter MoA explicitly after reloading the portal.
@@ -25,7 +25,7 @@ The picker mounts the same Sessions pane as the normal workspace: rows,
 folders, owner badges, pinning, scrolling, and the expandable detail box.
 Its selection stays local to the picker; choosing content does not navigate
 the default chat. Arrow keys navigate the list; select chat or canvas below it.
-The **Create New Session** row at the top of the list opens the existing
+The **+** icon beside Close replaces the picker pin button and opens the existing
 model/agent creation flow, including when the list is filtered or empty.
 Creating fills that panel and keeps the default workspace’s selection.
 Cancelling returns to the picker; failed creation leaves the panel intact.
@@ -45,8 +45,9 @@ Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
 native. Empty or read-only panels cannot accept prompts. Toolbar controls
 and dialogs retain their normal keyboard navigation.
 
-Each populated title bar has just **maximize** (open in the main view) and a
-**sliders** icon for the session control panel. Its **Session** group contains
+Each title bar has **split right** and **split below** shortcuts. Populated panels
+also have **maximize** (open in the main view) and a **sliders** icon for the session
+control panel. Its **Session** group contains
 the existing spanner/manage, trash, and info actions. MoA omits session-link
 and sharing controls; those remain available in the normal session view. Zoom is available
 only in the session title bar.
@@ -68,7 +69,7 @@ session. Each populated panel has an isolated session controller/subscription.
 
 ## Zen and opening a session
 
-The toolbar uses icons with hover labels: add panel, clear layout (eraser),
+The centered toolbar uses icons with hover labels: clear layout (eraser)
 and enter zen (expand corners). **Clear MoA layout** asks for
 confirmation, then returns your workspace to its blank **+** screen.
 Sessions and canvases are preserved.

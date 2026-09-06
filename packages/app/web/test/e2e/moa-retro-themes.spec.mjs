@@ -110,7 +110,7 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await contrast(controls.getByRole("heading", { name: "Session", exact: true }), `${themeId} session controls heading`);
         await contrast(controls.getByRole("heading", { name: "Panel layout", exact: true }), `${themeId} layout controls heading`);
         await contrast(controls.getByRole("button", { name: "Session information", exact: true }), `${themeId} info control`);
-        await expect(focusedPanel.locator(":scope > header button")).toHaveCount(2);
+        await expect(focusedPanel.locator(":scope > header button")).toHaveCount(4);
         await page.screenshot({ path: test.info().outputPath(`${themeId}-control-panel.png`) });
         await controls.getByRole("button", { name: "Close dialog", exact: true }).click();
         await expect(page.getByRole("tab")).toHaveCount(0);
