@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore Tab/Shift+Tab cycling around MoA panels with automatic composer
+  focus for the active session. Remove arrow-key panel navigation.
+
 - Move MoA tabs and controls into the PilotSwarm header, capped at five
   dashboards. Make Create New Session the first picker row and keep zoom
   only in the panel title bar.

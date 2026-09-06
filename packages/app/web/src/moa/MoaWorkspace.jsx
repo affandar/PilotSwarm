@@ -138,7 +138,7 @@ function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, o
             child.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
             await child.loadSession(node.sessionId); if (cancelled) return stop();
             child.dispatch({ type: "profileSettings/apply", settings: { themeId: parent.getState().ui.themeId } });
-            child.setFocus("chat");
+            child.setFocus("prompt");
             const draft = drafts.current.get(draftKey);
             if (draft) { child.dispatch({ type: "ui/prompt", prompt: draft.prompt }); child.dispatch({ type: "ui/promptAttachments", attachments: draft.attachments }); }
             offDraft = child.subscribe(s => drafts.current.set(draftKey, { prompt: s.ui.prompt, attachments: s.ui.promptAttachments || [] }));
@@ -168,7 +168,9 @@ function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, o
         return () => { cancelled = true; stop(); };
     }, [node.sessionId, createTransport, parent, retry, drafts, draftKey]);
     React.useEffect(() => { ready?.dispatch({ type: "profileSettings/apply", settings: { themeId } }); }, [ready, themeId]);
+    React.useLayoutEffect(() => { if (ready && focused) ready.setFocus("prompt"); }, [ready, focused]);
     const ref = React.useRef(null);
+    const focusReadOnlyPanel = React.useCallback(() => ref.current?.closest("[data-moa-panel]")?.focus({ preventScroll: true }), []);
     React.useEffect(() => {
         if (!ready || !ref.current) return;
         const observer = new ResizeObserver(([entry]) => ready.dispatch({ type: "ui/viewport", width: Math.max(20, Math.floor(entry.contentRect.width / 8)), height: Math.max(10, Math.floor(entry.contentRect.height / 16)) }));
@@ -181,7 +183,7 @@ function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, o
             {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} fullWidth showComposer={false} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
         {ready && <ModalLayer controller={ready} />}
-        {ready && focused && !actionsOpen && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} /></ControllerContext.Provider>, composerHost)}
+        {ready && focused && !actionsOpen && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
     </>;
 }
 
@@ -294,52 +296,35 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         const key = e => { if (e.key === "Escape" && !document.querySelector(".ps-moa-dialog, .ps-modal-backdrop, .ps-share-overlay")) moa.setZen(false); };
         window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
     }, [moa.setZen]);
-    const selectedPanel = () => [...(layoutRef.current?.querySelectorAll("[data-moa-panel]") || [])].find(el => el.dataset.moaPanel === selected);
-    const toggleComposer = () => {
-        const footer = composerHost?.closest(".ps-moa-composer-strip");
-        if (footer?.contains(document.activeElement)) selectedPanel()?.focus({ preventScroll: true });
-        else (composerHost?.querySelector("textarea, [contenteditable='true']") || footer)?.focus({ preventScroll: true });
-    };
-    const focusPanel = next => {
-        setFocus(next.dataset.moaPanel);
-        next.focus({ preventScroll: true });
-    };
-    const movePanel = direction => {
+    const cyclePanels = (backwards = false) => {
         const panels = [...(layoutRef.current?.querySelectorAll("[data-moa-panel]") || [])];
-        const current = panels.find(el => el.dataset.moaPanel === selected);
-        if (!current) return;
-        const horizontal = direction === "ArrowLeft" || direction === "ArrowRight";
-        const forward = direction === "ArrowRight" || direction === "ArrowDown";
-        const box = current.getBoundingClientRect();
-        const primary = r => horizontal ? r.left + r.width / 2 : r.top + r.height / 2;
-        const crossStart = r => horizontal ? r.top : r.left;
-        const crossEnd = r => horizontal ? r.bottom : r.right;
-        const candidates = panels.filter(el => el !== current).map(el => {
+        if (!panels.length) return;
+        const bounds = layoutRef.current.getBoundingClientRect();
+        const cx = bounds.left + bounds.width / 2, cy = bounds.top + bounds.height / 2;
+        // Screen y grows down: start at top-left and continue clockwise.
+        const order = panels.map(el => {
             const r = el.getBoundingClientRect();
-            const delta = (primary(r) - primary(box)) * (forward ? 1 : -1);
-            const overlap = Math.min(crossEnd(r), crossEnd(box)) - Math.max(crossStart(r), crossStart(box));
-            const cross = (crossStart(r) + crossEnd(r) - crossStart(box) - crossEnd(box)) / 2;
-            return { el, delta, aligned: overlap > 0, distance: Math.hypot(delta, cross) };
-        }).filter(item => item.delta > 1).sort((a, b) => Number(b.aligned) - Number(a.aligned) || a.distance - b.distance);
-        // Prefer a panel directly in that direction; stay put at the outside edge.
-        if (candidates.length) focusPanel(candidates[0].el);
+            return { el, angle: (Math.atan2(r.top + r.height / 2 - cy, r.left + r.width / 2 - cx) + Math.PI * 3 / 4 + Math.PI * 2) % (Math.PI * 2) };
+        }).sort((a, b) => a.angle - b.angle);
+        const index = order.findIndex(({ el }) => el.dataset.moaPanel === selected);
+        const next = order[(index + (backwards ? -1 : 1) + order.length) % order.length].el;
+        setFocus(next.dataset.moaPanel);
+        // Focus the destination first; its own composer takes focus when mounted.
+        // Never focus an outgoing portal during the selection update.
+        if (next.dataset.moaPanel === selected) {
+            (composerHost?.querySelector("textarea, [contenteditable='true']") || next).focus({ preventScroll: true });
+        } else next.focus({ preventScroll: true });
     };
-    const onPanelKey = key => {
+    const onPanelKey = (key, backwards = false) => {
         if (picker || menu || share || renaming || clearing || info || creating || document.querySelector(".ps-modal-backdrop, .ps-share-overlay") || controller.getState().ui.modal) return;
         if (key === "Escape") moa.setZen(false);
-        if (key === "Tab") toggleComposer();
+        if (key === "Tab") cyclePanels(backwards);
     };
     React.useEffect(() => {
         const key = e => {
-            const tab = e.key === "Tab" && !e.ctrlKey;
-            const arrow = !e.ctrlKey && !e.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key);
-            if ((!tab && !arrow) || e.altKey || e.metaKey || picker || menu || share || renaming || clearing || info || creating || document.querySelector(".ps-modal-backdrop, .ps-share-overlay") || controller.getState().ui.modal) return;
+            if (e.key !== "Tab" || e.ctrlKey || e.altKey || e.metaKey || picker || menu || share || renaming || clearing || info || creating || document.querySelector(".ps-modal-backdrop, .ps-share-overlay") || controller.getState().ui.modal) return;
             if (!e.target.closest?.("[data-moa-panel], .ps-moa-composer-strip") && e.target !== document.body) return;
-            if (arrow && e.target.closest?.(".ps-moa-composer-strip, input, textarea, select, [contenteditable='true'], [role='separator']")) return;
-            e.preventDefault(); e.stopPropagation();
-            if (arrow) {
-                movePanel(e.key);
-            } else toggleComposer();
+            e.preventDefault(); e.stopPropagation(); cyclePanels(e.shiftKey);
         };
         window.addEventListener("keydown", key, true);
         return () => window.removeEventListener("keydown", key, true);

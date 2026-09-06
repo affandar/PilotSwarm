@@ -34,13 +34,12 @@ no composer. Working and queued-message status stays inside each chat panel. Dra
 layouts during the current page session. Read-only sessions retain their normal
 read-only behavior.
 
-With keyboard focus on a panel, **Left/Right/Up/Down** selects the nearest
-panel in that direction, stopping at the edge. **Tab** or **Shift+Tab** toggles
-between the selected panel and its composer. Inside the composer, arrows edit
-text normally; Ctrl+Arrow does not change panel selection. Tab from inside a
-canvas moves to the composer, and the next Tab returns to its panel.
-Toolbar controls and dialogs keep normal Tab navigation; layout tabs also
-support Left/Right and Home/End.
+**Tab** moves to the next panel clockwise; **Shift+Tab** moves in reverse.
+The selected session’s composer is automatically focused and ready to type,
+including after clicking a different panel. Drafts stay with their sessions.
+Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
+native. Empty or read-only panels cannot accept prompts. Toolbar controls,
+layout tabs, and dialogs retain their normal keyboard navigation.
 
 Each populated title bar has just **maximize** (open in the main view) and a
 **sliders** icon for the session control panel. Its **Session** group contains

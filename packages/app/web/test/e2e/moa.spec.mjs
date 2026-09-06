@@ -95,7 +95,7 @@ test("splitting creates a focused blank panel and right-click opens the familiar
     await expect(page.locator(".ps-moa-workspace textarea")).toHaveCount(0);
     await blank.focus();
     await page.keyboard.press("Tab");
-    await expect(page.locator(".ps-moa-composer-strip")).toBeFocused();
+    await expect(composer(page)).toBeFocused();
     await page.keyboard.press("Shift+Tab");
     await expect(blank).toBeFocused();
     await blank.locator(".ps-moa-empty").click({ button: "right" });
@@ -215,13 +215,11 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await inside.press("Control+ArrowLeft");
     await expect(c).toHaveClass(/is-focused/);
     await inside.press("Tab");
+    await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
     await expect(composer(page)).toBeFocused();
     await page.keyboard.press("Shift+Tab");
-    await expect(c).toBeFocused();
-    await page.keyboard.press("ArrowLeft");
-    await expect(panel(page, "panel-1")).toBeFocused();
-    await page.keyboard.press("ArrowRight");
-    await expect(c).toBeFocused();
+    await expect(c).toHaveClass(/is-focused/);
+    await expect(composer(page)).toBeFocused();
     await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await inside.click();
     await page.evaluate(() => new Promise(resolve => {
@@ -435,41 +433,41 @@ test("named tabs start with one workspace, add up to five, and survive reload", 
     expect(f.errors).toEqual([]);
 });
 
-test("arrows select panels while Tab and Shift+Tab toggle composer without losing drafts", async ({ page }) => {
+test("Tab and Shift+Tab cycle panels clockwise and reverse with the composer automatically focused", async ({ page }) => {
     const left = { ...split(chat(0, "tl"), chat(1, "bl"), "left"), direction: "column" };
     const right = { ...split(chat(2, "tr"), chat(3, "br"), "right"), direction: "column" };
     const f = await fixture(page, [layout(split(left, right))]);
     await open(page);
-    await expect(composer(page)).toBeVisible();
-    await composer(page).fill("spatial draft");
-    await page.keyboard.press("ArrowLeft");
-    await expect(panel(page, "tl")).toHaveClass(/is-focused/);
     await expect(composer(page)).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(panel(page, "tl")).toBeFocused();
-    await page.keyboard.press("Control+ArrowRight");
-    await expect(panel(page, "tl")).toBeFocused();
-    for (const [key, target] of [["Left", "tl"], ["Up", "tl"], ["Right", "tr"], ["Right", "tr"], ["Down", "br"], ["Down", "br"], ["Left", "bl"], ["Up", "tl"]]) {
-        await page.keyboard.press(`Arrow${key}`);
-        await expect(panel(page, target)).toBeFocused();
-        await expect(panel(page, target)).toHaveClass(/is-focused/);
-        await page.keyboard.press("Tab");
+    await composer(page).fill("clockwise draft");
+    for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Control+ArrowLeft", "Control+ArrowRight"]) {
+        await page.keyboard.press(key);
+        await expect(panel(page, "tl")).toHaveClass(/is-focused/);
         await expect(composer(page)).toBeFocused();
-        await page.keyboard.press("Shift+Tab");
-        await expect(panel(page, target)).toBeFocused();
     }
-    await page.keyboard.press("Shift+Tab");
+    for (const target of ["tr", "br", "bl", "tl"]) {
+        await page.keyboard.press("Tab");
+        await expect(panel(page, target)).toHaveClass(/is-focused/);
+        await expect(composer(page)).toBeFocused();
+    }
+    await expect(composer(page)).toHaveValue("clockwise draft");
+    for (const target of ["bl", "br", "tr", "tl"]) {
+        await page.keyboard.press("Shift+Tab");
+        await expect(panel(page, target)).toHaveClass(/is-focused/);
+        await expect(composer(page)).toBeFocused();
+    }
+    await panel(page, "br").locator("header").first().click();
     await expect(composer(page)).toBeFocused();
-    await expect(composer(page)).toHaveValue("spatial draft");
-    await panel(page, "tl").getByRole("button", { name: "Session control panel" }).click();
-    await page.keyboard.press("ArrowRight");
-    await expect(panel(page, "tl")).toHaveClass(/is-focused/);
-    await page.getByRole("button", { name: "Close dialog" }).click();
+    await panel(page, "br").focus();
+    for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
+        await page.keyboard.press(key);
+        await expect(panel(page, "br")).toHaveClass(/is-focused/);
+    }
     await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await composer(page).focus();
     await page.keyboard.press("Tab");
-    await page.keyboard.press("ArrowDown");
-    await expect(panel(page, "bl")).toBeFocused();
+    await expect(panel(page, "bl")).toHaveClass(/is-focused/);
+    await expect(composer(page)).toBeFocused();
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);
 });
@@ -696,7 +694,7 @@ test("the bottom composer preserves read-only session access", async ({ page }) 
     await expect(composer(page)).toHaveCount(0);
     await panel(page, "panel-2").focus();
     await page.keyboard.press("Tab");
-    await expect(page.locator(".ps-moa-composer-strip")).toBeFocused();
+    await expect(composer(page)).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(panel(page, "panel-2")).toBeFocused();
     await panel(page, "panel-1").locator("header").first().click();

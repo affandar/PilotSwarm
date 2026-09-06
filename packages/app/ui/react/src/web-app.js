@@ -6407,17 +6407,18 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
-function SessionComposer({ controller }) {
+function SessionComposer({ controller, onReadOnlyFocus = null }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
     const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const readOnly = session?.serviceKind || access?.canWrite === false;
+    React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
     if (!session || session.isGroup || modal) return null;
-    const readOnly = session.serviceKind || access?.canWrite === false;
     return React.createElement("div", { className: "ps-chat-composer" }, readOnly
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
-        : React.createElement(PromptComposer, { controller, mobile: false, active: true, autoFocus: false }));
+        : React.createElement(PromptComposer, { controller, mobile: false, active: true }));
 }
 
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
