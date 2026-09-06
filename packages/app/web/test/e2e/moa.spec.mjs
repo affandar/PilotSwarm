@@ -203,7 +203,7 @@ test("canvas focus hides every composer and the pinned slot loads its own docume
     await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
     await page.keyboard.press("Shift+Tab");
     await expect(c).toHaveClass(/is-focused/);
-    await page.getByRole("button", { name: "Zen ↗", exact: true }).click();
+    await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await inside.click();
     await page.evaluate(() => new Promise(resolve => {
         window.postMessage({ type: "moa-panel-key", key: "Escape" }, "*");
@@ -368,9 +368,9 @@ test("zen Escape and zoom back restore the saved arrangement and chat draft", as
     const a = panel(page, "panel-1");
     await expect(a.locator("textarea")).toBeVisible();
     await a.locator("textarea").fill("draft before zoom");
-    await page.getByRole("button", { name: "Zen ↗", exact: true }).click();
+    await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     await expect(page.locator(".ps-moa-workspace")).toHaveClass(/is-zen/);
-    await expect(page.getByRole("button", { name: "MoA · Exit zen ↙", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Exit zen", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ps-moa-workspace")).not.toHaveClass(/is-zen/);
     await a.getByRole("button", { name: "Open panel in main view", exact: true }).click();
@@ -477,9 +477,50 @@ test("MoA stays in the workspace/budget/admin mode cluster and those modes remai
     await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
     await expect(page.locator(".ps-session-list-button").first()).toBeVisible();
     await launcher.click();
-    await page.getByRole("button", { name: "Zen ↗", exact: true }).click();
+    await page.getByRole("button", { name: "Enter zen", exact: true }).click();
     for (const button of [launcher, workspace, budget, admin]) await expect(button).not.toBeVisible();
     await page.keyboard.press("Escape");
     for (const button of [launcher, workspace, budget, admin]) await expect(button).toBeVisible();
+    expect(f.errors).toEqual([]);
+});
+
+
+test("icon actions clear only the current layout after confirmation and persist the blank screen", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1), chat(2)), "Operations"), layout(chat(3), "Keep me")]);
+    const destructive = [];
+    page.on("request", request => {
+        if (request.method() !== "GET" && /\/sessions\//.test(request.url())) destructive.push(request.url());
+    });
+    await open(page);
+    for (const name of ["Add panel", "Clear MoA layout", "Share", "Enter zen"]) {
+        const button = page.getByRole("button", { name, exact: true });
+        await expect(button).toHaveText("");
+        await expect(button).toHaveAttribute("title", name);
+        await expect(button.locator("svg")).toBeVisible();
+    }
+    await page.getByRole("button", { name: "Clear MoA layout", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Clear MoA layout", exact: true });
+    await expect(dialog).toContainText("Sessions, canvases, and other MoA tabs stay intact");
+    await page.getByRole("button", { name: "Cancel clear", exact: true }).click();
+    await expect(page.locator("[data-moa-panel]")).toHaveCount(2);
+    await page.getByRole("button", { name: "Clear MoA layout", exact: true }).click();
+    await page.getByRole("button", { name: "Confirm clear layout", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Add first MoA panel", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Clear MoA layout", exact: true })).toBeDisabled();
+    await expect.poll(() => f.settings().moa.slots[0].tree).toBe(null);
+    expect(f.settings().moa.slots[0].name).toBe("Operations");
+    expect(f.settings().moa.slots[1].tree.sessionId).toBe(sid(3));
+    expect(destructive).toEqual([]);
+    await page.reload();
+    await open(page);
+    await expectActiveName(page, "Operations");
+    await expect(page.getByRole("button", { name: "Add first MoA panel", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Keep me", exact: true }).click();
+    await expect(panel(page, "panel-3")).toBeVisible();
+    await page.getByRole("button", { name: "Enter zen", exact: true }).click();
+    const exit = page.getByRole("button", { name: "Exit zen", exact: true });
+    await expect(exit).toHaveText("");
+    await exit.click();
+    await expect(page.getByRole("navigation", { name: "Master of Agents" })).toBeVisible();
     expect(f.errors).toEqual([]);
 });

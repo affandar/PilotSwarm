@@ -4,6 +4,30 @@ import { ChatPane, CanvasFrame, SessionPane, ControllerContext, createWebPilotSw
 import { canvasKey, normalizeMoa, normalizeMoaLayout, emptyMoaPanel, moaLeaves, replaceMoaNode, encodeMoaShare, decodeMoaShare, MOA_MAX_PANELS, MOA_BREAKPOINT } from "pilotswarm/ui-core";
 import "./moa.css";
 
+// One icon treatment for MoA actions; names remain available to keyboard and
+// screen-reader users and as hover tooltips.
+const ICON_PATHS = {
+    panel: "M3 3h18v18H3z M12 3v18 M15 12h4 M17 10v4",
+    share: "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2",
+    zen: "M8 3H3v5 M16 3h5v5 M21 16v5h-5 M8 21H3v-5",
+    restore: "M3 8h5V3 M16 3v5h5 M21 16h-5v5 M8 21v-5H3",
+    clear: "m15 3 6 6-10 10H5l-3-3z M8 10l6 6 M11 21h10",
+    close: "m6 6 12 12 M6 18 18 6",
+    check: "m4 12 5 5L20 6",
+    copy: "M9 9h12v12H9z M15 9V3H3v12h6",
+    retry: "M20 7v5h-5 M20 12a8 8 0 1 0-2 6",
+    replace: "M4 7h16l-4-4 M20 17H4l4 4",
+    right: "M3 3h18v18H3z M12 3v18",
+    below: "M3 3h18v18H3z M3 12h18",
+    open: "M14 3h7v7 M21 3 10 14 M10 3H3v18h18v-7",
+    remove: "M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7",
+};
+function IconButton({ label, icon, className = "", ...props }) {
+    return <button className={`ps-mini-button ps-moa-icon-button ${className}`} aria-label={label} title={label} {...props}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d={ICON_PATHS[icon]} /></svg>
+    </button>;
+}
+
 const SHARE_STASH = "pilotswarm.moa.shared";
 export function stashMoaLink() {
     const raw = new URLSearchParams(window.location.hash.slice(1)).get("moa");
@@ -84,7 +108,7 @@ function SessionPicker({ controller, onChoose, onClose, initial }) {
         <footer className="ps-moa-picker-detail"><div>{session?.title || (selected ? selected : "Select a session")}</div>
             <div className="ps-moa-row"><label htmlFor="moa-content-kind">Show</label><select id="moa-content-kind" value={kind} onChange={e => setKind(e.target.value)} disabled={!selected}>
                 <option value="chat">Session chat</option>{canvases.map(c => <option key={c.slot} value={c.slot}>Canvas {c.slot}{c.name ? ` · ${c.name}` : ""}</option>)}
-            </select><button className="ps-mini-button" disabled={!session || session.isGroup || (kind !== "chat" && !canvases.some(c => String(c.slot) === kind))} onClick={() => onChoose({ type: kind === "chat" ? "chat" : "canvas", sessionId: selected, ...(kind !== "chat" ? { slot: Number(kind) } : {}) })}>Use {kind === "chat" ? "chat" : "canvas"}</button></div>
+            </select><IconButton label={`Use ${kind === "chat" ? "chat" : "canvas"}`} icon="check" disabled={!session || session.isGroup || (kind !== "chat" && !canvases.some(c => String(c.slot) === kind))} onClick={() => onChoose({ type: kind === "chat" ? "chat" : "canvas", sessionId: selected, ...(kind !== "chat" ? { slot: Number(kind) } : {}) })} /></div>
             {loading ? <small>Loading canvases…</small> : error ? <small role="alert">{error}</small> : selected && !canvases.length ? <small>No canvases in this session yet.</small> : null}
         </footer>
     </Modal>;
@@ -148,7 +172,7 @@ function LivePanel({ node, focused, parent, createTransport, drafts, draftKey, o
         observer.observe(ref.current); return () => observer.disconnect();
     }, [ready]);
     return <div ref={ref} className="ps-moa-live">
-        {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><button className="ps-mini-button" onClick={() => setRetry(n => n + 1)}>Retry</button></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} fullWidth showComposer={focused} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
+        {error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} fullWidth showComposer={focused} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : <div className="ps-moa-empty" role="status">Connecting…</div>}
     </div>;
 }
 function PinnedCanvas({ controller, node, onPanelKey }) {
@@ -178,7 +202,7 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
     const state = useControllerSelector(controller, s => s);
     const [focus, setFocus] = React.useState(null), [picker, setPicker] = React.useState(null), [menu, setMenu] = React.useState(null), [share, setShare] = React.useState(null), [error, setError] = React.useState(""), [copied, setCopied] = React.useState(false);
     const closePicker = React.useCallback(() => setPicker(null), []), closeMenu = React.useCallback(() => setMenu(null), []), closeShare = React.useCallback(() => setShare(null), []);
-    const [name, setName] = React.useState(layout.name), [renaming, setRenaming] = React.useState(false);
+    const [name, setName] = React.useState(layout.name), [renaming, setRenaming] = React.useState(false), [clearing, setClearing] = React.useState(false);
     const layoutRef = React.useRef(null);
     React.useEffect(() => setName(layout.name), [layout.name, value.activeSlot]);
     const nodes = moaLeaves(layout.tree), selected = nodes.some(n => n.id === focus) ? focus : nodes[0]?.id;
@@ -251,11 +275,11 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
         const active = selected === node.id;
         return <section key={node.id} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={node.id} data-session-id={node.sessionId} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDownCapture={() => setFocus(node.id)} onFocusCapture={() => setFocus(node.id)} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
             <header><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{node.type !== "empty" && <button className="ps-mini-button" aria-label="Open panel in main view" onClick={() => zoom(node)}>↗</button>}<button className="ps-mini-button" aria-label="Panel options" onClick={() => setMenu(node)}>⋯</button></header>
-            {node.type === "empty" ? <div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} onPanelKey={onPanelKey} focused={active && !picker && !menu && !share && !renaming} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${value.activeSlot}:${node.id}:${node.sessionId}`} />}
+            {node.type === "empty" ? <div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} onPanelKey={onPanelKey} focused={active && !picker && !menu && !share && !renaming && !clearing} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={`${value.activeSlot}:${node.id}:${node.sessionId}`} />}
         </section>;
     }
     return <div className={`ps-moa-workspace ${moa.zen ? "is-zen" : ""}`}>
-        {moa.zen ? <button className="ps-moa-zen-exit ps-mini-button" onClick={() => moa.setZen(false)}>MoA · Exit zen ↙</button> : <nav className="ps-moa-toolbar" aria-label="Master of Agents">
+        {moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : <nav className="ps-moa-toolbar" aria-label="Master of Agents">
             <div className="ps-moa-tabs" role="tablist" aria-label="MoA layouts">{value.slots.slice(0, value.tabCount).map((s, i) => <button className="ps-moa-tab" role="tab" key={i} id={`moa-tab-${i}`} aria-controls="moa-layout" aria-selected={value.activeSlot === i} tabIndex={value.activeSlot === i ? 0 : -1} onClick={() => { update({ ...value, activeSlot: i }); setFocus(null); }} onDoubleClick={() => setRenaming(true)} onKeyDown={e => {
                 if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
                 e.preventDefault(); const next = e.key === "Home" ? 0 : e.key === "End" ? value.tabCount - 1 : (i + (e.key === "ArrowLeft" ? -1 : 1) + value.tabCount) % value.tabCount;
@@ -263,16 +287,21 @@ export function MoaWorkspace({ controller, moa, createTransport }) {
             }}>{s.name}</button>)}</div>
             <button className="ps-mini-button ps-moa-new-tab" aria-label="Add MoA tab" title={value.tabCount >= 5 ? "All five MoA tabs are in use" : "Add MoA tab"} disabled={value.tabCount >= 5} onClick={() => { update({ ...value, tabCount: value.tabCount + 1, activeSlot: value.tabCount }); setFocus(null); }}>+</button>
             <button className="ps-mini-button" aria-label="Rename MoA" title="Rename this tab" onClick={() => setRenaming(true)}>✎</button>
-            <span className="ps-moa-save" role="status">{moa.saveStatus === "error" ? <button className="ps-mini-button" onClick={() => update(value)}>Save failed · Retry</button> : moa.saveStatus === "saving" ? "Saving…" : "Saved to profile"}</span>
-            <button className="ps-mini-button" onClick={() => { if (!layout.tree) setPicker({ id: null }); else split(nodes.find(n => n.id === selected) || nodes[0], "row"); }}>+ Panel</button>
-            <button className="ps-mini-button" onClick={() => { const url = new URL(window.location.href); url.search = ""; url.hash = `moa=${encodeMoaShare(layout)}`; setCopied(false); setShare(url.href); }}>Share</button><button className="ps-mini-button" onClick={() => moa.setZen(true)}>Zen ↗</button>
+            <span className="ps-moa-save" role="status">{moa.saveStatus === "error" ? <IconButton label="Save failed · Retry" icon="retry" onClick={() => update(value)} /> : moa.saveStatus === "saving" ? "Saving…" : "Saved to profile"}</span>
+            <IconButton label="Add panel" icon="panel" onClick={() => { if (!layout.tree) setPicker({ id: null }); else split(nodes.find(n => n.id === selected) || nodes[0], "row"); }} />
+            <IconButton label="Clear MoA layout" icon="clear" disabled={!layout.tree} onClick={() => setClearing(true)} />
+            <IconButton label="Share" icon="share" onClick={() => { const url = new URL(window.location.href); url.search = ""; url.hash = `moa=${encodeMoaShare(layout)}`; setCopied(false); setShare(url.href); }} /><IconButton label="Enter zen" icon="zen" onClick={() => moa.setZen(true)} />
         </nav>}
-        {error && <div role="alert" className="ps-moa-error">{error}<button className="ps-mini-button" onClick={() => setError("")}>Dismiss</button></div>}
+        {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
         <div ref={layoutRef} id="moa-layout" role="tabpanel" aria-labelledby={`moa-tab-${value.activeSlot}`} className="ps-moa-layout" key={value.activeSlot}>{layout.tree ? draw(layout.tree) : <div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div>}</div>
-        {renaming && <Modal title="Rename MoA" onClose={() => { setRenaming(false); setName(layout.name); }}><form className="ps-moa-menu" onSubmit={e => { e.preventDefault(); saveLayout({ ...layout, name }); setRenaming(false); }}><input aria-label="MoA name" maxLength={64} value={name} onChange={e => setName(e.target.value)} autoFocus /><button className="ps-mini-button" type="submit">Save name</button></form></Modal>}
+        {clearing && <Modal title="Clear MoA layout" onClose={() => setClearing(false)}><div className="ps-moa-menu">
+            <p>Clear all panels from “{layout.name}”? This keeps the tab and its name. Sessions, canvases, and other MoA tabs stay intact.</p>
+            <div className="ps-moa-row"><IconButton label="Cancel clear" icon="close" onClick={() => setClearing(false)} /><IconButton label="Confirm clear layout" icon="clear" onClick={() => { saveLayout({ ...layout, tree: null }); setFocus(null); setClearing(false); setError(""); }} /></div>
+        </div></Modal>}
+        {renaming && <Modal title="Rename MoA" onClose={() => { setRenaming(false); setName(layout.name); }}><form className="ps-moa-menu" onSubmit={e => { e.preventDefault(); saveLayout({ ...layout, name }); setRenaming(false); }}><input aria-label="MoA name" maxLength={64} value={name} onChange={e => setName(e.target.value)} autoFocus /><IconButton label="Save name" icon="check" type="submit" /></form></Modal>}
         {picker && <SessionPicker controller={controller} initial={picker} onClose={closePicker} onChoose={binding => { const next = { id: picker.id || crypto.randomUUID(), ...binding }; replace(picker.id, next); setFocus(next.id); setPicker(null); }} />}
-        {menu && <Modal title="Panel options" onClose={closeMenu}><div className="ps-moa-menu"><button className="ps-mini-button" onClick={() => { setPicker(menu); setMenu(null); }}>{menu.type === "empty" ? "Choose" : "Replace"} session or canvas…</button><button className="ps-mini-button" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "row")}>Split right</button><button className="ps-mini-button" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "column")}>Split below</button>{menu.type !== "empty" && <button className="ps-mini-button" onClick={() => { zoom(menu); setMenu(null); }}>Open in main view</button>}<button className="ps-mini-button" onClick={() => { replace(menu.id, null); setMenu(null); }}>Remove panel</button></div></Modal>}
-        {share && <Modal title="Share MoA" onClose={closeShare}><div className="ps-moa-menu"><p>This link copies the arrangement. Session access still applies.</p><input aria-label="MoA share link" readOnly value={share} onFocus={e => e.target.select()} /><button className="ps-mini-button" onClick={async () => { try { await navigator.clipboard.writeText(share); setCopied(true); } catch { setError("Select and copy the link manually."); } }}>{copied ? "Copied" : "Copy link"}</button></div></Modal>}
+        {menu && <Modal title="Panel options" onClose={closeMenu}><div className="ps-moa-menu ps-moa-menu-actions"><IconButton label={`${menu.type === "empty" ? "Choose" : "Replace"} session or canvas…`} icon="replace" onClick={() => { setPicker(menu); setMenu(null); }} /><IconButton label="Split right" icon="right" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "row")} /><IconButton label="Split below" icon="below" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(menu, "column")} />{menu.type !== "empty" && <IconButton label="Open in main view" icon="open" onClick={() => { zoom(menu); setMenu(null); }} />}<IconButton label="Remove panel" icon="remove" onClick={() => { replace(menu.id, null); setMenu(null); }} /></div></Modal>}
+        {share && <Modal title="Share MoA" onClose={closeShare}><div className="ps-moa-menu"><p>This link copies the arrangement. Session access still applies.</p><input aria-label="MoA share link" readOnly value={share} onFocus={e => e.target.select()} /><IconButton label={copied ? "Copied" : "Copy link"} icon={copied ? "check" : "copy"} onClick={async () => { try { await navigator.clipboard.writeText(share); setCopied(true); } catch { setError("Select and copy the link manually."); } }} /></div></Modal>}
     </div>;
 }
 
@@ -282,14 +311,14 @@ export function MoaImport({ moa, controller }) {
     React.useEffect(() => { if (moa.loaded) setDestination(Math.max(0, moa.value.slots.findIndex(s => !s.tree))); }, [moa.loaded]);
     const state = useControllerSelector(controller, s => s);
     if (!moa.shared) return null;
-    if (!moa.desktop) return <div className="ps-moa-mobile-notice" role="status">MoA layouts are available on desktop screens.<button className="ps-mini-button" onClick={close}>Dismiss</button></div>;
+    if (!moa.desktop) return <div className="ps-moa-mobile-notice" role="status">MoA layouts are available on desktop screens.<IconButton label="Dismiss" icon="close" onClick={close} /></div>;
     const shared = moa.shared;
     return <Modal title={shared.error ? "Invalid MoA link" : `Shared MoA · ${shared.layout.name}`} onClose={close}>
         <div className="ps-moa-menu">{shared.error ? <p role="alert">{shared.error}</p> : <>
             <div className="ps-moa-import-preview">{moaLeaves(shared.layout.tree).map(n => <div key={n.id}>{n.type === "empty" ? "Empty panel" : state.sessions.byId[n.sessionId]?.title || "Session · access checked when opened"}<small>{n.type === "canvas" ? `Canvas ${n.slot}` : n.type}</small></div>)}</div>
             <p>Copy this arrangement into your profile. It does not grant access to sessions.</p><label>Copy into <select aria-label="Destination MoA slot" value={destination} onChange={e => { setDestination(Number(e.target.value)); setConfirm(false); }}>{moa.value.slots.map((s, i) => <option key={i} value={i}>{i + 1} · {s.name}{s.tree ? " (occupied)" : " (empty)"}</option>)}</select></label>
             {confirm && <p role="alert">Replace “{moa.value.slots[destination].name}”? Its current arrangement will be overwritten.</p>}
-            <button className="ps-mini-button" disabled={!moa.loaded} onClick={() => { if (moa.value.slots[destination].tree && !confirm) { setConfirm(true); return; } const slots = moa.value.slots.map((s, i) => i === destination ? normalizeMoaLayout(shared.layout) : s); moa.update({ ...moa.value, activeSlot: destination, tabCount: Math.max(moa.value.tabCount, destination + 1), slots }); close(); moa.open(); }}>{confirm ? "Replace arrangement" : "Copy to my slot"}</button>
+            <IconButton label={confirm ? "Replace arrangement" : "Copy to my slot"} icon="copy" disabled={!moa.loaded} onClick={() => { if (moa.value.slots[destination].tree && !confirm) { setConfirm(true); return; } const slots = moa.value.slots.map((s, i) => i === destination ? normalizeMoaLayout(shared.layout) : s); moa.update({ ...moa.value, activeSlot: destination, tabCount: Math.max(moa.value.tabCount, destination + 1), slots }); close(); moa.open(); }} />
         </>}</div>
     </Modal>;
 }

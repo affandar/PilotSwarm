@@ -46,6 +46,11 @@ session. Each populated panel has an isolated session controller/subscription.
 
 ## Zen and opening a session
 
+The toolbar uses icons with hover labels: add panel, clear layout (eraser),
+share link, and enter zen (expand corners). **Clear MoA layout** asks for
+confirmation, then returns only the current tab to its blank **+** screen.
+Its name, other tabs, sessions, and canvases are preserved.
+
 **Zen** hides the PilotSwarm header and MoA toolbar. The small **Exit zen**
 handle and Escape restore the regular MoA view. Panel controls remain available.
 

@@ -72,3 +72,8 @@
 /* Winamp's dark blue selection fill needs a brighter outline on black panes. */
 :root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: var(--ps-foreground); box-shadow: inset 0 0 0 1px var(--ps-foreground); }
 :root[data-ps-theme="winamp"] .ps-moa-tab[aria-selected=true] { border-bottom-color: var(--ps-foreground); }
+
+.ps-moa-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 36px; height: 34px; padding: 6px; }
+.ps-moa-icon-button svg { display: block; flex-shrink: 0; }
+.ps-moa-icon-button.ps-moa-zen-exit { width: 36px; height: 26px; padding: 3px 8px; }
+.ps-moa-menu-actions { flex-direction: row; flex-wrap: wrap; }
