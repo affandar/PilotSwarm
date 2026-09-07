@@ -9330,7 +9330,8 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-prompt-label.is-default { display: none; }
 .ps-prompt-shell.is-compact .ps-prompt-label:not(.is-default) { grid-column: 1 / -1; }
 .ps-prompt-shell.is-compact .ps-prompt-input { font-size: 16px; line-height: 1.35; min-height: 44px; }
-.ps-prompt-shell.is-compact .ps-send-button { min-width: 44px; min-height: 44px; }
+.ps-prompt-shell.is-compact .ps-send-button,
+.ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
 
 /* Let toolbar groups use their actual width before centering them. Equal
    zero-minimum rails allowed the right-hand icons to paint over the center. */

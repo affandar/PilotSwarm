@@ -111,7 +111,14 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
   connection/status text lives in the app header under the version pill, not
   in the toolbar. Mobile Zen replaces that toolbar with only restore and the
   shared session picker; mobile MoA shows one panel at a time with its map and
-  focused-panel controls.
+  focused-panel controls. Its session title/status lead on the left, with an
+  icon-only down-triangle dashboard picker at the far right; never prepend
+  the dashboard name or add a second mobile tab row. Both compact focus
+  composers retain Stop during a running turn, with a 44px touch target and
+  disabled pending-request state beside Send.
+- MoA's Close panel action uses a panel outline with an × and neutral styling.
+  Keep it distinct from the Session group's trash/lifecycle action; closing a
+  panel changes only its layout, leaving the session available.
 - Theme picker selection previews immediately in both portal and shared UI state. `Apply Theme` commits the previewed theme; `Cancel`, `Close`, backdrop click, or `Esc` restores the theme that was active when the picker opened.
 - In chat-focus mode, the Sessions pane supports horizontal scrolling so long session titles are fully readable; do not force focus-mode session rows to truncate with ellipses.
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.

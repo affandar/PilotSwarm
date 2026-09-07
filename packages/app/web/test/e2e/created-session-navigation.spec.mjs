@@ -50,7 +50,9 @@ for (const mobile of [false, true]) {
         }
         await expect(page.locator(".ps-chat-panel")).toContainText("Fresh session");
         await expect(page.locator(".ps-prompt-input")).toBeVisible();
-        await expect(page.locator(".ps-moa-workspace")).toHaveCount(0);
+        // The workspace stays mounted as a client-side cache, but must leave
+        // the rendered surface and accessibility tree when normal chat opens.
+        await expect(page.locator(".ps-moa-workspace")).not.toBeVisible();
         await expect.poll(() => subscriptions.some(m => m.sessionId === newId && /^subscribe/.test(m.type))).toBe(true);
         expect(errors).toEqual([]);
     });

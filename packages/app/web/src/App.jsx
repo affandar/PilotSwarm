@@ -737,7 +737,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         React.createElement("main", { className: "portal-main" },
             React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa }),
             moa.mobileZen ? React.createElement(MobileZen, { controller, onClose: moa.closeMobileZen, drafts: moa.zenDrafts, createTransport: createPanelTransport }) : null,
-            moa.active ? React.createElement(MoaWorkspace, { controller, moa, createTransport: createPanelTransport }) : null),
+            moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, visible: moa.active, createTransport: createPanelTransport }) : null),
     );
 }
 

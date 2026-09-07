@@ -5838,10 +5838,11 @@ export class PilotSwarmUiController {
                 }
                 const existing = this.getState().history.bySessionId.get(sessionId)
                     || { chat: [], activity: [], events: [], lastSeq: 0 };
+                const liveHistory = this.preservePausedChatWindow(sessionId, existing);
                 this.dispatch({
                     type: "history/set",
                     sessionId,
-                    history: applyLiveTurnToHistory(existing, event.data, {
+                    history: applyLiveTurnToHistory(liveHistory, event.data, {
                         sessionId,
                         seq: event.liveSeq,
                         createdAt: Date.now(),
@@ -5878,7 +5879,10 @@ export class PilotSwarmUiController {
             this._liveTurnIdleTimers.delete(sessionId);
         }
         const state = this.getState();
-        const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
+        const existing = this.preservePausedChatWindow(
+            sessionId,
+            state.history.bySessionId.get(sessionId) || { chat: [], activity: [], events: [], lastSeq: 0 },
+        );
         if (event.seq <= (existing.lastSeq || 0)) return false;
         this.dispatch({
             type: "history/set",
@@ -5977,6 +5981,31 @@ export class PilotSwarmUiController {
         this.maybeFlushQueuedOutbox(sessionId, this.getState().sessions.byId[sessionId] || currentSession);
         this.scheduleSessionDetailSync(sessionId);
         return true;
+    }
+
+    /**
+     * Do not evict the first rendered item while its active chat is paused.
+     * A fixed-size history window normally drops one old item for each live
+     * append. Keeping the same numeric scrollTop then moves the actual text the
+     * user is reading. Grow the in-memory window just enough for arrivals made
+     * during that pause; normal bottom-follow appends resume bounded trimming.
+     */
+    preservePausedChatWindow(sessionId, history) {
+        const state = this.getState();
+        if (state.sessions.activeSessionId !== sessionId || state.ui.followBottom?.chat !== false) {
+            return history;
+        }
+        const currentLimit = Math.max(
+            DEFAULT_HISTORY_EVENT_LIMIT,
+            Number(history?.loadedEventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+        );
+        const requiredLimit = Math.max(
+            currentLimit,
+            (Array.isArray(history?.events) ? history.events.length : 0) + 1,
+            (Array.isArray(history?.chat) ? history.chat.length : 0) + 4,
+            (Array.isArray(history?.activity) ? history.activity.length : 0) + 1,
+        );
+        return requiredLimit === currentLimit ? history : { ...history, loadedEventLimit: requiredLimit };
     }
 
     async syncSessionEvents(sessionId) {
@@ -9178,6 +9207,7 @@ export class PilotSwarmUiController {
     }
 
     paneUsesStickyBottomFollow(pane, state = this.getState()) {
+        if (pane === "chat") return true;
         if (pane === "activity") return true;
         if (pane === "inspector") return state.ui.inspectorTab === "logs";
         return false;
@@ -9251,6 +9281,15 @@ export class PilotSwarmUiController {
             const current = this.getPaneVisualScrollOffset(pane, state);
             const nextOffset = Math.max(0, Math.min(current - delta, maxOffset));
             this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            if (pane === "chat" && delta > 0) {
+                if (current <= 0) {
+                    this.handleChatTopHistoryScrollIntent(nextOffset).catch(() => {});
+                } else if (nextOffset <= 0) {
+                    this.armChatTopHistoryLoad();
+                }
+            } else if (pane === "chat" && delta < 0) {
+                this.disarmChatTopHistoryLoad();
+            }
             return;
         }
         const current = Math.max(0, Math.min(Number(state.ui.scroll?.[pane]) || 0, maxOffset));
@@ -9273,6 +9312,10 @@ export class PilotSwarmUiController {
         const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
         if (this.paneUsesStickyBottomFollow(pane, state)) {
             this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            if (pane === "chat") {
+                if (maxOffset > 0 && nextOffset <= 0) this.armChatTopHistoryLoad();
+                else this.disarmChatTopHistoryLoad();
+            }
             return;
         }
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
@@ -9308,6 +9351,7 @@ export class PilotSwarmUiController {
 
         await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
             pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
+            preserveDomAnchor: options.preserveDomAnchor === true,
             // Always bypass the offset gate. Every caller of this method fires
             // only when the DOM scroller is already AT the top — a direct
             // measurement. The gate is a second, weaker guess that compares a
@@ -9369,7 +9413,7 @@ export class PilotSwarmUiController {
         const pane = this.getScrollablePaneForFocus();
         if (!pane) return;
         if (this.paneUsesStickyBottomFollow(pane)) {
-            this.applyPaneVisualScrollOffset(pane, 0, { followBottom: false });
+            this.scrollPaneTo(pane, 0);
             return;
         }
         const inspectorUsesBottomScroll = pane === "inspector" && this.inspectorUsesBottomScroll();
@@ -9649,6 +9693,7 @@ export class PilotSwarmUiController {
             requestedScrollOffset: targetOffset,
             autoTriggered: true,
             pages: options.pages,
+            preserveDomAnchor: options.preserveDomAnchor === true,
             // Chat-driven pull: page backward over renderable message types
             // only, so each page is transcript instead of raw event noise.
             eventTypes: CHAT_HISTORY_EVENT_TYPES,
@@ -9785,9 +9830,12 @@ export class PilotSwarmUiController {
                     pane: "chat",
                     offset: 0,
                 });
-            } else if (preserveChatView && previousScrollOffset > 0 && !options.autoTriggered) {
-                // EXPLICIT "load older" (the TUI's `e`): jump up to the start
-                // of what was just fetched — the user asked to SEE it.
+            } else if (preserveChatView && options.autoTriggered && !options.preserveDomAnchor) {
+                // Terminal panes store paused chat as a top offset. Prepending
+                // must advance that offset by the rendered rows inserted above
+                // it, preserving the same visible message. Browser panes use
+                // measured DOM height because rich cards and wrapping do not
+                // match terminal row metrics.
                 const nextState = this.getState();
                 const nextRenderedLines = this.getActiveChatRenderMetrics(nextState).totalLines;
                 const addedLines = Math.max(0, nextRenderedLines - previousRenderedLines);
@@ -9799,14 +9847,6 @@ export class PilotSwarmUiController {
                     });
                 }
             }
-            // AUTO-triggered (scrolling reached the top): change NOTHING. The
-            // offset is distance-from-BOTTOM, which prepended content cannot
-            // move — leaving it alone keeps the viewport glued to the exact
-            // messages the user was reading, and they scroll on into the new
-            // page naturally. Adding the delta here teleported the view to
-            // the TOP of a 3.3x-larger window — observed as "loading history
-            // takes you way back instead of a few pages up".
-
             const stateLabel = history.hasOlderEvents
                 ? options.autoTriggered
                     ? `Loaded older history page from CMS (${history.loadedEventCount} events loaded)`

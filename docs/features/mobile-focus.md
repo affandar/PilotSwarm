@@ -10,6 +10,9 @@ use the same 16px font. Drafts grow from one line and are capped against the
 visible viewport. Session changes retain drafts during the current page visit.
 The selector disables during navigation; failed navigation restores the source
 session and its draft. Read-only sessions retain their access restrictions.
+Both mobile focus composers show Stop beside Send while a turn is running.
+Stop remains visible and disabled while its request is pending, preserves the
+draft, and stops only the selected session's turn.
 
 On a phone, MoA shows one panel at a time. The map icon opens the saved desktop
 split tree, including unequal splits and the desktop viewport aspect ratio.
@@ -45,6 +48,10 @@ These views ship in PilotSwarm 0.5.61. They are browser-only; the native TUI
 keeps its existing workspace and keyboard flow.
 
 The mobile MoA header includes the session control-panel icon beside the map.
+The session title and status stay on the left. An icon-only down-triangle
+button at the far right opens the MoA dashboard picker, where dashboard names
+and previews remain visible. No extra mobile tab row or rearrangement controls
+are shown.
 Tap it, then Split right or Split below to create and select an empty panel;
 tap its + to select a session or canvas. The same menu handles replacement
 and removal without requiring a right-click or long press.

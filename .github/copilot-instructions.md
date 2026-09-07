@@ -603,3 +603,11 @@ never shrink or overlap action icons. Mobile uses that picker with proportional
 layout previews. Keep panel swipes and Tab cycling scoped to the active dashboard.
 Migration 0076 protects saved version-3 layouts against stale single-dashboard
 profile writes; do not remove that guard during UI or profile refactors.
+
+MoA dashboard order is profile data; cached views and transcripts remain client
+memory only. Refresh controllers only for the visible dashboard and guard late
+loads against session or dashboard switches. Desktop supports tab dragging;
+mobile keeps a triangle-only dashboard picker in the session header. Keep Stop
+visible for a running focused session. Use X for closing a panel and reserve
+trash for deleting a session. Chat follows new content only at the bottom, and
+session-focus changes center the corresponding session-list row.

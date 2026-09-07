@@ -11,7 +11,8 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
         let snapshot = { status: 'idle', statusVersion: 6, updatedAt: T0 };
-        let reads = 0, sends = 0;
+        let reads = 0, sends = 0, releaseStop;
+        const stops = [];
         const row = () => ({ sessionId, title: themeId === 'ms-dos' ? '' : 'Footer regression', model: 'github-copilot:claude-sonnet-5',
             owner: { provider: 'none', subject: 'test', email: 'test@example.com', displayName: 'Test User' },
             createdAt: T0, ...snapshot });
@@ -26,6 +27,12 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
                 }
                 if (path.endsWith(`/sessions/${sessionId}`)) return answer(row());
                 if (path.endsWith(`/sessions/${sessionId}/messages`)) { sends += 1; return answer({ queued: true }); }
+                if (path.endsWith('/stop-turn')) {
+                    stops.push({ path, body: request.postDataJSON() });
+                    await new Promise(resolve => { releaseStop = resolve; });
+                    snapshot = { status: 'idle', statusVersion: 10, updatedAt: T0 + 10000 };
+                    return answer({ outcome: 'stopped' });
+                }
                 return route.fallback();
             });
             await page.setViewportSize({ width: 390, height: 844 });
@@ -35,6 +42,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             const chat = surface.locator('.ps-chat-panel');
             const footer = surface.locator('.ps-mobile-session-status');
             const input = surface.locator('textarea');
+            const stop = surface.getByRole('button', { name: 'Stop the current turn', exact: true });
             await expect(input).toBeVisible();
             await expect(footer).toBeVisible();
             if (themeId === 'ms-dos') await expect(surface.locator('.ps-mobile-session-name')).toContainText(sessionId);
@@ -62,6 +70,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
                 for (const key of Object.keys(expected)) expect(Math.abs(actual[key] - expected[key]), key).toBeLessThan(1);
             };
             const idle = await geometry();
+            await expect(stop).toHaveCount(0);
             await expect(chat.locator('.ps-panel-bottom-sticky')).toHaveCount(0);
             await update({ status: 'running', statusVersion: 5, updatedAt: T0 + 5000 });
             await expect(footer).not.toContainText('Working');
@@ -69,10 +78,11 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await assertSame(idle);
             await update({ status: 'running', statusVersion: 7, updatedAt: T0 + 1000 });
             await expect(footer).toContainText('Working');
-            await expect(footer).toContainText('Working');
+            await expect(stop).toBeEnabled();
             await assertSame(idle);
             await update({ status: 'idle', statusVersion: 8, updatedAt: T0 + 2000 });
             await expect(footer).not.toContainText('Working');
+            await expect(stop).toHaveCount(0);
             await expect(chat.locator('.ps-panel-bottom-sticky')).toHaveCount(0);
             await assertSame(idle);
             await update({ status: 'running', statusVersion: 9, updatedAt: T0 + 3000 });
@@ -95,6 +105,29 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await page.screenshot({path:`/tmp/mobile-header-${mode}-${themeId}.png`});
             const box = await surface.locator(mode==='zen'?'.ps-mobile-zen-composer':'.ps-moa-composer-strip').boundingBox();
             expect(Math.abs(box.y-(await geometry()).transcriptBottom)).toBeLessThan(5);
+            // Stop remains reachable alongside Send at the narrowest phone and
+            // keyboard viewport, and targets the focused session only.
+            await page.clock.resume();
+            await page.setViewportSize({ width: 320, height: 400 });
+            await expect.poll(async () => { const r = await stop.boundingBox(); return r.y + r.height; }).toBeLessThanOrEqual(400);
+            const stopBox = await stop.boundingBox();
+            const inputBox = await input.boundingBox();
+            const sendBox = await surface.locator('.ps-send-button').boundingBox();
+            expect(stopBox.width).toBeGreaterThanOrEqual(44);
+            expect(stopBox.height).toBeGreaterThanOrEqual(44);
+            expect(inputBox.x + inputBox.width).toBeLessThanOrEqual(stopBox.x);
+            expect(stopBox.x + stopBox.width).toBeLessThanOrEqual(sendBox.x);
+            expect(sendBox.x + sendBox.width).toBeLessThanOrEqual(320);
+            expect(stopBox.y + stopBox.height).toBeLessThanOrEqual(400);
+            await input.fill('Keep my draft while stopping');
+            await stop.click();
+            await expect.poll(() => stops.length).toBe(1);
+            expect(stops[0].path).toBe(`/api/v1/management/sessions/${sessionId}/stop-turn`);
+            await expect(stop).toBeDisabled();
+            await expect(input).toBeFocused();
+            releaseStop();
+            await expect(stop).toHaveCount(0);
+            await expect(input).toHaveValue('Keep my draft while stopping');
             expect(errors).toEqual([]);
         } finally { await new Promise(resolve => stub.server.close(resolve)); }
     });

@@ -75,6 +75,129 @@ test('migrates one layout, adds at most five dashboards, and safely renames and 
     expect(f.errors).toEqual([]);
 });
 
+test('desktop tabs drag into a persisted profile order and support keyboard reordering', async ({page}) => {
+    const moa=normalizeMoa({version:3,activeDashboardId:'ops',dashboards:profiles().dashboards.slice(0,3)});
+    const f=await fixture(page,{moa,width:2000});
+    const operations=page.getByRole('tab',{name:'Operations',exact:true});
+    const review=page.getByRole('tab',{name:'Review',exact:true});
+    await page.getByRole('tab',{name:'Research',exact:true}).click();
+    const from=await operations.boundingBox(), to=await review.boundingBox();
+    await page.mouse.move(from.x+from.width/2,from.y+from.height/2);
+    await page.mouse.down();
+    await page.mouse.move(to.x+to.width*.8,to.y+to.height/2,{steps:8});
+    await page.mouse.up();
+    await expect.poll(()=>f.settings().moa.dashboards.map(d=>d.id)).toEqual(['research','review','ops']);
+    // pointerup may or may not synthesize a click depending on where the tab
+    // was dropped. Either way, the next intentional click must never be lost.
+    await operations.click();
+    await expect(operations).toHaveAttribute('aria-selected','true');
+    await operations.focus();
+    await operations.press('Alt+Shift+ArrowLeft');
+    await expect.poll(()=>f.settings().moa.dashboards.map(d=>d.id)).toEqual(['research','ops','review']);
+    await page.reload();
+    await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
+    expect(await page.getByRole('tab').allTextContents()).toEqual(['Research','Operations','Review']);
+    expect(f.errors).toEqual([]);
+});
+
+test('only the visible dashboard refreshes and revisiting it paints from memory immediately', async ({page}) => {
+    const sessionRequests=[];
+    page.on('request',request=>{ const path=new URL(request.url()).pathname; if(path.includes('/sessions/')) sessionRequests.push(path); });
+    const f=await fixture(page,{moa:profiles()});
+    await expect(composer(page)).toBeVisible();
+    expect(sessionRequests.some(path=>path.includes(sid(3)))).toBe(false);
+    expect(sessionRequests.some(path=>path.includes(sid(4)))).toBe(false);
+    await choose(page,'Review');
+    await expect.poll(()=>sessionRequests.some(path=>path.includes(sid(3)))).toBe(true);
+    await expect(page.locator('[data-dashboard-view-id="review"]')).not.toContainText('Connecting…');
+    await choose(page,'Operations');
+    await expect(page.locator('[data-dashboard-view-id="ops"]')).not.toContainText('Connecting…');
+    await page.waitForTimeout(4200);
+    expect(sessionRequests.some(path=>path.includes(sid(4)))).toBe(false);
+    await choose(page,'Review');
+    await expect(page.locator('[data-dashboard-view-id="review"]')).not.toContainText('Connecting…');
+    expect(f.errors).toEqual([]);
+});
+
+test('a stale dashboard load cannot suspend the controller resumed by a newer visit', async ({page}) => {
+    let releaseFirst, firstStarted;
+    const held = new Promise(resolve => { releaseFirst = resolve; });
+    const started = new Promise(resolve => { firstStarted = resolve; });
+    let alphaGets = 0;
+    await page.route(`**/api/v1/sessions/${sid(1)}`, async route => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        alphaGets++;
+        if (alphaGets === 1) { firstStarted(); await held; }
+        return route.fallback();
+    });
+    const moa = normalizeMoa({ version: 3, activeDashboardId: 'alpha', dashboards: [
+        { id: 'alpha', name: 'Alpha', tree: chat(1) },
+        { id: 'beta', name: 'Beta', tree: chat(2) },
+    ] });
+    try {
+        const f = await fixture(page, { moa });
+        await started;
+        await choose(page, 'Beta');
+        await expect(composer(page)).toBeVisible();
+        await choose(page, 'Alpha');
+        await expect.poll(() => alphaGets).toBeGreaterThanOrEqual(2);
+        await expect(composer(page)).toBeVisible();
+        releaseFirst();
+        const afterRelease = alphaGets;
+        // The visible controller polls every four seconds. The obsolete first
+        // load used to clear this newer timer and detach its live subscription.
+        await expect.poll(() => alphaGets, { timeout: 7_000 }).toBeGreaterThan(afterRelease);
+        await expect(page.getByRole('navigation', { name: 'Master of Agents' }).getByRole('button')).toHaveCount(2);
+        expect(f.errors).toEqual([]);
+    } finally { releaseFirst(); }
+});
+
+test('a late history load cannot leave a hidden cached dashboard subscribed', async ({page}) => {
+    let releaseFirst, firstStarted;
+    const held = new Promise(resolve => { releaseFirst = resolve; });
+    const started = new Promise(resolve => { firstStarted = resolve; });
+    let alphaHistoryGets = 0;
+    const sockets = new Map();
+    await page.routeWebSocket('**/api/v1/ws', ws => {
+        ws.onMessage(raw => {
+            const message = JSON.parse(raw);
+            if (message.type === 'subscribeLive') sockets.set(message.sessionId, ws);
+        });
+    });
+    await page.route(`**/api/v1/management/sessions/${sid(1)}/events?*`, async route => {
+        alphaHistoryGets++;
+        if (alphaHistoryGets === 1) { firstStarted(); await held; }
+        return route.fallback();
+    });
+    const moa = normalizeMoa({ version: 3, activeDashboardId: 'alpha', dashboards: [
+        { id: 'alpha', name: 'Alpha', tree: chat(1) },
+        { id: 'beta', name: 'Beta', tree: chat(2) },
+    ] });
+    try {
+        const f = await fixture(page, { moa });
+        await started;
+        await choose(page, 'Beta');
+        await expect(composer(page)).toBeVisible();
+        await choose(page, 'Alpha');
+        await expect.poll(() => alphaHistoryGets).toBeGreaterThanOrEqual(2);
+        await expect(composer(page)).toBeVisible();
+        await expect.poll(() => sockets.has(sid(1))).toBe(true);
+        await choose(page, 'Beta');
+        await expect(composer(page)).toBeVisible();
+        releaseFirst();
+        await page.waitForTimeout(250);
+
+        const marker = 'HIDDEN_CACHE_MUST_IGNORE_THIS';
+        sockets.get(sid(1)).send(JSON.stringify({ type: 'sessionEvent', sessionId: sid(1), event: {
+            sessionId: sid(1), seq: 1_000_000, eventType: 'assistant.message', createdAt: Date.now(),
+            data: { messageId: 'hidden-cache-event', content: marker },
+        } }));
+        await page.waitForTimeout(250);
+        await expect(page.locator('[data-dashboard-view-id="alpha"]')).not.toContainText(marker);
+        expect(f.errors).toEqual([]);
+    } finally { releaseFirst(); }
+});
+
 test('dashboard switching preserves each layout, selection and session draft, then reloads the active dashboard', async ({page}) => {
     const f=await fixture(page,{moa:profiles()});
     await expect(composer(page)).toBeVisible();
@@ -125,6 +248,27 @@ test('mobile picker preserves map geometry and switching only sends to the selec
     expect(f.errors).toEqual([]);
 });
 
+test('mobile uses one compact header and does not expose dashboard reordering', async ({page}) => {
+    const f=await fixture(page,{moa:profiles(),width:390});
+    await expect(page.locator('.ps-moa-mobile-dashboard-bar')).toHaveCount(0);
+    const header=page.locator('.ps-mobile-focus-header');
+    const trigger=header.getByRole('button',{name:'Switch MoA dashboard'});
+    await expect(trigger).toBeVisible();
+    await expect(trigger).toHaveText('');
+    await expect(trigger).toHaveAttribute('aria-haspopup','dialog');
+    await expect(header).not.toContainText('Operations');
+    const title=header.locator('.ps-mobile-session-name');
+    await expect(title).toContainText('Session 2');
+    const titleBox=await title.boundingBox(), triggerBox=await trigger.boundingBox();
+    expect(titleBox.x+titleBox.width).toBeLessThan(triggerBox.x);
+    expect(triggerBox.width).toBeGreaterThanOrEqual(44);
+    expect(390-triggerBox.x-triggerBox.width).toBeLessThanOrEqual(10);
+    await trigger.click();
+    await expect(page.getByRole('dialog',{name:'MoA dashboards',exact:true})).toBeVisible();
+    await expect(page.locator('.ps-moa-dashboard-picker [draggable="true"]')).toHaveCount(0);
+    expect(f.errors).toEqual([]);
+});
+
 for (const themeId of ['terminal-green','win95','winamp','ms-dos']) for (const touchScale of [false,true]) test(`${themeId}, touch scale ${touchScale}: resizing collapses tabs and never overlaps icons`, async ({page}) => {
     const moa=profiles(); moa.dashboards[0].name='Operations with a very long dashboard name';
     const f=await fixture(page,{moa,themeId,touchScale});
@@ -132,7 +276,7 @@ for (const themeId of ['terminal-green','win95','winamp','ms-dos']) for (const t
         await page.setViewportSize({width,height:width<=920?844:1000});
         await expect(workspace(page)).toBeVisible();
         await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        const container=page.locator(width<=920?'.ps-moa-mobile-dashboard-bar':'.ps-toolbar.is-moa');
+        const container=page.locator(width<=920?'.ps-mobile-focus-header':'.ps-toolbar.is-moa');
         await expect.poll(()=>container.evaluate(root=>{
             const boxes=[...root.querySelectorAll('button')].filter(b=>b.getClientRects().length && getComputedStyle(b).visibility!=='hidden').map(b=>({label:b.getAttribute('aria-label')||b.textContent,r:b.getBoundingClientRect()}));
             const problems=[];

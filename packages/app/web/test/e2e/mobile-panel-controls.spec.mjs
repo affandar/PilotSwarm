@@ -32,12 +32,14 @@ for (const engine of ['chromium','webkit']) {
    await expect(page.locator('.ps-moa-map > button')).toHaveCount(3);
    await page.getByRole('button',{name:'Close dialog',exact:true}).tap();
    await controls.tap();
-   await page.getByRole('button',{name:'Remove panel',exact:true}).tap();
+   await page.getByRole('button',{name:'Close panel',exact:true}).tap();
    await expect.poll(()=>activeMoaDashboard(normalizeMoa(settings.moa))?.tree?.second?.type).toBe('chat');
    await page.getByRole('button',{name:'Open panel map',exact:true}).tap();
    await expect(page.locator('.ps-moa-map > button')).toHaveCount(2);
    await page.locator('.ps-moa-map > button').nth(1).tap();
    await expect(page.locator('.ps-moa-composer-host textarea')).toHaveValue('Keep this draft');
+   await controls.tap();
+   await expect(page.getByRole('button',{name:'Close panel',exact:true})).toHaveAttribute('title','Close this panel. The session stays available.');
    await page.screenshot({path:`/tmp/mobile-panel-controls-${engine}.png`});
   } finally {await browser.close();}
  });

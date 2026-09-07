@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.2.0
+version: 1.3.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -23,6 +23,7 @@ Your job is to create or update application code in the user's repository, not t
 - treat authentication as an optional provider-based add-on rather than a built-in Entra assumption
 - support the shipped Entra add-on when requested, but preserve room for alternate auth providers such as AWS IAM
 - document provider-specific env vars, redirect URI expectations, and portal rollout steps
+- document the shipped personal MoA dashboards on desktop and mobile; keep profile-saved tab order separate from browser-only cached views, and refresh only visible dashboards
 - use the public docs and DevOps sample as canonical reference shapes
 
 ## Always Consult

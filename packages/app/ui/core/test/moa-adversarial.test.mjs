@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    normalizeMoa, normalizeMoaLayout, replaceMoaNode, moaLeaves, activeMoaDashboard, updateMoaDashboard,
+    normalizeMoa, normalizeMoaLayout, replaceMoaNode, moaLeaves, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard,
     emptyMoaPanel,
 } from "../src/moa.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
@@ -145,6 +145,20 @@ test("multiple dashboards preserve identity, active selection, geometry and per-
     assert.equal(activeMoaDashboard(updated).focusedPanelId, null);
     assert.deepEqual(value.dashboards[1], second, "updates must not mutate another saved snapshot");
     assert.deepEqual(normalizeMoa(value), value);
+});
+
+test("dashboard reordering preserves active identity, layout data and profile array order", () => {
+    const first = { id: "operations", name: "Operations", tree: split(), focusedPanelId: "p2" };
+    const second = { id: "research", name: "Research", tree: chat("p3"), focusedPanelId: "p3" };
+    const third = { id: "review", name: "Review", tree: canvas("p4"), focusedPanelId: "p4" };
+    const value = normalizeMoa({ version: 3, activeDashboardId: "research", dashboards: [first, second, third] });
+    const moved = moveMoaDashboard(value, "operations", 2);
+    assert.deepEqual(moved.dashboards.map(d => d.id), ["research", "review", "operations"]);
+    assert.equal(moved.activeDashboardId, "research");
+    assert.deepEqual(moved.dashboards[2], first);
+    assert.deepEqual(value.dashboards.map(d => d.id), ["operations", "research", "review"], "reordering must not mutate saved state");
+    assert.deepEqual(moveMoaDashboard(value, "missing", 0), value);
+    assert.deepEqual(moveMoaDashboard(value, "review", -20).dashboards.map(d => d.id), ["review", "operations", "research"]);
 });
 
 test("dashboard validation caps five, repairs duplicate identities and invalid active/focus references", () => {

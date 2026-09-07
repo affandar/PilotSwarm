@@ -17,7 +17,11 @@ export function clockwisePanels(tree, aspectRatio = 16 / 9) {
 }
 // Never steal a native control, horizontal code/table scroll, or a text selection.
 export function canSwipeFrom(target, root) {
-    if (target.closest?.("button,input,textarea,select,a,iframe,[contenteditable='true']")) return false;
+    const control = target.closest?.("button,input,textarea,select,a,iframe,[contenteditable='true']");
+    // On mobile the compact dashboard selector deliberately owns the session
+    // title too. A tap opens the dashboard picker; a horizontal gesture over
+    // its title still cycles panels, which was the established phone control.
+    if (control && !control.matches?.(".ps-moa-mobile-title-trigger")) return false;
     for (let node = target; node && node !== root; node = node.parentElement) {
         if (node.scrollWidth > node.clientWidth + 2 && /auto|scroll/.test(getComputedStyle(node).overflowX)) return false;
     }

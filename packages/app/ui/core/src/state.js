@@ -448,10 +448,14 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 activity: 0,
                 filePreview: 0,
             },
-            // Per-session chat scroll memory (rows from bottom), restored on
-            // sessions/selected and evicted with the session's history.
+            // Per-session chat scroll memory. While following, the offset is
+            // distance from the bottom; once the reader scrolls up it becomes
+            // a stable viewport offset from the top. The paired follow flag
+            // disambiguates the two modes across session switches.
             chatScrollBySession: {},
+            chatFollowBottomBySession: {},
             followBottom: {
+                chat: true,
                 inspector: true,
                 activity: true,
             },

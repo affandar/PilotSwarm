@@ -38,6 +38,71 @@ test("a session past the auto-expand cap offers a way to load older messages", a
     await expect(button).toBeEnabled();
 });
 
+test("scrolling up pauses bottom follow without disabling backward history paging", async ({ page }) => {
+    const backwardRequests = [];
+    const sessionId = "11111110-2222-3333-4444-555555555550";
+    const event = (seq, content) => ({
+        seq,
+        eventType: seq % 2 ? "assistant.message" : "user.message",
+        timestamp: 1785000000000 + seq,
+        data: { messageId: `message-${seq}`, content },
+    });
+    const initial = Array.from({ length: 300 }, (_, i) => {
+        const seq = 701 + i;
+        return event(seq, seq === 702 ? "VISIBLE_ANCHOR_702" : `recent message ${seq}`);
+    });
+    const older = Array.from({ length: 10 }, (_, i) => event(691 + i, `older message ${691 + i}`));
+    await page.route(`**/api/v1/management/sessions/${sessionId}/events?*`, async (route) => {
+        const url = new URL(route.request().url());
+        const types = JSON.parse(url.searchParams.get("eventTypes") || "[]");
+        return route.fulfill({ json: { ok: true, result: types.length === 1 && types[0] === "session.canvas_updated" ? [] : initial } });
+    });
+    await page.route(`**/api/v1/management/sessions/${sessionId}/events-before*`, async (route) => {
+        const url = new URL(route.request().url());
+        const types = JSON.parse(url.searchParams.get("eventTypes") || "[]");
+        return route.fulfill({ json: { ok: true, result: types.length === 1 && types[0] === "session.canvas_updated" ? [] : older } });
+    });
+    page.on("request", (request) => {
+        const url = new URL(request.url());
+        const types = JSON.parse(url.searchParams.get("eventTypes") || "[]");
+        if (url.pathname.endsWith("/events-before") && types.some((type) => type === "user.message" || type === "assistant.message")) {
+            backwardRequests.push(request.url());
+        }
+    });
+    await open(page);
+    const viewport = page.locator(".ps-chat-panel .ps-scroll-panel");
+    await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeGreaterThan(500);
+
+    // A real upward read gesture first switches chat from bottom-follow to a
+    // paused top anchor. Reaching the top and continuing upward must still
+    // request the preceding CMS page in that paused mode.
+    await viewport.hover();
+    await viewport.evaluate((node) => {
+        node.scrollTop = Math.max(100, node.scrollHeight - node.clientHeight - 300);
+        node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await page.waitForTimeout(50);
+    await viewport.evaluate((node) => {
+        node.scrollTop = 0;
+        node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    const anchor = viewport.getByText("VISIBLE_ANCHOR_702").first();
+    const anchorBefore = await anchor.boundingBox();
+    await page.mouse.wheel(0, -500);
+    await expect.poll(() => backwardRequests.length).toBeGreaterThan(0);
+    await expect(page.getByText("older message 692").first()).toBeAttached();
+    const anchorAfter = await anchor.boundingBox();
+    expect(Math.abs(anchorAfter.y - anchorBefore.y), "prepending older history moved the visible reading anchor").toBeLessThan(3);
+
+    const savedTop = await viewport.evaluate((node) => node.scrollTop);
+    await page.locator(`.ps-session-list-button[data-session-id="11111111-2222-3333-4444-555555555551"]`).click();
+    await page.locator(`.ps-session-list-button[data-session-id="${sessionId}"]`).click();
+    await expect(page.getByText("VISIBLE_ANCHOR_702").first()).toBeAttached();
+    await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeCloseTo(savedTop, 0);
+    const anchorAfterRoundTrip = await page.getByText("VISIBLE_ANCHOR_702").first().boundingBox();
+    expect(Math.abs(anchorAfterRoundTrip.y - anchorAfter.y), "switching sessions lost the paused history anchor").toBeLessThan(3);
+});
+
 // The detail box now starts FOLDED to a one-line summary and remembers the
 // choice — ten rows of reference detail under a list you are trying to read
 // was too much by default. The full field grid is one click away.

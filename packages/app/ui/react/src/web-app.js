@@ -1075,6 +1075,18 @@ export function computeAnchoredScrollTop(
         : Math.min(maxScroll, offsetPixels);
 }
 
+function scrollLineIdentity(line) {
+    if (!line) return "";
+    if (line.kind === "runs") return line.runs?.map((run) => run?.text || "").join("") || "";
+    if (line.kind === "assistantPreview") return `assistant:${line.previewKey || line.messageId || line.id || ""}`;
+    return `${line.kind || "text"}:${line.text || line.value || line.id || ""}`;
+}
+
+function scrollBoundaryIdentity(lines, fromEnd = false) {
+    const boundary = fromEnd ? lines.slice(-8) : lines.slice(0, 8);
+    return boundary.map(scrollLineIdentity).join("\u241e");
+}
+
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
@@ -1087,6 +1099,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         scrollMode,
         scrollOffset,
     });
+    const previousContentRef = React.useRef(null);
     // Touch scrolling relies on native momentum for speed: a hard flick keeps
     // scrolling long after the finger lifts. Re-asserting scrollTop from state
     // on every render (live events, status updates) kills that momentum at the
@@ -1116,30 +1129,44 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const node = ref.current;
         if (!node) return;
         const previousViewportState = previousViewportStateRef.current;
+        const firstLine = scrollBoundaryIdentity(normalizedLines);
+        const lastLine = scrollBoundaryIdentity(normalizedLines, true);
+        const previousContent = previousContentRef.current;
         const interaction = userScrollRef.current;
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();
         const interacting = interaction.touching
             || (now - (interaction.lastUserScrollAt || 0)) < TOUCH_MOMENTUM_GRACE_MS;
         const isEchoOffset = interaction.lastDispatchedOffset != null
             && Math.abs((Number(scrollOffset) || 0) - interaction.lastDispatchedOffset) < 2;
-        if (
-            interacting
-            && scrollMode === previousViewportState?.scrollMode
-            && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
-        ) {
-            previousViewportStateRef.current = { scrollMode, scrollOffset };
-            return;
-        }
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
             && previousViewportState?.scrollMode === "top"
             && previousViewportState?.scrollOffset === scrollOffset;
-        const nextScrollTop = computeAnchoredScrollTop(
-            node,
-            scrollOffset,
-            scrollMode,
-            preservePausedStickyScroll,
-        );
+        // A backward page inserts DOM above the reader. Top-anchored paused
+        // state normally preserves scrollTop, which would push the same visible
+        // message down by the inserted height. Compensate with the measured DOM
+        // height delta. Appended live text keeps the old scrollTop unchanged.
+        const prependedWhilePaused = stickyBottom
+            && previousContent?.lastLine === lastLine
+            && previousContent?.firstLine !== firstLine
+            && node.scrollHeight > previousContent.scrollHeight
+            && (preservePausedStickyScroll || node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX);
+        if (
+            !prependedWhilePaused
+            && interacting
+            && scrollMode === previousViewportState?.scrollMode
+            && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
+        ) {
+            previousViewportStateRef.current = { scrollMode, scrollOffset };
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
+            return;
+        }
+        const nextScrollTop = prependedWhilePaused
+            ? Math.max(0, Math.min(
+                node.scrollTop + (node.scrollHeight - previousContent.scrollHeight),
+                node.scrollHeight - node.clientHeight,
+            ))
+            : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
         if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             const pendingProgrammaticScroll = { target: nextScrollTop };
             programmaticScrollRef.current = pendingProgrammaticScroll;
@@ -1152,10 +1179,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                 }
             });
         }
+        if (prependedWhilePaused && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
+            // The measured DOM compensation above is the new durable paused
+            // position. Persist it too: otherwise switching sessions and back
+            // reapplies the pre-page offset and moves the reader by the full
+            // height of the newly inserted history.
+            const rowOffset = Math.max(0, nextScrollTop) / SCROLL_ROW_HEIGHT;
+            userScrollRef.current.lastDispatchedOffset = rowOffset;
+            controller.updatePaneScrollFromViewport(paneKey, rowOffset, { atBottom: false });
+        }
         previousViewportStateRef.current = {
             scrollMode,
             scrollOffset,
         };
+        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
     }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
@@ -1189,6 +1226,13 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                 rowOffset,
                 { atBottom: isScrollViewportAtBottom(node) },
             );
+            // Pausing bottom-follow changes chat to top-anchored scroll state,
+            // but reaching the DOM's actual top must still arm backward CMS
+            // paging. Keep this next to the native measurement so the history
+            // gate does not depend on which anchoring mode currently renders.
+            if (paneKey === "chat" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+                controller.armChatTopHistoryLoad?.();
+            }
             return;
         }
 
@@ -1207,11 +1251,11 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
 
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
-        if (!node || paneKey !== "chat" || scrollMode !== "bottom" || event.deltaY >= 0) return;
+        if (!node || paneKey !== "chat" || event.deltaY >= 0) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
-        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
-    }, [controller, paneKey, ref, scrollMode]);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT, { preserveDomAnchor: true });
+    }, [controller, paneKey, ref]);
 
     // Touch equivalent of the wheel-at-top gesture: touch devices never fire
     // wheel events, and once scrollTop sits at 0 a further swipe-down emits no
@@ -1221,9 +1265,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const touchPullRef = React.useRef({ startY: null, fired: false });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
-        if (paneKey !== "chat" || scrollMode !== "bottom") return;
+        if (paneKey !== "chat") return;
         touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
-    }, [paneKey, scrollMode]);
+    }, [paneKey]);
     const onTouchEnd = React.useCallback(() => {
         userScrollRef.current.touching = false;
         // Momentum continues past the finger lift; onScroll keeps refreshing
@@ -1233,7 +1277,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
         const pull = touchPullRef.current;
-        if (!node || paneKey !== "chat" || scrollMode !== "bottom") return;
+        if (!node || paneKey !== "chat") return;
         if (pull.fired || pull.startY == null) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
         const y = event.touches?.[0]?.clientY;
@@ -1245,8 +1289,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // on narrow viewports). The wheel path keeps the handshake — one
         // physical scroll emits MANY wheel events, so it needs debouncing.
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
-        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1, { force: true });
-    }, [controller, paneKey, ref, scrollMode]);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1, { force: true, preserveDomAnchor: true });
+    }, [controller, paneKey, ref]);
 
     return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd };
 }
@@ -5570,10 +5614,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             || focused.tagName === "SELECT"
             || focused.isContentEditable
         ));
-        if (focused !== activeButton && !isTypingTarget) {
+        if (viewState.focused && focused !== activeButton && !isTypingTarget) {
             activeButton.focus({ preventScroll: true });
         }
-        activeButton.scrollIntoView({ block: "nearest" });
+        // Selection can change from outside this pane (deep links, newly
+        // created sessions, MoA focus and other navigation surfaces). Center
+        // the row once for that selection so its surrounding sessions remain
+        // visible, without re-centering on routine status/catalog refreshes.
+        activeButton.scrollIntoView({ block: "center" });
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
@@ -6492,6 +6540,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
             scroll: state.ui.scroll.chat,
+            followBottom: state.ui.followBottom?.chat !== false,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages and name others (with an "(owner)" tag).
             authPrincipal: state.auth?.principal || null,
@@ -6641,7 +6690,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         bottomStickyLines: activityInHeader ? EMPTY_ARRAY : stickyBottom,
         reserveBottomSticky: !activityInHeader,
         scrollOffset: viewState.scroll,
-        scrollMode: "bottom",
+        scrollMode: viewState.followBottom ? "bottom" : "top",
+        stickyBottom: true,
         paneKey: "chat",
         ariaLive: "polite",
         className: "is-wrapped",
@@ -9086,7 +9136,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
-            !compact && (promptState.canStopTurn || stoppingTurn)
+            (promptState.canStopTurn || stoppingTurn)
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,

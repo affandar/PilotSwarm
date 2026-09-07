@@ -1,6 +1,8 @@
 .portal-app-shell.is-moa-zen > .portal-header, .portal-app-shell.is-moa-zen > .portal-mobile-status, .portal-app-shell.is-moa-zen > .portal-chromeless-strip { display: none; }
 .portal-app-shell.is-moa-zen .portal-main { padding: 0; }
 .ps-moa-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; background: var(--ps-background); color: var(--ps-foreground); font: var(--ps-font-size-base)/1.3 var(--ps-mono); }
+.ps-moa-workspace[hidden], .ps-moa-dashboard-view[hidden] { display: none !important; }
+.ps-moa-dashboard-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .ps-moa-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; flex-wrap: wrap; background: var(--ps-chrome); border-bottom: 1px solid var(--ps-border); }
 .ps-moa-row { display: flex; align-items: center; gap: 5px; }
 .ps-moa-toolbar button[aria-pressed=true] { color: var(--ps-highlight-foreground); background: var(--ps-highlight-background); }
@@ -63,6 +65,7 @@
 
 .ps-moa-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 36px; height: 34px; padding: 6px; }
 .ps-moa-icon-button svg { display: block; flex-shrink: 0; }
+.ps-moa-stale { flex: none; border: 0; padding: 2px 5px; color: var(--ps-muted); background: transparent; font: 10px var(--ps-mono); cursor: pointer; }
 .ps-moa-icon-button.ps-moa-zen-exit { width: 36px; height: 26px; padding: 3px 8px; }
 .ps-moa-menu-actions { flex-direction: row; flex-wrap: wrap; }
 
@@ -118,6 +121,7 @@
 .ps-moa-panel[hidden] { display: none !important; }
 @media (max-width: 920px) {
   .ps-moa-workspace.is-mobile { display: flex !important; }
+  .ps-moa-workspace.is-mobile[hidden] { display: none !important; }
   .ps-moa-workspace.is-mobile .ps-moa-layout { padding: 0; }
   .ps-moa-workspace.is-mobile .ps-moa-panel > header { display: none; }
   .ps-moa-workspace.is-mobile .ps-moa-composer-target { display: none; }
@@ -186,6 +190,11 @@
 .ps-moa-tab-strip.is-collapsed { position: absolute; visibility: hidden; pointer-events: none; }
 .ps-moa-tab-strip button { flex: none; max-width: 140px; height: 36px; border: 1px solid var(--ps-border); border-radius: 4px 4px 0 0; padding: 6px 10px; background: var(--ps-background); color: var(--ps-foreground); font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .ps-moa-tab-strip button[aria-selected=true] { background: var(--ps-selection-background); color: var(--ps-selection-foreground); box-shadow: inset 0 -3px var(--ps-foreground); }
+.ps-moa-tab-strip button.is-dragging { opacity: .45; }
+.ps-moa-tab-strip button.is-drop-before { box-shadow: inset 3px 0 var(--ps-highlight-foreground); }
+.ps-moa-tab-strip button.is-drop-after { box-shadow: inset -3px 0 var(--ps-highlight-foreground); }
+.ps-moa-tab-strip button[aria-selected=true].is-drop-before { box-shadow: inset 3px 0 var(--ps-highlight-foreground), inset 0 -3px var(--ps-foreground); }
+.ps-moa-tab-strip button[aria-selected=true].is-drop-after { box-shadow: inset -3px 0 var(--ps-highlight-foreground), inset 0 -3px var(--ps-foreground); }
 .ps-moa-dashboard-trigger { display: flex; align-items: center; gap: 8px; justify-content: space-between; min-width: 0; width: 100%; height: 36px; font: inherit; }
 .ps-moa-dashboard-trigger > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ps-moa-dashboard-trigger > span:last-child { flex: none; }

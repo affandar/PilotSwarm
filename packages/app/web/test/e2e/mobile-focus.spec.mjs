@@ -59,7 +59,8 @@ for (const theme of ['terminal-green', 'win95', 'winamp', 'ms-dos']) {
         expect(await input.evaluate(el => getComputedStyle(el).fontSize)).toBe('16px');
         expect((await input.boundingBox()).height).toBeLessThan(52);
         await expect(input).not.toBeFocused();
-        await expect(zen.getByRole('button')).toHaveCount(3);
+        await expect(zen.getByRole('button', { name: 'Stop the current turn', exact: true })).toBeEnabled();
+        await expect(zen.getByRole('button')).toHaveCount(4);
         await input.fill('first session draft');
         await page.getByRole('button', { name: 'Select session', exact: true }).click();
         await page.screenshot({ path: `/tmp/zen-picker-${theme}.png` });

@@ -67,8 +67,9 @@ and sharing controls; those remain available in the normal session view. Focus i
 only in the session title bar.
 Trash opens the existing lifecycle chooser and confirmation. The details use the
 same fields as the session list. Its **Panel layout** group contains replace,
-split right/below, and remove panel. These actions remain icon buttons with
-hover labels. Removing a panel does not delete its session.
+split right/below, and **Close panel** (a panel outline with an ×). These actions
+remain icon buttons with hover labels. Closing a panel keeps its session available.
+The trash icon in the Session group remains reserved for session lifecycle actions.
 
 Use the control-panel icon or right-click a populated panel. Splitting immediately
 creates a focused empty panel; select its content separately with **+** or
@@ -97,10 +98,12 @@ the saved arrangement.
 
 ## Phone layout
 
-On phones, tap the dashboard name in the top row to switch dashboards. The picker
+On phones, tap the down-triangle button at the far right of the header to switch dashboards. The picker
 shows each dashboard’s saved proportions and selected tile, with options to add,
-rename, or delete dashboards. Its list scrolls within the screen. The second row
-shows the current session, activity, panel controls, and minimap.
+rename, or delete dashboards. Its list scrolls within the screen. A single header
+shows the current session and activity on the left, then panel controls, the
+minimap, and the dashboard selector on the right. Dashboard names stay in the
+picker; reordering is available on desktop only.
 
 MoA keeps the saved desktop split geometry but displays one panel
 at a time. Tap the map icon to see a minimap with the same proportions as the
@@ -113,6 +116,8 @@ The phone header exposes the map and the focused panel's control menu. Use the
 control menu to split right or below, replace content, or remove the panel.
 Hidden panels stay mounted so drafts, transcript positions, and canvas state
 survive panel changes. The compact composer always targets the visible panel.
+While that session is running, Stop remains available beside Send and preserves
+your draft when used.
 
 Mobile Zen reduces the view to a restore control, the shared searchable session
 picker, the transcript, and the compact composer. The picker includes session

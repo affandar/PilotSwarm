@@ -386,7 +386,7 @@ injected** providers extend this without changing the default:
 - **EnhancedFactStore** — multi-signal retrieval (lexical + semantic + hybrid) plus
   a durable in-DB embedder, backed by a HorizonDB (preview) cluster with
   `pgvector` + `pg_textsearch` + `pg_durable`. Lights up `facts_search`,
-  `facts_similar`, and a per-turn `search_skills` tool.
+  `facts_similar`, and an on-demand `search_skills` tool.
 - **GraphStore** — an open knowledge graph (Apache AGE) for entities/edges with
   fact-`scopeKey` evidence anchors. Lights up the graph read tools
   (`graph_search_nodes` / `graph_search_edges` / `graph_neighbourhood`) plus a

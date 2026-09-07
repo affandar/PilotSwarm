@@ -354,6 +354,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
             connectionError: state.connection.error,
             connectionMode: state.connection.mode,
             chatScroll: state.ui.scroll.chat,
+            followBottom: state.ui.followBottom?.chat !== false,
             focused: state.ui.focusRegion === "chat",
         };
     }, shallowEqualObject);
@@ -449,7 +450,7 @@ const ChatPane = React.memo(function ChatPane({ controller, width, height, frame
         lines: elements,
         bottomStickyLines,
         scrollOffset: chatView.chatScroll,
-        scrollMode: "bottom",
+        scrollMode: chatView.followBottom ? "bottom" : "top",
         paneId: "chat",
         paneLabel: "Chat",
         frame,

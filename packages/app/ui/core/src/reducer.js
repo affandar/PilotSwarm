@@ -646,6 +646,7 @@ function updateUiForSessionSelection(state, nextActiveSessionId) {
         },
         followBottom: {
             ...(state.ui.followBottom || {}),
+            chat: true,
             inspector: true,
             activity: true,
         },
@@ -1481,7 +1482,7 @@ function baseReducer(state, action) {
             };
 
         case "ui/followBottom": {
-            if (action.pane !== "inspector" && action.pane !== "activity") {
+            if (action.pane !== "chat" && action.pane !== "inspector" && action.pane !== "activity") {
                 return state;
             }
             const nextFollowBottom = Boolean(action.followBottom);
@@ -1876,14 +1877,15 @@ function baseReducer(state, action) {
 
         case "sessions/selected": {
             state = { ...state, sessions: { ...state.sessions, listDeselected: false } };
-            // Per-session chat scroll memory: stash the outgoing session's
-            // offset and restore the incoming one's. If new chat arrives on
-            // re-entry, history/set's activeChatUpdated reset still snaps to
-            // latest — "latest chat, or where you left it".
+            // Per-session chat scroll memory: stash both the outgoing offset
+            // and whether it follows the bottom. A paused reading position
+            // stays paused as new messages arrive and across session switches.
             const previousActiveId = state.sessions.activeSessionId;
             const savedChatScroll = { ...(state.ui.chatScrollBySession || {}) };
+            const savedChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
             if (previousActiveId && previousActiveId !== action.sessionId) {
                 savedChatScroll[previousActiveId] = Number(state.ui.scroll?.chat) || 0;
+                savedChatFollowBottom[previousActiveId] = state.ui.followBottom?.chat !== false;
             }
             // Per-session prompt drafts: a half-written message belongs to the
             // session it was written in. Stash the outgoing draft (text +
@@ -1936,6 +1938,7 @@ function baseReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: savedChatScroll,
+                    chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
@@ -1954,6 +1957,7 @@ function baseReducer(state, action) {
                     },
                     followBottom: {
                         ...(state.ui.followBottom || {}),
+                        chat: savedChatFollowBottom[action.sessionId] !== false,
                         inspector: true,
                         activity: true,
                     },
@@ -2201,7 +2205,7 @@ function baseReducer(state, action) {
                     ...state.history,
                     bySessionId: nextHistory,
                 },
-                ui: activeChatUpdated
+                ui: activeChatUpdated && state.ui.followBottom?.chat !== false
                     ? {
                         ...state.ui,
                         scroll: {
@@ -2222,6 +2226,8 @@ function baseReducer(state, action) {
             for (const id of ids) delete nextOutbox[id];
             const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
             for (const id of ids) delete nextChatScroll[id];
+            const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
+            for (const id of ids) delete nextChatFollowBottom[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
             for (const id of ids) delete nextDrafts[id];
             return {
@@ -2237,6 +2243,7 @@ function baseReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,
+                    chatFollowBottomBySession: nextChatFollowBottom,
                     promptDraftBySession: nextDrafts,
                 },
             };

@@ -291,10 +291,14 @@ Known internal codes are:
 
 On a base store, the framework injects a capped slice of curated skills into the
 system prompt every turn. On an enhanced store that push is **dropped**; instead
-the agent gets a dedicated `search_skills` tool and is instructed to call it at
-the start of every turn with a task-derived query. Same per-turn DB cost, but it
-returns *ranked relevant* skills instead of an arbitrary slice, and the agent can
-also retrieve its own past `intake/*` observations via `facts_search`.
+the agent gets a dedicated `search_skills` tool for explicit skill requests and
+non-obvious questions or workflows that the current context does not resolve.
+Greetings, simple arithmetic, status checks, and follow-ups can be answered
+directly when context suffices. Relevant loaded skills are reused; another
+search is appropriate for a new knowledge gap or an explicit request. Each
+search returns ranked relevant skills, whose full instructions must be loaded
+before use, instead of an arbitrary slice on every turn. The agent can also
+retrieve its own past `intake/*` observations via `facts_search`.
 
 ### The knowledge graph
 

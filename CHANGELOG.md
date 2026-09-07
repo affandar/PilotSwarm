@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.63 — 2026-09-07
+
+Faster Master of Agents navigation, stable reading positions, and compact
+mobile controls.
+
+- Drag desktop MoA tabs to reorder them and save that order in the user profile.
+  Cache visited dashboard views in browser memory for immediate display when
+  switching back; refresh session content only while its dashboard is visible.
+  Preserve drafts, panel state, and subscriptions across rapid switches.
+- Keep the mobile session title and status on the left, with a triangle-only
+  MoA picker on the right. Avoid a second tab row, overlapping icons, and mobile
+  drag reordering. Restore the compact Stop control beside Send while working.
+- Center the session list on the newly focused session, including navigation
+  from MoA panels. Preserve the reading position when new chat activity arrives;
+  follow new content only while the reader is at the bottom. Keep older-history
+  loading anchored and prevent delayed requests from reclaiming focus.
+- Use an X for Close panel and retain the trash can for Delete session. Closing
+  a panel leaves the session available to reopen.
+- Search skills when explicitly requested or when a task needs knowledge beyond
+  the current context. Answer routine greetings, arithmetic, and status questions
+  directly, and reuse already loaded relevant skills.
+- Update the Duroxide dependency to 0.1.29 or later for compatibility with the
+  deployed storage migrations. No PilotSwarm orchestration or CMS schema change
+  is introduced in this release.
+
 ## 0.5.62 — 2026-09-07
 
 Multiple personal Master of Agents dashboards, live tool activity, durable

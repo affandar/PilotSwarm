@@ -57,6 +57,15 @@ export const activeMoaDashboard = value => value.dashboards.find(d => d.id === v
 export function updateMoaDashboard(value, dashboardId, patch) {
     return normalizeMoa({ ...value, dashboards: value.dashboards.map(d => d.id === dashboardId ? { ...d, ...patch } : d) });
 }
+export function moveMoaDashboard(value, dashboardId, toIndex) {
+    const normalized = normalizeMoa(value);
+    const fromIndex = normalized.dashboards.findIndex(d => d.id === dashboardId);
+    if (fromIndex < 0 || !Number.isInteger(toIndex)) return normalized;
+    const dashboards = [...normalized.dashboards];
+    const [dashboard] = dashboards.splice(fromIndex, 1);
+    dashboards.splice(Math.max(0, Math.min(dashboards.length, toIndex)), 0, dashboard);
+    return { ...normalized, dashboards };
+}
 export function replaceMoaNode(tree, nodeId, next) {
     if (!tree) return null;
     if (tree.id === nodeId) return next;

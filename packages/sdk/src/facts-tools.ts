@@ -1086,9 +1086,10 @@ export function createFactTools(opts: {
             enhancedTools.push(defineTool("search_skills", {
                 description:
                     "Find the curated skills most relevant to your current task (ranked semantic + lexical search " +
-                    "over the shared 'skills' namespace). Call this at the start of a turn with a task-derived query " +
-                    "(e.g. 'azure deployments', 'horizondb connection errors', 'terraform s3 backend') — as many times " +
-                    "as needed for different facets. Returns ranked skill hints; load a skill's full instructions with " +
+                    "over the shared 'skills' namespace). Use when the user explicitly asks for skill discovery or use, " +
+                    "or when a non-obvious question or workflow is not resolved by the current context and shared guidance may help. " +
+                    "Skip routine exchanges and reuse relevant skills already loaded. Query the specific knowledge gap " +
+                    "(e.g. 'azure deployments', 'horizondb connection errors'). Returns ranked skill hints; load full instructions with " +
                     "read_facts(key_pattern=\"<key>\", scope=\"shared\") before applying it.",
                 parameters: {
                     type: "object" as const,
