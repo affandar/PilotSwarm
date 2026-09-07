@@ -3,6 +3,7 @@ import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-action
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { buildSessionWarning } from "./session-errors.js";
+import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -17,6 +18,7 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 // noisy sessions (thousands of tool/orchestration events between messages)
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
+    ...CHAT_CALL_EVENT_TYPES,
     "session.error",
     "user.message",
     "assistant.message",
@@ -354,6 +356,7 @@ function buildSessionMessageChatCard(event, text) {
             time: formatTimestamp(event.createdAt),
             createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
             cardTitle: expectsResponse ? "Session Request" : "Session Message",
+            agentCallPreview: body,
             cardTitleColor: "cyan",
             cardBorderColor: "cyan",
         };
@@ -381,6 +384,7 @@ function buildSessionMessageChatCard(event, text) {
             time: formatTimestamp(event.createdAt),
             createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
             cardTitle: "Session Reply",
+            agentCallPreview: body,
             cardTitleColor: "green",
             cardBorderColor: "green",
         };
@@ -405,6 +409,13 @@ function sharesClientMessageId(left, right) {
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
+    // Different agents can send the same short acknowledgement. Only a
+    // durable identity or a redelivered queue envelope can merge those calls.
+    if (left.sender?.kind === "agent" || right.sender?.kind === "agent") {
+        return left.sender?.kind === right.sender?.kind
+            && left.sender?.sessionId === right.sender?.sessionId
+            && (left.id === right.id || sharesClientMessageId(left, right) === true);
+    }
     // Identical text in separate model messages still represents separate
     // preview slots (and one may later become the final answer).
     if (left.role === "assistant" && left.messageId && right.messageId) {
@@ -415,6 +426,7 @@ function areMessagesEquivalent(left, right) {
     // link) — the redelivery time-window below would eat rev N-1 on every
     // reload, making the transcript disagree with what live append showed.
     if (left.kind === "canvas-update" || right.kind === "canvas-update"
+        || left.kind === "chat-call" || right.kind === "chat-call"
         || left.kind === "session-warning" || right.kind === "session-warning") {
         return left.kind === right.kind && left.id === right.id;
     }
@@ -1214,6 +1226,7 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
+        appendChatCall(chat, event);
         if (event.eventType === "session.error") {
             const warning = buildSessionWarning(event);
             if (warning) chat.push(warning);
@@ -1321,6 +1334,8 @@ export function appendEventToHistory(history, event) {
             next.chat = clampHistoryItems([...next.chat, warning], loadedEventLimit);
         }
     }
+
+    appendChatCall(next.chat, event);
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

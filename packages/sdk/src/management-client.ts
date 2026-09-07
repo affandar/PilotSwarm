@@ -92,7 +92,7 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
-import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
+import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -360,7 +360,7 @@ export interface PilotSwarmSessionView {
     cronTimezone?: string;
     cronMaxFires?: number;
     cronFiresCompleted?: number;
-    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean; iteration?: number };
     result?: string;
     contextUsage?: SessionContextUsage;
     /** customStatusVersion for change tracking. */
@@ -1254,19 +1254,7 @@ export class PilotSwarmManagementClient {
             cronReason: cronActive && typeof normalizedCustomStatus.cronReason === "string"
                 ? normalizedCustomStatus.cronReason
                 : undefined,
-            pendingQuestion: normalizedCustomStatus.pendingQuestion
-                ? {
-                    question: normalizedCustomStatus.pendingQuestion,
-                    choices: normalizedCustomStatus.choices,
-                    allowFreeform: normalizedCustomStatus.allowFreeform,
-                }
-                    : latestResponse?.type === "input_required" && latestResponse.question
-                    ? {
-                        question: latestResponse.question,
-                        choices: latestResponse.choices,
-                        allowFreeform: latestResponse.allowFreeform,
-                    }
-                    : undefined,
+            pendingQuestion: resolvePendingQuestion(liveStatus, normalizedCustomStatus, latestResponse),
             result: normalizedCustomStatus.turnResult?.type === "completed"
                 ? normalizedCustomStatus.turnResult.content
                 : latestResponse?.type === "completed"
@@ -2405,6 +2393,8 @@ export class PilotSwarmManagementClient {
      * Replace the user's `profile_settings` JSON document. Creates the
      * user row lazily so settings can be saved before the principal has
      * created any sessions.
+     * Saved multi-dashboard MoA settings are retained when a legacy client
+     * omits them or submits an older schema; clear them with a v3 layout.
      */
     async setUserProfileSettings(
         principal: UserPrincipal,
@@ -3022,11 +3012,13 @@ export class PilotSwarmManagementClient {
     /**
      * Send an answer to a pending question from a session.
      */
-    async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender }): Promise<void> {
+    async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
-        const payload: Record<string, unknown> = { answer, wasFreeform: true };
+        const expectedQuestion = options?.expectedQuestion !== undefined
+            ? options.expectedQuestion : (await this.getSession(sessionId))?.pendingQuestion ?? null;
+        const payload: Record<string, unknown> = { answer, wasFreeform: true, expectedQuestion };
         const sender = normalizeMessageSender(options?.sender);
         if (sender) payload.sender = sender;
         await this._duroxideClient.enqueueEvent(

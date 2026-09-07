@@ -14,7 +14,7 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
         "list_models",
         {
             title: "List Models",
-            description: "List all available LLM models, optionally grouped by provider",
+            description: "List all available LLM models with supported reasoning efforts, context tiers and declared token capacities, optionally grouped by provider",
             inputSchema: {
                 group_by_provider: z
                     .boolean()
@@ -65,6 +65,11 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                             model_name: m.modelName,
                             description: m.description,
                             cost: m.cost,
+                            supported_reasoning_efforts: m.supportedReasoningEfforts,
+                            default_reasoning_effort: m.defaultReasoningEffort,
+                            supported_context_tiers: m.supportedContextTiers,
+                            default_context_tier: m.defaultContextTier,
+                            context_window_sizes: m.contextWindowSizes,
                         })),
                     }));
                     return {
@@ -82,6 +87,11 @@ export function registerModelTools(server: McpServer, ctx: ServerContext) {
                         provider: p.providerId,
                         description: m.description,
                         cost: m.cost,
+                        supported_reasoning_efforts: m.supportedReasoningEfforts,
+                        default_reasoning_effort: m.defaultReasoningEffort,
+                        supported_context_tiers: m.supportedContextTiers,
+                        default_context_tier: m.defaultContextTier,
+                        context_window_sizes: m.contextWindowSizes,
                     })),
                 );
                 const defaults = await ctx.mgmt.getModelDefaults(viewer).catch(() => null);

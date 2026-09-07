@@ -1,5 +1,22 @@
 # Copilot Instructions for PilotSwarm
 
+## Agent Smith naming
+
+The published `agent-manager` package and agent display as **Agent Smith**.
+Keep the stable `agent-manager` IDs, FQNs, file paths, capability gates, and
+provider/session configuration unchanged when updating the display name.
+Existing system sessions named Agent Manager use the same display alias.
+
+## Chat call previews
+
+Portal tool and cross-agent calls use compact, collapsible first-line previews.
+Correlate execution and external-tool events by their call/request IDs within
+the durable session; completion updates the existing row. Keep bulk history,
+live append, and backward paging consistent, and preserve disclosure identity.
+Render raw arguments/results as text. Empty-response diagnostics remain only
+in Activity; do not turn them back into chat warnings. The TUI keeps calls in
+its Activity view.
+
 ## **⚠️ NEVER commit, push, or deploy without explicit user permission. ALWAYS ask first.**
 
 > **MANDATORY:** Do NOT run `git commit`, `git push`, `git tag`, deploy scripts, or any
@@ -570,3 +587,19 @@ When the regression test fails:
 1. Fire it from `ManagedSession` via the `onEvent` callback
 2. Persist it in CMS via `session-proxy.ts` event capture
 3. Filter it in `PilotSwarmSession.on()` if it needs special handling
+
+
+## Personal MoA dashboards
+
+The browser's MoA profile is version 3 (`activeDashboardId`, up to five
+`dashboards`). Each dashboard owns its split tree, desktop aspect ratio and
+focused panel. Normalize legacy profiles through `ui/core/src/moa.js`; preserve
+intentional empty layouts. Drafts belong to sessions and stay in browser memory.
+Switching dashboards must not terminate sessions or redirect a send, including
+when an attachment upload finishes after its view unmounts.
+
+Header tabs must collapse to the dashboard picker based on available width;
+never shrink or overlap action icons. Mobile uses that picker with proportional
+layout previews. Keep panel swipes and Tab cycling scoped to the active dashboard.
+Migration 0076 protects saved version-3 layouts against stale single-dashboard
+profile writes; do not remove that guard during UI or profile refactors.

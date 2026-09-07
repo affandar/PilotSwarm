@@ -1702,6 +1702,19 @@ body.is-resizing-pane-y iframe {
   gap: 10px;
 }
 
+/* Call previews keep one line at every panel width; details use their own
+   scroll area. Fixed labels never squeeze the preview or each other. */
+.ps-system-notice.ps-chat-call { margin: 4px 0; min-width: 0; color: var(--ps-foreground); }
+.ps-chat-call-summary { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; font-size: .92em; }
+.ps-chat-call-summary::before { flex: none; }
+.ps-chat-call-summary .ps-system-notice-summary-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-chat-call-tag { flex: none; font-size: .82em; text-transform: uppercase; color: var(--ps-accent); }
+.ps-chat-call-status { flex: none; font-size: .82em; color: var(--ps-muted); }
+.ps-chat-call-status.is-failed { color: var(--ps-warning); }
+.ps-chat-call-time { color: var(--ps-muted); font-size: .85em; margin-bottom: 6px; }
+.ps-chat-call-payload { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .92em; }
+.ps-chat-call .ps-system-notice-body { max-height: min(360px, 45dvh); overflow: auto; padding: 10px; border-left: 2px solid var(--ps-border-strong); }
+
 .ps-system-notice-body .ps-md-paragraph,
 .ps-system-notice-body .ps-md-list,
 .ps-system-notice-body .ps-md-quote {

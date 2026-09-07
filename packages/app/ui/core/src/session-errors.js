@@ -1,3 +1,10 @@
+// Copilot emits this diagnostic for an accepted turn without visible text.
+// Keep its durable event and Activity entry, but do not turn it into a chat
+// warning. Match only this message and the runtime's known retry wrapper.
+export function isActivityOnlySessionError(text) {
+    return /^(?:Execution failed:\s*)?No response was returned\. Send your message again to retry\.(?: \(retry \d+\/\d+ in \d+s\))?$/.test(String(text || "").trim());
+}
+
 export function shouldKeepSessionWarning(previousSession, nextSession) {
     if (!String(previousSession?.error || "").trim()) return false;
     if (nextSession?.error !== undefined) return false;
@@ -26,7 +33,7 @@ const sameError = (statusText, eventText) => Boolean(eventText) && statusText.in
 
 export function buildSessionWarning(event) {
     const text = errorText(event);
-    if (!text) return null;
+    if (!text || isActivityOnlySessionError(text)) return null;
     const failed = event?.data?.fatal === true;
     return {
         id: `${event.sessionId}:${event.seq}:warning`,
@@ -79,8 +86,9 @@ export function retainSessionWarnings(previous, next, events = [], now = Date.no
 }
 
 export function withSessionWarnings(chat, session, events = []) {
-    const messages = [...chat];
+    const messages = chat.filter(message => message.kind !== "session-warning" || !isActivityOnlySessionError(message.text));
     for (const warning of session?.chatWarnings || []) {
+        if (isActivityOnlySessionError(warning.text)) continue;
         // Status often wins the race against its durable event. Match only
         // that boundary, never a later failure after a new user/agent message.
         const following = events.filter(e => Number(e.seq) > warning.afterSeq);

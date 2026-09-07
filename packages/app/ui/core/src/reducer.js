@@ -379,7 +379,7 @@ function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
         // An absent/invalid counter must not erase the last known server version.
         if (key === "statusVersion" && previousVersion != null
             && sessionStatusVersion(nextSession) == null) continue;
-        if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value)) {
+        if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value, nextSession)) {
             if (merged === previousSession) {
                 merged = { ...(previousSession || {}) };
             }
@@ -555,10 +555,18 @@ function normalizedPendingQuestionText(pendingQuestion) {
     return String(pendingQuestion?.question || "").trim();
 }
 
-function isAnsweredPendingQuestion(previousSession, pendingQuestion) {
-    const answeredQuestion = normalizedPendingQuestionText(previousSession?.answeredPendingQuestion);
+function isAnsweredPendingQuestion(previousSession, pendingQuestion, nextSession) {
     const incomingQuestion = normalizedPendingQuestionText(pendingQuestion);
-    return Boolean(answeredQuestion && incomingQuestion && answeredQuestion === incomingQuestion);
+    if (!incomingQuestion) return false;
+    const incomingTime = sessionUpdateTimestampMs({ updatedAt: pendingQuestion?.askedAt })
+        || sessionUpdateTimestampMs(nextSession);
+    return [previousSession?.answeredPendingQuestion, previousSession?.resolvedInputQuestion].some(answered => {
+        if (normalizedPendingQuestionText(answered) !== incomingQuestion) return false;
+        const answeredAt = sessionUpdateTimestampMs({ updatedAt: answered?.answeredAt });
+        // Preserve the answer fence across stale detail polls, but let a new
+        // instance of the same question through when it was asked later.
+        return !incomingTime || !answeredAt || incomingTime <= answeredAt;
+    });
 }
 
 function pickDefaultActiveSessionId(sessions = []) {

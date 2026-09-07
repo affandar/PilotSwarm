@@ -1,4 +1,5 @@
-// One personal desktop layout, containing references and geometry only.
+// Personal dashboards contain references and geometry only, never session data.
+export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
 export const MOA_BREAKPOINT = 920;
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
@@ -24,17 +25,37 @@ export function normalizeMoaLayout(value) {
     return { name: typeof value.name === "string" ? value.name.trim().slice(0, 64) || "Untitled MoA" : "Untitled MoA", tree: value.tree == null ? null : walk(value.tree) };
 }
 export function normalizeMoa(value) {
-    const safeTree = layout => { try { return normalizeMoaLayout(layout).tree; } catch { return null; } };
-    // Version 2 has one layout. A deliberately cleared layout must stay empty.
-    if (value?.version === 2 || (object(value) && Object.hasOwn(value, "tree"))) {
-        return { version: 2, tree: safeTree(value), ...(Number.isFinite(value.aspectRatio) && value.aspectRatio >= 0.2 && value.aspectRatio <= 8 ? { aspectRatio: value.aspectRatio } : {}) };
+    const safeLayout = (layout, dashboardId = "moa-1", name = "MoA 1") => {
+        let tree = null;
+        try { tree = normalizeMoaLayout(layout).tree; } catch {}
+        const leaves = moaLeaves(tree);
+        return { id: dashboardId, name: typeof layout?.name === "string" ? layout.name.trim().slice(0, 64) || name : name, tree,
+            ...(Number.isFinite(layout?.aspectRatio) && layout.aspectRatio >= .2 && layout.aspectRatio <= 8 ? { aspectRatio: layout.aspectRatio } : {}),
+            focusedPanelId: leaves.some(p => p.id === layout?.focusedPanelId) ? layout.focusedPanelId : leaves[0]?.id || null };
+    };
+    if (value?.version === 3 && Array.isArray(value.dashboards)) {
+        const used = new Set();
+        const dashboards = value.dashboards.slice(0, MOA_MAX_DASHBOARDS).map((dashboard, index) => {
+            let key = id(dashboard?.id) && !used.has(dashboard.id) ? dashboard.id : `moa-${index + 1}`;
+            while (used.has(key)) key += "-copy";
+            used.add(key);
+            return safeLayout(dashboard, key, `MoA ${index + 1}`);
+        });
+        if (!dashboards.length) dashboards.push(safeLayout(null));
+        return { version: 3, activeDashboardId: dashboards.some(d => d.id === value.activeDashboardId) ? value.activeDashboardId : dashboards[0].id, dashboards };
     }
-    // Migrate the selected legacy dashboard when populated; otherwise keep
-    // the first populated dashboard rather than a previously selected blank tab.
-    const slots = Array.isArray(value?.slots) ? value.slots.slice(0, 5) : [];
-    const active = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
-    const tree = safeTree(slots[active]) || slots.map(safeTree).find(Boolean) || null;
-    return { version: 2, tree };
+    let source = value;
+    if (!(value?.version === 2 || (object(value) && Object.hasOwn(value, "tree")))) {
+        // Match the old single-workspace migration; do not resurrect discarded tabs.
+        const slots = Array.isArray(value?.slots) ? value.slots.slice(0, 5) : [];
+        const active = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
+        source = safeLayout(slots[active]).tree ? slots[active] : slots.find(slot => safeLayout(slot).tree);
+    }
+    return { version: 3, activeDashboardId: "moa-1", dashboards: [safeLayout(source)] };
+}
+export const activeMoaDashboard = value => value.dashboards.find(d => d.id === value.activeDashboardId) || value.dashboards[0];
+export function updateMoaDashboard(value, dashboardId, patch) {
+    return normalizeMoa({ ...value, dashboards: value.dashboards.map(d => d.id === dashboardId ? { ...d, ...patch } : d) });
 }
 export function replaceMoaNode(tree, nodeId, next) {
     if (!tree) return null;

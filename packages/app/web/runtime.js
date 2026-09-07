@@ -1053,6 +1053,7 @@ export class PortalRuntime {
             }
             case "sendAnswer":
                 return this.transport.sendAnswer(safeParams.sessionId, safeParams.answer, {
+                    ...(safeParams.options?.expectedQuestion !== undefined ? { expectedQuestion: safeParams.options.expectedQuestion } : {}),
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
                 });
             case "sendSessionEvent":

@@ -193,3 +193,36 @@ test("terminal failures stay errors, and retry retention is not tied to provider
         assert.ok(selectActiveChat(store.getState()).some(m => m.cardTitle === "Error"));
     }
 });
+
+const NO_RESPONSE = "No response was returned. Send your message again to retry.";
+test("silent-turn diagnostics remain in Activity, never chat, live or reloaded", () => {
+    const events = [event(1, "user.message", "Update the canvas"), event(2, "session.error", NO_RESPONSE),
+        event(3, "session.error", "Permission denied"), event(4, "assistant.message", "Done")];
+    for (const history of [buildHistoryModel(events), events.reduce(appendEventToHistory, buildHistoryModel([]))]) {
+        assert.deepEqual(history.chat.map(m => m.text), ["Update the canvas", "Permission denied", "Done"]);
+        assert.ok(history.activity.some(a => a.eventType === "session.error" && a.text.includes(NO_RESPONSE)));
+        assert.ok(history.events.some(e => e.seq === 2), "retain diagnostic event for debugging");
+    }
+});
+
+test("silent-turn status and previously retained cards do not recreate chat warnings", () => {
+    for (const text of [NO_RESPONSE, `Execution failed: ${NO_RESPONSE}`, `Execution failed: ${NO_RESPONSE} (retry 1/3 in 15s)`]) {
+        const { store } = setup(text);
+        assert.equal(warning(store), undefined);
+        // A pre-upgrade history may already contain the materialized card.
+        const history = buildHistoryModel([event(1, "assistant.message", "Prior answer")]);
+        history.chat.push({ id: "legacy", kind: "session-warning", role: "system", text, cardTitle: "Warning" });
+        store.dispatch({ type: "history/set", sessionId: "s1", history });
+        assert.deepEqual(selectActiveChat(store.getState()).map(m => m.text), ["Prior answer"]);
+        // The fallback path when retained warning state has not arrived yet.
+        store.dispatch({ type: "sessions/merged", session: { sessionId: "s1", chatWarnings: [] } });
+        assert.equal(warning(store), undefined);
+    }
+});
+
+test("quoting the diagnostic in a message and other errors remains visible", () => {
+    const history = buildHistoryModel([event(1, "user.message", NO_RESPONSE), event(2, "assistant.message", NO_RESPONSE),
+        event(3, "session.error", `Authorization failed. ${NO_RESPONSE}`)]);
+    assert.equal(history.chat.length, 3);
+    assert.equal(history.chat[2].cardTitle, "Warning");
+});

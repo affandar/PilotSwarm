@@ -109,7 +109,7 @@ sessions return not-found to avoid an existence oracle.
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
-| sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body) | Answer a pending input-required question. |
+| sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body), options (body) | Answer a pending question. `options.expectedQuestion: { question, iteration? }` binds to the observed `pendingQuestion`; omitted options bind to the current question when enqueued. A stale binding preserves the text as an ordinary message. |
 | sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Send a custom event into the session. |
 | cancelPendingMessage | `POST /api/v1/sessions/:sessionId/cancel-pending` | sessionId (path), clientMessageIds (body) | Cancel queued messages by client message ids. |
 

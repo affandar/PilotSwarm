@@ -20,10 +20,18 @@ With identity-aware proxy auth, the proxy completes sign-in before the portal
 loads. For local development, sign-in is normally bypassed.
 
 For several sessions at once, open the
-[Master of Agents workspace](./master-of-agents.md). It saves one personal
-chat/canvas arrangement and uses a single composer for the focused panel.
+[Master of Agents workspace](./master-of-agents.md). It saves up to five personal
+chat/canvas dashboards and uses a single composer for the focused panel. Desktop
+tabs collapse into a picker when the header gets narrow.
 On phones it presents one panel at a time with a geometry-preserving minimap
 and swipe navigation.
+
+Tool calls and messages between agents appear in chat as collapsed, single-line
+previews. Long first lines end with an ellipsis; click or tap to expand the
+arguments, output, or message. A call updates in place as results arrive, and
+keeps its expansion state. The same previews work in ordinary chat and MoA.
+The Activity pane still contains the full event stream, including diagnostic
+notices for turns that finish without a reply.
 
 ## Layout overview
 
@@ -393,6 +401,20 @@ it in the parent's `subAgents` table. Children communicate back via
 durable messages on the parent's queue, batched into a 30-second
 digest before the parent processes them. Children staying alive after
 final reply makes follow-up `message_agent` conversations possible.
+
+For a child using a different model, first call `list_available_models`.
+Its catalog lists each model's supported reasoning strengths and context
+tiers, with defaults and per-tier token capacities when declared. The MCP
+`list_models` tool exposes these as `supported_reasoning_efforts`,
+`default_reasoning_effort`, `supported_context_tiers`, `default_context_tier`,
+and `context_window_sizes`. An omitted capacity means it is not declared.
+Pass the exact qualified model name
+and supported `reasoning_effort` and `context_tier` values to `spawn_agent`.
+For example, `context_tier: "default"` overrides a parent's long context
+when the child model only supports default context. The other context
+option is `"long_context"`; omitting the option preserves inheritance.
+An explicit override affects only the child, not the parent or provider defaults.
+
 
 ---
 

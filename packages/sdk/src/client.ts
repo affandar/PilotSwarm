@@ -26,7 +26,7 @@ import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
-import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
+import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
@@ -1046,15 +1046,7 @@ export class PilotSwarmClient {
             createdAt: cmsRow?.createdAt ?? new Date(),
             updatedAt: cmsRow?.updatedAt ?? new Date(),
             iterations: customStatus.iteration ?? cmsRow?.currentIteration ?? 0,
-            pendingQuestion: customStatus.pendingQuestion
-                ? { question: customStatus.pendingQuestion, choices: customStatus.choices, allowFreeform: customStatus.allowFreeform }
-                : latestResponse?.type === "input_required" && latestResponse.question
-                    ? {
-                        question: latestResponse.question,
-                        choices: latestResponse.choices,
-                        allowFreeform: latestResponse.allowFreeform,
-                    }
-                : undefined,
+            pendingQuestion: resolvePendingQuestion(status, customStatus, latestResponse),
             waitingUntil: customStatus.waitSeconds
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,

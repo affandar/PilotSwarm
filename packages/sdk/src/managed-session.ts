@@ -8,7 +8,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
-import type { ReasoningEffort } from "./model-providers.js";
+import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 
 /**
@@ -852,6 +852,7 @@ export class ManagedSession {
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
                 "Models may also list supported reasoning efforts; pass spawn_agent(reasoning_effort=...) only with one of those listed values. " +
+                "Models also list supported context tiers; use spawn_agent(context_tier=...) to override inherited context when switching models. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -1023,6 +1024,11 @@ export class ManagedSession {
                         type: "string",
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                         description: "Optional reasoning effort override for the sub-agent. Call list_available_models first and use only a reasoning value listed for the selected model. If omitted, inherits the parent's reasoning effort.",
+                    },
+                    context_tier: {
+                        type: "string",
+                        enum: ["default", "long_context"],
+                        description: "Optional context-window tier for the child. If omitted, inherits the parent tier. When changing model, use a supported context tier from list_available_models; pass default for a model that only supports default context.",
                     },
                     system_message: {
                         type: "string",
@@ -1910,6 +1916,7 @@ export class ManagedSession {
                 "Use this when choosing the best model for a sub-agent task, or when the user asks about available models. " +
                 "If you plan to pass spawn_agent(model=...), you must choose an exact provider:model value from this list and must not invent or shorten names. " +
                 "Models may also list supported reasoning efforts; pass spawn_agent(reasoning_effort=...) only with one of those listed values. " +
+                "Models also list supported context tiers; use spawn_agent(context_tier=...) to override inherited context when switching models. " +
                 "When choosing a model for a sub-agent, prefer lower-cost models for simple tasks " +
                 "and higher-cost models for complex reasoning tasks.",
             parameters: {
@@ -2114,6 +2121,11 @@ export class ManagedSession {
                         enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
                         description: "Optional reasoning effort override from list_available_models for the selected model. If omitted, inherits the parent's reasoning effort.",
                     },
+                    context_tier: {
+                        type: "string",
+                        enum: ["default", "long_context"],
+                        description: "Optional context-window tier for the child. If omitted, inherits the parent tier. When changing model, use a supported context tier from list_available_models; pass default for a model that only supports default context.",
+                    },
                     system_message: {
                         type: "string",
                         description: "Optional custom system message. Only for custom agents.",
@@ -2133,7 +2145,7 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
+            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
                 if (!args.agent_name && !args.task) {
                     return "Error: either agent_name or task is required.";
@@ -2141,6 +2153,9 @@ export class ManagedSession {
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
                     return "Error: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max.";
+                }
+                if (args.context_tier !== undefined && args.context_tier !== "default" && args.context_tier !== "long_context") {
+                    return "Error: context_tier must be one of default, long_context.";
                 }
                 if (controlBridge) {
                     return await controlBridge.spawnAgent({ ...args, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
@@ -2150,6 +2165,7 @@ export class ManagedSession {
                     task: args.task || "",
                     model: args.model,
                     reasoningEffort,
+                    ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                     agentName: args.agent_name,

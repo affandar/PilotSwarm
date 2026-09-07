@@ -71,10 +71,11 @@
 .ps-moa-composer-host .ps-chat-composer { margin: 0; }
 .ps-moa-panel > header { flex-wrap: wrap; }
 .ps-moa-panel-title { flex-basis: 100px; }
-.ps-moa-dialog > .ps-session-detail-box { margin: 0; padding: 12px; overflow: auto; }
-.ps-moa-dialog > .ps-session-detail-box .ps-session-detail-collapse { display: none; }
 
-.ps-moa-control-panel { padding: 16px; display: grid; gap: 18px; }
+.ps-moa-control-panel { padding: 16px; display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; }
+.ps-moa-control-panel > section { flex-shrink: 0; min-width: 0; }
+.ps-moa-control-panel .ps-session-detail-box { margin: 0; padding: 0; border: 0; background: transparent; }
+.ps-moa-control-panel .ps-session-detail-collapse { display: none; }
 .ps-moa-control-title { margin: 0; overflow-wrap: anywhere; color: var(--ps-muted); }
 .ps-moa-control-panel h3 { margin: 0 0 8px; font-size: inherit; }
 .ps-moa-control-actions { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -100,13 +101,19 @@
 .ps-mobile-zen-chat .ps-panel-header { display: none; }
 .ps-mobile-zen-composer { flex-shrink: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--ps-border); }
 .ps-mobile-zen-composer .ps-chat-composer { border: 0; padding: 0; }
-.ps-moa-map-body { padding: 12px; min-height: 0; overflow-y: auto; }
-.ps-moa-map { position: relative; width: 100%; border: 1px solid var(--ps-border); }
+/* Keep the desktop map visible. Only the list gives up space and scrolls. */
+.ps-moa-dialog:has(.ps-moa-map-body) { height: min(800px, calc(var(--ps-moa-viewport-height, 100dvh) - 16px)); }
+.ps-moa-map-body { display: flex; flex-direction: column; flex: 1; gap: 12px; padding: 12px; min-height: 0; overflow: hidden; }
+.ps-moa-map-body > small { flex: none; }
+.ps-moa-map { position: relative; flex: none; align-self: center; width: min(100%, calc(var(--ps-moa-viewport-height, 100dvh) * .4 * var(--ps-moa-map-ratio))); aspect-ratio: var(--ps-moa-map-ratio); border: 1px solid var(--ps-border); }
 .ps-moa-map button { position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; overflow: hidden; padding: 4px; border: 2px solid var(--ps-border); background: var(--ps-background); color: var(--ps-foreground); font: 12px var(--ps-mono); text-align: left; }
 .ps-moa-map button.is-selected { background: var(--ps-selection-background); color: var(--ps-selection-foreground); border-color: var(--ps-selection-foreground); }
+.ps-moa-map button { container-type: size; }
+.ps-moa-map button b { flex: none; }
 .ps-moa-map button span { overflow: hidden; max-width: 100%; }
-.ps-moa-map-list { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; }
-.ps-moa-map-list button { min-height: 44px; text-align: left; padding: 8px; border: 1px solid var(--ps-border); color: var(--ps-foreground); background: var(--ps-background); font: inherit; }
+@container (max-height: 48px) { .ps-moa-map button span { display: none; } }
+.ps-moa-map-list { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 4px; margin: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+.ps-moa-map-list button { flex: none; overflow-wrap: anywhere; min-height: 44px; text-align: left; padding: 8px; border: 1px solid var(--ps-border); color: var(--ps-foreground); background: var(--ps-background); font: inherit; }
 .ps-moa-map-list button[aria-current] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
 .ps-moa-panel[hidden] { display: none !important; }
 @media (max-width: 920px) {
@@ -165,3 +172,51 @@
 .ps-mobile-session-heading > div:empty { height: 18px; }
 .ps-moa-workspace.is-mobile .ps-moa-panel { border: 0; }
 .ps-moa-workspace.is-mobile .ps-moa-panel.is-focused { box-shadow: none; }
+
+/* Tabs get only the space left after the fixed-size toolbar controls. Measure
+   their natural width and switch to a picker before any controls can overlap. */
+.ps-toolbar.is-moa:not(.is-mobile) { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr); }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { min-width: 0; width: 100%; }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-actions { margin-inline: 0; }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-right { flex-wrap: nowrap; }
+#ps-moa-status-slot { width: 100%; }
+.ps-moa-dashboard-tabs { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; }
+.ps-moa-tabs-track { position: relative; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.ps-moa-tab-strip { display: flex; width: max-content; gap: 4px; }
+.ps-moa-tab-strip.is-collapsed { position: absolute; visibility: hidden; pointer-events: none; }
+.ps-moa-tab-strip button { flex: none; max-width: 140px; height: 36px; border: 1px solid var(--ps-border); border-radius: 4px 4px 0 0; padding: 6px 10px; background: var(--ps-background); color: var(--ps-foreground); font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.ps-moa-tab-strip button[aria-selected=true] { background: var(--ps-selection-background); color: var(--ps-selection-foreground); box-shadow: inset 0 -3px var(--ps-foreground); }
+.ps-moa-dashboard-trigger { display: flex; align-items: center; gap: 8px; justify-content: space-between; min-width: 0; width: 100%; height: 36px; font: inherit; }
+.ps-moa-dashboard-trigger > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-moa-dashboard-trigger > span:last-child { flex: none; }
+.ps-moa-dashboard-picker { padding: 12px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.ps-moa-dashboard-picker > .ps-moa-icon-button { align-self: flex-end; }
+.ps-moa-dashboard-item { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
+.ps-moa-dashboard-choice { display: flex; align-items: center; gap: 12px; text-align: left; padding: 8px; min-width: 0; flex: 1; border: 1px solid var(--ps-border); background: var(--ps-background); color: var(--ps-foreground); font: inherit; cursor: pointer; }
+.ps-moa-dashboard-choice[aria-current=true] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
+.ps-moa-dashboard-choice > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.ps-moa-dashboard-choice small { display: block; margin-top: 5px; font-size: 11px; color: var(--ps-muted); }
+.ps-moa-dashboard-preview { display: block; position: relative; width: 96px; flex: none; border: 1px solid var(--ps-border); background: var(--ps-chrome); }
+.ps-moa-dashboard-preview > span { position: absolute; box-sizing: border-box; border: 1px solid var(--ps-border); }
+.ps-moa-dashboard-preview > .is-selected { background: var(--ps-selection-background); }
+.ps-moa-menu label { display: flex; flex-direction: column; gap: 8px; }
+.ps-moa-mobile-dashboard-bar { display: flex; align-items: center; flex: none; gap: 8px; min-width: 0; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); background: var(--ps-chrome); border-bottom: 1px solid var(--ps-border); }
+.ps-moa-mobile-dashboard-bar button, .ps-moa-workspace.is-mobile .ps-moa-dialog button { min-height: 44px; }
+.ps-moa-mobile-dashboard-bar > .ps-moa-icon-button { width: 44px; }
+.ps-moa-panel { container: moa-panel / inline-size; }
+@container moa-panel (max-width: 330px) {
+  .ps-moa-panel > header > .ps-moa-split-action, .ps-moa-panel > header > .ps-moa-focus-label { display: none; }
+  .ps-moa-initial-panel > header > .ps-moa-split-action { display: inline-flex; }
+}
+@container header-tools (max-width: 520px) {
+  .ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); }
+  .ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; }
+}
+@media (max-width: 920px) {
+  .ps-moa-dialog .ps-moa-dashboard-item .ps-moa-icon-button { width: 44px; height: 44px; }
+  .ps-moa-dialog .ps-moa-dashboard-picker > .ps-moa-icon-button { width: 44px; height: 44px; }
+}
+
+.ps-moa-dashboard-tabs.is-compact .ps-moa-tabs-track { flex: 1; }
+:root[data-ps-theme="win95"] .ps-moa-tab-strip button:not([aria-selected=true]),
+:root[data-ps-theme="win95"] .ps-moa-dashboard-choice { background: var(--w95-face); color: #000; }

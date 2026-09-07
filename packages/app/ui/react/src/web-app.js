@@ -607,12 +607,8 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // synthesizing one here would let a poll clobber a fresh local toggle.
         ...(hasOwn(normalizedRemote, touchScaleKey())
             ? { touchScale: normalizedRemote[touchScaleKey()] }
-            // Profiles written before the per-device split carry a single
-            // `touchScale`, which IS the desktop key — so only a phone needs to
-            // inherit it, and only until it saves a slot of its own.
-            : (isNarrowViewport() && hasOwn(normalizedRemote, "touchScale")
-                ? { touchScale: normalizedRemote.touchScale }
-                : {})),
+            // Never inherit the other device class's preference.
+            : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
         // either — absent must stay absent so a poll cannot overwrite a toggle
@@ -1329,6 +1325,22 @@ function SystemNoticeLine({ line, theme }) {
             ? React.createElement("div", { className: "ps-system-notice-body" },
                 React.createElement(MarkdownPreviewContent, { content: body, theme }))
             : null);
+}
+
+function ChatCallLine({ line }) {
+    const [open, setOpen] = React.useState(false);
+    return React.createElement("details", {
+        className: "ps-system-notice ps-chat-call",
+        "data-call-id": line.callKey,
+        onToggle: event => setOpen(event.currentTarget.open),
+    },
+    React.createElement("summary", { className: "ps-system-notice-summary ps-chat-call-summary" },
+        React.createElement("span", { className: "ps-chat-call-tag" }, line.category || "Tool"),
+        React.createElement("span", { className: "ps-system-notice-summary-text" }, line.text),
+        line.status ? React.createElement("span", { className: `ps-chat-call-status${line.status === "Failed" ? " is-failed" : ""}` }, line.status) : null),
+    open ? React.createElement("div", { className: "ps-system-notice-body" },
+        line.time ? React.createElement("div", { className: "ps-chat-call-time" }, line.time) : null,
+        React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
 }
 
 /**
@@ -3230,6 +3242,13 @@ function parseStructuredChatBlocks(lines = []) {
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
 
+        if (currentLine?.kind === "chatCall" || currentLine?.callPreview !== undefined) {
+            blocks.push({ type: "chatCall", line: currentLine.callPreview !== undefined
+                ? { ...currentLine, text: currentLine.callPreview, category: "Agent" } : currentLine });
+            index += 1;
+            continue;
+        }
+
         if (currentLine?.kind === "assistantPreview") {
             blocks.push({ type: "assistantPreview", line: currentLine });
             index += 1;
@@ -3655,6 +3674,9 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "chatCall") {
+                return React.createElement(ChatCallLine, { key: block.line.callKey, line: block.line });
+            }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
                     key: block.line.previewKey,
@@ -4216,7 +4238,7 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
-function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null }) {
+function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
     // height — a box that grew and shrank would shove the list under the
@@ -4313,12 +4335,12 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         pause && pause.clears
             ? React.createElement("span", { className: "ps-session-detail-clears" }, pause.clears)
             : null,
-        pause && controller ? React.createElement("button", {
+        pause && (controller || onOpenBudget) ? React.createElement("button", {
             type: "button", className: "ps-budget-link",
             title: pause.provider
                 ? `Open ${pause.provider} in Providers & Budgets`
                 : "Open providers and budgets",
-            onClick: () => controller.openBudget(
+            onClick: () => (onOpenBudget || (options => controller.openBudget(options)))(
                 pause.provider ? { provider: pause.provider } : {},
             ).catch(() => {}),
         }, pause.provider ? `Open ${pause.provider}` : "Open providers and budgets") : null));
@@ -6408,7 +6430,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
-function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false }) {
+function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
     const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
@@ -6419,7 +6441,7 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
-        : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus: !mobile, active: true }));
+        : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
 // The compact focus views use their existing header for activity. The same
@@ -8850,7 +8872,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
-            if (!autoFocus) return;
+            if (!autoFocus || (typeof autoFocus === "function" && !autoFocus())) return;
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
@@ -14302,6 +14324,9 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         branding,
         docs,
     }));
+    // Only the initial device default. A saved value for this device wins
+    // when the profile loads, including an explicit mobile opt-out.
+    store.dispatch({ type: "ui/touchScale", enabled: isNarrowViewport });
     return new PilotSwarmUiController({ store, transport });
 }
 

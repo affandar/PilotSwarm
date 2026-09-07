@@ -1,4 +1,5 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
+import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -28,7 +29,7 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
-import { withSessionWarnings } from "./session-errors.js";
+import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -1645,7 +1646,7 @@ function chatAlreadyContainsPendingQuestion(chat, question) {
 
 function buildSessionErrorMessage(session, events = []) {
     const errorText = String(session?.error || "").trim();
-    if (!errorText) return null;
+    if (!errorText || isActivityOnlySessionError(errorText)) return null;
 
     const errorKind = getSessionErrorVisualKind(session);
     if (!errorKind) return null;
@@ -2251,6 +2252,7 @@ function chatMessageSpacingKind(message) {
 
 function shouldInsertChatSpacer(currentMessage, nextMessage) {
     if (!currentMessage || !nextMessage) return false;
+    if (currentMessage.kind === "chat-call" || nextMessage.kind === "chat-call") return false;
     return chatMessageSpacingKind(currentMessage) !== chatMessageSpacingKind(nextMessage);
 }
 
@@ -2287,7 +2289,7 @@ function buildCollapsedSystemNoticeLine(text, timestamp = "") {
     };
 }
 
-function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "gray" }) {
+function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "gray", callPreview, callKey }) {
     const normalizedTitle = String(title || "System").trim() || "System";
     const normalizedSummary = String(summary || "").replace(/\s+/g, " ").trim();
     return {
@@ -2296,6 +2298,7 @@ function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "
         summary: normalizedSummary,
         body: decorateArtifactLinksForChat(body || normalizedSummary),
         color,
+        ...(callPreview !== undefined ? { callPreview: `${normalizedTitle} — ${firstCallLine(callPreview)}`, callKey } : {}),
     };
 }
 
@@ -2401,6 +2404,8 @@ function buildSystemNoticeCardLines(systemText, message, maxWidth) {
         ].filter((line, index) => index === 2 || line).join("\n");
         return [buildSystemNoticeLine({
             title: `Sub-agent Response — ${shortId}`,
+            callPreview: subAgent.result || subAgent.status,
+            callKey: `${message.id}:agent:${shortId}`,
             summary: subAgent.status || "completed",
             timestamp,
             body,
@@ -2420,6 +2425,8 @@ function buildSystemNoticeCardLines(systemText, message, maxWidth) {
             .join(" · ");
         return [buildSystemNoticeLine({
             title: `Sub-agent Responses (${subAgent.agents.length})`,
+            callPreview: subAgent.agents.map(agent => firstCallLine(agent.result) || agent.status).join(" · "),
+            callKey: `${message.id}:agents`,
             summary,
             timestamp,
             body: sections.join("\n\n---\n\n"),
@@ -2505,6 +2512,17 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 }
 
 function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
+    if (message?.kind === "chat-call") {
+        return options.tableMode === "sentinel" ? [chatCallLine(message)] : [];
+    }
+    if (options.tableMode === "sentinel" && (message?.sender?.kind === "agent" || message?.agentCallPreview !== undefined)) {
+        const label = message.cardTitle || message.sender?.display || "Agent message";
+        return [{
+            kind: "chatCall", callKey: message.id, category: "Agent",
+            text: `${label} — ${firstCallLine(message.agentCallPreview ?? message.text)}`,
+            body: message.text, time: message.time,
+        }];
+    }
     if (message?.splash) {
         // Swap in the narrow-viewport variant when the main art would
         // overflow the pane (mobile portal, narrow terminals). When the
@@ -2574,7 +2592,9 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         const askedAndAnswered = parseAskedAndAnsweredExchange(message?.text || "");
         if (askedAndAnswered) {
             return [
-                ...buildMessageCardLines({
+                // Older runtimes inserted this placeholder for late answers.
+                // Keep the user's answer, without displaying a fabricated card.
+                ...(askedAndAnswered.question === "a question" ? [] : buildMessageCardLines({
                     title: "Question",
                     timestamp: formatTimestamp(message?.createdAt || message?.time),
                     body: askedAndAnswered.question,
@@ -2582,7 +2602,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
                     titleColor: USER_CHAT_COLOR,
                     borderColor: USER_CHAT_COLOR,
                     tableMode: options.tableMode,
-                }),
+                })),
                 ...buildChatMessageLines({
                     ...message,
                     text: askedAndAnswered.answer,

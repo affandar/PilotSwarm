@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.62 — 2026-09-07
+
+Multiple personal Master of Agents dashboards, live tool activity, durable
+question handling, explicit spawn context, and refined responsive controls.
+
+- Add up to five personal MoA dashboards with responsive desktop tabs and a
+  mobile picker. Preserve per-dashboard layouts, selection, session drafts,
+  attachments, and pending sends when switching. Protect saved layouts from
+  older clients overwriting the new format.
+- Keep the proportional mobile panel map visible while its session list scrolls.
+  Default touch sizing off on desktop and on on mobile, with separate saved choices.
+- Use a diagonal arrow for panel focus. Show session details directly inside
+  the control panel, with scrolling on smaller screens.
+- Show tool and cross-agent calls in chat as collapsible first-line previews;
+  keep disclosure state through progress and completion. Empty-response
+  diagnostics remain in Activity rather than warning cards.
+- Expose model reasoning strengths, context tiers and capacities; let spawned
+  agents explicitly select a supported context tier.
+- Rename the Agent Manager package display name to Agent Smith, preserving IDs
+  and routing configuration.
+- Stop replayed questions and old saved responses from reopening the answer
+  composer. Bind answers to their observed question/iteration so a second
+  writer's late answer cannot answer a later question. Render legacy generic
+  question placeholders as the preserved user answer only.
+- Reconcile legacy merged system-message receipts by their exact client message
+  identities so acknowledged prompts do not remain in the optimistic outbox.
+- Document the proposed durable scheduler operation protocol and its adversarial
+  test plan without changing runtime scheduling behavior.
+
 ## 0.5.61 — 2026-09-06
 
 Mobile focus workspaces, stable live status, provider-budget recovery, and responsive portal controls.

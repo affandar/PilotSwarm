@@ -5,17 +5,29 @@ Master of Agents is an alternate browser workspace. On desktop, use the
 in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay
 available in MoA, except in zen. It is unavailable in the native TUI.
 
-MoA is one personal workspace saved to your user profile. There are no dashboard
-tabs, names, sharing controls, or MoA links. The header centers clear layout and zen, with the existing view controls on the right. Layouts remember
-session and canvas references, split directions, and divider proportions.
-Changes save automatically. Routine save status stays hidden; a failed save
-shows a retry icon in the header.
-Enter MoA explicitly after reloading the portal.
+MoA supports up to **five personal dashboards**, saved to your user profile.
+Each dashboard remembers its name, session and canvas references, split geometry,
+and focused panel. Changes save automatically. Routine save status stays hidden;
+a failed save shows a retry icon. Enter MoA explicitly after reloading the portal;
+your last selected dashboard returns.
 
-Existing multi-dashboard profiles migrate to the selected populated layout.
-If the selected dashboard is blank or invalid, the first populated layout is
-retained. Other dashboards are no longer available. Old MoA links and pending
-imports are ignored; they cannot replace your personal workspace.
+On desktop, named tabs sit in the PilotSwarm header. When the available width
+cannot fit them, the tabs become a single dashboard picker; action icons keep
+their size. **+** creates an empty dashboard (disabled at five). The adjacent
+sliders icon opens dashboard options to rename or delete it. Deletion requires
+confirmation and is disabled for the last dashboard. It never deletes sessions.
+Clear layout affects only the current dashboard. MoA has no sharing or links.
+
+Switching dashboards reconnects their visible sessions without stopping the agents.
+Drafts belong to sessions, including when the same session appears on multiple
+dashboards. Drafts last for the current page session; they are not saved in the
+profile. Layouts and focused-panel selections survive reloads.
+
+Existing single-workspace profiles become the first dashboard with their panels
+and geometry intact. The older slot-based format retains its selected populated
+layout, or the first populated layout when the selected slot is blank. Discarded
+legacy slots are not restored. Old MoA links and pending imports are ignored.
+Older open clients cannot downgrade a saved multi-dashboard profile.
 
 ## Panels and focus
 
@@ -45,14 +57,16 @@ Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
 native. Empty or read-only panels cannot accept prompts. Toolbar controls
 and dialogs retain their normal keyboard navigation.
 
-Each title bar has **split right** and **split below** shortcuts. Populated panels
-also have **maximize** (open in the main view) and a **sliders** icon for the session
+Only the focused panel shows its title-bar buttons. It has **split right** and
+**split below** shortcuts; in narrow panels these stay available in the control
+menu, leaving room for the title and primary actions. Populated panels
+also have a **diagonal arrow** (focus in the main view) and a **sliders** icon for the session
 control panel. Its **Session** group contains
-the existing spanner/manage, trash, and info actions. MoA omits session-link
-and sharing controls; those remain available in the normal session view. Zoom is available
+the existing spanner/manage and trash actions. Session details appear directly below the controls. MoA omits session-link
+and sharing controls; those remain available in the normal session view. Focus is available
 only in the session title bar.
-Trash opens the existing lifecycle chooser and confirmation. Info shows the
-existing session-details fields. Its **Panel layout** group contains replace,
+Trash opens the existing lifecycle chooser and confirmation. The details use the
+same fields as the session list. Its **Panel layout** group contains replace,
 split right/below, and remove panel. These actions remain icon buttons with
 hover labels. Removing a panel does not delete its session.
 
@@ -71,19 +85,24 @@ session. Each populated panel has an isolated session controller/subscription.
 
 The centered toolbar uses icons with hover labels: clear layout (eraser)
 and enter zen (expand corners). **Clear MoA layout** asks for
-confirmation, then returns your workspace to its blank **+** screen.
+confirmation, then returns the current dashboard to its blank **+** screen.
 Sessions and canvases are preserved.
 
 **Zen** hides the PilotSwarm header and MoA toolbar. The small **Exit zen**
 handle and Escape restore the regular MoA view. Panel controls remain available.
 
-**Open in main view** opens that panel's session, or maximizes its chosen
+**Focus panel** opens that panel's session, or maximizes its chosen
 canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
 the saved arrangement.
 
 ## Phone layout
 
-On phones, MoA keeps the saved desktop split geometry but displays one panel
+On phones, tap the dashboard name in the top row to switch dashboards. The picker
+shows each dashboard’s saved proportions and selected tile, with options to add,
+rename, or delete dashboards. Its list scrolls within the screen. The second row
+shows the current session, activity, panel controls, and minimap.
+
+MoA keeps the saved desktop split geometry but displays one panel
 at a time. Tap the map icon to see a minimap with the same proportions as the
 desktop layout, then tap a tile or its full-size session row to select it.
 Swipe left to move clockwise and right to move counter-clockwise. Swipes that

@@ -10,7 +10,7 @@ export function registerModelsResources(server: McpServer, ctx: ServerContext) {
             description:
                 "Available LLM models grouped by provider. Each model entry exposes " +
                 "`qualified_name` (provider:model — pass to switch_model), `model_name` " +
-                "(bare id), `provider`, `description`, and `cost`.",
+                "(bare id), `provider`, `description`, `cost`, supported reasoning efforts, context tiers, and declared context window sizes in tokens.",
             mimeType: "application/json",
         },
         async () => {
@@ -41,6 +41,11 @@ export function registerModelsResources(server: McpServer, ctx: ServerContext) {
                     provider,
                     description: model.description,
                     cost: model.cost,
+                    supported_reasoning_efforts: model.supportedReasoningEfforts,
+                    default_reasoning_effort: model.defaultReasoningEffort,
+                    supported_context_tiers: model.supportedContextTiers,
+                    default_context_tier: model.defaultContextTier,
+                    context_window_sizes: model.contextWindowSizes,
                 });
                 grouped.set(provider, group);
             }

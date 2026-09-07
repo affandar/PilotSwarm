@@ -31,14 +31,14 @@ import { fileURLToPath } from "node:url";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const read = (rel) => readFileSync(join(SRC, rel), "utf8");
 
-test("the latest version is 1.0.72", () => {
+test("the latest version is 1.0.73", () => {
     assert.match(
         read("orchestration-version.ts"),
-        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.72";/,
+        /export const DURABLE_SESSION_LATEST_VERSION = "1\.0\.73";/,
     );
 });
 
-test("1.0.70 and 1.0.71 are frozen in their own directories", () => {
+test("1.0.70 through 1.0.72 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
     assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
     const registry = read("orchestration-registry.ts");
@@ -52,13 +52,17 @@ test("1.0.70 and 1.0.71 are frozen in their own directories", () => {
         /import \{ durableSessionOrchestration_1_0_71 \} from "\.\/orchestration_1_0_71\/index\.js";/,
         "1.0.71 must resolve to its frozen directory",
     );
-    assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration\/index\.js";/);
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_73 \} from "\.\/orchestration\/index\.js";/);
     assert.match(registry, /\{ version: "1\.0\.70", handler: durableSessionOrchestration_1_0_70 \}/);
     assert.match(registry, /\{ version: "1\.0\.71", handler: durableSessionOrchestration_1_0_71 \}/);
     assert.match(
         registry,
-        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_72 \}/,
+        /\{ version: DURABLE_SESSION_LATEST_VERSION, handler: durableSessionOrchestration_1_0_73 \}/,
     );
+    assert.match(registry, /import \{ durableSessionOrchestration_1_0_72 \} from "\.\/orchestration_1_0_72\/index\.js";/);
+    assert.match(registry, /\{ version: "1\.0\.72", handler: durableSessionOrchestration_1_0_72 \}/);
+    assert.match(read("orchestration_1_0_72/runtime.ts"), /CURRENT_ORCHESTRATION_VERSION = "1\.0\.72";/);
+    assert.match(read("orchestration_1_0_72/index.ts"), /export function\* durableSessionOrchestration_1_0_72\(/);
     // The previous freeze must still be intact — a bump must never unfreeze.
     assert.match(registry, /from "\.\/orchestration_1_0_69\/index\.js";/);
 });
@@ -88,7 +92,7 @@ test("a frozen orchestration self-identifies with its OWN version", () => {
         read("orchestration/runtime.ts"),
         /export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;/,
     );
-    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_72\(/);
+    assert.match(read("orchestration/index.ts"), /export function\* durableSessionOrchestration_1_0_73\(/);
     assert.match(read("orchestration_1_0_71/index.ts"), /export function\* durableSessionOrchestration_1_0_71\(/);
     assert.match(read("orchestration_1_0_70/index.ts"), /export function\* durableSessionOrchestration_1_0_70\(/);
 });

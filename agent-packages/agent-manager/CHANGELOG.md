@@ -1,5 +1,11 @@
 # Changelog — agent-manager
 
+## 1.1.1
+
+### Changed
+
+- Rename the displayed package and agent to **Agent Smith**, including the desktop/mobile splash and self-introduction. Keep the `agent-manager` package and agent IDs, tools, authority, and configuration unchanged.
+
 ## 1.1.0
 
 ### Added

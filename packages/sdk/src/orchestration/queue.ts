@@ -420,7 +420,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
                 state.activeTimer = null;
             }
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
+            stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
             if (interruptsInputHold) break;
             continue;
         }
@@ -624,7 +624,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.answer !== undefined) {
-            stash.push({ kind: "answer", answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
+            stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
             continue;
         }
 
@@ -663,12 +663,25 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 // ─── decide: pop and process one item from FIFO ─────────────
 
 function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Generator<any, void, any> {
-    const question = runtime.state.pendingInputQuestion?.question ?? "a question";
-    runtime.state.pendingInputQuestion = null;
+    const pending = runtime.state.pendingInputQuestion?.question;
+    // New callers bind to the question they observed at enqueue. Queue-drain
+    // snapshots cover older callers; old persisted FIFO entries remain valid.
+    const expected = answerItem.expectedQuestion;
+    const matchesQuestion = expected === undefined || (expected !== null
+        && expected.question === pending
+        && (expected.iteration === undefined
+            || expected.iteration === (runtime.state.pendingInputQuestion?.iteration ?? runtime.state.iteration)));
+    const question = matchesQuestion ? pending : undefined;
+    if (matchesQuestion) runtime.state.pendingInputQuestion = null;
     // Any writer may answer (security model); attribution shows who did.
     const sender = noteMessageSender(runtime, answerItem.sender);
     const answeredBy = runtime.state.multiWriter && sender?.display ? ` (answered by ${sender.display})` : "";
-    const answerPrompt = `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`;
+    // Another writer can already have answered, or a reconnecting client can
+    // send against stale question state. Preserve that message as ordinary
+    // input instead of inventing a question the agent never asked.
+    const answerPrompt = question
+        ? `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`
+        : String(answerItem.answer);
     maybeQueueSharedPreamble(runtime);
     yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
 }

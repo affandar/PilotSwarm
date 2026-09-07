@@ -1,3 +1,4 @@
+import { activeMoaDashboard, normalizeMoa } from "../../../ui/core/src/moa.js";
 import { test, expect, chromium, webkit } from '@playwright/test';
 import { startStubServer } from './stub-server.mjs';
 let stub;
@@ -32,7 +33,7 @@ for (const engine of ['chromium','webkit']) {
    await page.getByRole('button',{name:'Close dialog',exact:true}).tap();
    await controls.tap();
    await page.getByRole('button',{name:'Remove panel',exact:true}).tap();
-   await expect.poll(()=>settings.moa?.tree?.second?.type).toBe('chat');
+   await expect.poll(()=>activeMoaDashboard(normalizeMoa(settings.moa))?.tree?.second?.type).toBe('chat');
    await page.getByRole('button',{name:'Open panel map',exact:true}).tap();
    await expect(page.locator('.ps-moa-map > button')).toHaveCount(2);
    await page.locator('.ps-moa-map > button').nth(1).tap();

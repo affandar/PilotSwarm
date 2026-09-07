@@ -62,6 +62,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 ## Product Rules
 
+- Question events received during reconnect must not reopen questions older
+  than the current session snapshot. A durable answer from another writer
+  retires its matching pending question. Legacy late-answer wrappers containing
+  the runtime placeholder `a question` render only the preserved answer.
+  Preserve the resolved-question timestamp across stale detail refreshes, but
+  allow a later identical question. Send the observed question and its iteration
+  through `sendAnswer` options; do not silently answer the next question.
+- Portal tool and cross-agent calls use one-line collapsible previews with
+  ellipsis. Correlate call/request IDs within the durable session; keep the
+  disclosure stable through progress, completion, reload, and history paging.
+  Raw arguments/results are text, and empty-response diagnostics stay in
+  Activity. The native TUI keeps tool calls in Activity.
 - Preserve the existing PilotSwarm terminal workflow and information density.
 - Pane titles live in borders, not as duplicate content inside panes.
 - Keep title run data plain. The portal may use a slim painted card header, while the TUI should render pane titles without a highlighted header background. When panes narrow, drop low-priority title metadata like session ids or recent-window labels before squeezing content.
@@ -79,7 +91,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Session rows should show interval cron as `[cron <duration>]` and wall-clock cron as `[cron <next client-local time>]` from shared selector state; status clearing must remove stale wall-clock cron fields when `cronActive` becomes false. Do not expose the internal `cron_at` tool name in row badges.
 - Waiting/timer row visuals should stay stable across same-age stale detail refreshes. Row status icons may change, but the new row visual status must remain stable for at least 5 seconds before the visible icon/color flips; a row that is visibly waiting should not briefly lose its `~` icon or cron badge unless a newer session update, running state, or terminal state actually clears the wait.
 - The sequence and activity panes should render wall-clock `cron_at` lifecycle events with the same visible `cron` label and magenta styling as interval cron, including a visible wake-up indicator when `session.cron_at_fired` arrives.
-- Non-user / non-assistant transcript items render as cards, except dedicated read-only chat-pane views: the session summary and session group details render as plain structured markdown without a card border. Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` protocol prompts are product-visible transcript items and must render as dedicated session request/reply cards, not collapsed activity-only system notices.
+- Non-user / non-assistant transcript items render as cards, except dedicated read-only chat-pane views and the portal call previews described above. Session summary and session group details render as plain structured markdown without a card border. Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` protocol prompts remain product-visible: collapsible first-line previews in the portal and request/reply cards in the native TUI.
 - Mouse copy must stay pane-local.
 - Prompt/question behavior and keybinding help must stay synchronized with actual bindings.
 - Files, logs, sequence, nodes, activity, and chat are all product surfaces and should not silently regress.

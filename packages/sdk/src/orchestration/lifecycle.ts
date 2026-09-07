@@ -69,6 +69,14 @@ export function publishStatus(
             : { cronActive: false }),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
         ...extra,
+        // A late answer may finish another turn while this question remains open.
+        // Keep the question independently of latestResponse and its newer iteration.
+        ...(status === "input_required" && state.pendingInputQuestion ? {
+            pendingQuestion: state.pendingInputQuestion.question,
+            questionIteration: state.pendingInputQuestion.iteration ?? state.iteration,
+            choices: state.pendingInputQuestion.choices,
+            allowFreeform: state.pendingInputQuestion.allowFreeform,
+        } : {}),
     } as SessionStatusSignal;
     runtime.ctx.setCustomStatus(JSON.stringify(signal));
 }

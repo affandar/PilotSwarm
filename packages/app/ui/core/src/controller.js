@@ -11,6 +11,7 @@ import {
     DEFAULT_HISTORY_EVENT_LIMIT,
     dedupeChatMessages,
     getNextHistoryEventLimit,
+    parseAskedAndAnsweredExchange,
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
@@ -5490,6 +5491,7 @@ export class PilotSwarmUiController {
     /**
      * Reconcile outbox state against a single CMS event. Removes outbox items
      * whose `clientMessageIds` were observed as a durable `user.message`
+     * (or a legacy merged `system.message` carrying those exact identities)
      * (acknowledged → drop the local optimistic item) or as a
      * `pending_messages.cancelled` (cancel confirmed → drop the cancelling
      * item). Pure side-effect helper that is safe to call repeatedly.
@@ -5501,16 +5503,20 @@ export class PilotSwarmUiController {
      */
     reconcileOutboxAgainstEvent(sessionId, event) {
         if (!sessionId || !event) return;
-        if (event.eventType === "user.message") {
+        if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
                 ? event.data.clientMessageIds.filter((id) => typeof id === "string")
                 : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
             if (clientMessageIds.length > 0) {
                 for (const id of clientMessageIds) {
-                    this.acknowledgeOutboxPrompt(sessionId, content, id);
+                    // Older workers classified a merged internal + user turn
+                    // from its leading protocol marker. The preserved IDs are
+                    // still an exact receipt. Never text-match a system event:
+                    // its content can quote unrelated pending user input.
+                    this.acknowledgeOutboxPrompt(sessionId, event.eventType === "user.message" ? content : undefined, id);
                 }
-            } else if (typeof content === "string" && content.trim()) {
+            } else if (event.eventType === "user.message" && typeof content === "string" && content.trim()) {
                 // Fallback: text-match acknowledgement until clientMessageId is
                 // plumbed through every layer.
                 this.acknowledgeOutboxPrompt(sessionId, content);
@@ -5887,7 +5893,11 @@ export class PilotSwarmUiController {
         // misrouted into the outbox queue, where it would sit until a later send
         // flushed it. The eventual detail-sync reconciles to the authoritative
         // customStatus.
-        if (event.eventType === "session.input_required_started" && event.data?.question) {
+        const questionSession = this.getState().sessions.byId[sessionId];
+        const questionEventTime = timestampMs(event.createdAt);
+        const currentSessionTime = timestampMs(questionSession?.updatedAt);
+        if (event.eventType === "session.input_required_started" && event.data?.question
+            && (!questionEventTime || !currentSessionTime || questionEventTime >= currentSessionTime)) {
             this.dispatch({
                 type: "sessions/merged",
                 session: {
@@ -5895,11 +5905,26 @@ export class PilotSwarmUiController {
                     status: "input_required",
                     pendingQuestion: {
                         question: event.data.question,
+                        ...(questionEventTime ? { askedAt: questionEventTime } : {}),
+                        ...(Number.isSafeInteger(event.data.questionIteration) ? { iteration: event.data.questionIteration } : {}),
                         choices: Array.isArray(event.data.choices) ? event.data.choices : undefined,
                         allowFreeform: event.data.allowFreeform ?? true,
                     },
                 },
             });
+        }
+        // Catch-up events also include answers from other windows/writers.
+        // Retire the matching question before another send can use sendAnswer.
+        if (event.eventType === "user.message" && questionSession?.pendingQuestion) {
+            const exchange = parseAskedAndAnsweredExchange(event.data?.content);
+            const pendingSince = Math.max(currentSessionTime, timestampMs(questionSession.pendingQuestion.askedAt));
+            if (exchange?.question === questionSession.pendingQuestion.question
+                && (!questionEventTime || !pendingSince || questionEventTime >= pendingSince)) {
+                this.dispatch({ type: "sessions/merged", session: {
+                    sessionId, pendingQuestion: null,
+                    resolvedInputQuestion: { question: exchange.question, answeredAt: questionEventTime },
+                } });
+            }
         }
         // show_artifact: the agent is presenting something to look at, so the
         // inspector switches to Files and opens that preview live.
@@ -8685,7 +8710,10 @@ export class PilotSwarmUiController {
             });
             this.dispatch({ type: "ui/status", text: "Sending answer..." });
             try {
-                await this.transport.sendAnswer(sessionId, prompt);
+                await this.transport.sendAnswer(sessionId, prompt, { expectedQuestion: {
+                    question: activePendingQuestion.question,
+                    ...(Number.isSafeInteger(activePendingQuestion.iteration) ? { iteration: activePendingQuestion.iteration } : {}),
+                } });
                 this.dispatch({
                     type: "sessions/merged",
                     session: {

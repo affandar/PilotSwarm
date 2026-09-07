@@ -1456,7 +1456,7 @@ export class NodeSdkTransport {
     }
 
     async sendAnswer(sessionId, answer, options = {}) {
-        await this.mgmt.sendAnswer(sessionId, answer, options?.sender ? { sender: options.sender } : undefined);
+        await this.mgmt.sendAnswer(sessionId, answer, options);
     }
 
     async sendSessionEvent(sessionId, eventName, data) {

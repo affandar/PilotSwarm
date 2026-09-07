@@ -46,3 +46,18 @@ test("attributed durable answers replace optimistic answers and render the quest
     assert.equal(appended.chat.length, 1);
     assert.ok(!appended.chat[0].optimistic);
 });
+
+
+test("legacy late-answer placeholders show only the preserved user answer", () => {
+    let state = createInitialState();
+    state = appReducer(state, { type: "sessions/loaded", sessions: [{ sessionId: "s1", status: "idle" }] });
+    state = appReducer(state, { type: "sessions/selected", sessionId: "s1" });
+    state = appReducer(state, { type: "history/set", sessionId: "s1", history: buildHistoryModel([
+        { seq: 1, eventType: "user.message", createdAt: 200, data: { content: wrap("", "a question", answer) } },
+    ]) });
+    const lines = selectChatLines(state, 120, { tableMode: "sentinel" });
+    assert.equal(lines.filter(line => line.kind === "cardStart").length, 0);
+    const text = lines.map(line => (Array.isArray(line) ? line : line.runs || []).map(run => run.text || "").join("")).join("\n");
+    assert.match(text, /Confirm bulk/);
+    assert.doesNotMatch(text, /a question|QUESTION/);
+});
