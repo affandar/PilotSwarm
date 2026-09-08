@@ -284,20 +284,20 @@ function clampInteger(value, defaultValue, min, max) {
 function normalizeSessionPageOptions(params) {
     const limit = clampInteger(params.limit, 50, 1, 200);
     const includeDeleted = params.includeDeleted === true;
-    if (params.cursor != null && typeof params.cursor !== "object") {
-        throw new Error("listSessionsPage cursor must be an object when provided");
-    }
-    const rawCursor = params.cursor ?? null;
+    // The keyset cursor arrives as two scalar query params
+    // (cursorUpdatedAt/cursorSessionId) rather than a JSON blob. Both must be
+    // present together to form a cursor; neither present means the first page.
+    const hasCursor = params.cursorUpdatedAt != null || params.cursorSessionId != null;
     let cursor = null;
 
-    if (rawCursor) {
-        const updatedAt = Number(rawCursor.updatedAt);
-        const sessionId = String(rawCursor.sessionId || "").trim();
+    if (hasCursor) {
+        const updatedAt = Number(params.cursorUpdatedAt);
+        const sessionId = String(params.cursorSessionId ?? "").trim();
         if (!Number.isFinite(updatedAt)) {
-            throw new Error("listSessionsPage cursor.updatedAt must be a finite number");
+            throw new Error("listSessionsPage cursorUpdatedAt must be a finite number");
         }
         if (!sessionId) {
-            throw new Error("listSessionsPage cursor.sessionId must be a non-empty string");
+            throw new Error("listSessionsPage cursorSessionId must be a non-empty string");
         }
         cursor = { updatedAt, sessionId };
     }

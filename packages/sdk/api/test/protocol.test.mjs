@@ -111,12 +111,15 @@ test("JobGenerator operations use resource-shaped REST paths and bodies", () => 
     assert.equal(deleteJob.path, `${API_PREFIX}/jobs/job%2F1`);
 });
 
-test("json query params round-trip through encode + coerce", () => {
-    const cursor = { updatedAt: 1751500000000, sessionId: "abc" };
-    const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursor, includeDeleted: true });
-    assert.deepEqual(coerceQueryValue(query.get("cursor"), "json"), cursor);
+test("scalar cursor query params round-trip through encode + coerce", () => {
+    const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursorUpdatedAt: 1751500000000, cursorSessionId: "abc", includeDeleted: true });
+    assert.equal(coerceQueryValue(query.get("cursorUpdatedAt"), "number"), 1751500000000);
+    assert.equal(coerceQueryValue(query.get("cursorSessionId"), "string"), "abc");
     assert.equal(coerceQueryValue(query.get("limit"), "number"), 10);
     assert.equal(coerceQueryValue(query.get("includeDeleted"), "boolean"), true);
+    // The cursor must serialize with no encoded JSON braces/quotes so an edge
+    // WAF has nothing to trip on.
+    assert.ok(!/%7B|%22/i.test(query.toString()), "cursor query must not contain encoded JSON");
 });
 
 test("missing required path params throw", () => {

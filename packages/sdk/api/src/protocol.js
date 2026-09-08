@@ -120,7 +120,7 @@ export const OPERATIONS = [
     { name: "setArtifactPinned", access: "session:manage", method: "PUT", path: "/sessions/:sessionId/artifacts/:filename/pinned", params: { sessionId: path("sessionId"), filename: path("filename"), pinned: body() }, summary: "Pin/unpin an artifact (pinned artifacts survive retention sweeps)." },
 
     // ── Management: sessions ────────────────────────────────────────────
-    { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursor: query("json"), includeDeleted: query("boolean") }, summary: "Keyset-paginated session listing." },
+    { name: "listSessionsPage", access: "session:list", method: "GET", path: "/management/sessions", params: { limit: query("number"), cursorUpdatedAt: query("number"), cursorSessionId: query("string"), includeDeleted: query("boolean") }, summary: "Keyset-paginated session listing. Cursor is carried as two scalar params (cursorUpdatedAt/cursorSessionId) so the request URL has no encoded JSON for a WAF to block." },
     { name: "renameSession", access: "session:manage", method: "PATCH", path: "/management/sessions/:sessionId", params: { sessionId: path("sessionId"), title: body() }, summary: "Rename a session." },
     { name: "cancelSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/cancel", params: { sessionId: path("sessionId") }, summary: "Cancel a session." },
     { name: "completeSession", access: "session:manage", method: "POST", path: "/management/sessions/:sessionId/complete", params: { sessionId: path("sessionId"), reason: body() }, summary: "Mark a session completed." },

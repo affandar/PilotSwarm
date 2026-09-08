@@ -112,7 +112,7 @@ describe("portal browser contracts", () => {
         assertIncludes(httpTransport, 'this.api.call("getTopEventEmitters"', "web transport should call the top event emitter diagnostics operation");
         assertIncludes(runtime, 'case "listSessionsPage":', "portal runtime should expose bounded session paging RPC");
         assertIncludes(runtime, "normalizeSessionPageOptions(safeParams)", "portal runtime should guard bounded session paging params");
-        assertIncludes(runtime, 'params.cursor != null && typeof params.cursor !== "object"', "portal runtime should reject malformed session page cursors");
+        assertIncludes(runtime, "params.cursorUpdatedAt != null || params.cursorSessionId != null", "portal runtime should read the keyset cursor from scalar params");
         assertIncludes(runtime, 'case "getTopEventEmitters":', "portal runtime should expose top event emitter diagnostics RPC");
         assertIncludes(runtime, "normalizeTopEventEmitterOptions(safeParams)", "portal runtime should guard top emitter diagnostic params");
         assertIncludes(runtime, "params.since == null", "portal runtime should require a since value for top emitter diagnostics");

@@ -1174,12 +1174,13 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Keyset-paginated session listing.
+     * Keyset-paginated session listing. Cursor is carried as two scalar params (cursorUpdatedAt/cursorSessionId) so the request URL has no encoded JSON for a WAF to block.
      * @remarks `GET /management/sessions` — access: `session:list`
      */
     listSessionsPage(params: {
         limit?: number;
-        cursor?: any;
+        cursorUpdatedAt?: number;
+        cursorSessionId?: string;
         includeDeleted?: boolean;
     }): Promise<any>;
 

@@ -231,9 +231,14 @@ export class HttpApiTransport {
     }
 
     async listSessionsPage(opts = {}) {
+        // The keyset cursor travels as two scalar query params rather than a
+        // JSON blob so the request URL carries no encoded braces/quotes for an
+        // edge WAF to block.
+        const cursor = opts?.cursor ?? null;
         return this.api.call("listSessionsPage", {
             limit: opts?.limit,
-            cursor: opts?.cursor ?? undefined,
+            cursorUpdatedAt: cursor ? cursor.updatedAt : undefined,
+            cursorSessionId: cursor ? cursor.sessionId : undefined,
             includeDeleted: opts?.includeDeleted,
         });
     }

@@ -65,10 +65,9 @@ test("every operation in the table is routable and dispatches by name", async ()
 test("path, query, and body params are collected with declared types", async () => {
     const { baseUrl, calls, close } = await createHarness();
     try {
-        const cursor = { updatedAt: 123, sessionId: "abc" };
-        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
+        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&cursorUpdatedAt=123&cursorSessionId=abc`);
         const page = calls.find((call) => call.name === "listSessionsPage");
-        assert.deepEqual(page.params, { limit: 5, includeDeleted: true, cursor });
+        assert.deepEqual(page.params, { limit: 5, includeDeleted: true, cursorUpdatedAt: 123, cursorSessionId: "abc" });
 
         await fetch(`${baseUrl}/api/v1/sessions/s1/messages`, {
             method: "POST",
@@ -175,8 +174,8 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
         assert.equal(boom.status, 500);
         assert.equal((await boom.json()).error.code, "INTERNAL_ERROR");
 
-        const malformedCursor = await fetch(`${baseUrl}/api/v1/management/sessions?cursor=%7Bnope`);
-        assert.equal(malformedCursor.status, 400, "malformed json query rejected before dispatch");
+        const malformedJsonQuery = await fetch(`${baseUrl}/api/v1/facts?scopeKeys=%7Bnope`);
+        assert.equal(malformedJsonQuery.status, 400, "malformed json query rejected before dispatch");
     } finally {
         await close();
     }

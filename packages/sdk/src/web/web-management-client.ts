@@ -194,9 +194,13 @@ export class WebPilotSwarmManagementClient {
     }
 
     async listSessionsPage(opts: { limit?: number; cursor?: { updatedAt: number; sessionId: string } | null; includeDeleted?: boolean } = {}): Promise<any> {
+        // Send the keyset cursor as two scalar query params (not JSON) so the
+        // request URL has no encoded braces/quotes for an edge WAF to block.
+        const cursor = opts.cursor ?? null;
         return this._api.call("listSessionsPage", {
             limit: opts.limit,
-            cursor: opts.cursor ?? undefined,
+            cursorUpdatedAt: cursor ? cursor.updatedAt : undefined,
+            cursorSessionId: cursor ? cursor.sessionId : undefined,
             includeDeleted: opts.includeDeleted,
         });
     }
