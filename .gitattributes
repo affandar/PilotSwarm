@@ -1,0 +1,14 @@
+# Normalize line endings to LF for all text files.
+#
+# Rationale: many unit tests read source files and assert on exact line
+# structure (e.g. `source.split("\n")` compared against fixed arrays). With no
+# eol policy, a Windows checkout under core.autocrlf=true materializes CRLF,
+# leaving a stray "\r" on every line and failing those eol-sensitive tests --
+# and inflating `git status`/diffs with phantom eol-only changes. Pinning the
+# working tree to LF makes source scans, diffs, and tests deterministic across
+# Windows, Linux, and CI, independent of each machine's local git config.
+* text=auto eol=lf
+
+# Windows shell scripts must stay CRLF if any are added later.
+*.bat text eol=crlf
+*.cmd text eol=crlf
