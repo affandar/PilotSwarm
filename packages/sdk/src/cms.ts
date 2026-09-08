@@ -3075,6 +3075,47 @@ export class PgSessionCatalog implements SessionCatalog {
                         status === "active" ? "active" : "blocked",
                     ],
                 );
+                if (status !== "active") {
+                    // Authoritative external-operation wait "started" stamp. This
+                    // transition is the durable "session has parked" signal: it
+                    // runs post-turn, strictly after the producer's
+                    // startJobExternalOperation has committed the wait row, and it
+                    // flips the state run to 'waiting'/'input_required' in this very
+                    // transaction. The signal.system_wait_started event that also
+                    // stamps this boundary runs on a decoupled activity and can lose
+                    // a visibility race against wait-row creation; when it does, the
+                    // signal-claim path (which requires wait_started_at IS NOT NULL)
+                    // would never deliver the resume signal and the Job would strand.
+                    // Stamping here — atomically with the state-run parking — closes
+                    // that race for good without risking premature delivery, since
+                    // wait_started_at only becomes non-null at the same instant the
+                    // state run becomes claim-eligible.
+                    const stampedWaits = await client.query(
+                        `UPDATE "${this.sql.schema}".job_waits wait
+                         SET wait_started_at = COALESCE(wait.wait_started_at, now()),
+                             updated_at = now()
+                         FROM "${this.sql.schema}".job_sessions session
+                         WHERE wait.state_run_id = session.state_run_id
+                           AND session.session_id = $1
+                           AND session.is_current
+                           AND wait.external_operation_id IS NOT NULL
+                           AND wait.wait_started_at IS NULL
+                         RETURNING wait.external_operation_id`,
+                        [sessionId],
+                    );
+                    const stampedOpIds = stampedWaits.rows
+                        .map((row: { external_operation_id: string | null }) => row.external_operation_id)
+                        .filter((id: string | null): id is string => Boolean(id));
+                    if (stampedOpIds.length > 0) {
+                        await client.query(
+                            `UPDATE "${this.sql.schema}".job_external_operations
+                             SET wait_started_at = COALESCE(wait_started_at, now()),
+                                 updated_at = now()
+                             WHERE operation_id = ANY($1::text[])`,
+                            [stampedOpIds],
+                        );
+                    }
+                }
             }
             await client.query("COMMIT");
         } catch (error) {
@@ -4050,10 +4091,93 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!normalizedSessionId || !normalizedSignalKey) {
             throw new Error("Recording a Job wait boundary requires sessionId and signalKey");
         }
-        const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
-        const prerequisite = phase === "completed" ? "AND wait.wait_started_at IS NOT NULL" : "";
-        const signalDeliverySet = phase === "completed"
-            ? `,
+        // Best-effort identity stamp driven by the session.system_wait_* event.
+        // This runs on the recordSessionEvent activity, which is decoupled from —
+        // and can lose a visibility race against — the wait-row creation done by
+        // the producer's startJobExternalOperation. A no-match here is therefore
+        // EXPECTED and must NOT throw: recordJobExternalOperationWait is wrapped in
+        // cmsRetryCritical (swallow:false, no retry on non-transient errors), so a
+        // thrown no-match immediately fails the whole recordSessionEvent activity
+        // and drops the event batch — and, because the boundary event never fires
+        // again, permanently strands the Job (the signal-claim path requires
+        // wait_started_at IS NOT NULL, so the resume signal is never delivered).
+        //
+        // The AUTHORITATIVE started stamp is written in setJobSessionExecutionStatus
+        // when the session durably parks: that path always runs after the wait-
+        // creating tool has committed and flips the state run to 'waiting' in the
+        // same transaction, so it closes the race regardless of this event's
+        // ordering. This call remains only as a fast-path best-effort stamp.
+        return this.recordJobWaitBoundaryOnce(normalizedSessionId, normalizedSignalKey, phase);
+    }
+
+    /**
+     * Single-attempt wait-boundary write. Returns true when a matching wait row
+     * was stamped, false on no-match.
+     *
+     * The `started` phase matches the wait by stable identity — the current
+     * session plus signal key — and deliberately does NOT gate on
+     * job.state_revision / current_state. Those job-progress predicates can
+     * transiently differ while the job row advances, and gating the started
+     * stamp on them previously produced a silent no-match that stranded the Job.
+     * The stamp is idempotent (COALESCE), so recording "this session parked on
+     * this wait" is safe regardless of where the job row is mid-transition.
+     *
+     * The `completed` phase keeps the full job-progress predicates and the
+     * wait_started_at prerequisite because it delivers the resume signal and must
+     * not fire for a stale state revision or an unstarted wait.
+     */
+    private async recordJobWaitBoundaryOnce(
+        normalizedSessionId: string,
+        normalizedSignalKey: string,
+        phase: "started" | "completed",
+    ): Promise<boolean> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            let rows: Array<{ external_operation_id: string | null }>;
+            if (phase === "started") {
+                ({ rows } = await client.query(
+                    `UPDATE "${this.sql.schema}".job_waits wait
+                     SET wait_started_at = COALESCE(wait.wait_started_at, now()),
+                         session_id = $1,
+                         updated_at = now()
+                     FROM "${this.sql.schema}".job_sessions session
+                     WHERE wait.state_run_id = session.state_run_id
+                       AND session.session_id = $1
+                       AND session.is_current
+                       AND wait.signal_key = $2
+                     RETURNING wait.external_operation_id`,
+                    [normalizedSessionId, normalizedSignalKey],
+                ));
+            } else {
+                ({ rows } = await client.query(
+                    `UPDATE "${this.sql.schema}".job_waits wait
+                     SET wait_completed_at = COALESCE(wait.wait_completed_at, now()),
+                         session_id = $1,
+                         updated_at = now()
+                     FROM "${this.sql.schema}".job_state_runs state_run,
+                          "${this.sql.schema}".jobs job,
+                          "${this.sql.schema}".job_sessions session
+                     WHERE wait.state_run_id = state_run.state_run_id
+                       AND wait.job_id = job.job_id
+                       AND wait.state_run_id = session.state_run_id
+                       AND session.session_id = $1
+                       AND session.is_current
+                       AND wait.signal_key = $2
+                       AND wait.expected_state_revision = job.state_revision
+                       AND job.current_state = state_run.state_name
+                       AND wait.wait_started_at IS NOT NULL
+                     RETURNING wait.external_operation_id`,
+                    [normalizedSessionId, normalizedSignalKey],
+                ));
+            }
+            if (!rows[0]) {
+                await client.query("COMMIT");
+                return false;
+            }
+            const timestampColumn = phase === "started" ? "wait_started_at" : "wait_completed_at";
+            const signalDeliverySet = phase === "completed"
+                ? `,
                          signal_status = CASE
                              WHEN signal_status IN ('pending', 'delivering') THEN 'delivered'
                              ELSE signal_status
@@ -4066,34 +4190,7 @@ export class PgSessionCatalog implements SessionCatalog {
                          signal_lease_owner = NULL,
                          signal_lease_expires_at = NULL,
                          last_signal_error = NULL`
-            : "";
-        const client = await this.pool.connect();
-        try {
-            await client.query("BEGIN");
-            const { rows } = await client.query(
-                `UPDATE "${this.sql.schema}".job_waits wait
-                 SET ${timestampColumn} = COALESCE(wait.${timestampColumn}, now()),
-                     session_id = $1,
-                     updated_at = now()
-                 FROM "${this.sql.schema}".job_state_runs state_run,
-                      "${this.sql.schema}".jobs job,
-                      "${this.sql.schema}".job_sessions session
-                 WHERE wait.state_run_id = state_run.state_run_id
-                   AND wait.job_id = job.job_id
-                   AND wait.state_run_id = session.state_run_id
-                   AND session.session_id = $1
-                   AND session.is_current
-                   AND wait.signal_key = $2
-                   AND wait.expected_state_revision = job.state_revision
-                   AND job.current_state = state_run.state_name
-                   ${prerequisite}
-                 RETURNING wait.external_operation_id`,
-                [normalizedSessionId, normalizedSignalKey],
-            );
-            if (!rows[0]) {
-                await client.query("COMMIT");
-                return false;
-            }
+                : "";
             if (rows[0].external_operation_id) {
                 await client.query(
                     `UPDATE "${this.sql.schema}".job_external_operations
