@@ -207,7 +207,8 @@ export function createJobLifecycleTools(
                     request: {
                         type: "object",
                         description:
-                            "Provider request. For mock: delayMs, outcome, result, evidence, and error. "
+                            "Provider request. For mock: delayMs (fixed) or delayMinMs/delayMaxMs (a uniform "
+                            + "random delay window, both 0..600000 ms), plus outcome, result, evidence, and error. "
                             + "For Azure DevOps pull-request approval or completion: organization, project, repositoryId, "
                             + "pullRequestId, and expectedSourceCommit. For pull_request_approval, an optional "
                             + "conditions object narrows the gate to a heterogeneous set that must all hold on the "
@@ -250,9 +251,32 @@ export function createJobLifecycleTools(
                 let operationKey = params.operationKey;
                 let nextPollAt = new Date();
                 if (params.provider === "mock") {
-                    const rawDelay = Number(params.request?.delayMs ?? 1_000);
-                    if (!Number.isFinite(rawDelay) || rawDelay < 0 || rawDelay > 300_000) {
-                        throw new Error("Mock external operation delayMs must be between 0 and 300000");
+                    // Mock waits are capped at 15 minutes. The cap is a safety
+                    // threshold on the deterministic test provider only; it does
+                    // not change the durable observed-condition design.
+                    const MAX_MOCK_DELAY_MS = 900_000;
+                    const hasRange = params.request?.delayMinMs !== undefined
+                        || params.request?.delayMaxMs !== undefined;
+                    let rawDelay: number;
+                    if (hasRange) {
+                        // The state Markdown declares a [min, max] window and the
+                        // scheduler samples a uniform random delay within it, so
+                        // each Job parks for a different, realistic duration while
+                        // the configuration stays in the lifecycle definition.
+                        const minMs = Number(params.request?.delayMinMs ?? 0);
+                        const maxMs = Number(params.request?.delayMaxMs ?? params.request?.delayMinMs ?? 0);
+                        if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)
+                            || minMs < 0 || maxMs < minMs || maxMs > MAX_MOCK_DELAY_MS) {
+                            throw new Error(
+                                `Mock external operation delay range must satisfy 0 <= delayMinMs <= delayMaxMs <= ${MAX_MOCK_DELAY_MS}`,
+                            );
+                        }
+                        rawDelay = Math.round(minMs + Math.random() * (maxMs - minMs));
+                    } else {
+                        rawDelay = Number(params.request?.delayMs ?? 1_000);
+                        if (!Number.isFinite(rawDelay) || rawDelay < 0 || rawDelay > MAX_MOCK_DELAY_MS) {
+                            throw new Error(`Mock external operation delayMs must be between 0 and ${MAX_MOCK_DELAY_MS}`);
+                        }
                     }
                     const outcome = params.request?.outcome;
                     if (outcome !== undefined && outcome !== "succeeded" && outcome !== "failed") {
