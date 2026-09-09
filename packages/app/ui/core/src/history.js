@@ -2,6 +2,8 @@ import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessi
 import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { matchesSessionError } from "./session-warning.js";
+import { appendNativeTaskEvent } from "./native-tasks.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -22,6 +24,14 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     // when an older transcript page is loaded.
     "session.turn_completed",
     "session.turn_stopped",
+    // Warnings belong at the error's position in the transcript, including
+    // after recovery and when paging backward through a noisy session.
+    "session.error",
+    "subagent.started",
+    "subagent.configured",
+    "subagent.completed",
+    "subagent.failed",
+    "native.task_updated",
     "system.message",
     // Session regeneration boundary — rendered as an inline epoch divider in
     // the transcript, so it must survive backward chat-history paging.
@@ -84,6 +94,49 @@ function buildRegenFailedItem(event) {
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
     };
+}
+
+function buildSessionWarningItem(event) {
+    const data = event?.data || {};
+    const text = event.eventType === "session.error"
+        ? data.message
+        : event.eventType === "session.turn_completed" && data.resultType === "error"
+            ? data.errorMessage
+            : null;
+    if (typeof text !== "string" || !text.trim()) return null;
+    return {
+        id: `session-warning:${event.sessionId}:${event.seq}`,
+        kind: "session-warning",
+        role: "system",
+        text: text.trim(),
+        errorText: text.trim(),
+        sourceEventType: event.eventType,
+        ...(event.eventType === "session.turn_completed" ? { turnCompletedSeq: event.seq } : {}),
+        time: formatTimestamp(event.createdAt),
+        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
+        cardTitle: "Warning",
+        cardTitleColor: "yellow",
+        cardBorderColor: "yellow",
+    };
+}
+
+function appendSessionWarning(chat, event) {
+    const warning = buildSessionWarningItem(event);
+    if (!warning) return;
+    if (chat.some((item) => item.id === warning.id
+        || (item.turnCompletedSeq != null && item.turnCompletedSeq === event.seq))) return;
+    const previous = chat.at(-1);
+    // A runtime error and its failed-turn summary can describe one failure.
+    // Retain the original anchor; subsequent failed turns remain distinct.
+    if (previous?.kind === "session-warning"
+        && previous.sourceEventType === "session.error"
+        && previous.turnCompletedSeq == null
+        && event.eventType === "session.turn_completed"
+        && matchesSessionError(previous.errorText, warning.errorText)) {
+        chat[chat.length - 1] = { ...previous, turnCompletedSeq: event.seq };
+        return;
+    }
+    chat.push(warning);
 }
 
 function clampHistoryItems(items, maxItems) {
@@ -412,7 +465,8 @@ function areMessagesEquivalent(left, right) {
     // event per rev), and share identical text by design (the artifact://
     // link) — the redelivery time-window below would eat rev N-1 on every
     // reload, making the transcript disagree with what live append showed.
-    if (left.kind === "canvas-update" || right.kind === "canvas-update") {
+    if (left.kind === "canvas-update" || right.kind === "canvas-update"
+        || left.kind === "session-warning" || right.kind === "session-warning") {
         return left.kind === right.kind && left.id === right.id;
     }
 
@@ -868,7 +922,7 @@ function formatActivity(event) {
 
     // Native child transcripts remain inspectable as events, but only their
     // lifecycle belongs in the parent's activity feed.
-    if (event.eventType?.startsWith("native.")) return null;
+    if (event.eventType?.startsWith("native.") || event.eventType === "session.background_tasks_changed") return null;
     switch (event.eventType) {
         case "subagent.started":
         case "subagent.completed":
@@ -1225,6 +1279,8 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
+        appendNativeTaskEvent(chat, event);
+        appendSessionWarning(chat, event);
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
@@ -1303,6 +1359,7 @@ export function appendEventToHistory(history, event) {
         ? existingEvents
         : [...existingEvents, event].slice(-loadedEventLimit);
     const next = {
+        nativeTaskSnapshot: history?.nativeTaskSnapshot,
         closedLiveKeys: history?.closedLiveKeys || [],
         closedLiveStreams: history?.closedLiveStreams || [],
         chat: clampHistoryItems(history?.chat || [], loadedEventLimit),
@@ -1321,6 +1378,10 @@ export function appendEventToHistory(history, event) {
         // clamps/reloads.
         stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
+
+    appendNativeTaskEvent(next.chat, event);
+    appendSessionWarning(next.chat, event);
+    next.chat = clampHistoryItems(next.chat, loadedEventLimit);
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

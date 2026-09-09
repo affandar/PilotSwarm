@@ -11,6 +11,7 @@ import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
+import { NativeTaskObserver } from "./native-task-observer.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -2664,6 +2665,15 @@ export class ManagedSession {
                 } catch {}
             })
             : null;
+        const nativeTasks = this.config.nativeSubagents === "sync"
+            ? new NativeTaskObserver(this.copilotSession, {
+                turnIndex: opts?.turnIndex,
+                emit: (event) => {
+                    if (event.eventType !== "session.native_tasks_tick") collectedEvents.push(event);
+                    try { opts?.onEvent?.(event); } catch {}
+                },
+            })
+            : null;
         // Note: we used to emit a synthetic `assistant.streaming_progress`
         // heartbeat into CMS for the activity pane. The user found those
         // rows noisy compared to the actual reasoning snapshots, so the
@@ -2797,6 +2807,10 @@ export class ManagedSession {
                         }
                     }
 
+                    nativeTasks?.observe({ ...event, data: eventData });
+                    // This empty ephemeral event only invalidates the CLI task
+                    // registry. It is neither activity nor durable history.
+                    if (eventType === "session.background_tasks_changed") return;
                     if (isNativeChildEvent(event)) {
                         // Child events share the parent subscription. Keep usage
                         // in the existing accounting stream, but namespace child
@@ -3218,6 +3232,7 @@ export class ManagedSession {
             // live row anyway so reconnecting viewers cannot see stale text.
             liveTurn?.finishTurn();
             liveTurn?.dispose();
+            nativeTasks?.finish(this.stopRequest ? "cancelled" : "interrupted");
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
         }

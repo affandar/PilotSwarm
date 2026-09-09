@@ -685,10 +685,24 @@ export class HttpApiTransport {
                 data,
             });
         });
+        const unsubscribeNativeTasks = this.api.subscribeLive(sessionId, "native-tasks", (message) => {
+            if (message?.kind === "signal") return;
+            const data = message?.kind === "unavailable" ? { phase: "unavailable" } : message?.data;
+            if (!data || typeof data !== "object") return;
+            handler({
+                eventType: "session.native_tasks_tick",
+                sessionId,
+                transient: true,
+                liveSeq: Number(message.seq) || 0,
+                liveUpdatedAt: message.updatedAt,
+                data,
+            });
+        });
         return () => {
             unsubscribeEvents();
             unsubscribeCanvas();
             unsubscribeLive();
+            unsubscribeNativeTasks();
             const handlers = this._canvasEmitHandlers.get(sessionId);
             if (handlers) {
                 handlers.delete(handler);

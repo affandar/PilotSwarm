@@ -28,6 +28,7 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { matchesSessionError } from "./session-warning.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -1541,11 +1542,11 @@ export function canStopSessionTurn(session) {
 // raised them. They used to stamp session.updatedAt, which moves on EVERY
 // poll and status tick — so the card's clock jumped forward with each update
 // and read as flicker.
-function latestEventCreatedAtMs(events = [], eventTypes = []) {
+function latestEventCreatedAtMs(events = [], eventTypes = [], predicate = () => true) {
     const wanted = new Set(eventTypes);
     for (let index = (events || []).length - 1; index >= 0; index -= 1) {
         const event = events[index];
-        if (!event || !wanted.has(event.eventType)) continue;
+        if (!event || !wanted.has(event.eventType) || !predicate(event)) continue;
         const createdAt = event.createdAt;
         const ms = createdAt instanceof Date
             ? createdAt.getTime()
@@ -1659,10 +1660,11 @@ function buildSessionErrorMessage(session, events = []) {
         role: "system",
         text: body,
         time: "",
-        // The error event when one was recorded, else the end of the turn
-        // that produced the error; never the session's rolling updatedAt.
-        createdAt: latestEventCreatedAtMs(events, ["session.error"])
-            ?? latestEventCreatedAtMs(events, ["session.turn_completed", "assistant.turn_end"]),
+        // Only an actual failure can anchor this card. A later successful
+        // turn must never move an earlier warning's timestamp forward.
+        createdAt: latestEventCreatedAtMs(events, ["session.error", "session.turn_completed"],
+            (event) => matchesSessionError(event.eventType === "session.error" ? event.data?.message
+                : event.data?.resultType === "error" ? event.data?.errorMessage : null, errorText)),
         cardTitle: isFailed ? "Error" : "Warning",
         cardTitleColor: isFailed ? "red" : "yellow",
         cardBorderColor: isFailed ? "red" : "yellow",
@@ -1908,7 +1910,23 @@ export function selectActiveChat(state) {
         messages.push(answeredQuestionMessage);
     }
     if (sessionErrorMessage) {
-        messages.push(sessionErrorMessage);
+        // History owns the warning's position and identity. Status may add
+        // current retry/failure details, but must not append the same warning
+        // after the newer conversation on every poll.
+        const warningIndex = messages.findLastIndex((message) => message.kind === "session-warning"
+            && matchesSessionError(message.errorText, session.error));
+        if (warningIndex < 0) {
+            messages.push(sessionErrorMessage);
+        } else if (warningIndex === messages.length - 1 || sessionErrorMessage.cardTitle === "Error") {
+            const warning = messages[warningIndex];
+            messages[warningIndex] = {
+                ...warning,
+                ...sessionErrorMessage,
+                id: warning.id,
+                createdAt: warning.createdAt,
+                time: warning.time,
+            };
+        }
     }
     return messages;
 }
@@ -3039,7 +3057,20 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     };
     const lines = [];
     for (const [index, message] of messages.entries()) {
-        if (message?.kind === "epoch-divider") {
+        if (message?.kind === "native-task-group") {
+            if (options.tableMode === "sentinel") {
+                lines.push({ kind: "nativeTasks", group: message });
+            } else {
+                const labels = { starting: "Starting", running: "Running", waiting: "Waiting", completed: "Done",
+                    failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" };
+                appendChatBlockLines(lines, buildChatMessageLines({ ...message, cardTitle: "Native tasks",
+                    cardTitleColor: "cyan", cardBorderColor: "cyan",
+                    text: message.tasks.map(task => `[${labels[task.status] || task.status}] ${task.title}`
+                        + (task.toolCalls ? ` · ${task.toolCalls} calls` : "")
+                        + (task.error || task.result || task.preview ? `\n  ${String(task.error || task.result || task.preview).replace(/\s+/g, " ").slice(0, 240)}` : "")).join("\n\n"),
+                }, maxWidth, buildOptions));
+            }
+        } else if (message?.kind === "epoch-divider") {
             lines.push(buildEpochDividerLine(message, maxWidth));
         } else if (message?.kind === "regen-refused") {
             lines.push(buildRegenRefusedLine(message, maxWidth));

@@ -13,8 +13,10 @@ test("native lifecycle is visible without leaking child answers into parent chat
     const replay = buildHistoryModel(events);
     const live = events.slice(1).reduce(appendEventToHistory, buildHistoryModel(events.slice(0, 1)));
     for (const model of [replay, live]) {
-        assert.deepEqual(model.chat.map(m => m.text), ["PARENT_ANSWER"]);
-        assert.equal(model.chat[0].responseFinal, true);
+        const answers = model.chat.filter(m => m.role === "assistant");
+        assert.deepEqual(answers.map(m => m.text), ["PARENT_ANSWER"]);
+        assert.equal(answers[0].responseFinal, true);
+        assert.equal(model.chat.filter(m => m.kind === "native-task-group").length, 1);
         assert.ok(model.activity.some(e => e.text.includes("[native agent] swarm-explore started")));
         assert.ok(model.activity.some(e => e.text.includes("[native agent] swarm-explore completed")));
         assert.ok(!model.activity.some(e => e.text.includes("CHILD_ANSWER")));

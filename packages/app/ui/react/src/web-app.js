@@ -1,4 +1,5 @@
 import React from "react";
+import { NativeTaskCard } from "./native-task-card.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
 // and react-dom is a dependency wherever this file loads, so it is safe in the
@@ -841,7 +842,7 @@ function normalizeLines(lines) {
     };
 
     for (const line of lines || []) {
-        if (line?.kind === "assistantPreview") {
+        if (line?.kind === "assistantPreview" || line?.kind === "nativeTasks") {
             // Preserve selector-cache identity so another stream's ticks don't
             // rerender every completed response or recreate its scroll observer.
             normalized.push(line);
@@ -3229,6 +3230,11 @@ function parseStructuredChatBlocks(lines = []) {
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
 
+        if (currentLine?.kind === "nativeTasks") {
+            blocks.push({ type: "nativeTasks", group: currentLine.group });
+            index += 1;
+            continue;
+        }
         if (currentLine?.kind === "assistantPreview") {
             blocks.push({ type: "assistantPreview", line: currentLine });
             index += 1;
@@ -3654,6 +3660,12 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
+            if (block.type === "nativeTasks") {
+                return React.createElement(NativeTaskCard, { key: block.group.id, group: block.group,
+                    colors: { starting: resolveColor(theme, "cyan"), running: resolveColor(theme, "cyan"),
+                        waiting: resolveColor(theme, "yellow"), completed: resolveColor(theme, "green"),
+                        failed: resolveColor(theme, "red"), cancelled: resolveColor(theme, "gray"), interrupted: resolveColor(theme, "yellow") } });
+            }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
                     key: block.line.previewKey,

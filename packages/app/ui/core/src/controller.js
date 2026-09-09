@@ -1,3 +1,4 @@
+import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -53,6 +54,23 @@ import {
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
 import { getTheme, listThemes } from "./themes/index.js";
+
+function preserveNativeTaskProgress(history, current, sessionId) {
+    const retained = current?.nativeTaskSnapshot;
+    if (!retained?.ownerId) return history;
+    // Replay has reconstructed task rows from durable events. Reapply the
+    // latest live projection even when a paging rebuild carried its old
+    // metadata through; individual task revision/terminal guards still let
+    // newer durable truth win and prevent another owner from taking a row.
+    return applyNativeTaskSnapshot({ ...history, nativeTaskSnapshot: undefined }, {
+        version: 1,
+        ...retained,
+        tasks: (current.chat || [])
+            .filter(item => item.kind === "native-task-group")
+            .flatMap(group => group.tasks)
+            .filter(task => task.ownerId === retained.ownerId),
+    }, { sessionId, seq: retained.liveSeq });
+}
 
 /**
  * The copy selector for a package LIST row: which same-named copy it is.
@@ -2985,6 +3003,7 @@ export class PilotSwarmUiController {
                     }
                 }
             }
+            history = preserveNativeTaskProgress(history, current, sessionId);
             this.dispatch({
                 type: "history/set",
                 sessionId,
@@ -5757,6 +5776,12 @@ export class PilotSwarmUiController {
         // history would corrupt the replay cursor — and they must never
         // appear in the transcript.
         if (event.transient === true) {
+            if (event.eventType === "session.native_tasks_tick") {
+                const existing = this.getState().history.bySessionId.get(sessionId);
+                const history = applyNativeTaskSnapshot(existing, event.data, { sessionId, seq: event.liveSeq });
+                if (history && history !== existing) this.dispatch({ type: "history/set", sessionId, history });
+                return true;
+            }
             if (event.eventType === "assistant.live_tick") {
                 // A worker can die leaving a reasoning-only retained row.
                 // On re-entry its message ID cannot match a durable final;
@@ -9696,6 +9721,7 @@ export class PilotSwarmUiController {
                     lastSeq: events[events.length - 1]?.seq || 0,
                 };
             }
+            history = preserveNativeTaskProgress(history, this.getState().history.bySessionId.get(sessionId), sessionId);
             this.dispatch({
                 type: "history/set",
                 sessionId,

@@ -80,6 +80,28 @@ class FakeSession {
 }
 
 describe("native turn boundaries", () => {
+    it("projects task milestones without persisting empty registry notifications or live ticks", async () => {
+        const sdk = new FakeSession();
+        const events = [];
+        sdk.send = async () => {
+            sdk.emit("tool.execution_start", { toolName: "task", toolCallId: "call", arguments: task });
+            sdk.emit("subagent.started", { toolCallId: "call", agentName: "swarm-explore" }, "child");
+            for (let i = 0; i < 20; i++) sdk.emit("session.background_tasks_changed");
+            sdk.emit("subagent.completed", { toolCallId: "call", totalToolCalls: 4 }, "child");
+            sdk.emit("tool.execution_complete", { toolCallId: "call", success: true, result: { content: "Findings" } });
+            sdk.emit("assistant.message", { content: "Parent answer" });
+            sdk.emit("session.idle");
+        };
+        const result = await new ManagedSession("test", sdk, { nativeSubagents: "sync" }).runTurn("go", {
+            turnIndex: 3, onEvent: event => events.push(event),
+        });
+        expect(result.content).toBe("Parent answer");
+        expect(events.some(event => event.eventType === "session.background_tasks_changed")).toBe(false);
+        expect(result.events.some(event => event.eventType === "session.native_tasks_tick")).toBe(false);
+        const snapshot = events.findLast(event => event.eventType === "session.native_tasks_tick").data;
+        expect(snapshot).toMatchObject({ phase: "idle", turnIndex: 3, tasks: [{ id: "call", status: "completed", result: "Findings", toolCalls: 4 }] });
+        expect(result.events.findLast(event => event.eventType === "native.task_updated").data).toMatchObject({ id: "call", status: "completed", result: "Findings" });
+    });
     it("isolates interleaved child messages, reasoning, tools and idle; retains usage", async () => {
         const sdk = new FakeSession();
         const events = [], deltas = [], tools = [];
