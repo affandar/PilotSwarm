@@ -86,6 +86,12 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
   frozen ref pinned at the divergence point **`eaabdbf9`**, so the compare reads as
   **143 ahead / 0 behind** (= the 142 divergence commits **plus** this plan-doc commit) —
   purely what the fork added, no upstream-only noise.
+- **Browse the current (draining) delta — the drain-to-zero permalink:**
+  [`oss/main...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/oss/main...feature/aks-git-repo-worker)
+  — `oss/main` is a fast-forward-only mirror of the **current** upstream tip (advanced each rebase, §11 step 7),
+  so this compare tracks the **shrinking** delta as themes drain upstream. When it reports **0 files
+  changed**, the fork-vs-upstream logical diff is empty. (Contrast the frozen `upstream-base` link above,
+  which shows the delta since *original* divergence and therefore does **not** shrink as you rebase.)
 - **Browse the SQL-specific overlay:**
   [`main...dev/kchung/…-pilotswarm`](https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace/branchCompare?baseVersion=GBmain&targetVersion=GBdev%2Fkchung%2Fsql-agent-orchestration-platform-proposal-pilotswarm&_a=files)
   on the ADO `SQL-AI-Marketplace` repo — the internal overlay holding the SQL-specific pieces
@@ -401,6 +407,18 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
   overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
 
+> **⚠️ "Pure-platform" describes the *tree*, not the *history*.** After Phase 2 the fork's **working
+> tree** is IP-free — the Tier-1 files (IcM endpoint, AAD scope, CI-gate names) now live in the
+> overlay. But the **commit history still contains the IP**: Phase 2 removes it at the *tip* via
+> *new* commits — it does **not** rewrite history, so the older commits that introduced the IP are
+> still reachable in the branch. Consequence: the fork is safe to keep **private**, but must
+> **never** be pushed — branch, tag, or mirror — to any **public** repo. A public branch exposes its
+> full history, and checking out any historical commit leaks the IP (§4), and it cannot be
+> un-published once cloned/forked/cached. This is precisely why **Phase 3 does not publish the fork
+> branch**: it upstreams via **clean-room, path-scoped PRs re-originated from `origin/main`** (fresh
+> commits, no entangled history). Treat "IP-less" as a claim gated on a **secret + full-history
+> scan**, not one inferred from a clean tip.
+
 ### Phase 3 — Upstream the platform, theme by theme (slow track, external pace)
 - Slice the fork-vs-upstream logical diff into the ~8+ capability themes of §6.
 - For each theme, in dependency order:
@@ -451,6 +469,12 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
 - **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
   every rebase; all by-name references (overlay core pin, CI, PR policy) point here.
 - **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
+- **Compare baseline (moving mirror):** branch `oss/main` — a fast-forward-only mirror of
+  `origin/main` (the upstream tip the fork was last rebased onto), pushed to `microsoft`. It is
+  **not** the fork's `main`, is never committed to, and exists only to power an in-repo GitHub
+  compare — cross-repo compare against `affandar` is unavailable (the private fork and public
+  upstream share no fork network). Advanced after each swap (step 7). Invariant:
+  `oss/main == origin/main == the newest onto- tag`.
 - **Candidate branch (ephemeral):** `cand/<upstreamDate>-<upstreamSha>` — deleted after swap.
   **Deliberately *not* named `rebase/onto-…`:** that name is the `onto-` *tag*, and git resolves a
   bare ref as a **tag before a branch** — a same-named branch + tag makes `reset`/`push` silently
@@ -539,6 +563,7 @@ full set is a permanent audit trail and rollback ledger.
    git branch -f feature/aks-git-repo-worker $CAND          # move the ref by SHA, no checkout, tree untouched
    git push microsoft refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
    git push microsoft feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
+   git push microsoft $BASE:refs/heads/oss/main            # 7b. advance the moving compare baseline to the upstream tip
    ```
    > **Why by SHA, not name.** The `onto-` *tag* and (pre-2026-09) the candidate *branch* shared the
    > name `rebase/onto-…`; git resolves a bare ref as a **tag before a branch**, so `git reset --hard
@@ -554,7 +579,11 @@ full set is a permanent audit trail and rollback ledger.
 8. **Re-measure & refresh:** the new merge-base is now `origin/main`, so
    `git diff origin/main...HEAD` reports the *current* delta — update §3's metrics and the diagram.
    (`upstream-base` stays frozen at `eaabdbf9` as the original-divergence marker; advance it only if
-   you'd rather the compare link track the shrinking current delta.)
+   you'd rather the compare link track the shrinking current delta.) Track the drain in the UI via
+   the moving compare
+   [`oss/main...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/oss/main...feature/aks-git-repo-worker):
+   because `oss/main` was just advanced in step 7 it shows **only** the fork's real delta, so
+   **"drained to zero" = this compare reports 0 files changed.**
 9. Clean up: delete the candidate branch (`git branch -D cand/<upstreamDate>-<upstreamSha>`); keep the
    `from-`/`onto-` tags as the permanent audit trail.
 
