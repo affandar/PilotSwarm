@@ -32,8 +32,8 @@ feature flighting. That work is now implemented/documented:
   `ARTIFACT_DIR=.tmp/native-subagents/copilot/artifacts`. Server restarted with
   current prompt and left running on port 3017. It loads credentials privately as before.
 - `docs/proposals/feature-flighting.md` is a design only: CMS-backed fleet defaults,
-  user overrides, emergency disable, admin/root control, worker enforcement and
-  requester-only Waldemort CHK rollout. No feature flags or CHK deployment applied.
+  user/session overrides, fleet hard on/off, admin/root control, worker enforcement
+  and requester-only Waldemort CHK rollout. No feature flags or CHK deployment applied.
 - The old broad routing sweep remains partial; it was not resumed under the
   narrower current request. Historical details below describe the earlier pause.
 

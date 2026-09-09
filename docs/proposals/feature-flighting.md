@@ -1,186 +1,148 @@
-# Fleet and user feature flighting
+# Fleet, user, and session feature flighting
 
 Status: proposed; no flighting implementation or CHK deployment in this change.
 
-## Intended behavior
+## Policy model
 
-An admin can enable a registered feature by default for a fleet, override it for
-specific users, remove an override, or disable it for everyone. The portal and all
-workers use the same persisted policy. First feature: `copilot.native_tasks`.
-First rollout: native tasks enabled only for the requesting user's sessions in
-Waldemort CHK, including their ordinary durable descendants.
-
-Flighting is an eligibility decision, not a prompt preference. A session with
-native tasks disabled must have no native tool/profile access even if the model
-requests it. Feature flags never confer admin authority or override ownership,
-model admission, native tool restrictions, or service-session exclusions.
-
-## Resolution and controls
-
-Use a code-owned registry for known boolean feature keys, their default, display
-name, required worker capability, and session eligibility. Start with a false
-default for `copilot.native_tasks`; translate the result to existing `off`/`sync`.
-
-| Precedence | Rule | Result |
+| Scope | Values | Meaning |
 | --- | --- | --- |
-| 1 | Deployment cannot run it, or session is ineligible | Off |
-| 2 | Admin emergency disable is active | Off for everyone |
-| 3 | Explicit override for session owner | That user's enabled/disabled value |
-| 4 | Explicit fleet default | Fleet enabled/disabled value |
-| 5 | No configured rule | Registered feature default |
+| Fleet | `on`, `off`, `on-hard`, `off-hard` | Default, or forced value for the whole fleet |
+| User | `on`, `off` | Overrides a normal fleet value |
+| Session | `on`, `off` | Overrides the user and normal fleet value |
 
-“Fleet default disabled” allows selected test users to be enabled. **“Disable for
-everyone”** is a separate emergency control that overrides those exceptions.
-Removing a user override means inherit; it does not mean disable. Clearing the
-fleet default restores the registered default. Clearing emergency disable restores
-the underlying rules. These operations should have distinct UI labels and tool
-arguments; avoid an ambiguous bare `clear` operation.
+Resolve from fleet → user → session. A fleet `on-hard` or `off-hard` wins over
+both lower scopes. There is no separate emergency-disable flag.
 
-Resolve the **session's persisted owner**, not whoever is viewing it, the last
-person who messaged it, or the worker identity. Durable children already inherit
-effective ownership through `resolveEffectiveSpawnOwner`; use that same authority.
-Shared sessions retain their owner's feature policy. Ownerless/system sessions
-get no human user's flight; keep current native exclusions for system agents,
-agent-tuner, and regen-distiller. Unknown users get only the fleet/default policy.
+An absent user or session entry inherits from the preceding scope. Unset deletes
+that entry; it is not another stored mode. An absent fleet entry uses the feature's
+registered normal default (`off` for `copilot.native_tasks`). Unsetting the fleet
+entry restores that default, including removing any hard mode. Switching a hard
+mode to a normal mode makes existing user/session entries effective again; those
+entries are retained while overridden.
 
-## Persistence and concurrency
+```text
+fleet = configured fleet mode, otherwise registered default
+if fleet == on-hard:  return on
+if fleet == off-hard: return off
+return session override ?? user override ?? fleet
+```
 
-Add CMS migrations and a typed FeatureStore beside ProviderStore:
+Use presence checks, not boolean OR: an explicit `off` must override an `on`.
 
-- `feature_policies`: feature key, nullable fleet default, emergency-disabled
-  boolean, monotonically increasing revision, actor and timestamps.
-- `feature_user_overrides`: feature key, numeric CMS user ID, enabled boolean,
-  actor and timestamps; primary key `(feature_key, user_id)`.
-- A feature-change audit stream: before/after, action, authenticated actor,
-  root-system session ID when applicable, reason, request ID, revision, timestamp.
+| Fleet | User | Session | Effective |
+| --- | --- | --- | --- |
+| off | on | — | on |
+| on | off | — | off |
+| off | off | on | on |
+| on | on | off | off |
+| on-hard | off | off | on |
+| off-hard | on | on | off |
 
-User IDs come from the existing provider/subject identity mapping. Email is a
-directory search label, never the authorization key. Reject unknown feature keys,
-ambiguous user searches, and synthetic/system targets for a human flight.
+Hard modes override flight policy. They do not supply missing worker capabilities
+or bypass existing permission and system-session restrictions. Expose both the
+resolved policy and whether the session can actually use the feature, with the
+reason if it cannot. For native tasks, existing deployment `off` remains a runtime
+capability cap; a flight of `on` maps to `sync` only on a capable, eligible worker.
 
-Mutations are transactions: lock the feature policy row, check `expectedRevision`,
-apply the change, increment revision, write the audit record, then notify. Return
-409 on a stale revision with the current policy. Retry a timed-out mutation with
-the same idempotency key. Audit failure rolls back the mutation; it must not
-silently disappear. Store policy in dedicated tables, not user-editable profile
-settings or model-writable facts.
+## Identity and scope
 
-## API, portal, and root system agent
+The user entry is selected by the session's persisted owner, not its viewer, last
+sender, or worker identity. The session entry is keyed by the actual session ID.
+Shared sessions therefore have one effective policy regardless of who views them.
 
-Proposed shared operations, declared once in the API protocol and generated into
-clients as existing management operations are:
+A session override applies only to that session. Durable children inherit the
+owner through the existing spawn ownership path, then resolve their own session
+entry; do not copy the parent's session override. Native tasks are part of their
+calling session and use that session's decision. Ownerless/system sessions have
+no human user entry and retain their existing eligibility restrictions.
 
-- Admin: list/read policies and overrides; set/unset fleet default; set/unset
-  user override; set/clear emergency disable; inspect effective policy for a user;
-  read audit history. Every mutation requires `fleet:admin` at the transport and
-  server/store boundary. Actor and privilege are server-derived, never body fields.
-- Ordinary user: read their effective flags. A readable session can expose its
-  current applied feature snapshot without revealing another user's override list.
+## Storage and controls
 
-Portal Admin → Features: one row per registered feature with fleet default,
-emergency state, exception count and revision; a detail view manages user exceptions
-and explains the effective result. User selection uses the existing directory and
-shows the unambiguous account. The session UI distinguishes configured policy from
-the revision actually applied to a running turn; an old worker cannot claim support.
+Keep the registry of known feature keys/defaults in code and the policy in shared
+CMS tables read by the portal and every worker:
 
-Add root-agent tools from one shared specification: `get_feature_flags`,
-`set_feature_flag(scope, user, enabled, expected_revision)`,
-`unset_feature_flag(scope, user, expected_revision)`, and an explicit
-`set_feature_emergency_disable`. Register both declarations and per-turn handlers.
-Only the authenticated management API and the persisted, worker-provisioned
-`pilotswarm` root system session receive mutation authority. A custom agent named
-“pilotswarm”, its descendants, and native tasks receive none.
+- Fleet entry: feature key, four-value mode, revision, actor and timestamps.
+- User entry: feature key, CMS user ID, on/off, actor and timestamps.
+- Session entry: feature key, session ID, on/off, actor and timestamps.
+- Audit: operation, scope/target, before/after, authenticated actor, revision,
+  request ID and timestamp; include root-system session ID for assisted changes.
 
-For root-assisted changes, require a direct authenticated admin operator request
-and re-check that actor's current role when executing the mutation. Use trusted,
-durably recorded message provenance; model text, facts, tool arguments, forwarded
-child messages, or a self-reported admin identity cannot supply it. Autonomous
-wake-ups can inspect policy but cannot mutate it without a scoped admin instruction.
-The existing system-session API already restricts non-read operations to admins,
-but the agent-tool path needs its own enforcement. If current turn provenance
-cannot bind that admin reliably, add a server-created change intent carrying the
-exact operation, actor, target and revision; the root may apply only that intent.
-Do not fall back to unrestricted system authority merely because provenance is
-missing. This binding is an implementation requirement, not an existing guarantee.
+Each mutation checks the feature revision and atomically writes policy plus audit.
+Use idempotent request IDs for retries. Reject unknown features, ambiguous users,
+missing sessions, and hard modes at user/session scope. Resolve users through the
+existing identity directory; email is a search label, not the stored identity.
 
-## Worker enforcement and propagation
+Admin API and root-system tools share three operations:
 
-Read the relevant policy from shared CMS on each turn admission and each new
-native `task` admission. The workload has few native dispatches; start with fresh
-reads rather than building a distributed cache invalidation dependency. Resolve
-the policy with owner and eligibility before warm-session reuse in SessionManager.
-Reuse the existing native-mode rebind path for changes on warm/cold sessions.
-Do not freeze the flag into the child's spawn arguments or trust a client override.
+- `get_feature_flags`: inspect entries and the resolved value/source for a target.
+- `set_feature_flag(feature, scope, target, mode, expected_revision)`.
+- `unset_feature_flag(feature, scope, target, expected_revision)`.
 
-At turn start, record the applied feature revision, owner and effective mode in
-session metadata/telemetry. An enable becomes visible in tool schemas at the next
-turn. A disable rejects **new native task admissions** once committed, including
-later calls in an already-running parent turn. Native tasks admitted before the
-disable finish normally; existing cancellation controls handle an urgent stop.
-Keep that turn's native cleanup active even if subsequent admissions are denied,
-then remove the tool/profile/guidance on the next turn. Ordinary chat remains usable.
+All changes, including session overrides, require admin authority. The real
+worker-provisioned root system session can act on a direct authenticated admin
+request; recheck that actor at execution. Names, model text, forwarded messages,
+and autonomous wakes do not grant mutation authority. Bind execution to trusted
+message provenance or a server-created scoped change intent if needed.
 
-Database-read failure denies new native work and reports policy unavailable; it
-does not use an indefinitely cached enabled value or overwrite the saved policy.
-Keep feature decisions outside deterministic orchestration generators: admission
-belongs in activities/session management. No new orchestration version is expected
-for that alone; durable provenance changes must be assessed separately if needed.
+Portal Admin → Features exposes the fleet's four choices, user/session on/off
+overrides, and an unset action. Show the effective value and its winning scope;
+under hard mode, show lower entries as overridden. Ordinary session viewers can
+see their session's effective/applied state without seeing other users' policies.
 
-After a transaction, publish a small CMS-schema-scoped change notification. The
-portal invalidates its display cache; refresh on reconnect and use a short bounded
-fallback refresh for missed notifications. Worker correctness does not depend on
-delivery. The existing live relay is session-scoped; add an explicit admin/user
-feature channel rather than inventing a fake session ID or broadcasting user
-membership to every browser. A notification is a hint to re-read, never authority.
+## Applying changes
 
-Keep `PILOTSWARM_NATIVE_SUBAGENTS=off` as a deployment-level hard cap. For this
-rollout, `sync` permits capable workers to offer native execution, subject to CMS
-policy. Existing deployments that deliberately used env `sync` must be explicitly
-seeded with the desired fleet default during migration; do not silently reinterpret
-it as enabled for every user or silently turn existing users off.
+Read policy from CMS at turn admission and before every new native task admission,
+using both owner and session ID. Keep resolution in activities/session management,
+outside deterministic orchestration code. No orchestration version change is
+expected for policy resolution alone; assess durable admin provenance separately.
+
+An enable appears in the tool schemas on the next turn. An effective disable
+blocks new native calls after commit, including calls later in an existing turn.
+Already admitted tasks finish with cleanup intact; existing cancellation handles
+an urgent stop. Remove the tools/profiles/guidance on the next turn. Chat remains
+usable. A failed policy read denies new native work and reports unavailable.
+
+Record the applied revision and winning scope with session telemetry. Notify the
+portal to refresh after mutations, with reconnect/fallback refresh for missed
+notifications; workers rely on fresh CMS reads for correctness. Scope notifications
+to authorized viewers. Reuse the current warm/cold native-mode rebind path.
 
 ## Waldemort CHK rollout
 
 1. Verify the subscription/cluster and requesting user's immutable CMS identity.
-2. Install the schema and policy API. Persist fleet default **disabled**, no other
-   enabled user overrides, and this user's override **enabled**.
-3. Roll out the feature-aware build to portal and every relevant worker; enable
-   native capability on those workers only after policy enforcement is present.
-   Old code interprets env `sync` fleet-wide, so never enable that env on old workers.
-4. Verify from the portal and two workers: requester on, control user off;
-   descendants inherit the right owner; viewers of shared sessions do not change
-   eligibility. Check tool schemas and actual dispatch, not UI badges alone.
-5. Exercise user disable/unset, emergency disable/clear, warm resume, and worker
-   restart. Retain rollback: emergency disable first; env `off` as an independent
-   deployment cap. No existing sessions need deletion.
+2. Persist `copilot.native_tasks`: fleet **off**, this user **on**, no other enabled
+   user or session overrides. This also enables their eligible durable children.
+3. Deploy feature-aware portal and workers before enabling native runtime
+   capability. Old workers interpret env `sync` fleet-wide, so keep it off there.
+   Explicitly seed intended policies when migrating existing env-enabled fleets.
+4. Check requester on and control user off across two workers; verify actual tool
+   admission, shared-session ownership, and durable descendants.
+5. Exercise session overrides, unset, both hard modes, warm resume and restart.
+   Roll back immediately with fleet **off-hard**; retain env `off` as a runtime cap.
 
-## Validation required for implementation
+## Implementation tests
 
-- Resolver matrix: defaults, enable/disable/unset, emergency override, unsupported
-  worker, unknown owner, system/service exclusions, and shared-session viewers.
-- Store: concurrent revisions, transaction/audit atomicity, idempotency, deletion
-  of overrides, unknown keys, identity lookup and unauthorized calls.
-- Admin API + root tools: forged privilege/identity, nonadmin and demoted admin,
-  spoofed root name, forwarded messages and autonomous wakes, native tool attempts.
-- Two-worker integration: same user gets same policy, missed notifications do not
-  bypass admission, warm/cold sessions lose native access, child ownership is used.
-- Mid-turn disable: reject the next native call, let an admitted task settle,
-  preserve cancellation and prompt responsiveness, remove schema next turn.
-- CHK acceptance with requester and control account; general native test suite and
-  both durable/native filesystem tests pass with the flight enabled.
+- All 36 combinations of four fleet modes × three user states × three session
+  states (on/off/absent), plus missing fleet default and unset transitions.
+- Hard on defeats lower off, hard off defeats lower on, and returning to normal
+  fleet mode restores retained overrides.
+- Owner identity, shared viewers, exact session scope, durable children and native
+  tasks; capability/permission restrictions still apply under hard on.
+- Admin/root authorization, invalid targets/modes, concurrent revisions,
+  idempotency and atomic audit writes.
+- Two workers, missed notifications, failed policy reads, warm/cold reuse and
+  mid-turn disable with an already admitted task completing normally.
+- Requester-only CHK acceptance and the existing native/delegation filesystem suite.
 
-## Existing code this design builds on
+## Existing code
 
-- [Native eligibility and SDK assembly](../../packages/sdk/src/session-manager.ts),
-  [native policy hooks](../../packages/sdk/src/native-subagents.ts),
-  [mode rebind and cleanup](../../packages/sdk/src/managed-session.ts).
-- [Turn admission and child ownership](../../packages/sdk/src/session-proxy.ts).
-- [Provider store](../../packages/sdk/src/provider-store.ts),
-  [CMS schema](../../packages/sdk/src/cms-migrations.ts),
-  [management operations/audit](../../packages/sdk/src/management-client.ts).
-- [Admin API gate](../../packages/app/web/api/router.js),
+- [Native assembly](../../packages/sdk/src/session-manager.ts),
+  [admission hooks](../../packages/sdk/src/native-subagents.ts),
+  [mode rebind](../../packages/sdk/src/managed-session.ts).
+- [Turn admission and ownership](../../packages/sdk/src/session-proxy.ts),
+  [CMS migrations](../../packages/sdk/src/cms-migrations.ts),
+  [management operations](../../packages/sdk/src/management-client.ts).
+- [Admin API](../../packages/app/web/api/router.js),
   [shared protocol](../../packages/sdk/api/src/protocol.js),
-  [system-session access](../../packages/sdk/api/src/session-authz.js).
-- [Provider tool specification/viewer pattern](../../packages/sdk/src/provider-tools.ts),
-  [root system agent](../../packages/sdk/plugins/mgmt/agents/pilotswarm.agent.md),
-  [portal live relay](../../packages/app/web/api/live-plane.js).
+  [system-session access](../../packages/sdk/api/src/session-authz.js),
+  [root agent](../../packages/sdk/plugins/mgmt/agents/pilotswarm.agent.md).
