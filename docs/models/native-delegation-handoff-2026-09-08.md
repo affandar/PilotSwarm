@@ -37,9 +37,13 @@ feature flighting. That work is now implemented/documented:
   MCP/Web/mgmt parity, Resource Manager and admin Agent Smith tools, and a user
   Feature flags tab. CHK initially enables the requester; override-enabled users
   can also opt themselves in. Workers will cache flags via the existing package/
-  heartbeat poll (20s default), using a separate feature-flags directive epoch.
+  heartbeat poll (20s default), reading per-feature catalog revisions.
   The latest schema is two tables: code-published `feature_flags` and unified
-  cluster/user `feature_flag_settings`, reusing existing audit/directive tables.
+  cluster/user `feature_flag_settings`, reusing existing audit only. Feature
+  changes increment `feature_flags.revision`; there is no feature directive row.
+  Runtime `resolve(key, owner, options)` requires either `{ fallback: boolean }`
+  or `{ required: true }`. Missing/unresolvable flags follow that explicit choice;
+  missing settings inherit normally. Native admission chooses fallback false.
   The design includes exact proposed routes, code sketch, native rollout plan
   and an explicit in-flight ON/OFF round-trip test matrix. That matrix is planned,
   not existing coverage. No per-turn/task flag DB reads; no feature flags or CHK

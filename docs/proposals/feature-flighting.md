@@ -53,6 +53,44 @@ permissions and system-session restrictions. For native tasks, deployment
 capable, eligible workers. Return effective policy separately from runtime
 availability, with a reason when unavailable.
 
+### Explicit lookup failure policy
+
+Every runtime caller must choose a fallback or require successful resolution.
+There is no implicit global `false` and no overload that omits this choice:
+
+```ts
+type ResolveOptions =
+  | { fallback: boolean; required?: never }
+  | { required: true; fallback?: never };
+
+// Native tasks are optional; unavailable configuration leaves them disabled.
+featureCache.resolve('copilot.native_tasks', owner, { fallback: false });
+
+// A caller that cannot proceed without a resolved policy requests an error.
+featureCache.resolve('copilot.native_tasks', owner, { required: true });
+```
+
+`resolve(key: FeatureKey, owner, options: ResolveOptions)` returns a decision with
+`enabled`, `source`, the applied feature revision when available, and cache health.
+A fallback decision has `source: 'fallback'` and a reason such as `unknown_key`,
+`catalog_missing`, or `cache_unavailable`. The required form throws a typed
+`FeatureFlagResolutionError` with the same reason instead. A caller may choose
+either boolean as its fallback; native-task admission explicitly chooses `false`.
+Compiled keys are typed; dynamic management/API keys are validated separately and
+unknown keys return an explicit error, never create a definition implicitly.
+
+These options apply only when a decision cannot be resolved: the build does not
+know the key, its published catalog row is missing, or no valid snapshot has loaded.
+An absent user setting inherits; an absent cluster setting uses published defaults.
+A resolved `false` remains `false`, even if the caller's fallback is `true`.
+Neither option overrides valid cluster policy or runtime capability restrictions.
+Authorization errors and programming errors are not converted into fallback values.
+
+A failed refresh retains the last good snapshot and marks it stale; an available
+decision from that snapshot still resolves normally. Neither lookup mode reads the
+database or retries a load. Startup with no usable snapshot follows the caller's
+explicit choice, and the scheduled poll retries loading it.
+
 ## Identity and storage
 
 Each cluster stores its settings in its shared CMS namespace. The portal, MCP,
@@ -70,8 +108,9 @@ restrictions.
 
 **Two new tables:** `feature_flags` for the code-published catalog, and
 `feature_flag_settings` for all cluster/user values. Reuse existing `authz_audit`
-for history and `fleet_directives` for the polling epoch. No separate cluster,
-user, change-history, or session-settings tables.
+for history. Each catalog row carries its feature's change revision; feature
+policy does not use `fleet_directives`. No separate cluster, user, change-history,
+or session-settings tables.
 
 ```sql
 CREATE TABLE feature_flags (
@@ -80,7 +119,8 @@ CREATE TABLE feature_flags (
     description                 TEXT NOT NULL,
     default_enabled             BOOLEAN NOT NULL,
     default_allow_user_override  BOOLEAN NOT NULL,
-    required_capability         TEXT
+    required_capability         TEXT,
+    revision                    BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0)
 );
 
 CREATE TABLE feature_flag_settings (
@@ -114,7 +154,7 @@ The real migration qualifies tables with the cluster's CMS schema. Separate part
 unique indexes avoid the nullable-user uniqueness trap for cluster rows. The check
 constraint prevents a user setting from supplying its own override permission.
 Foreign keys reject nonexistent flags/users; deletions use an explicit controlled
-path rather than silent cascading settings away without an epoch change.
+path rather than silent cascading settings away without a feature revision change.
 
 Example rows in `feature_flag_settings`:
 
@@ -130,36 +170,37 @@ published defaults. There is no need to materialize a row for every flag/user pa
 
 Versioned migrations insert/update catalog rows from the code manifest; contract
 tests check that the manifest and migration output match. Catalog changes bump the
-same feature epoch as setting changes. They do not overwrite settings. There is
+affected feature's revision, as setting changes do. They do not overwrite settings. There is
 no create/update/delete-definition API or tool, and workers never upsert their
 compiled catalog at startup: an older worker must not roll back newer metadata.
 
 Snapshots include the published catalog and settings, so every worker uses the same
 deployed defaults even during a rolling update. A worker evaluates only keys and
-capabilities implemented by its build; unknown flags are reported as unsupported.
-A required catalog row missing from CMS means incomplete deployment, not implicit
-permission to enable the feature. Native tasks remain off until that is resolved.
+capabilities implemented by its build. Unsupported keys and missing catalog rows
+follow the caller's explicit fallback/error choice, with a diagnostic reason.
+Native admission chooses `fallback: false`, so these cases keep native tasks off.
 Reset returns to code-authored, migration-published defaults, not potentially
 older defaults baked into whichever worker happened to receive the session.
 
 ### Change propagation and audit
 
-Keep the existing physical name `fleet_directives`; public feature APIs and UI use
-**cluster**. Seed its global `feature-flags` row with epoch 1, worker actuation and
-an empty desired payload. Constrain this domain to `pool='*', worker_node_id='*'`:
-feature policy has cluster/user scope, never per-pool or per-worker policy. Flag
-changes bump only this domain, not the package epoch.
+Use `feature_flags.revision` as the monotonic change counter for each feature,
+starting at 1. A definition or setting change increments only that feature's
+revision; it never changes the package epoch. There is no feature directive row.
+Feature policy has cluster/user scope, never per-pool or per-worker policy.
 
 Each successful setting mutation is one transaction: resolve/check actor and
-published/supported key, lock the feature directive, recognize an identical retry,
-check `expectedEpoch`, update/delete the scoped setting, bump epoch, and append an
-`authz_audit` event. Row `revision` is the resulting epoch; return 409 on a stale
-expected epoch. Reset/unset also bumps the epoch, so worker caches remove entries.
-One epoch serializes the initial low-volume settings writes and handles reset races
-without a tombstone table.
+published/supported key, lock its catalog row, recognize an identical retry,
+check `expectedRevision` against the catalog revision, update/delete the scoped
+setting, increment the catalog revision, and append an `authz_audit` event.
+The changed setting's `revision` records that resulting feature revision; unchanged
+settings retain their last-change revision. Return 409 on a stale expected revision.
+Reset/unset also increments the catalog revision, so worker caches remove entries.
+This serializes writes for the same feature and handles delete/recreate races
+without a tombstone table. Different features have independent counters.
 
 Use audit actions `feature_flag.set` / `feature_flag.unset`; keep scope, feature key,
-target user, before/after, epoch, canonical request hash and returned result in
+target user, before/after, feature revision, canonical request hash and returned result in
 `details`. Existing actor/session/time fields identify who made the change.
 `updated_by` and audit actors are server-derived, never caller-claimed authority.
 The service calls the audit insert inside its transaction, not through the existing
@@ -170,14 +211,18 @@ For retry receipts, add a partial unique expression index on existing audit
 mutation path always populates both from a trusted actor and supplied request ID;
 validate the request hash before returning a previous result. Different input with
 the same ID fails. After audit retention removes a receipt, the original
-`expectedEpoch` still prevents an old retry from replaying its write; return a
+`expectedRevision` still prevents an old retry from replaying its write; return a
 conflict and let the client read current state. No third feature table is needed.
 
-The internal read returns **epoch + catalog + scoped settings in one consistent
-database snapshot**, including stable owner lookup keys so runtime resolution adds
-no identity lookup. Split scoped rows into immutable cluster/user maps in memory.
-Full snapshots on changed epochs cover deletes and missed polls; public reads stay
-caller-scoped. Failed snapshot reads leave the last good cache intact.
+The internal poll reads the small **feature key + revision** catalog. For changed
+or newly published keys, load their definitions, revisions, and complete scoped
+settings in one consistent database snapshot, including stable owner lookup keys
+so runtime resolution adds no identity lookup. Replace each changed feature's
+cluster/user maps, including absent rows, then swap one immutable cache reference.
+Complete settings for each changed feature cover deletes and missed polls. A
+successful catalog read that omits a previously loaded key invalidates that key;
+runtime lookup then follows its explicit failure policy. A failed read never
+masquerades as an empty catalog. Public reads stay caller-scoped.
 
 ## One API contract across all surfaces
 
@@ -216,10 +261,10 @@ Proposed Web routes below are relative to `/api/v1`:
 Register literal `me` ahead of user ID routes. MCP and agent tools use the shared
 method names in snake case with equivalent arguments/results. Direct management
 and Web adapters expose the same method set. Cluster updates save both booleans
-atomically; mutations require request ID and expected epoch.
+atomically; mutations require request ID and expected feature revision.
 Responses include configured cluster/user values, effective value, winning scope,
-configuration epoch, and whether a saved user preference is currently ignored.
-Mutations return the committed epoch; worker adoption is reported separately.
+feature revision, and whether a saved user preference is currently ignored.
+Mutations return the committed feature revision; worker adoption is reported separately.
 
 ## Admin and personal UX
 
@@ -258,17 +303,16 @@ management authority. Direct callers still have ordinary self-service APIs.
 ## Worker polling and cache
 
 The existing worker package loop defaults to **20 seconds**. It checks the package
-epoch and reports a worker heartbeat; the heartbeat already returns effective
-versioned directives from `fleet_directives`. The worker currently discards those
-returned directives. Reuse this loop and returned directive set for feature flags.
+epoch and reports a worker heartbeat. Reuse its timer for a lightweight feature
+catalog revision read, with no feature directive or separate polling timer.
 
 1. At startup, load an initial feature snapshot before allowing enabled native
    work. If this fails, keep native tasks off and retry on the regular poll.
-2. Each existing poll reports actual worker state and receives desired epochs for
-   `agent-packages` and `feature-flags`. Unchanged flags cost no snapshot read.
-3. On a changed feature epoch, fetch the consistent catalog/settings snapshot, validate
-   it, build new maps, and swap one immutable cache reference. Mark only the epoch
-   actually loaded, not an epoch observed earlier in a separate poll.
+2. Each existing poll reports actual worker state and reads feature keys/revisions
+   alongside its package check. Unchanged flags cost no settings snapshot read.
+3. On changed feature revisions, fetch the consistent definition/settings snapshot,
+   validate it, build new maps, and swap one immutable cache reference. Mark only
+   the revisions actually loaded, not revisions observed in the earlier poll.
 4. Package and feature refreshes have independent in-flight guards and error state.
    A slow or broken package download must not block subsequent feature polls.
    Do not hold a shared refresh lock while installing packages.
@@ -288,17 +332,18 @@ Use the existing worker heartbeat JSON, with no new worker columns:
 ```text
 workers.info.consumes += 'feature-flags'
 workers.state['feature-flags'] = {
-  epoch, supportedKeys, protocolVersion: 1, lastCheckedAt, lastLoadedAt, lastError
+  appliedRevisions: { 'copilot.native_tasks': 7 }, // illustrative
+  supportedKeys, protocolVersion: 1, lastCheckedAt, lastLoadedAt, lastError
 }
 ```
 
 Use the refreshed state for capability/adoption checks: `workers.info` is written
-once, so it can describe an older build when a worker ID is reused. An epoch alone
+once, so it can describe an older build when a worker ID is reused. A revision alone
 does not prove that an older build understands a newly defined flag.
 
 A failed poll preserves the last good snapshot and reports stale/error state;
 workers without any successful snapshot keep native tasks off. Subsequent polls
-retry, including a failed snapshot load when the desired epoch is unchanged. No
+retry, including a failed snapshot load when the desired revision is unchanged. No
 claim of immediate cluster-wide revocation: normal propagation is one poll interval
 plus reload time; an outage delays it further. The UI shows committed policy versus
 worker adoption. Existing native cancellations and deployment capability controls
@@ -313,11 +358,11 @@ correctness does not need a new push channel.
 
 | Area | Changes |
 | --- | --- |
-| `feature-flags.ts` (new) | Code-owned manifest and supported keys, pure resolver using published defaults, result/source types |
-| `feature-store.ts` (new), CMS migration/catalog | Code-published flag catalog plus one scoped settings table; authorized mutations using existing audit/epoch infrastructure; consistent snapshot and caller-scoped reads |
-| `feature-flag-cache.ts` (new) | Published definitions and immutable cluster/user maps, initialization/error state, one epoch-based refresh; synchronous `resolve(key, owner)` |
-| `worker.ts` | Consume heartbeat directives in the existing polling loop, refresh package/feature domains independently, inject cache resolver, publish applied feature epoch |
-| Management client, shared API protocol, Web adapters/router, MCP | Same list/read/set/reset/unset/audit operations and actor checks across surfaces; mutation result includes committed epoch |
+| `feature-flags.ts` (new) | Code-owned manifest and supported keys, pure resolver using published defaults, required fallback/error options, result/source/error types |
+| `feature-store.ts` (new), CMS migration/catalog | Code-published flag catalog plus one scoped settings table; authorized mutations using per-feature revisions and existing audit; consistent snapshot and caller-scoped reads |
+| `feature-flag-cache.ts` (new) | Published definitions and immutable cluster/user maps, initialization/error state, revision-based refresh; synchronous `resolve(key, owner, options)` |
+| `worker.ts` | Read feature revisions in the existing polling loop, refresh packages/features independently, inject cache resolver, publish applied feature revisions |
+| Management client, shared API protocol, Web adapters/router, MCP | Same list/read/set/reset/unset/audit operations and actor checks across surfaces; mutation result includes committed feature revision |
 | `feature-tools.ts` (new), tool registration/agent manifests | Shared schemas and handlers for Resource Manager, admin Agent Manager/Smith and root management path; authority checked for each mutation |
 | Shared UI controller/selectors and Admin/Settings views | Cluster controls, per-user Feature flags tab and personal view; effective value and worker adoption |
 | `session-manager.ts`, `native-subagents.ts`, `managed-session.ts` | Memory-only native eligibility, live cached admission guard, next-turn rebind, unchanged in-flight cleanup |
@@ -326,15 +371,18 @@ Illustrative worker flow (each refresh owns its guard and catches/reports errors
 
 ```ts
 async function pollWorkerConfiguration() {
-  const directives = await reportWorkerState(); // existing heartbeat round-trip
-  void featureCache.refreshIfChanged(epochFor(directives, 'feature-flags'));
-  void refreshAgentPackagesIfChanged(epochFor(directives, 'agent-packages'));
+  // Each operation bounds overlap and records its own failures.
+  await Promise.allSettled([
+    reportWorkerState(),
+    featureCache.pollRevisionsAndRefresh(),
+    refreshAgentPackagesIfChanged(), // existing package revision check
+  ]);
 }
 
 function nativeAllowed(owner, sessionEligibility) {
   return nativeCapability === 'sync'
     && sessionEligibility
-    && featureCache.resolve('copilot.native_tasks', owner).enabled;
+    && featureCache.resolve('copilot.native_tasks', owner, { fallback: false }).enabled;
 }
 
 function admitNativeTask(turn) {
@@ -345,29 +393,29 @@ function admitNativeTask(turn) {
 // Clear the latch only for a new turn; never alter in-flight task cleanup mode.
 ```
 
-The polling request itself must not overlap without a bound; release its guard
-before either asynchronous reload. A failed/absent directive response is not a
-request to reset the cache. Startup explicitly awaits the initial feature load.
-A cache reload swaps only a complete consistent snapshot and never downgrades to
-an older epoch. Feature mutations still authorize against live identity/role state;
-polling caches settings, not administrator privileges.
+Each periodic operation has its own bounded overlap guard; a slow package install
+must not prevent the next feature poll. Startup explicitly awaits the initial
+feature load attempt. A cache reload swaps only complete consistent data and never
+downgrades a feature to an older revision. Feature mutations still authorize against
+live identity/role state; polling caches settings, not administrator privileges.
 
 ## Plan: move copilot.native_tasks onto feature flags
 
 1. **Land catalog and scoped settings.** Define `copilot.native_tasks` in code with
    both defaults false, then publish it through the CMS migration. Add the two
-   tables, directive seed/constraint and audit retry index; implement transactional
+   tables with catalog revisions and audit retry index; implement transactional
    scoped mutations and snapshot loading. Verify catalog/manifest parity, scope
    constraints, resolution's 12 combinations, authz, retries and reset races.
 2. **Wire worker convergence.** Generalize the existing polling/heartbeat loop and
-   inject the cache resolver into SessionManager. Test unchanged-epoch cost, startup,
+   inject the cache resolver into SessionManager. Test unchanged-revision cost, startup,
    atomic swap, snapshot races, failed reload/retry, package failure independence,
    package-disabled workers and shutdown. Assert no flag DB reads on turn/task paths.
 3. **Expose control surfaces.** Add management/Web/MCP parity, shared agent tools,
    cluster controls and user tab. Admins manage cluster/any user, users themselves;
    Agent Smith's admin status is rechecked. Test registration, permissions and UI.
 4. **Gate the existing native spike.** In SessionManager combine deployment
-   capability + existing session exclusions + the owner's cached flag decision.
+   capability + existing session exclusions + the owner's cached flag decision,
+   explicitly choosing `fallback: false` for lookup failure.
    Reuse existing swarm profiles, named-agent restrictions, model inheritance,
    sync-only policy, inline task UI and event handling. The flag adds no new native
    executor and does not change durable `spawn_agent` availability.
@@ -408,7 +456,7 @@ orchestrations; no orchestration version or session schema change is expected.
 4. Check requester on and untouched control user off across two workers, plus
    actual tool admission, durable descendants and self-service changes.
 5. For a cluster-wide stop, save `enabled: false, allowUserOverride: false` in one
-   transaction, then verify worker epochs converge on subsequent polls. Keep env
+   transaction, then verify worker revisions converge on subsequent polls. Keep env
    `off` as the independent runtime cap; an API success means saved, not applied.
 
 This initializes only the requesting user as enabled, but it is **not an exclusive
@@ -435,17 +483,17 @@ The new implementation must pass this additional matrix before CHK rollout:
 | --- | --- |
 | ON→OFF while native A is executing | After the worker applies OFF, A finishes and its real process/tasks are cleaned up; new task B is rejected, parent turn continues |
 | OFF→ON while a parent turn is executing | Current turn keeps its original OFF tool surface; next turn on the same session has native schemas/profiles/guidance and successfully executes native work |
-| ON→OFF→ON with each epoch applied during one turn | OFF revokes further native admissions for that turn, even if no call was attempted while OFF; re-enable works on the next turn; no leftover tasks or duplicate profiles/guidance |
+| ON→OFF→ON with each revision applied during one turn | OFF revokes further native admissions for that turn, even if no call was attempted while OFF; re-enable works on the next turn; no leftover tasks or duplicate profiles/guidance |
 | ON/OFF round trips between turns | Execute successful native work, disable and prove denial, re-enable and execute again on the same warm session; repeat after eviction/cold resume |
 | User On/Off/Inherit | Only that owner's sessions change; Inherit follows cluster; durable descendants use the owner, not a shared-session viewer |
 | allowUserOverride false→true→false | Locked cluster values win; saved user preferences become active then inactive again without being deleted; test both cluster enabled values |
 | Several writes before one poll | Worker applies the latest snapshot; intermediate values need not be observed. A transient OFF entirely between polls is not a guaranteed stop |
-| Two workers at different polling points | Each follows its applied epoch; both converge after refresh. UI shows saved epoch, worker-applied epoch and next-turn activation accurately |
+| Two workers at different polling points | Each follows its applied revision; both converge after refresh. UI shows saved revision, worker-applied revision and next-turn activation accurately |
 | Failed/stale/overlapping refresh | Last good cache survives; old completion cannot replace newer snapshot; failed load retries. Slow package install does not block flags |
 | Prompt/stop during transitions | Existing message queue and stop behavior work; no stuck turn, lost input, implicit interruption or forced cancellation solely from a flag change |
 
 Use real SDK/CLI execution with deterministic local inference and explicit barriers
-(native A started, mutation committed, epoch applied, task B attempted), rather than
+(native A started, mutation committed, revision applied, task B attempted), rather than
 sleeping 20 seconds and hoping the race occurs. Drive the real poll callback with a
 testable clock; instrument the store to prove zero feature DB reads on turn/task
 paths. Add a two-worker CMS integration case for actual propagation and browser
@@ -464,21 +512,28 @@ allowing disable to take effect after a poll during a running turn.
 - Catalog/manifest parity, migration-only publication, unknown keys and blocked
   runtime definition creation; older workers never overwrite catalog metadata;
   published defaults during rolling updates and missing-catalog/read failures.
+- Required lookup options: compile-time rejection of omitted/conflicting options;
+  fallback true/false and typed-error behavior for missing/unsupported keys and no
+  valid snapshot; source/reason retained. Resolved false never uses fallback true;
+  absent setting rows still inherit. Stale last-good data remains usable, and
+  authorization/programming failures are never swallowed. Native admission's
+  explicit fallback false denies new work on unresolved configuration.
 - Unified settings constraints: unique cluster row with NULL user, unique user row,
   cluster requires override permission, user forbids it, and valid foreign keys.
 - Permission matrix on MCP, Web and direct management APIs: self versus another
   user, forged actor, admin cluster access, resource-manager identity, admin-owned
   Agent Manager and demotion. Read and audit privacy checks.
 - Contract/tool registration parity across every surface, including both tool
-  declarations and handlers; concurrent epochs, transactional existing-audit writes,
+  declarations and handlers; concurrent revisions, transactional existing-audit writes,
   duplicate request IDs and expired audit retry receipts.
 - User Feature flags tab, personal Settings, cluster controls, inheritance,
   inactive-preference explanation and effective state after remote updates.
 - Two workers, polling lag/failure/retry, package installation failure/disabled mode,
   atomic snapshot reload, no per-turn/task flag reads, ownership/shared viewers,
   warm/cold sessions, durable children and mid-turn disable after cache refresh.
-- Independent feature/package epochs, ignored unknown directive domains, unchanged
-  package epoch on flag mutations, and no feature scope outside cluster/user.
+- Independent per-feature revisions; unchanged package epoch on flag mutations;
+  deletions invalidate cached settings/definitions, missed polls converge, no
+  feature directive rows and no feature scope outside cluster/user.
 - CHK initial requester/control check and explicit control-user self opt-in;
   existing native/delegation filesystem suite.
 
