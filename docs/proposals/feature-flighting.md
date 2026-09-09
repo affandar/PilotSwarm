@@ -4,12 +4,13 @@ Status: proposed; no feature-flag implementation or CHK deployment in this chang
 
 ## Definitions and resolution
 
-Feature flags are defined **only in code**. A typed registry owns each key, label,
-description, default enabled value, default `allowUserOverride`, and required
-runtime capability. Administrators and agents can change settings for registered
-flags; they cannot create, rename, delete, or redefine flags through APIs, the UI,
-facts, or agent packages. First key: `copilot.native_tasks`, with code defaults
-`enabled: false, allowUserOverride: false`.
+Feature flags are authored **only in code** and published into a `feature_flags`
+catalog table by versioned CMS migrations. The code-owned manifest specifies each
+key, label, description, default enabled value, default `allowUserOverride`, and
+required runtime capability. The table is the persisted catalog of those released
+definitions; it is not an admin-editable registry. Administrators and agents change
+only rows in `feature_flag_settings`. First key: `copilot.native_tasks`, with
+code-authored defaults `enabled: false, allowUserOverride: false`.
 
 | Scope | Stored setting | Who can change it |
 | --- | --- | --- |
@@ -19,7 +20,7 @@ facts, or agent packages. First key: `copilot.native_tasks`, with code defaults
 There are no per-session settings or hard modes. Resolution is:
 
 ```text
-cluster = saved cluster settings, otherwise code defaults
+cluster = saved cluster settings, otherwise defaults from the published catalog
 if cluster.allowUserOverride and user setting exists:
     return user.enabled
 return cluster.enabled
@@ -61,60 +62,116 @@ restrictions.
 
 ## Overall schema changes
 
-One additive CMS migration: **three new tables**, one seeded directive row, and
-an added constraint on the existing directive table. No session/owner table changes
-and no editable flag-definition table. Keep the existing physical table name
-`fleet_directives`; the new public feature APIs and UI use **cluster**.
+**Two new tables:** `feature_flags` for the code-published catalog, and
+`feature_flag_settings` for all cluster/user values. Reuse existing `authz_audit`
+for history and `fleet_directives` for the polling epoch. No separate cluster,
+user, change-history, or session-settings tables.
 
-| Table | Columns and constraints |
-| --- | --- |
-| `feature_cluster_settings` | `feature_key TEXT PRIMARY KEY`, `enabled BOOLEAN NOT NULL`, `allow_user_override BOOLEAN NOT NULL`, `revision BIGINT NOT NULL`, `updated_by TEXT NOT NULL`, `updated_at TIMESTAMPTZ NOT NULL` |
-| `feature_user_settings` | `feature_key TEXT`, `user_id BIGINT REFERENCES users(user_id)`, `enabled BOOLEAN NOT NULL`, `revision BIGINT NOT NULL`, `updated_by TEXT NOT NULL`, `updated_at TIMESTAMPTZ NOT NULL`; primary key `(feature_key, user_id)`, index on `user_id` |
-| `feature_flag_changes` | `change_id BIGSERIAL PRIMARY KEY`, `epoch BIGINT UNIQUE NOT NULL`, `request_id UUID NOT NULL`, `request_hash TEXT NOT NULL`, `actor_key TEXT NOT NULL`, optional `actor_session_id TEXT`, `scope TEXT NOT NULL CHECK (scope IN ('cluster','user'))`, `feature_key TEXT NOT NULL`, nullable `target_user_id BIGINT`, `action TEXT NOT NULL CHECK (action IN ('set','unset'))`, `before JSONB`, `after JSONB`, `created_at TIMESTAMPTZ NOT NULL`; unique `(actor_key, request_id)`, target present iff scope is user |
+```sql
+CREATE TABLE feature_flags (
+    feature_key                 TEXT PRIMARY KEY,
+    display_name                TEXT NOT NULL,
+    description                 TEXT NOT NULL,
+    default_enabled             BOOLEAN NOT NULL,
+    default_allow_user_override  BOOLEAN NOT NULL,
+    required_capability         TEXT
+);
 
-`updated_by` and `actor_key` are server-derived identities, including trusted
-service actors; never accept them as caller-supplied authority. Audit targets and
-actor session references survive deletion of the referenced user/session. User
-setting deletion, including user removal if supported, must use the same mutation
-path so it cannot leave a worker's cache unrefreshed.
+CREATE TABLE feature_flag_settings (
+    setting_id           BIGSERIAL PRIMARY KEY,
+    feature_key          TEXT NOT NULL REFERENCES feature_flags(feature_key),
+    scope                TEXT NOT NULL CHECK (scope IN ('cluster', 'user')),
+    user_id              BIGINT REFERENCES users(user_id),
+    enabled              BOOLEAN NOT NULL,
+    allow_user_override  BOOLEAN,
+    revision             BIGINT NOT NULL,
+    updated_by           TEXT NOT NULL,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (
+        (scope = 'cluster' AND user_id IS NULL
+                           AND allow_user_override IS NOT NULL)
+        OR
+        (scope = 'user' AND user_id IS NOT NULL
+                       AND allow_user_override IS NULL)
+    )
+);
 
-Seed an existing worker-registry directive:
-
-```text
-fleet_directives:
-  domain = 'feature-flags'
-  pool = '*'
-  worker_node_id = '*'
-  actuation = 'worker'
-  desired = {}
-  epoch = 1
+CREATE UNIQUE INDEX feature_flag_settings_cluster
+    ON feature_flag_settings(feature_key) WHERE scope = 'cluster';
+CREATE UNIQUE INDEX feature_flag_settings_user
+    ON feature_flag_settings(feature_key, user_id) WHERE scope = 'user';
+CREATE INDEX feature_flag_settings_by_user
+    ON feature_flag_settings(user_id) WHERE scope = 'user';
 ```
 
-This row is a change counter, not a flag registry or a place to store overrides.
-Constrain this domain to the global `*/*` scope, worker actuation and empty desired
-payload. Feature policy has only cluster and user scope, even though the generic
-worker registry supports pool/worker directives. Do not bump `agent-packages` for
-a flag change: that would cause unnecessary package installation.
+The real migration qualifies tables with the cluster's CMS schema. Separate partial
+unique indexes avoid the nullable-user uniqueness trap for cluster rows. The check
+constraint prevents a user setting from supplying its own override permission.
+Foreign keys reject nonexistent flags/users; deletions use an explicit controlled
+path rather than silent cascading settings away without an epoch change.
+
+Example rows in `feature_flag_settings`:
+
+| Feature | Scope | User ID | Enabled | Allow user override |
+| --- | --- | --- | --- | --- |
+| copilot.native_tasks | cluster | NULL | false | true |
+| copilot.native_tasks | user | 42 (illustrative) | true | NULL |
+
+Deleting a user row means inherit. Deleting a cluster row restores that flag's
+published defaults. There is no need to materialize a row for every flag/user pair.
+
+### Publishing the catalog from code
+
+Versioned migrations insert/update catalog rows from the code manifest; contract
+tests check that the manifest and migration output match. Catalog changes bump the
+same feature epoch as setting changes. They do not overwrite settings. There is
+no create/update/delete-definition API or tool, and workers never upsert their
+compiled catalog at startup: an older worker must not roll back newer metadata.
+
+Snapshots include the published catalog and settings, so every worker uses the same
+deployed defaults even during a rolling update. A worker evaluates only keys and
+capabilities implemented by its build; unknown flags are reported as unsupported.
+A required catalog row missing from CMS means incomplete deployment, not implicit
+permission to enable the feature. Native tasks remain off until that is resolved.
+Reset returns to code-authored, migration-published defaults, not potentially
+older defaults baked into whichever worker happened to receive the session.
+
+### Change propagation and audit
+
+Keep the existing physical name `fleet_directives`; public feature APIs and UI use
+**cluster**. Seed its global `feature-flags` row with epoch 1, worker actuation and
+an empty desired payload. Constrain this domain to `pool='*', worker_node_id='*'`:
+feature policy has cluster/user scope, never per-pool or per-worker policy. Flag
+changes bump only this domain, not the package epoch.
 
 Each successful setting mutation is one transaction: resolve/check actor and
-known key, recognize an identical idempotent retry, lock/check the feature directive
-against `expectedEpoch`, update/delete the setting, increment the feature epoch,
-and insert audit. Row `revision` is the resulting epoch. Return 409 on a stale
-expected epoch; an idempotent retry returns its original result, while reusing its
-request ID for different input fails. Reset/unset also bumps the epoch, so cached
-entries are removed. For the initial low-write-volume settings service, one epoch
-serializes writes and avoids lost resets without tombstone tables.
+published/supported key, lock the feature directive, recognize an identical retry,
+check `expectedEpoch`, update/delete the scoped setting, bump epoch, and append an
+`authz_audit` event. Row `revision` is the resulting epoch; return 409 on a stale
+expected epoch. Reset/unset also bumps the epoch, so worker caches remove entries.
+One epoch serializes the initial low-volume settings writes and handles reset races
+without a tombstone table.
 
-The internal snapshot read returns **epoch + all cluster settings + all sparse user
-settings from one consistent database snapshot**. Include the stable owner lookup
-keys needed by workers, so resolving an existing session owner adds no user lookup.
-A full snapshot per changed epoch handles deletes and missed polls; no event replay
-or delta protocol is needed initially. Public reads remain caller-scoped.
+Use audit actions `feature_flag.set` / `feature_flag.unset`; keep scope, feature key,
+target user, before/after, epoch, canonical request hash and returned result in
+`details`. Existing actor/session/time fields identify who made the change.
+`updated_by` and audit actors are server-derived, never caller-claimed authority.
+The service calls the audit insert inside its transaction, not through the existing
+fire-and-forget management wrapper. An audit failure rolls back the setting.
 
-Feature definitions stay in code. Reject unknown keys before mutation; older code
-ignores unsupported keys in a snapshot and reports them as unsupported rather than
-letting database rows create new flags. Missing settings use registry defaults;
-failed snapshot reads leave the cache state intact.
+For retry receipts, add a partial unique expression index on existing audit
+`details` `(actorKey, requestId)` for successful feature-flag setting events. The
+mutation path always populates both from a trusted actor and supplied request ID;
+validate the request hash before returning a previous result. Different input with
+the same ID fails. After audit retention removes a receipt, the original
+`expectedEpoch` still prevents an old retry from replaying its write; return a
+conflict and let the client read current state. No third feature table is needed.
+
+The internal read returns **epoch + catalog + scoped settings in one consistent
+database snapshot**, including stable owner lookup keys so runtime resolution adds
+no identity lookup. Split scoped rows into immutable cluster/user maps in memory.
+Full snapshots on changed epochs cover deletes and missed polls; public reads stay
+caller-scoped. Failed snapshot reads leave the last good cache intact.
 
 ## One API contract across all surfaces
 
@@ -189,7 +246,7 @@ returned directives. Reuse this loop and returned directive set for feature flag
    work. If this fails, keep native tasks off and retry on the regular poll.
 2. Each existing poll reports actual worker state and receives desired epochs for
    `agent-packages` and `feature-flags`. Unchanged flags cost no snapshot read.
-3. On a changed feature epoch, fetch the consistent full feature snapshot, validate
+3. On a changed feature epoch, fetch the consistent catalog/settings snapshot, validate
    it, build new maps, and swap one immutable cache reference. Mark only the epoch
    actually loaded, not an epoch observed earlier in a separate poll.
 4. Package and feature refreshes have independent in-flight guards and error state.
@@ -236,9 +293,9 @@ correctness does not need a new push channel.
 
 | Area | Changes |
 | --- | --- |
-| `feature-flags.ts` (new) | Code-owned typed registry, pure cluster/user resolver, result/source types |
-| `feature-store.ts` (new), CMS migration/catalog | Authorized setting operations, atomic mutation/audit/epoch bump, consistent internal snapshot and caller-scoped public reads |
-| `feature-flag-cache.ts` (new) | Immutable cluster/user maps, initialization/error state, epoch-based refresh with one in-flight load; synchronous `resolve(key, owner)` |
+| `feature-flags.ts` (new) | Code-owned manifest and supported keys, pure resolver using published defaults, result/source types |
+| `feature-store.ts` (new), CMS migration/catalog | Code-published flag catalog plus one scoped settings table; authorized mutations using existing audit/epoch infrastructure; consistent snapshot and caller-scoped reads |
+| `feature-flag-cache.ts` (new) | Published definitions and immutable cluster/user maps, initialization/error state, one epoch-based refresh; synchronous `resolve(key, owner)` |
 | `worker.ts` | Consume heartbeat directives in the existing polling loop, refresh package/feature domains independently, inject cache resolver, publish applied feature epoch |
 | Management client, shared API protocol, Web adapters/router, MCP | Same list/read/set/reset/unset/audit operations and actor checks across surfaces; mutation result includes committed epoch |
 | `feature-tools.ts` (new), tool registration/agent manifests | Shared schemas and handlers for Resource Manager, admin Agent Manager/Smith and root management path; authority checked for each mutation |
@@ -270,10 +327,11 @@ polling caches settings, not administrator privileges.
 
 ## Plan: move copilot.native_tasks onto feature flags
 
-1. **Land registry and persistence.** Define `copilot.native_tasks` in code with
-   both defaults false. Add the three tables, directive seed/constraint, transactional
-   operations and snapshot read. Verify resolution's 12 combinations, authz,
-   unknown keys, idempotency, concurrent updates and reset/delete convergence.
+1. **Land catalog and scoped settings.** Define `copilot.native_tasks` in code with
+   both defaults false, then publish it through the CMS migration. Add the two
+   tables, directive seed/constraint and audit retry index; implement transactional
+   scoped mutations and snapshot loading. Verify catalog/manifest parity, scope
+   constraints, resolution's 12 combinations, authz, retries and reset races.
 2. **Wire worker convergence.** Generalize the existing polling/heartbeat loop and
    inject the cache resolver into SessionManager. Test unchanged-epoch cost, startup,
    atomic swap, snapshot races, failed reload/retry, package failure independence,
@@ -334,13 +392,17 @@ user's override; an admin-set user entry has no special precedence.
   × three user states (on/off/absent), plus defaults and reset/unset transitions.
 - Preserved preferences when overrides are disabled/re-enabled; admin-written and
   self-written user entries resolve identically; no session override is accepted.
-- Registry only: reject unknown keys and runtime definition creation; unsupported
-  keys on older workers; code defaults versus database-read failure.
+- Catalog/manifest parity, migration-only publication, unknown keys and blocked
+  runtime definition creation; older workers never overwrite catalog metadata;
+  published defaults during rolling updates and missing-catalog/read failures.
+- Unified settings constraints: unique cluster row with NULL user, unique user row,
+  cluster requires override permission, user forbids it, and valid foreign keys.
 - Permission matrix on MCP, Web and direct management APIs: self versus another
   user, forged actor, admin cluster access, resource-manager identity, admin-owned
   Agent Manager and demotion. Read and audit privacy checks.
 - Contract/tool registration parity across every surface, including both tool
-  declarations and handlers; concurrent revisions and atomic audit writes.
+  declarations and handlers; concurrent epochs, transactional existing-audit writes,
+  duplicate request IDs and expired audit retry receipts.
 - User Feature flags tab, personal Settings, cluster controls, inheritance,
   inactive-preference explanation and effective state after remote updates.
 - Two workers, polling lag/failure/retry, package installation failure/disabled mode,
