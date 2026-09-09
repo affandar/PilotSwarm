@@ -1,4 +1,4 @@
-# PilotSwarm-SQLFork → Transition Plan
+# PilotSwarm-SQL-staging → Transition Plan
 
 > **Status:** Draft · **Owner:** @andrewkcchung · **Scope:** this fork only
 > **This file is a fork-only artifact.** It must not be part of any PR to
@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-This clone (`C:\src\PilotSwarm`) is effectively **PilotSwarm-SQLFork** — its working
+This clone (`C:\src\PilotSwarm`) is effectively **PilotSwarm-SQL-staging** — its working
 branch pushes to the private mirror, not to the public upstream. It exists so the SQL
 team can collaborate on in-flight work without publishing internal IP. **A private fork
 is a staging buffer, not a destination.** It must not diverge from upstream for long.
@@ -17,11 +17,11 @@ is a staging buffer, not a destination.** It must not diverge from upstream for 
 | Role | Repo | URL |
 | --- | --- | --- |
 | 🌐 Public upstream (platform destination) | `affandar/PilotSwarm` | https://github.com/affandar/PilotSwarm |
-| 🔒 Internal staging fork (Entra-governed, private) | `microsoft/PilotSwarm-SQLFork` | https://github.com/microsoft/PilotSwarm-SQLFork |
+| 🔒 Internal staging fork (SAML SSO-governed, private) | `azure-data/PilotSwarm-SQL-staging` | https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging |
 | 🔒 SQL-internal overlay (short-term IP home) | ADO `Database Systems/SQL-AI-Marketplace` | https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace |
 | 🔒 SQL-internal repo (eventual IP home) | `sqlmort` *(not yet created)* | _TBD — supersedes the ADO overlay_ |
 
-**Fork vs. overlay — two different artifacts.** The **fork** (`microsoft/PilotSwarm-SQLFork`)
+**Fork vs. overlay — two different artifacts.** The **fork** (`azure-data/PilotSwarm-SQL-staging`)
 is a *complete copy of the entire PilotSwarm codebase* carrying all 142 divergence commits —
 platform changes and SQL-specific changes tangled together in the same files. It mirrors
 upstream's full tree and is meant to be temporary. The **overlay** (the `SQL-AI-Marketplace`
@@ -42,7 +42,7 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 2. **Keep SQL-internal concepts / proprietary IP out of the public repo.**
    - **Short term:** ADO [`SQL-AI-Marketplace`](https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace/branchCompare?baseVersion=GBmain&targetVersion=GBdev%2Fkchung%2Fsql-agent-orchestration-platform-proposal-pilotswarm&_a=files) (existing private overlay).
    - **Eventually:** a GitHub `sqlmort` repo that supersedes the ADO overlay.
-3. **Retire the fork.** Once (1) and (2) are complete, `PilotSwarm-SQLFork` has no reason
+3. **Retire the fork.** Once (1) and (2) are complete, `PilotSwarm-SQL-staging` has no reason
    to exist and is deleted.
 
 ## 3. Current state (as of this draft)
@@ -57,7 +57,7 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 | --- | --- | :---: | --- |
 | local `feature/aks-git-repo-worker` | `2d7cec67` | 171† | — |
 | `origin` = `affandar/PilotSwarm` `main` | `6df642ef` | — | 🌐 public upstream |
-| `microsoft` = `microsoft/PilotSwarm-SQLFork` | `2d7cec67` | 171† | 🔒 internal org staging |
+| `ghe` = `azure-data/PilotSwarm-SQL-staging` | `2d7cec67` | 171† | 🔒 internal org staging |
 
 > † As of the **2026-09-08 rebase**, the fork sits **cleanly on the current upstream tip**
 > (`6df642ef`) — **171 ahead / 0 behind**. Of those 171, **18 are fork-only scaffolding** (this
@@ -69,7 +69,7 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 
    …──o──o──o──o──o── … ──o──●   6df642ef   ← origin/main (2026-09-07) = current rebase base
                              │
-                             └──o──o──o── … ──o──►   2d7cec67   ← feature/aks-git-repo-worker   🔒 microsoft
+                             └──o──o──o── … ──o──►   2d7cec67   ← feature/aks-git-repo-worker   🔒 ghe
                                    our fork: +171 (153 code + 18 plan/scaffolding) · 0 behind
 
    (original divergence eaabdbf9 sits far to the left, frozen as upstream-base; the merge-base
@@ -83,17 +83,17 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 - The code divergence (`git diff origin/main...feature/aks-git-repo-worker`) = **241 files / +57,421 / −3,842 / 171 commits**.
   This is the scope to route — each capability lands upstream or moves internal, not a
   commit-by-commit burndown.
-- **All 171** commits are internal-only on `microsoft`; upstream `affandar` carries no
+- **All 171** commits are internal-only on `ghe`; upstream `affandar` carries no
   divergent refs.
 - **Browse the full divergence diff:**
-  [`upstream-base...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/upstream-base...feature/aks-git-repo-worker)
-  on the internal `microsoft/PilotSwarm-SQLFork` staging repo. `upstream-base` is a
+  [`upstream-base...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/upstream-base...feature/aks-git-repo-worker)
+  on the internal `azure-data/PilotSwarm-SQL-staging` staging repo. `upstream-base` is a
   frozen ref pinned at the *original* divergence point **`eaabdbf9`**, so the compare reads as
   **236 ahead / 0 behind** — the fork's 171 commits **plus** the ~65 upstream commits pulled into
   history by rebasing past `eaabdbf9`. Because this baseline is frozen, it **grows** with each rebase;
   use the `oss/main` drain link below for the *shrinking* fork-vs-current-upstream delta.
 - **Browse the current (draining) delta — the drain-to-zero permalink:**
-  [`oss/main...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/oss/main...feature/aks-git-repo-worker)
+  [`oss/main...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker)
   — `oss/main` is a fast-forward-only mirror of the **current** upstream tip (advanced each rebase, §11 step 7),
   so this compare tracks the **shrinking** delta as themes drain upstream. When it reports **0 files
   changed**, the fork-vs-upstream logical diff is empty. (Contrast the frozen `upstream-base` link above,
@@ -106,8 +106,8 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 ### Remotes
 
 ```
-origin     https://github.com/affandar/PilotSwarm.git               (public upstream — rebase source)
-microsoft  https://github.com/microsoft/PilotSwarm-SQLFork.git       (internal org staging — Entra-governed, private)
+origin     https://github.com/affandar/PilotSwarm.git                    (public upstream — rebase source)
+ghe        https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging.git    (internal staging — SAML SSO-governed, private)
 ```
 
 ## 4. The core problem
@@ -245,7 +245,7 @@ not a commit.)
 4. **Resolve DELETE items** (anything experimental we don't want to publish or keep) — none
    identified yet; flag as found.
 5. **Retire.** Once every §6 capability has landed upstream or moved internal — so the fork
-   holds nothing not already in one of those homes — delete `PilotSwarm-SQLFork`.
+   holds nothing not already in one of those homes — delete `PilotSwarm-SQL-staging`.
 
 **Pros:** reuses the actual working, tested code (least rework); the scan shows the IP surface
 is tiny (2 files), so this is low-risk. **Cons:** the PRs are large and entangled with weeks of
@@ -449,7 +449,7 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   platform work has moved **upstream-first**, so nothing fresh keeps landing fork-only.
 - Swap the deploy core **fork → upstream**: because the overlay owns the pipeline, this is just
   **repinning the overlay's core dependency**, not moving any build logic.
-- Delete `PilotSwarm-SQLFork`; remove this plan doc.
+- Delete `PilotSwarm-SQL-staging`; remove this plan doc.
 
 > **Invariant throughout:** deployment is always **exactly 2 repos** — core (`fork`→`upstream`) +
 > `overlay` — the overlay owns composition, and "done" means the **fork-vs-upstream logical diff
@@ -476,7 +476,7 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
   every rebase; all by-name references (overlay core pin, CI, PR policy) point here.
 - **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
 - **Compare baseline (moving mirror):** branch `oss/main` — a fast-forward-only mirror of
-  `origin/main` (the upstream tip the fork was last rebased onto), pushed to `microsoft`. It is
+  `origin/main` (the upstream tip the fork was last rebased onto), pushed to `ghe`. It is
   **not** the fork's `main`, is never committed to, and exists only to power an in-repo GitHub
   compare — cross-repo compare against `affandar` is unavailable (the private fork and public
   upstream share no fork network). Advanced after each swap (step 7). Invariant:
@@ -568,9 +568,9 @@ full set is a permanent audit trail and rollback ledger.
    #   $BASE = upstream tip rebased onto  (git rev-parse origin/main)
    git tag -a rebase/onto-<upstreamDate>-<upstreamSha> $BASE -m "upstream base rebased onto"
    git branch -f feature/aks-git-repo-worker $CAND          # move the ref by SHA, no checkout, tree untouched
-   git push microsoft refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
-   git push microsoft feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
-   git push microsoft $BASE:refs/heads/oss/main            # 7b. advance the moving compare baseline to the upstream tip
+   git push ghe refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
+   git push ghe feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
+   git push ghe $BASE:refs/heads/oss/main            # 7b. advance the moving compare baseline to the upstream tip
    ```
    > **Why by SHA, not name.** The `onto-` *tag* and (pre-2026-09) the candidate *branch* shared the
    > name `rebase/onto-…`; git resolves a bare ref as a **tag before a branch**, so `git reset --hard
@@ -588,7 +588,7 @@ full set is a permanent audit trail and rollback ledger.
    (`upstream-base` stays frozen at `eaabdbf9` as the original-divergence marker; advance it only if
    you'd rather the compare link track the shrinking current delta.) Track the drain in the UI via
    the moving compare
-   [`oss/main...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/oss/main...feature/aks-git-repo-worker):
+   [`oss/main...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker):
    because `oss/main` was just advanced in step 7 it shows **only** the fork's real delta, so
    **"drained to zero" = this compare reports 0 files changed.**
 9. Clean up: delete the candidate branch (`git branch -D cand/<upstreamDate>-<upstreamSha>`); keep the
@@ -597,7 +597,7 @@ full set is a permanent audit trail and rollback ledger.
 **Rollback.** If validation fails, discard the candidate — the live branch never moved. If a bad
 rebase was already pushed, restore **by SHA** and force-push with an explicit lease:
 `git branch -f feature/aks-git-repo-worker rebase/from-<forkTipDate>-<forkTipSha>` then
-`git push microsoft feature/aks-git-repo-worker --force-with-lease` — the `from-` tag name is
+`git push ghe feature/aks-git-repo-worker --force-with-lease` — the `from-` tag name is
 unambiguous (no branch shares it) and its objects were never GC-eligible, so the last-good tip is
 always reachable.
 
@@ -861,7 +861,7 @@ small weekly rebases keep each migration/orchestration collision to one commit's
   - [ ] (10) Reliability & deploy
 - [ ] New generic platform work is authored upstream-first (inflow stopped) and the
       fork's logical diff vs upstream is empty.
-- [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQLFork` deleted; this file removed.
+- [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQL-staging` deleted; this file removed.
 
 ## 13. Open decisions
 
