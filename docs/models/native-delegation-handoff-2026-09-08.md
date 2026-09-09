@@ -31,9 +31,12 @@ feature flighting. That work is now implemented/documented:
 - Local launcher now aligns portal and worker artifact stores with
   `ARTIFACT_DIR=.tmp/native-subagents/copilot/artifacts`. Server restarted with
   current prompt and left running on port 3017. It loads credentials privately as before.
-- `docs/proposals/feature-flighting.md` is a design only: CMS-backed fleet defaults,
-  user/session overrides, fleet hard on/off, admin/root control, worker enforcement
-  and requester-only Waldemort CHK rollout. No feature flags or CHK deployment applied.
+- `docs/proposals/feature-flighting.md` is a design only, updated to the user's
+  latest model: code-defined flags, cluster enabled + allowUserOverride, and user
+  preferences. Admins manage cluster/any user; users manage themselves. Includes
+  MCP/Web/mgmt parity, Resource Manager and admin Agent Smith tools, and a user
+  Feature flags tab. CHK initially enables the requester; override-enabled users
+  can also opt themselves in. No feature flags or CHK deployment applied.
 - The old broad routing sweep remains partial; it was not resumed under the
   narrower current request. Historical details below describe the earlier pause.
 
