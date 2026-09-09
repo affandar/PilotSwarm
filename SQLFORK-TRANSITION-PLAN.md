@@ -55,37 +55,43 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 
 | Ref | Tip (code) | Ahead of `origin/main` | Visibility |
 | --- | --- | :---: | --- |
-| local `feature/aks-git-repo-worker` | `b22d93a3` | 142† | — |
-| `origin` = `affandar/PilotSwarm` `main` | `378adf16` | — | 🌐 public upstream |
-| `microsoft` = `microsoft/PilotSwarm-SQLFork` | `b22d93a3` | 142† | 🔒 internal org staging |
+| local `feature/aks-git-repo-worker` | `2d7cec67` | 171† | — |
+| `origin` = `affandar/PilotSwarm` `main` | `6df642ef` | — | 🌐 public upstream |
+| `microsoft` = `microsoft/PilotSwarm-SQLFork` | `2d7cec67` | 171† | 🔒 internal org staging |
 
-> † `b22d93a3` is the **code tip** = **142** divergence commits (the routable scope). The branch
-> HEAD sits one commit higher — this fork-only plan-doc commit — so `microsoft` shows **143 ahead**.
+> † As of the **2026-09-08 rebase**, the fork sits **cleanly on the current upstream tip**
+> (`6df642ef`) — **171 ahead / 0 behind**. Of those 171, **18 are fork-only scaffolding** (this
+> transition plan + its diagram, committed incrementally); the remaining **153** are the routable
+> divergence scope.
 
 ```
    🌐 affandar/PilotSwarm   (upstream · main = the continuous horizontal trunk)
 
-   …──o──o──o──●──o──o──o──o──o── … ──o──►   378adf16   ← main today (+46 commits past the fork)
-               │
-               eaabdbf9   ← fork point / merge-base (pinned as upstream-base)
-               │
-               └──o──o──o──o── … ──o──►   b22d93a3   ← feature/aks-git-repo-worker (code tip)   🔒 microsoft
-                     our fork: +142 commits              (branch HEAD = +this plan-doc commit → 143)
+   …──o──o──o──o──o── … ──o──●   6df642ef   ← origin/main (2026-09-07) = current rebase base
+                             │
+                             └──o──o──o── … ──o──►   2d7cec67   ← feature/aks-git-repo-worker   🔒 microsoft
+                                   our fork: +171 (153 code + 18 plan/scaffolding) · 0 behind
+
+   (original divergence eaabdbf9 sits far to the left, frozen as upstream-base; the merge-base
+    advances to the newest upstream tip on every rebase, so the fork is replayed — not branched — here)
 ```
 
-- Diverged from `main` at merge-base **`eaabdbf9`**; `main` has since advanced **46 commits**.
+- **Rebased onto** `origin/main` **`6df642ef`** on **2026-09-08** — the merge-base *is* the current
+  upstream tip, so the fork is **0 behind**. (Original divergence was at **`eaabdbf9`**, still frozen
+  as the `upstream-base` tag; the merge-base advances to the newest upstream tip on every rebase.)
 
-- The code divergence (`git diff origin/main...b22d93a3`) = **237 files / +59,595 / −3,494 / 142 commits**.
+- The code divergence (`git diff origin/main...feature/aks-git-repo-worker`) = **241 files / +57,421 / −3,842 / 171 commits**.
   This is the scope to route — each capability lands upstream or moves internal, not a
   commit-by-commit burndown.
-- **All 142** commits are internal-only on `microsoft`; upstream `affandar` carries no
+- **All 171** commits are internal-only on `microsoft`; upstream `affandar` carries no
   divergent refs.
 - **Browse the full divergence diff:**
   [`upstream-base...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/upstream-base...feature/aks-git-repo-worker)
   on the internal `microsoft/PilotSwarm-SQLFork` staging repo. `upstream-base` is a
-  frozen ref pinned at the divergence point **`eaabdbf9`**, so the compare reads as
-  **143 ahead / 0 behind** (= the 142 divergence commits **plus** this plan-doc commit) —
-  purely what the fork added, no upstream-only noise.
+  frozen ref pinned at the *original* divergence point **`eaabdbf9`**, so the compare reads as
+  **236 ahead / 0 behind** — the fork's 171 commits **plus** the ~65 upstream commits pulled into
+  history by rebasing past `eaabdbf9`. Because this baseline is frozen, it **grows** with each rebase;
+  use the `oss/main` drain link below for the *shrinking* fork-vs-current-upstream delta.
 - **Browse the current (draining) delta — the drain-to-zero permalink:**
   [`oss/main...feature/aks-git-repo-worker`](https://github.com/microsoft/PilotSwarm-SQLFork/compare/oss/main...feature/aks-git-repo-worker)
   — `oss/main` is a fast-forward-only mirror of the **current** upstream tip (advanced each rebase, §11 step 7),
@@ -174,7 +180,7 @@ labels/fixtures, not IP.)
 - `dev.azure.com` / `.visualstudio.com` → generic host-parsing + `example`/`Contoso`/`<org>`
   placeholders; `package-lock.json` hits are the public `1es-public` npm feed
 
-**Bottom line:** of 237 files, **exactly 2** contain true proprietary IP. The fork is
+**Bottom line:** of 241 files, **exactly 2** contain true proprietary IP. The fork is
 overwhelmingly generic platform work that belongs upstream.
 
 ## 6. Platform contributions (upstream themes)
@@ -483,9 +489,10 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
 - **Per-rebase tags (immutable):** `rebase/from-<forkTipDate>-<forkTipSha>` (rollback point) and
   `rebase/onto-<upstreamDate>-<upstreamSha>` (the upstream tip rebased onto). Consumers needing a
   reproducible deploy pin to the `onto-` tag rather than the moving branch.
-- **Baseline (today):** `rebase/from-2026-09-03-2dc49630` (current fork tip) and
-  `rebase/onto-2026-08-08-eaabdbf9` (the merge-base this state rests on) — the first row of the
-  audit trail, before any upstream rebase.
+- **Initial baseline (before any rebase):** `rebase/from-2026-09-03-2dc49630` (the original fork tip)
+  and `rebase/onto-2026-08-08-eaabdbf9` (the merge-base it rested on) — the first row of the audit trail.
+- **Current tip (as of the 2026-09-08 rebase):** `rebase/from-2026-09-08-e25ef7d5`, replayed onto
+  `origin/main` `6df642ef` (the newest `rebase/onto-…` row).
 
 **Model.** The stable branch name never changes (so no script, CI ref, or PR policy breaks); every
 pre-rebase tip is frozen under an immutable `from-` tag before the rewrite, so a bad force-push is
