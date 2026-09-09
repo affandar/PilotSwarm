@@ -143,7 +143,7 @@ failures. Local session: `7cb2d383-c902-4669-a8bd-423c336cf871`.
 
 ### Delegation selection and regression tests
 
-The framework base prompt is now version `1.20.0`. A matching configured,
+The framework base prompt is now version `1.21.0`. A matching configured,
 user-creatable specialist takes priority and is spawned by exact `agent_name`.
 Long-lived work and broad scale-out favor durable sessions. User wording such
 as “subagent”, “spawn”, and “spin off” is a strong durable hint; explicit native

@@ -6,6 +6,38 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-09-08 — Durable versus native filesystem boundary
+
+- **Agent:** framework base prompt and native delegation overlay.
+- **Version:** `1.20.0` → `1.21.0`.
+- **Observed behavior:** with native tasks enabled, Terra passed a durable
+  parent's or sibling's local source path to its own native task, despite an
+  available artifact reference. Both live fixture cases failed. The producer
+  file had been removed, so colocation could not hide the mistake.
+- **Change:** native sharing is explicitly limited to the immediate parent
+  session. Durable children materialize other sessions' artifacts into their
+  own workspace before asking native tasks to process them; native tasks cannot
+  fetch artifacts themselves.
+- **Validation:** both cases passed after the change, then passed again on a
+  second run (4/4). Real Terra/medium, real SDK/CLI and production artifact
+  handlers; actual `read_artifact(toFile)` followed by native `shasum`, byte/hash
+  verification, and task cleanup. The fixture supplies durable-child context
+  and simulates unavailable producer storage; it does not use the scheduler.
+  Four credential-free cases independently test the harness, including false
+  shared-path assumptions and fabricated correct checksum claims.
+- **Local orchestration:** `25bc9f77-e785-43b5-b26b-270b015880a8` actually spawned
+  durable child `7f9404d6-ec2b-43dc-a2b6-90c0ada75b6f`. The child downloaded its
+  parent's artifact, ran native checksum work, returned the correct hash, and
+  was completed by the parent. A first attempt exposed mismatched portal/worker
+  local artifact directories; the isolated launcher now sets `ARTIFACT_DIR`
+  explicitly. No production artifact code changed. After the successful result,
+  subsequent root wakes emitted empty-response retries before recovering to
+  `idle`; similar behavior was recorded before this prompt change. That separate
+  coordination issue remains unresolved.
+- **Scope:** these are small regression samples, not a general model reliability
+  benchmark. The separate interrupted routing sweep remains partial; this entry
+  does not claim it was completed. See `docs/models/native-delegation-testing.md`.
+
 ## 2026-07-20 — Finite delegation wake policy
 
 - **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)

@@ -23,7 +23,7 @@
     "test:local:multi-worker": "npm run test:local:multi-worker --workspace=packages/sdk",
     "test:local:commands": "npm run test:local:commands --workspace=packages/sdk",
     "test:local:sub-agents": "npm run test:local:sub-agents --workspace=packages/sdk",
-    "test:native-delegation": "node --test scripts/test/native-*.test.mjs packages/app/ui/core/test/native-task-*.test.mjs && npm exec --workspace=packages/sdk -- vitest run test/local/native-subagents.test.js test/local/native-subagents-runtime.test.js test/local/native-task-observer.test.js test/local/native-task-observer-review.test.js test/local/system-agent-cron-contracts.test.js",
+    "test:native-delegation": "node --test scripts/test/native-*.test.mjs packages/app/ui/core/test/native-task-*.test.mjs && npm exec --workspace=packages/sdk -- vitest run test/local/native-subagents.test.js test/local/native-subagents-runtime.test.js test/local/native-durable-filesystem.test.js test/local/native-task-observer.test.js test/local/native-task-observer-review.test.js test/local/system-agent-cron-contracts.test.js",
     "test:native-delegation:live": "node scripts/eval-native-delegation.mjs",
     "test:native-filesystem:live": "node scripts/smoke-native-filesystem.mjs",
     "test:local:kv-transport": "npm run test:local:kv-transport --workspace=packages/sdk",

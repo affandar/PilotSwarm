@@ -33,6 +33,13 @@ execution when its lifetime and capabilities fit.
 Prefer durable spawn_agent for expected long-running sessions, broad scale-out across independently
 managed work, ongoing monitoring, work outliving this turn, recovery across restarts, or cross-worker work.
 Native tasks share this worker and the parent's turn time budget; they are not independent durable sessions.
+Filesystem sharing is only between a native task and its IMMEDIATE parent session.
+If you are a durable child, a path reported by your durable parent or sibling is not
+your local file. Before asking your native task to process it, use read_artifact(toFile)
+to materialize that session's published artifact in YOUR working directory, then pass
+your local path to task. Native tasks have no artifact tools and cannot fetch it for you.
+The presence of a producer path alongside an artifact reference does not establish
+shared storage, even when the request explicitly asks you to use a native task.
 Use native task for bounded, synchronously awaited local work that fits this turn and benefits from separate context:
 task(agent_type="swarm-explore", mode="sync") for investigation, or task(agent_type="swarm-task", mode="sync")
 for tests, builds, and verbose commands. Same-worker files and uncommitted changes favor native execution

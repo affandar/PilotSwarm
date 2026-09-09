@@ -1,5 +1,42 @@
 # Paused at the user's request — 2026-09-08
 
+## Resumed work (supersedes the pause and unfinished-verifier notes below)
+
+The user resumed with: add the durable-child filesystem boundary test and design
+feature flighting. That work is now implemented/documented:
+
+- Prompt `1.21.0` clarifies that native sharing applies only to the immediate
+  parent. Before this fix, both live Terra parent/sibling cases incorrectly used
+  the producer's path. Afterward both passed twice (4/4).
+- Added `native-durable-filesystem.test.js` with four credential-free real CLI
+  tests and two opt-in model cases; byte transfer and actual native checksum are
+  verified. Results are in `durable-filesystem-results-2026-09-08.json`.
+- Full actual local spawn also passed: root
+  `25bc9f77-e785-43b5-b26b-270b015880a8`, child
+  `7f9404d6-ec2b-43dc-a2b6-90c0ada75b6f`, downloaded artifact then native checksum,
+  child completed. Run `node scripts/smoke-durable-filesystem.mjs` to repeat.
+- The pending native smoke-verifier hardening and tests are complete. Unified
+  suite: 168 Node + 67 SDK checks passed; live model cases are opt-in. SDK build
+  passed. Design/test adversarial review addressed the concrete findings.
+- Fresh native sharing run `6a4edae7-973c-49a5-a53b-0b68d5bfda47` completed all
+  four real file phases. Its first verdict rejected a harmless `read_agent`
+  status lookup; after allowing read-only inspection, independently rechecking
+  disk receipts and probe integrity passed. Original failure/cleanup is preserved
+  beside `.tmp/native-filesystem-bOgKdZ/reviewed-result.json`; cleanup cancelled
+  the root after the successful child execution.
+- The durable-boundary root above later emitted empty-response retries on
+  subsequent wakes, then recovered to `idle`. Similar behavior was recorded
+  before this prompt change. The file proof passed; ongoing root coordination
+  health is not claimed, and the retry issue remains unresolved.
+- Local launcher now aligns portal and worker artifact stores with
+  `ARTIFACT_DIR=.tmp/native-subagents/copilot/artifacts`. Server restarted with
+  current prompt and left running on port 3017. It loads credentials privately as before.
+- `docs/proposals/feature-flighting.md` is a design only: CMS-backed fleet defaults,
+  user overrides, emergency disable, admin/root control, worker enforcement and
+  requester-only Waldemort CHK rollout. No feature flags or CHK deployment applied.
+- The old broad routing sweep remains partial; it was not resumed under the
+  narrower current request. Historical details below describe the earlier pause.
+
 Worktree: `/Users/affandar/workshop/drox/pilotswarm.worktrees/native-copilot-subagents-spike`
 Branch: `codex/native-copilot-subagents-spike`
 Previous implementation HEAD: `0664a35b` (inline native tasks and warning positioning).
