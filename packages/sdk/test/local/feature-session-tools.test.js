@@ -114,6 +114,24 @@ describe("feature tool session surfaces", () => {
             expect(declarations(options.at(-1)).map(tool => tool.name).sort()).toEqual(featureNames);
         });
     });
+
+    it.each(["pilotswarm", "resourcemgr"])("boots the persisted ownerless %s system session with its trusted feature identity", async agentIdentity => {
+        await fixture(async ({ manager, sessionId, options, setRow, featureCalls }) => {
+            // PgSessionCatalog deliberately leaves worker-provisioned system
+            // sessions ownerless; isSystem is their persisted service identity.
+            setRow({ sessionId, owner: null, isSystem: true, agentId: agentIdentity });
+            await manager.getOrCreate(sessionId, { model: "gpt-5.6-terra", agentIdentity }, { turnIndex: 0 });
+            expect(declarations(options[0]).map(tool => tool.name).sort()).toEqual(featureNames);
+            const tool = declarations(options[0]).find(tool => tool.name === "set_cluster_feature_flag");
+            await tool.handler({ featureKey: "copilot.native_tasks", expectedRevision: "1", requestId: "system-bootstrap", enabled: false, allowUserOverride: false }, { sessionId });
+            expect(featureCalls.at(-1).viewer).toMatchObject({ principal: { provider: "system", subject: "system" }, isAdmin: true });
+
+            // An ownerless ordinary session with the same agent name cannot
+            // acquire authority after the service classification is removed.
+            setRow({ sessionId, owner: null, isSystem: false, agentId: agentIdentity });
+            await expect(tool.handler({}, { sessionId })).rejects.toMatchObject({ code: "FEATURE_FORBIDDEN" });
+        });
+    });
 });
 
 describe("native owner resolution", () => {

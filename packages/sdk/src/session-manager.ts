@@ -2742,7 +2742,10 @@ export class SessionManager {
         // Never use the inspect-viewer TTL for feature mutations: demotion must
         // apply on the next invocation, including an already-hydrated session.
         const row = await this.sessionCatalog?.getSession(sessionId);
-        const principal = row?.owner;
+        // CMS deliberately leaves worker-provisioned system sessions ownerless.
+        // Their persisted service classification supplies the same identity used
+        // by credential and inspect resolution; an agent name grants nothing.
+        const principal = row?.owner ?? (row?.isSystem === true ? SYSTEM_USER_PRINCIPAL : null);
         if (!principal?.provider || !principal.subject) throw new FeatureFlagError("FEATURE_FORBIDDEN", "Feature tools require an authenticated session owner", 403);
         const system = row?.isSystem === true && principal.provider === SYSTEM_USER_PRINCIPAL.provider
             && principal.subject === SYSTEM_USER_PRINCIPAL.subject;
