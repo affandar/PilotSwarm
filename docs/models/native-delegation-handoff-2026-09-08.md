@@ -36,7 +36,10 @@ feature flighting. That work is now implemented/documented:
   preferences. Admins manage cluster/any user; users manage themselves. Includes
   MCP/Web/mgmt parity, Resource Manager and admin Agent Smith tools, and a user
   Feature flags tab. CHK initially enables the requester; override-enabled users
-  can also opt themselves in. No feature flags or CHK deployment applied.
+  can also opt themselves in. Workers will cache flags via the existing package/
+  heartbeat poll (20s default), using a separate feature-flags directive epoch.
+  The design includes the overall schema, code sketch and native rollout plan;
+  no per-turn/task flag DB reads. No feature flags or CHK deployment applied.
 - The old broad routing sweep remains partial; it was not resumed under the
   narrower current request. Historical details below describe the earlier pause.
 
