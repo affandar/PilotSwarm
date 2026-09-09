@@ -73,26 +73,26 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
 
-test("0052: stable worker identities refresh owner and routing registration", () => {
-    const migration = migrations.find((m) => m.version === "0052");
-    assert.ok(migration, "migration 0052 must be registered");
+test("0084: stable worker identities refresh owner and routing registration", () => {
+    const migration = migrations.find((m) => m.version === "0084");
+    assert.ok(migration, "migration 0084 must be registered");
     assert.equal(migration.name, "worker_registration_refresh");
     assert.match(migration.sql, /owner_provider = EXCLUDED\.owner_provider/);
     assert.match(migration.sql, /owner_subject = EXCLUDED\.owner_subject/);
     assert.match(migration.sql, /info = EXCLUDED\.info/);
 });
 
-test("0053: sessions persist an immutable routing contract", () => {
-    const migration = migrations.find((m) => m.version === "0053");
-    assert.ok(migration, "migration 0053 must be registered");
+test("0085: sessions persist an immutable routing contract", () => {
+    const migration = migrations.find((m) => m.version === "0085");
+    assert.ok(migration, "migration 0085 must be registered");
     assert.equal(migration.name, "session_routing_contract");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS routing_config JSONB/);
     assert.match(migration.sql, /jsonb_typeof\(routing_config\) = 'object'/);
 });
 
-test("0054: Jobs use logical deletion with durable cleanup tombstones", () => {
-    const migration = migrations.find((m) => m.version === "0054");
-    assert.ok(migration, "migration 0054 must be registered");
+test("0086: Jobs use logical deletion with durable cleanup tombstones", () => {
+    const migration = migrations.find((m) => m.version === "0086");
+    assert.ok(migration, "migration 0086 must be registered");
     assert.equal(migration.name, "job_cleanup_tombstones");
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.job_generators\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
     assert.match(migration.sql, /ALTER TABLE "shape_check"\.jobs\s+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ/i);
@@ -110,9 +110,9 @@ test("0054: Jobs use logical deletion with durable cleanup tombstones", () => {
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status/i);
 });
 
-test("0055: Job waits use one durable taxonomy with response fencing", () => {
-    const migration = migrations.find((m) => m.version === "0055");
-    assert.ok(migration, "migration 0055 must be registered");
+test("0087: Job waits use one durable taxonomy with response fencing", () => {
+    const migration = migrations.find((m) => m.version === "0087");
+    assert.ok(migration, "migration 0087 must be registered");
     assert.equal(migration.name, "job_waits");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.job_waits/i);
     assert.match(migration.sql, /kind IN \('response', 'observed_condition', 'timer'\)/i);
@@ -126,9 +126,9 @@ test("0055: Job waits use one durable taxonomy with response fencing", () => {
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_waits_due/i);
 });
 
-test("0056: observed-condition waits persist scheduling leases and delivery boundaries", () => {
-    const migration = migrations.find((m) => m.version === "0056");
-    assert.ok(migration, "migration 0056 must be registered");
+test("0088: observed-condition waits persist scheduling leases and delivery boundaries", () => {
+    const migration = migrations.find((m) => m.version === "0088");
+    assert.ok(migration, "migration 0088 must be registered");
     assert.equal(migration.name, "job_wait_scheduling");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS signal_key TEXT/i);
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS check_attempts INTEGER NOT NULL DEFAULT 0/i);
