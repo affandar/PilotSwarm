@@ -18,13 +18,40 @@ const childTools = new Set(NATIVE_SUBAGENT_TOOLS);
 
 export const NATIVE_SUBAGENT_GUIDANCE = `
 ## Native local delegation
-The native task tool is enabled for bounded, synchronously awaited work on this worker.
-Use task(agent_type="swarm-explore", mode="sync") for substantial exploration needing separate context,
-or task(agent_type="swarm-task", mode="sync") for tests, builds, and verbose commands.
+Choose delegation by role fit, expected lifetime, scale, execution location, and the user's intent.
+First consider the available user-creatable named agents. If one is customized for the required role,
+prefer spawn_agent(agent_name=<exact name>) over a generic durable agent or native task.
+Use the agent index already in context, or ps_list_agents when discovery is needed; do not invent names.
+Match its capabilities and source access, not just a similar name. A specialist can perform its own
+intake: spawn the matching role rather than asking the user for details that role is designed to collect.
+Give named children their assignment through the contract and message_agent, not task/system_message overrides.
+User words such as "subagent", "sub-agent", "spawn", or "spin off" are strong hints for durable spawn_agent:
+default to durable when the intended mechanism is otherwise ambiguous; short duration alone does not
+override that hint. "Spin off an agent to summarize the README" therefore favors durable execution.
+These are contextual hints, not literal keyword rules: "spawn a native task" still asks for native
+execution when its lifetime and capabilities fit.
+Prefer durable spawn_agent for expected long-running sessions, broad scale-out across independently
+managed work, ongoing monitoring, work outliving this turn, recovery across restarts, or cross-worker work.
+Native tasks share this worker and the parent's turn time budget; they are not independent durable sessions.
+Use native task for bounded, synchronously awaited local work that fits this turn and benefits from separate context:
+task(agent_type="swarm-explore", mode="sync") for investigation, or task(agent_type="swarm-task", mode="sync")
+for tests, builds, and verbose commands. Same-worker files and uncommitted changes favor native execution
+when the user has left the delegation mechanism open. Local files alone do not cancel a durable hint:
+"use subagents in parallel to compare README.md and package.json" favors durable children with source
+access or artifact handoff, even though the files are small. An explicit requirement to execute in this
+exact checkout with uncommitted edits, however, favors native tasks when the work fits this turn.
+Preserve explicit topology: separate agents/sessions that themselves run native tasks means spawn_agent
+children, each using native tasks within its own turn. Do not collapse that into native tasks in the parent.
+Resolve "spawn separate subagents for this" from the existing objective and results; do not ask the user
+to repeat an established task. Ask only when missing information materially blocks useful action.
+Use judgment rather than a fixed duration or agent-count threshold. Simple work without a delegation
+request is best done directly. A matching named role takes priority over native convenience.
+Durable children may run on another worker: provide task context and repository access or artifacts;
+do not assume they can read this worker's local paths. Explain briefly if explicit native execution
+cannot satisfy a required lifetime or capability, and use a durable agent to meet that requirement.
 Provide full context and ask for findings/results. Simple lookups are best done directly.
 Native workers have local CLI tools only and use your current model. They return results through task.
 PilotSwarm child contracts, facts, wake-ups, and complete_agent apply ONLY to spawn_agent children.
-Use spawn_agent for independent durable work, timers, or future follow-ups.
 Native background mode and write_agent are unavailable.
 Native workers inherit the parent model, reasoning effort, and context tier.
 Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.

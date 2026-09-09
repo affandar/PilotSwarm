@@ -141,6 +141,27 @@ failures. Local session: `7cb2d383-c902-4669-a8bd-423c336cf871`.
 
 ## Local instance
 
+### Delegation selection and regression tests
+
+The framework base prompt is now version `1.20.0`. A matching configured,
+user-creatable specialist takes priority and is spawned by exact `agent_name`.
+Long-lived work and broad scale-out favor durable sessions. User wording such
+as “subagent”, “spawn”, and “spin off” is a strong durable hint; explicit native
+requests and required access to the current uncommitted checkout still matter.
+These are prompt guidelines, not a keyword router. A request for durable agents
+that run native tasks preserves that two-level structure.
+
+A synchronous native task shares its immediate parent's filesystem and working
+directory, including when that parent is itself a durable child. Separate
+durable sessions still cannot assume they share files. No orchestration or data
+model change is needed for this selection guidance.
+
+`PILOTSWARM_NATIVE_SUBAGENTS=off` remains the default. Tests exercise disabled
+new/warm/cold sessions, durable spawning while disabled, and saved-session
+sync-to-OFF revocation. See [the test guide](../models/native-delegation-testing.md)
+for the unified suite, live routing evaluation, and repeatable durable/native
+filesystem smoke test.
+
 Portal: <http://127.0.0.1:3017>. Bound only to loopback, with local auth disabled.
 It uses one standalone worker with native delegation enabled and management
 agents disabled. Existing services on ports 3001/3002 are untouched.
