@@ -113,7 +113,38 @@ tool rounds. SDK turnId advances per inference; durable activity boundaries are
 `session.turn_started` / `session.turn_completed`. This was corrected, tested,
 and the next smoke passed. Do not reintroduce the erroneous turnId comparison.
 
-## Shutdown and restart
+## Additional work requested for when the user returns
+
+Implementation remains paused. Do not start these items, deploy, or schedule
+background work until the user resumes.
+
+1. **Durable subagents understand their filesystem boundary while native tasks
+   are enabled.** Add a companion live model test proving that durable children
+   do not assume they share their parent's or sibling durable session's files.
+   They should arrange source/artifact access, while recognizing that their own
+   native tasks do share their local files. Exercise separate worker locations or
+   isolated working directories so accidental colocation cannot hide a mistaken
+   assumption. Assert actual transfer/access behavior as well as model choices;
+   a correct explanatory sentence alone is insufficient. Keep deterministic
+   regression coverage alongside the live Terra test.
+
+2. **Admin-managed feature flighting.** Build a general facility to enable or
+   disable a feature fleet-wide or for particular users. Admins manage it; the
+   main root system session should be able to help set, clear, and unset flights
+   through properly authorized tools. Portal and workers must resolve the same
+   effective feature setting for that user's sessions, including durable children.
+   Define enable/disable/unset inheritance and precedence explicitly, and cover
+   authorization, persistence, propagation/caching, and session reconfiguration.
+   These details need design against the existing system, not assumptions made
+   while paused.
+
+   First intended flight: enable native Copilot tasks **only for this user** to
+   test in the **Waldemort CHK subscription**. Resolve the actual authenticated
+   user and deployment before applying it; do not invent a user ID or conflate
+   this target with localhost or another subscription. Other users should retain
+   the disabled default. This records requested work; nothing has been deployed.
+
+## Shutdown and restart details
 
 On pause, SIGTERM sent only to tuning node68392, its CLI68400, and local server
 67602 (server CLI67638 is managed by graceful shutdown). Other VS Code/pocketswarm
