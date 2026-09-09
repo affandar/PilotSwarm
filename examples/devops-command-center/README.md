@@ -61,7 +61,9 @@ GITHUB_TOKEN=your-token-here
 The shipped browser portal can optionally show live reasoning and answer
 previews for these agents: set `PILOTSWARM_LIVE_TURN=1` on the worker process
 (and on the portal when it embeds workers). No sample tool changes are
-required. The native direct transport stays on durable events. See the
+required. The portal also provides personal MoA dashboards with saved desktop tab order,
+browser-only view caching, and a compact mobile dashboard picker. Inactive
+dashboards do not eagerly refresh. The native direct transport stays on durable events. See the
 [live-plane architecture](../../docs/architecture/live-plane.md) for limits
 and reconnect behavior.
 
@@ -246,3 +248,10 @@ token accounting remain available to admins. See the
 | Title prefixing | Named-agent sessions keep their prefix, e.g. "Investigator: CPU Spike Analysis" |
 | TUI layering | Sample plugin branding, named-agent session picker, and worker-module tools all run on the shipped terminal UI host |
 | Management client | Rename sessions, cancel, delete |
+
+### Monitoring several sessions
+
+In the shipped portal, use Master of Agents to arrange incident chats and
+canvases together. The layout saves to your profile. On desktop, Tab and
+Shift+Tab select a panel and focus its composer. On phones, use the minimap or
+swipe between panels. The sample needs no extra configuration.

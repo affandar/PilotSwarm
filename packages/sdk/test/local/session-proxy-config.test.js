@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
+import { handleSubAgentAction as frozenSpawn } from "../../src/orchestration_1_0_72/agents.ts";
+import { describe, expect, it, vi } from "vitest";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { bootstrapTurnOptions, buildRunTurnConfig, childModelCreationOptions } from "../../src/session-proxy.ts";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
@@ -91,5 +93,27 @@ describe("runTurn config backfill", () => {
             JSON.stringify(childContract),
             "child contract should reach the durable orchestration input",
         );
+    });
+});
+
+// Inspect the durable activity payload: it is the boundary serialized for replay.
+describe("spawn context override and replay", () => {
+    function payload(handler, override) {
+        const config = { model: "parent:model", contextTier: "long_context", reasoningEffort: "high" };
+        const spawnChildSession = vi.fn(() => ({ activity: "spawnChildSession" }));
+        handler({ ctx: { traceInfo() {} }, state: { config, subAgents: [] },
+            options: { nestingLevel: 0 }, input: { sessionId: "parent" },
+            manager: { spawnChildSession } }, { type: "spawn_agent", task: "Review", model: "review:model", ...override }).next();
+        expect(config.contextTier).toBe("long_context");
+        return spawnChildSession.mock.calls[0];
+    }
+    it("overrides inherited long context for a default-only review model", () => {
+        expect(payload(handleSubAgentAction, { contextTier: "default" })[1]).toMatchObject({
+            model: "review:model", contextTier: "default", reasoningEffort: "high",
+        });
+    });
+    it("preserves the frozen activity payload when no context override is supplied", () => {
+        expect(JSON.stringify(payload(handleSubAgentAction, {}))).toBe(JSON.stringify(payload(frozenSpawn, {})));
+        expect(payload(handleSubAgentAction, {})[1].contextTier).toBe("long_context");
     });
 });

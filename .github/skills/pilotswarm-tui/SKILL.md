@@ -62,6 +62,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 ## Product Rules
 
+- Question events received during reconnect must not reopen questions older
+  than the current session snapshot. A durable answer from another writer
+  retires its matching pending question. Legacy late-answer wrappers containing
+  the runtime placeholder `a question` render only the preserved answer.
+  Preserve the resolved-question timestamp across stale detail refreshes, but
+  allow a later identical question. Send the observed question and its iteration
+  through `sendAnswer` options; do not silently answer the next question.
+- Portal tool and cross-agent calls use one-line collapsible previews with
+  ellipsis. Correlate call/request IDs within the durable session; keep the
+  disclosure stable through progress, completion, reload, and history paging.
+  Raw arguments/results are text, and empty-response diagnostics stay in
+  Activity. The native TUI keeps tool calls in Activity.
 - Preserve the existing PilotSwarm terminal workflow and information density.
 - Pane titles live in borders, not as duplicate content inside panes.
 - Keep title run data plain. The portal may use a slim painted card header, while the TUI should render pane titles without a highlighted header background. When panes narrow, drop low-priority title metadata like session ids or recent-window labels before squeezing content.
@@ -79,7 +91,7 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Session rows should show interval cron as `[cron <duration>]` and wall-clock cron as `[cron <next client-local time>]` from shared selector state; status clearing must remove stale wall-clock cron fields when `cronActive` becomes false. Do not expose the internal `cron_at` tool name in row badges.
 - Waiting/timer row visuals should stay stable across same-age stale detail refreshes. Row status icons may change, but the new row visual status must remain stable for at least 5 seconds before the visible icon/color flips; a row that is visibly waiting should not briefly lose its `~` icon or cron badge unless a newer session update, running state, or terminal state actually clears the wait.
 - The sequence and activity panes should render wall-clock `cron_at` lifecycle events with the same visible `cron` label and magenta styling as interval cron, including a visible wake-up indicator when `session.cron_at_fired` arrives.
-- Non-user / non-assistant transcript items render as cards, except dedicated read-only chat-pane views: the session summary and session group details render as plain structured markdown without a card border. Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` protocol prompts are product-visible transcript items and must render as dedicated session request/reply cards, not collapsed activity-only system notices.
+- Non-user / non-assistant transcript items render as cards, except dedicated read-only chat-pane views and the portal call previews described above. Session summary and session group details render as plain structured markdown without a card border. Cross-session `[SESSION_MESSAGE ...]` and `[SESSION_MESSAGE_RESPONSE ...]` protocol prompts remain product-visible: collapsible first-line previews in the portal and request/reply cards in the native TUI.
 - Mouse copy must stay pane-local.
 - Prompt/question behavior and keybinding help must stay synchronized with actual bindings.
 - Files, logs, sequence, nodes, activity, and chat are all product surfaces and should not silently regress.
@@ -93,7 +105,20 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the portal desktop Sessions column, row data is structured: title and collapse count stay on the primary line, timestamps/member counts render as muted metadata, cron/context badges render on their own badge line, and the selected row may reveal richer status/model/context metadata. Mobile Main Sessions keeps the flattened clipped single-line row path; mobile Chat Focus Sessions may use the same structured rows as desktop, with horizontal scrolling where needed. Keep the native TUI flattening path available for terminal rows.
 - System session actions are restart actions: Done prompts for `Complete & Restart`, Cancel prompts for `Terminate & Restart`, and Delete prompts for `Hard Delete & Restart`. They all route through `restartSystemSession`, not ordinary `completeSession` / `cancelSession` / `deleteSession`. In the portal Sessions pane, the ordinary `Terminate` button becomes `Restart` for system sessions and opens a disposition picker with those three restart choices.
 - In the chat pane, `s` toggles between the transcript and the current session summary view; keep the portal top-toolbar `Summary` / `Chat` toggle and TUI keybinding help in sync. Do not add a second Chat/Summary control inside the chat pane header. Summary and group details are read-only views: the portal hides/disables the prompt composer and suppresses transient live-progress labels there.
-- On mobile portal layouts, the top toolbar stays on exactly two rows: `New/Model/Switch/Filter` on row 1, and `Theme/Chat-or-Summary/Focus/Admin` on row 2. Portal connection/status text lives in the app header under the version pill, not in the toolbar.
+- On mobile portal layouts, the normal workspace toolbar stays on exactly two
+  rows. It includes New, Model, Switch, Filter, Theme, Chat-or-Summary, Focus,
+  Master of Agents, and Admin when the viewer has access. Portal
+  connection/status text lives in the app header under the version pill, not
+  in the toolbar. Mobile Zen replaces that toolbar with only restore and the
+  shared session picker; mobile MoA shows one panel at a time with its map and
+  focused-panel controls. Its session title/status lead on the left, with an
+  icon-only down-triangle dashboard picker at the far right; never prepend
+  the dashboard name or add a second mobile tab row. Both compact focus
+  composers retain Stop during a running turn, with a 44px touch target and
+  disabled pending-request state beside Send.
+- MoA's Close panel action uses a panel outline with an × and neutral styling.
+  Keep it distinct from the Session group's trash/lifecycle action; closing a
+  panel changes only its layout, leaving the session available.
 - Theme picker selection previews immediately in both portal and shared UI state. `Apply Theme` commits the previewed theme; `Cancel`, `Close`, backdrop click, or `Esc` restores the theme that was active when the picker opened.
 - In chat-focus mode, the Sessions pane supports horizontal scrolling so long session titles are fully readable; do not force focus-mode session rows to truncate with ellipses.
 - Summary markdown tables must render as real HTML tables in the portal. If summary text arrives with escaped newline sequences (`\\n`) in otherwise tabular markdown, normalize and render the table structure instead of showing raw pipe-delimited text.
@@ -115,7 +140,9 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - In the native TUI, keep the session/chat divider shared and capped: it is the chat resize control, and it must not let the top sessions pane grow beyond 50% of the full window height.
 - Busy/system-session prompt sends now use a shared pending outbox: queued prompts render in chat as pending user items, `Enter` on an empty draft flushes the queued batch, `Up`/`Down` at the prompt boundary navigate queued items, and `Esc` cancels the selected queued item. Keep portal, TUI, status hints, and docs aligned with that behavior.
 - Pending-question answers render an optimistic asked/answered transcript item as soon as the user submits. Keep that item visible while `sendAnswer` is in flight and after it is accepted, then let the durable `user.message` transcript replace it once history sync catches up; stale session refreshes must not restore the old question card or hide the submitted exchange. Recognize both legacy and `(answered by …)` wrappers: the question remains a Question card and only the answer is human-authored. Use event sender metadata for identity, not the wrapper text.
-- Session warnings, including provider/API errors, remain stable while retrying and across stale idle/waiting refreshes. Use server status versions before timestamps to recognize recovery; an explicit error clear, newer idle/waiting detail, or terminal transition must resolve the warning. Keep the card's DOM key independent of retry counts and error text. Do not special-case only lost Copilot connections.
+- Session warnings, including provider/API errors, remain stable while retrying and across stale idle/waiting refreshes. Use server status versions before timestamps to recognize recovery. Recovery resolves the active status, not the historical warning: keep the notice at its original transcript position and append later chat below it. Durable `session.error` events belong in chat history and backward paging. Capture status-only notices once in shared state; reconcile them with their durable event without duplicating or remounting the card. Keep the card's DOM key independent of retry counts and error text. Do not special-case only lost Copilot connections.
+- Creating a session explicitly selects and reveals its chat, including from mobile diagnostics/canvas or the desktop Master of Agents workspace. Seed the returned session before catalog refresh, preserve the outgoing draft, and keep selection through paged/stale catalogs and filters. A late load of the previous session must not take over the live subscription. Do not alter saved Master of Agents layouts when returning to normal chat.
+- The browser composer must resize on both draft and placeholder changes. Empty textareas measure wrapped placeholder text: the outbox hint changing back after acknowledgement must shrink the box without another keystroke or viewport resize. Keep the mobile height cap and independent textarea scrolling.
 - On mobile/coarse-pointer session lists, axis-locked drags track the finger and stop immediately on release or cancellation; never schedule an inertial fling. Preserve taps, deliberate horizontal panning, and desktop reorder behavior. This rule is session-list-only: chat and canvas retain their existing scrolling.
 - The chat live-activity `Working` card is governed by the session's running state, not by whether an assistant message has already appeared in the transcript. Assistant output can land before a turn is fully complete; keep the card visible until the session stops running.
 - In the portal, the live `Working` card and queued outbox are bottom-sticky flex siblings that reduce the transcript viewport height. `useScrollSync` must observe real viewport size changes and reapply the existing bottom/top anchor even when transcript lines did not change; otherwise the last transcript rows sit under the bottom fade and appear to slide behind `Working`. Preserve paused user scroll and touch momentum when re-anchoring.

@@ -1,6 +1,8 @@
 .portal-app-shell.is-moa-zen > .portal-header, .portal-app-shell.is-moa-zen > .portal-mobile-status, .portal-app-shell.is-moa-zen > .portal-chromeless-strip { display: none; }
 .portal-app-shell.is-moa-zen .portal-main { padding: 0; }
 .ps-moa-workspace { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; background: var(--ps-background); color: var(--ps-foreground); font: var(--ps-font-size-base)/1.3 var(--ps-mono); }
+.ps-moa-workspace[hidden], .ps-moa-dashboard-view[hidden] { display: none !important; }
+.ps-moa-dashboard-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .ps-moa-toolbar { display: flex; align-items: center; gap: 7px; padding: 7px; flex-wrap: wrap; background: var(--ps-chrome); border-bottom: 1px solid var(--ps-border); }
 .ps-moa-row { display: flex; align-items: center; gap: 5px; }
 .ps-moa-toolbar button[aria-pressed=true] { color: var(--ps-highlight-foreground); background: var(--ps-highlight-background); }
@@ -37,21 +39,13 @@
 .ps-moa-menu { padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
 .ps-moa-menu > .ps-mini-button { align-self: flex-start; }
 .ps-moa-menu p { margin: 0 0 6px; }
-.ps-moa-import-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.ps-moa-import-preview > div { border: 1px solid var(--ps-border); padding: 10px; overflow-wrap: anywhere; }
-.ps-moa-import-preview small { display: block; color: var(--ps-muted); }
 .ps-moa-error, .ps-moa-mobile-notice { padding: 8px; display: flex; gap: 8px; align-items: center; background: var(--ps-chrome); }
-@media (max-width: 920px) { .ps-moa-workspace { display: none !important; } }
+
 
 .ps-moa-live > .ps-chat-panel { flex: 1; min-height: 0; }
 .ps-moa-live > .ps-html-preview-host { flex: 1; min-height: 0; }
 
 .ps-moa-toolbar { flex-wrap: nowrap; }
-.ps-moa-tabs { display: flex; align-self: stretch; align-items: stretch; gap: 3px; min-width: 0; overflow-x: auto; }
-.ps-moa-tab { border: 1px solid var(--ps-border); border-bottom: 3px solid transparent; border-radius: 5px 5px 0 0; background: var(--ps-background); color: var(--ps-muted); padding: 8px 15px; font: inherit; cursor: pointer; max-width: 220px; min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ps-moa-tab[aria-selected=true] { background: var(--ps-background); color: var(--ps-foreground); border-bottom-color: var(--ps-selection-background); }
-.ps-moa-tab:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: -3px; }
-.ps-moa-new-tab { font-size: 20px; }
 .ps-moa-session-picker { display: flex; flex-direction: column; flex: 1; min-height: 0; height: min(70dvh, 740px); border: 0; }
 .ps-moa-session-picker .ps-panel-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ps-moa-session-picker .ps-session-list { flex: 1; min-height: 100px; }
@@ -60,10 +54,7 @@
 
 /* Win95 desktop teal is an outer desktop, not a readable control surface. */
 :root[data-ps-theme="win95"] .ps-moa-panel,
-:root[data-ps-theme="win95"] .ps-moa-dialog,
-:root[data-ps-theme="win95"] .ps-moa-tab { background: var(--w95-face); color: #000; border-radius: 0; }
-:root[data-ps-theme="win95"] .ps-moa-tab { border-color: #fff #000 #808080 #fff; }
-:root[data-ps-theme="win95"] .ps-moa-tab[aria-selected=true] { border-bottom-color: #000080; font-weight: bold; }
+:root[data-ps-theme="win95"] .ps-moa-dialog { background: var(--w95-face); color: #000; border-radius: 0; }
 :root[data-ps-theme="win95"] .ps-moa-workspace input,
 :root[data-ps-theme="win95"] .ps-moa-dialog input,
 :root[data-ps-theme="win95"] .ps-moa-dialog select { background: #fff; color: #000; border-radius: 0; border-color: #808080 #fff #fff #808080; }
@@ -71,9 +62,170 @@
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused .ps-moa-focus-label { color: #fff; }
 /* Winamp's dark blue selection fill needs a brighter outline on black panes. */
 :root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: var(--ps-foreground); box-shadow: inset 0 0 0 1px var(--ps-foreground); }
-:root[data-ps-theme="winamp"] .ps-moa-tab[aria-selected=true] { border-bottom-color: var(--ps-foreground); }
 
 .ps-moa-icon-button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 36px; height: 34px; padding: 6px; }
 .ps-moa-icon-button svg { display: block; flex-shrink: 0; }
+.ps-moa-stale { flex: none; border: 0; padding: 2px 5px; color: var(--ps-muted); background: transparent; font: 10px var(--ps-mono); cursor: pointer; }
 .ps-moa-icon-button.ps-moa-zen-exit { width: 36px; height: 26px; padding: 3px 8px; }
 .ps-moa-menu-actions { flex-direction: row; flex-wrap: wrap; }
+
+.ps-moa-composer-strip { min-height: 80px; box-sizing: border-box; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); background: var(--ps-chrome); }
+.ps-moa-composer-target { display: block; padding: 4px 12px 0; color: var(--ps-muted); font-size: var(--ps-font-size-dense); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ps-moa-composer-host .ps-chat-composer { margin: 0; }
+.ps-moa-panel > header { flex-wrap: wrap; }
+.ps-moa-panel-title { flex-basis: 100px; }
+
+.ps-moa-control-panel { padding: 16px; display: flex; flex-direction: column; gap: 18px; min-height: 0; overflow-y: auto; }
+.ps-moa-control-panel > section { flex-shrink: 0; min-width: 0; }
+.ps-moa-control-panel .ps-session-detail-box { margin: 0; padding: 0; border: 0; background: transparent; }
+.ps-moa-control-panel .ps-session-detail-collapse { display: none; }
+.ps-moa-control-title { margin: 0; overflow-wrap: anywhere; color: var(--ps-muted); }
+.ps-moa-control-panel h3 { margin: 0 0 8px; font-size: inherit; }
+.ps-moa-control-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.ps-moa-control-panel section + section { border-top: 1px solid var(--ps-border); padding-top: 14px; }
+.ps-moa-panel:focus-visible { outline: 2px solid var(--ps-foreground); outline-offset: -5px; }
+
+.ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }
+
+/* Reuse the workspace header's left/status, center/actions, right/modes grid. */
+.ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; min-width: 0; }
+.ps-toolbar.is-moa .ps-toolbar-meta-slot { display: none; }
+#ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; gap: 4px; }
+#ps-moa-status-slot { min-width: 0; overflow: hidden; }
+#ps-moa-status-slot .ps-moa-save { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root[data-ps-theme="win95"] #ps-moa-status-slot .ps-moa-save { color: #fff; }
+
+.ps-mobile-zen { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--ps-foreground); background: var(--ps-background); }
+.ps-mobile-focus-header { display: flex; align-items: center; flex-shrink: 0; gap: 8px; padding: 6px max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left)); border-bottom: 1px solid var(--ps-border); background: var(--ps-chrome); min-height: 56px; touch-action: pan-y; }
+.ps-mobile-focus-header button { min-width: 44px; min-height: 44px; }
+.ps-mobile-focus-header select { flex: 1; min-width: 0; width: 100%; height: 44px; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); font: 16px var(--ps-mono); }
+.ps-mobile-zen-chat { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.ps-mobile-zen-chat > .ps-chat-panel { flex: 1; border: 0; }
+.ps-mobile-zen-chat .ps-panel-header { display: none; }
+.ps-mobile-zen-composer { flex-shrink: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border-top: 1px solid var(--ps-border); }
+.ps-mobile-zen-composer .ps-chat-composer { border: 0; padding: 0; }
+/* Keep the desktop map visible. Only the list gives up space and scrolls. */
+.ps-moa-dialog:has(.ps-moa-map-body) { height: min(800px, calc(var(--ps-moa-viewport-height, 100dvh) - 16px)); }
+.ps-moa-map-body { display: flex; flex-direction: column; flex: 1; gap: 12px; padding: 12px; min-height: 0; overflow: hidden; }
+.ps-moa-map-body > small { flex: none; }
+.ps-moa-map { position: relative; flex: none; align-self: center; width: min(100%, calc(var(--ps-moa-viewport-height, 100dvh) * .4 * var(--ps-moa-map-ratio))); aspect-ratio: var(--ps-moa-map-ratio); border: 1px solid var(--ps-border); }
+.ps-moa-map button { position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; overflow: hidden; padding: 4px; border: 2px solid var(--ps-border); background: var(--ps-background); color: var(--ps-foreground); font: 12px var(--ps-mono); text-align: left; }
+.ps-moa-map button.is-selected { background: var(--ps-selection-background); color: var(--ps-selection-foreground); border-color: var(--ps-selection-foreground); }
+.ps-moa-map button { container-type: size; }
+.ps-moa-map button b { flex: none; }
+.ps-moa-map button span { overflow: hidden; max-width: 100%; }
+@container (max-height: 48px) { .ps-moa-map button span { display: none; } }
+.ps-moa-map-list { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 4px; margin: 0; overflow-y: auto; overscroll-behavior-y: contain; }
+.ps-moa-map-list button { flex: none; overflow-wrap: anywhere; min-height: 44px; text-align: left; padding: 8px; border: 1px solid var(--ps-border); color: var(--ps-foreground); background: var(--ps-background); font: inherit; }
+.ps-moa-map-list button[aria-current] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
+.ps-moa-panel[hidden] { display: none !important; }
+@media (max-width: 920px) {
+  .ps-moa-workspace.is-mobile { display: flex !important; }
+  .ps-moa-workspace.is-mobile[hidden] { display: none !important; }
+  .ps-moa-workspace.is-mobile .ps-moa-layout { padding: 0; }
+  .ps-moa-workspace.is-mobile .ps-moa-panel > header { display: none; }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-target { display: none; }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-strip { min-height: 0; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); }
+  .ps-moa-workspace.is-mobile .ps-moa-composer-host .ps-chat-composer { padding: 0; }
+  .ps-moa-backdrop { padding: 8px; }
+  .ps-moa-dialog { max-height: calc(var(--ps-app-height, 100dvh) - 16px); }
+  .ps-toolbar.is-mobile .ps-toolbar-row-primary { flex-wrap: wrap; }
+}
+
+/* Desktop controls follow the focused panel without shrinking inactive headers. */
+.ps-moa-panel > header { min-height: 44px; box-sizing: border-box; }
+.ps-moa-panel:not(.is-focused):not(.ps-moa-initial-panel) > header > button { display: none; }
+.ps-moa-workspace { --ps-moa-focus-ring: color-mix(in srgb, var(--ps-selection-background) 55%, #fff); }
+.ps-moa-panel.is-focused {
+  border-color: var(--ps-moa-focus-ring);
+  box-shadow: 0 0 0 1px var(--ps-moa-focus-ring), 0 0 8px color-mix(in srgb, var(--ps-moa-focus-ring) 35%, transparent);
+}
+:root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: #8fff5a; box-shadow: 0 0 0 1px #8fff5a, 0 0 8px #8fff5a55; }
+:root[data-ps-theme="win95"] .ps-moa-panel.is-focused { border-color: #000080; box-shadow: 0 0 0 1px #fff; }
+:root[data-ps-theme="ms-dos"] .ps-moa-panel.is-focused { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+.ps-moa-icon-button.ps-moa-zen-exit { align-self: flex-end; margin-right: 4px; width: 36px; height: 20px; min-height: 20px; padding: 1px 8px; border-radius: 0 0 4px 4px; }
+.ps-moa-zen-exit svg { width: 14px; height: 14px; }
+
+/* A definite picker height avoids Safari shrinking its flex list to zero.
+   The body portal follows the visual viewport when the keyboard opens. */
+.ps-moa-backdrop { box-sizing: border-box; }
+.ps-moa-dialog:has(.ps-moa-session-picker) { height: min(850px, calc(var(--ps-moa-viewport-height, 100dvh) - 40px)); }
+.ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 40px); }
+.ps-moa-dialog > .ps-moa-session-picker { flex: 1 1 0; height: auto; min-height: 0; }
+.ps-moa-session-picker > .ps-panel-header, .ps-moa-picker-detail { flex-shrink: 0; }
+.ps-moa-session-picker .ps-panel-body > .ps-session-list { min-height: 0; flex: 1 1 0; }
+@media (max-width: 920px) {
+  .ps-moa-dialog:has(.ps-moa-session-picker) { height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-dialog { max-height: calc(var(--ps-moa-viewport-height, 100dvh) - 16px); }
+  .ps-moa-session-picker .ps-session-detail-box { max-height: min(100px, calc(var(--ps-moa-viewport-height, 100dvh) * .15)); }
+  .ps-moa-picker-detail { padding: 6px 10px; gap: 4px; }
+  .ps-moa-session-picker .ps-modal-input { font-size: 16px; }
+}
+
+/* The status occupies the second line of the existing 44px header content.
+   A full-size button opens the shared session picker from the Zen label. */
+.ps-mobile-session-heading { position: relative; min-width: 0; flex: 1; height: 44px; display: flex; flex-direction: column; justify-content: center; }
+.ps-mobile-session-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 16px/24px var(--ps-mono); }
+.ps-mobile-session-status { display: flex; gap: 5px; height: 18px; min-width: 0; align-items: center; font: 11px/18px var(--ps-mono); color: var(--ps-foreground); }
+.ps-mobile-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.ps-mobile-queue { flex: 0 1 auto; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ps-foreground); }
+.ps-mobile-session-heading.has-selector { padding-right: 18px; }
+.ps-mobile-session-heading.has-selector > .ps-mobile-session-trigger { padding: 0; border: 0; cursor: pointer; position: absolute; inset: 0; height: 44px; width: 100%; opacity: 0; z-index: 1; }
+.ps-mobile-session-heading.has-selector:focus-within { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+.ps-mobile-select-chevron { position: absolute; right: 1px; top: 10px; }
+.ps-mobile-session-heading > div:empty { height: 18px; }
+.ps-moa-workspace.is-mobile .ps-moa-panel { border: 0; }
+.ps-moa-workspace.is-mobile .ps-moa-panel.is-focused { box-shadow: none; }
+
+/* Tabs get only the space left after the fixed-size toolbar controls. Measure
+   their natural width and switch to a picker before any controls can overlap. */
+.ps-toolbar.is-moa:not(.is-mobile) { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr); }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { min-width: 0; width: 100%; }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-actions { margin-inline: 0; }
+.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-right { flex-wrap: nowrap; }
+#ps-moa-status-slot { width: 100%; }
+.ps-moa-dashboard-tabs { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; }
+.ps-moa-tabs-track { position: relative; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.ps-moa-tab-strip { display: flex; width: max-content; gap: 4px; }
+.ps-moa-tab-strip.is-collapsed { position: absolute; visibility: hidden; pointer-events: none; }
+.ps-moa-tab-strip button { flex: none; max-width: 140px; height: 36px; border: 1px solid var(--ps-border); border-radius: 4px 4px 0 0; padding: 6px 10px; background: var(--ps-background); color: var(--ps-foreground); font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.ps-moa-tab-strip button[aria-selected=true] { background: var(--ps-selection-background); color: var(--ps-selection-foreground); box-shadow: inset 0 -3px var(--ps-foreground); }
+.ps-moa-tab-strip button.is-dragging { opacity: .45; }
+.ps-moa-tab-strip button.is-drop-before { box-shadow: inset 3px 0 var(--ps-highlight-foreground); }
+.ps-moa-tab-strip button.is-drop-after { box-shadow: inset -3px 0 var(--ps-highlight-foreground); }
+.ps-moa-tab-strip button[aria-selected=true].is-drop-before { box-shadow: inset 3px 0 var(--ps-highlight-foreground), inset 0 -3px var(--ps-foreground); }
+.ps-moa-tab-strip button[aria-selected=true].is-drop-after { box-shadow: inset -3px 0 var(--ps-highlight-foreground), inset 0 -3px var(--ps-foreground); }
+.ps-moa-dashboard-trigger { display: flex; align-items: center; gap: 8px; justify-content: space-between; min-width: 0; width: 100%; height: 36px; font: inherit; }
+.ps-moa-dashboard-trigger > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-moa-dashboard-trigger > span:last-child { flex: none; }
+.ps-moa-dashboard-picker { padding: 12px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.ps-moa-dashboard-picker > .ps-moa-icon-button { align-self: flex-end; }
+.ps-moa-dashboard-item { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
+.ps-moa-dashboard-choice { display: flex; align-items: center; gap: 12px; text-align: left; padding: 8px; min-width: 0; flex: 1; border: 1px solid var(--ps-border); background: var(--ps-background); color: var(--ps-foreground); font: inherit; cursor: pointer; }
+.ps-moa-dashboard-choice[aria-current=true] { border-color: var(--ps-selection-background); box-shadow: inset 3px 0 var(--ps-selection-background); }
+.ps-moa-dashboard-choice > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.ps-moa-dashboard-choice small { display: block; margin-top: 5px; font-size: 11px; color: var(--ps-muted); }
+.ps-moa-dashboard-preview { display: block; position: relative; width: 96px; flex: none; border: 1px solid var(--ps-border); background: var(--ps-chrome); }
+.ps-moa-dashboard-preview > span { position: absolute; box-sizing: border-box; border: 1px solid var(--ps-border); }
+.ps-moa-dashboard-preview > .is-selected { background: var(--ps-selection-background); }
+.ps-moa-menu label { display: flex; flex-direction: column; gap: 8px; }
+.ps-moa-mobile-dashboard-bar { display: flex; align-items: center; flex: none; gap: 8px; min-width: 0; padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left)); background: var(--ps-chrome); border-bottom: 1px solid var(--ps-border); }
+.ps-moa-mobile-dashboard-bar button, .ps-moa-workspace.is-mobile .ps-moa-dialog button { min-height: 44px; }
+.ps-moa-mobile-dashboard-bar > .ps-moa-icon-button { width: 44px; }
+.ps-moa-panel { container: moa-panel / inline-size; }
+@container moa-panel (max-width: 330px) {
+  .ps-moa-panel > header > .ps-moa-split-action, .ps-moa-panel > header > .ps-moa-focus-label { display: none; }
+  .ps-moa-initial-panel > header > .ps-moa-split-action { display: inline-flex; }
+}
+@container header-tools (max-width: 520px) {
+  .ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); }
+  .ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; }
+}
+@media (max-width: 920px) {
+  .ps-moa-dialog .ps-moa-dashboard-item .ps-moa-icon-button { width: 44px; height: 44px; }
+  .ps-moa-dialog .ps-moa-dashboard-picker > .ps-moa-icon-button { width: 44px; height: 44px; }
+}
+
+.ps-moa-dashboard-tabs.is-compact .ps-moa-tabs-track { flex: 1; }
+:root[data-ps-theme="win95"] .ps-moa-tab-strip button:not([aria-selected=true]),
+:root[data-ps-theme="win95"] .ps-moa-dashboard-choice { background: var(--w95-face); color: #000; }

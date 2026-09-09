@@ -41,7 +41,7 @@ import type {
 } from "./provider-store.js";
 import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
-import { PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
@@ -94,7 +94,7 @@ import { SessionDumper } from "./session-dumper.js";
 import { computeSessionFootprint, FootprintCache, type SessionFootprint } from "./footprint.js";
 import { loadModelProviders, loadModelProviderTypes, providerTypeUsesWorkloadIdentity, type ModelProviderRegistry, type ModelDescriptor, type ReasoningEffort, type ContextTier } from "./model-providers.js";
 import { bootstrapProviders, resolveProviderCredential, resolveRuntimeModelSelection } from "./provider-catalog.js";
-import { deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
+import { resolvePendingQuestion, deriveStatusFromCmsAndRuntime, shouldSyncCompletedStatus, shouldSyncFailedStatus, resolveStaleRunningRowRecovery } from "./session-status.js";
 import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } from "./web/api-connection.js";
 import { WebPilotSwarmManagementClient } from "./web/web-management-client.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -362,7 +362,7 @@ export interface PilotSwarmSessionView {
     cronTimezone?: string;
     cronMaxFires?: number;
     cronFiresCompleted?: number;
-    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean; iteration?: number };
     result?: string;
     contextUsage?: SessionContextUsage;
     /** customStatusVersion for change tracking. */
@@ -1256,19 +1256,7 @@ export class PilotSwarmManagementClient {
             cronReason: cronActive && typeof normalizedCustomStatus.cronReason === "string"
                 ? normalizedCustomStatus.cronReason
                 : undefined,
-            pendingQuestion: normalizedCustomStatus.pendingQuestion
-                ? {
-                    question: normalizedCustomStatus.pendingQuestion,
-                    choices: normalizedCustomStatus.choices,
-                    allowFreeform: normalizedCustomStatus.allowFreeform,
-                }
-                    : latestResponse?.type === "input_required" && latestResponse.question
-                    ? {
-                        question: latestResponse.question,
-                        choices: latestResponse.choices,
-                        allowFreeform: latestResponse.allowFreeform,
-                    }
-                    : undefined,
+            pendingQuestion: resolvePendingQuestion(liveStatus, normalizedCustomStatus, latestResponse),
             result: normalizedCustomStatus.turnResult?.type === "completed"
                 ? normalizedCustomStatus.turnResult.content
                 : latestResponse?.type === "completed"
@@ -2407,6 +2395,8 @@ export class PilotSwarmManagementClient {
      * Replace the user's `profile_settings` JSON document. Creates the
      * user row lazily so settings can be saved before the principal has
      * created any sessions.
+     * Saved multi-dashboard MoA settings are retained when a legacy client
+     * omits them or submits an older schema; clear them with a v3 layout.
      */
     async setUserProfileSettings(
         principal: UserPrincipal,
@@ -3024,11 +3014,13 @@ export class PilotSwarmManagementClient {
     /**
      * Send an answer to a pending question from a session.
      */
-    async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender }): Promise<void> {
+    async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
-        const payload: Record<string, unknown> = { answer, wasFreeform: true };
+        const expectedQuestion = options?.expectedQuestion !== undefined
+            ? options.expectedQuestion : (await this.getSession(sessionId))?.pendingQuestion ?? null;
+        const payload: Record<string, unknown> = { answer, wasFreeform: true, expectedQuestion };
         const sender = normalizeMessageSender(options?.sender);
         if (sender) payload.sender = sender;
         await this._duroxideClient.enqueueEvent(
@@ -3292,36 +3284,7 @@ export class PilotSwarmManagementClient {
      * exactly what it is for.
      */
     private async _wakeProvidersPaused(providerName: string): Promise<void> {
-        const store = this._catalog?.providers;
-        if (!store || !this._duroxideClient) return;
-        try {
-            const sessionIds = await store.pausedFor(providerName);
-            for (const sessionId of sessionIds) {
-                try {
-                    // The orchestration id is DERIVED, not stored: getSession
-                    // builds this same string at its top and then returns a
-                    // view that does not carry it. Reading it back off that
-                    // view gave undefined every time, so `if (!orchId)
-                    // continue` skipped every session and this whole function
-                    // has never woken anything. Releasing a hold, raising a
-                    // limit, widening an allowance, removing a limit and
-                    // creating a provider were all silent no-ops behind the
-                    // catch below, leaving the 6-hour backstop as the only
-                    // real release.
-                    const orchId = `session-${sessionId}`;
-                    await this._catalog!.updateSession(sessionId, {
-                        state: "running", waitReason: null, lastActiveAt: new Date(),
-                    }).catch(() => {});
-                    await this._duroxideClient.enqueueEvent(orchId, "messages", JSON.stringify({
-                        prompt: PROVIDER_BUDGET_WAKE_PROMPT,
-                    }));
-                } catch {
-                    // One unreachable session must not stop the others.
-                }
-            }
-        } catch {
-            // The backstop timer still covers every one of them.
-        }
+        await wakeProviderPausedSessions(this._catalog, this._duroxideClient, providerName);
     }
 
     /**

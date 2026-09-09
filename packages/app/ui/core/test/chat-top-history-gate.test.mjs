@@ -86,27 +86,44 @@ test("reaching the top of a transcript of LONG messages also loads older history
     );
 });
 
-// The anchoring contract, pinned after a live report: loading older history
-// from the SCROLL path must not move the view. The offset is distance-from-
-// bottom, which prepended content cannot shift — so auto-loads leave it
-// untouched and the reader stays on the same messages. Only the EXPLICIT
-// "load older" command jumps up to the newly fetched page.
-test("auto-load keeps the reading position; explicit load jumps to the fetched page", async () => {
-    const { controller } = makeController({ tall: false });
-    const offsetBefore = 40;
-    controller.dispatch({ type: "ui/scroll", pane: "chat", offset: offsetBefore });
-
-    await controller.expandSessionHistory(SESSION, {
-        requestedScrollOffset: offsetBefore,
+test("auto-load preserves the terminal reading anchor while browser DOM anchoring owns its offset", async () => {
+    const terminal = makeController({ tall: false }).controller;
+    terminal.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: false });
+    terminal.dispatch({ type: "ui/scroll", pane: "chat", offset: 0 });
+    await terminal.expandSessionHistory(SESSION, {
+        requestedScrollOffset: 0,
         autoTriggered: true,
-        eventTypes: undefined,
     });
-    assert.equal(controller.getState().ui.scroll.chat, offsetBefore,
-        "auto-triggered load teleported the reader — the offset must not change");
+    assert.ok(terminal.getState().ui.scroll.chat > 0,
+        "terminal prepend did not advance its top offset to preserve the visible message");
 
-    await controller.expandSessionHistory(SESSION, {
-        requestedScrollOffset: offsetBefore,
+    const browser = makeController({ tall: false }).controller;
+    browser.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: false });
+    browser.dispatch({ type: "ui/scroll", pane: "chat", offset: 0 });
+    await browser.expandSessionHistory(SESSION, {
+        requestedScrollOffset: 0,
+        autoTriggered: true,
+        preserveDomAnchor: true,
     });
-    assert.ok(controller.getState().ui.scroll.chat >= offsetBefore,
-        "the explicit path may jump up to show what was fetched");
+    assert.equal(browser.getState().ui.scroll.chat, 0,
+        "browser controller moved the offset before the DOM could preserve its measured anchor");
+});
+
+test("terminal PageUp at the top arms and then loads older history", async () => {
+    const { controller, beforeCalls } = makeController({ tall: false });
+    controller.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: false });
+    controller.dispatch({ type: "ui/scroll", pane: "chat", offset: 0 });
+    controller.scrollPane("chat", 10);
+    controller.scrollPane("chat", 10);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(beforeCalls.length > 0, "repeated PageUp at the top did not request backward history");
+});
+
+test("terminal Home arms backward paging for the next PageUp", async () => {
+    const { controller, beforeCalls } = makeController({ tall: false });
+    controller.setFocus("chat");
+    controller.scrollCurrentPaneToTop();
+    controller.scrollPane("chat", 10);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(beforeCalls.length > 0, "Home followed by PageUp did not request backward history");
 });

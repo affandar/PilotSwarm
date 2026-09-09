@@ -28,8 +28,8 @@ export async function loadKnowledgeIndexFromFactStore(
 ): Promise<KnowledgeIndex> {
     const includeSkills = opts.includeSkills ?? true;
     const skills: KnowledgeIndexSkill[] = [];
-    // Enhanced-retrieval sessions PULL ranked skills via `search_skills` every
-    // turn (07 §1.6), so they pass includeSkills:false — skip the capped-50
+    // Enhanced-retrieval sessions PULL ranked skills via `search_skills` as
+    // needed, so they pass includeSkills:false — skip the capped-50
     // skills read entirely rather than reading then discarding it.
     if (includeSkills) {
         const skillResult = await factStore.readFacts(
@@ -118,7 +118,7 @@ export function mergePromptBlocks(parts: Array<string | null | undefined>): stri
 /**
  * Enhanced-retrieval instruction block (enhancedfactstore 07 §1.6). Replaces the
  * capped-50 skills PUSH when the store is an EnhancedFactStore with search: the
- * agent PULLS the most relevant curated skills with `search_skills` every turn,
+ * agent PULLS relevant curated skills with `search_skills` when needed,
  * and can retrieve its own memory with `facts_search` / `facts_similar` instead
  * of only literal-key `read_facts` scans. Intake-writing rules are unchanged.
  *
@@ -144,11 +144,15 @@ export function buildEnhancedRetrievalPromptBlock(opts: { semantic: boolean } = 
           `as lexical) — ranked full-text recall is often better than a literal read_facts scan.\n\n`;
     return (
         `${header}\n` +
-        `Curated skills are NOT pre-listed for you. At the START of every turn, call\n` +
-        `search_skills(query="<derived from your current task>") to pull the most relevant\n` +
-        `shared skills (e.g. "azure deployment errors", "horizondb connection"). Call it more\n` +
-        `than once for different facets of the task. Load a returned skill's full instructions\n` +
-        `with read_facts(key_pattern="<key>", scope="shared") before applying it.\n` +
+        `Curated skills are available on demand rather than pre-listed. Use\n` +
+        `search_skills(query="<derived from your current task>") when the user explicitly\n` +
+        `asks for skill discovery or use, or when the task has a non-obvious question or\n` +
+        `workflow that the current context does not resolve and shared guidance may help\n` +
+        `(e.g. "azure deployment errors", "horizondb connection"). Answer greetings, simple\n` +
+        `arithmetic, status checks, and follow-ups directly when the current context suffices.\n` +
+        `Reuse relevant skills already loaded; search again only for a new knowledge gap\n` +
+        `or an explicit request. Load a returned skill's full instructions with\n` +
+        `read_facts(key_pattern="<key>", scope="shared") before applying it.\n\n` +
         recallLine +
         `[FACT NAMESPACE RULES]\n` +
         `- You can WRITE to: intake/<topic>/<session-id> (shared observations)\n` +

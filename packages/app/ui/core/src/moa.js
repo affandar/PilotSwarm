@@ -1,9 +1,7 @@
-// Saved desktop layouts contain references only. Never serialize session titles,
-// transcripts, credentials, canvas HTML or access grants into a shared link.
-export const MOA_SLOTS = 5;
+// Personal dashboards contain references and geometry only, never session data.
+export const MOA_MAX_DASHBOARDS = 5;
 export const MOA_MAX_PANELS = 16;
 export const MOA_BREAKPOINT = 920;
-export const MOA_SHARE_LIMIT = 24000;
 const object = (v) => v && typeof v === "object" && !Array.isArray(v);
 const id = (v) => typeof v === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(v);
 export const emptyMoaPanel = () => ({ id: crypto.randomUUID(), type: "empty" });
@@ -27,14 +25,46 @@ export function normalizeMoaLayout(value) {
     return { name: typeof value.name === "string" ? value.name.trim().slice(0, 64) || "Untitled MoA" : "Untitled MoA", tree: value.tree == null ? null : walk(value.tree) };
 }
 export function normalizeMoa(value) {
-    const slots = Array.from({ length: MOA_SLOTS }, (_, i) => {
-        try { return normalizeMoaLayout(value?.slots?.[i]); } catch { return { name: `MoA ${i + 1}`, tree: null }; }
-    });
-    const activeSlot = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
-    // Migrate existing layouts without hiding populated or renamed slots.
-    const used = slots.reduce((count, slot, i) => slot.tree || slot.name !== `MoA ${i + 1}` ? i + 1 : count, 1);
-    const tabCount = Math.max(used, activeSlot + 1, Number.isInteger(value?.tabCount) ? Math.max(1, Math.min(5, value.tabCount)) : 1);
-    return { version: 1, activeSlot, tabCount, slots };
+    const safeLayout = (layout, dashboardId = "moa-1", name = "MoA 1") => {
+        let tree = null;
+        try { tree = normalizeMoaLayout(layout).tree; } catch {}
+        const leaves = moaLeaves(tree);
+        return { id: dashboardId, name: typeof layout?.name === "string" ? layout.name.trim().slice(0, 64) || name : name, tree,
+            ...(Number.isFinite(layout?.aspectRatio) && layout.aspectRatio >= .2 && layout.aspectRatio <= 8 ? { aspectRatio: layout.aspectRatio } : {}),
+            focusedPanelId: leaves.some(p => p.id === layout?.focusedPanelId) ? layout.focusedPanelId : leaves[0]?.id || null };
+    };
+    if (value?.version === 3 && Array.isArray(value.dashboards)) {
+        const used = new Set();
+        const dashboards = value.dashboards.slice(0, MOA_MAX_DASHBOARDS).map((dashboard, index) => {
+            let key = id(dashboard?.id) && !used.has(dashboard.id) ? dashboard.id : `moa-${index + 1}`;
+            while (used.has(key)) key += "-copy";
+            used.add(key);
+            return safeLayout(dashboard, key, `MoA ${index + 1}`);
+        });
+        if (!dashboards.length) dashboards.push(safeLayout(null));
+        return { version: 3, activeDashboardId: dashboards.some(d => d.id === value.activeDashboardId) ? value.activeDashboardId : dashboards[0].id, dashboards };
+    }
+    let source = value;
+    if (!(value?.version === 2 || (object(value) && Object.hasOwn(value, "tree")))) {
+        // Match the old single-workspace migration; do not resurrect discarded tabs.
+        const slots = Array.isArray(value?.slots) ? value.slots.slice(0, 5) : [];
+        const active = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
+        source = safeLayout(slots[active]).tree ? slots[active] : slots.find(slot => safeLayout(slot).tree);
+    }
+    return { version: 3, activeDashboardId: "moa-1", dashboards: [safeLayout(source)] };
+}
+export const activeMoaDashboard = value => value.dashboards.find(d => d.id === value.activeDashboardId) || value.dashboards[0];
+export function updateMoaDashboard(value, dashboardId, patch) {
+    return normalizeMoa({ ...value, dashboards: value.dashboards.map(d => d.id === dashboardId ? { ...d, ...patch } : d) });
+}
+export function moveMoaDashboard(value, dashboardId, toIndex) {
+    const normalized = normalizeMoa(value);
+    const fromIndex = normalized.dashboards.findIndex(d => d.id === dashboardId);
+    if (fromIndex < 0 || !Number.isInteger(toIndex)) return normalized;
+    const dashboards = [...normalized.dashboards];
+    const [dashboard] = dashboards.splice(fromIndex, 1);
+    dashboards.splice(Math.max(0, Math.min(dashboards.length, toIndex)), 0, dashboard);
+    return { ...normalized, dashboards };
 }
 export function replaceMoaNode(tree, nodeId, next) {
     if (!tree) return null;
@@ -44,19 +74,4 @@ export function replaceMoaNode(tree, nodeId, next) {
     if (!first) return second;
     if (!second) return first;
     return first === tree.first && second === tree.second ? tree : { ...tree, first, second };
-}
-export function encodeMoaShare(layout) {
-    const bytes = new TextEncoder().encode(JSON.stringify({ version: 1, ...normalizeMoaLayout(layout) }));
-    const encoded = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    if (encoded.length > MOA_SHARE_LIMIT) throw new Error("This MoA link is too large.");
-    return encoded;
-}
-export function decodeMoaShare(encoded) {
-    if (typeof encoded !== "string" || !encoded || encoded.length > MOA_SHARE_LIMIT || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("Invalid MoA link.");
-    try {
-        const json = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0)));
-        const data = JSON.parse(json);
-        if (data.version !== 1) throw new Error("version");
-        return normalizeMoaLayout(data);
-    } catch { throw new Error("Invalid or unsupported MoA link."); }
 }

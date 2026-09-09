@@ -1312,12 +1312,13 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Answer a pending input-required question.
+     * Answer a pending input-required question; options.expectedQuestion binds to the observed question and iteration.
      * @remarks `POST /sessions/:sessionId/answers` — access: `session:write`
      */
     sendAnswer(params: {
         sessionId: string;
         answer?: any;
+        options?: any;
     }): Promise<any>;
 
     /**

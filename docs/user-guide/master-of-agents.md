@@ -1,16 +1,33 @@
 # Master of Agents (MoA)
 
-Master of Agents is an alternate **desktop browser** workspace. Use the
+Master of Agents is an alternate browser workspace. On desktop, use the
 **Master of Agents** tiled-panel icon between Workspace and Budget
-in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay available in MoA, except in zen. It is unavailable on
-screens 920 pixels wide or narrower and in the TUI.
+in the PilotSwarm header, followed by Admin/Settings. Those view buttons stay
+available in MoA, except in zen. It is unavailable in the native TUI.
 
-Start with one named tab. Use **+** beside the tabs to add another, up to five.
-Double-click a tab or use **Rename MoA** to name it. Existing saved layouts
-automatically appear as tabs. Layouts remember
-session and canvas references, split directions, and divider proportions.
-Changes save automatically; the toolbar reports a failed save and offers Retry.
-The active slot is remembered. Enter MoA explicitly after reloading the portal.
+MoA supports up to **five personal dashboards**, saved to your user profile.
+Each dashboard remembers its name, session and canvas references, split geometry,
+and focused panel. Changes save automatically. Routine save status stays hidden;
+a failed save shows a retry icon. Enter MoA explicitly after reloading the portal;
+your last selected dashboard returns.
+
+On desktop, named tabs sit in the PilotSwarm header. When the available width
+cannot fit them, the tabs become a single dashboard picker; action icons keep
+their size. **+** creates an empty dashboard (disabled at five). The adjacent
+sliders icon opens dashboard options to rename or delete it. Deletion requires
+confirmation and is disabled for the last dashboard. It never deletes sessions.
+Clear layout affects only the current dashboard. MoA has no sharing or links.
+
+Switching dashboards reconnects their visible sessions without stopping the agents.
+Drafts belong to sessions, including when the same session appears on multiple
+dashboards. Drafts last for the current page session; they are not saved in the
+profile. Layouts and focused-panel selections survive reloads.
+
+Existing single-workspace profiles become the first dashboard with their panels
+and geometry intact. The older slot-based format retains its selected populated
+layout, or the first populated layout when the selected slot is blank. Discarded
+legacy slots are not restored. Old MoA links and pending imports are ignored.
+Older open clients cannot downgrade a saved multi-dashboard profile.
 
 ## Panels and focus
 
@@ -20,20 +37,41 @@ The picker mounts the same Sessions pane as the normal workspace: rows,
 folders, owner badges, pinning, scrolling, and the expandable detail box.
 Its selection stays local to the picker; choosing content does not navigate
 the default chat. Arrow keys navigate the list; select chat or canvas below it.
+The **+** icon beside Close replaces the picker pin button and opens the existing
+model/agent creation flow, including when the list is filtered or empty.
+Creating fills that panel and keeps the default workspace’s selection.
+Cancelling returns to the picker; failed creation leaves the panel intact.
 
-Only the focused chat displays a composer. Click a panel or focus one of its
-controls to focus it; its border and title bar highlight. Focusing a canvas or
-empty panel hides all chat composers. Drafts remain when switching focus or
-layouts during the current page session. Read-only sessions retain their normal
+One full-width composer sits below all panels, including in zen. It targets
+the focused panel’s session, whether the panel shows chat or a canvas. Click
+a panel or focus one of its controls to select it; its border and title bar
+highlight, and the composer names its target. Empty or unavailable panels have
+no composer. Working and queued-message status stays inside each chat panel. Drafts remain when switching focus or
+views during the current page session. Read-only sessions retain their normal
 read-only behavior.
 
-Within the panels, **Tab** moves focus clockwise around the screen and
-**Shift+Tab** moves in reverse, including from a canvas. Drafts stay in their
-own panels. Toolbar controls and dialogs keep normal Tab navigation; the
-layout tabs also support Left/Right and Home/End.
+**Tab** moves to the next panel clockwise; **Shift+Tab** moves in reverse.
+The selected session’s composer is automatically focused and ready to type,
+including after clicking a different panel. Drafts stay with their sessions.
+Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
+native. Empty or read-only panels cannot accept prompts. Toolbar controls
+and dialogs retain their normal keyboard navigation.
 
-Use a panel's **…** menu or right-click a populated panel to replace it,
-split right/below, open it in the main view, or remove it. Splitting immediately
+Only the focused panel shows its title-bar buttons. It has **split right** and
+**split below** shortcuts; in narrow panels these stay available in the control
+menu, leaving room for the title and primary actions. Populated panels
+also have a **diagonal arrow** (focus in the main view) and a **sliders** icon for the session
+control panel. Its **Session** group contains
+the existing spanner/manage and trash actions. Session details appear directly below the controls. MoA omits session-link
+and sharing controls; those remain available in the normal session view. Focus is available
+only in the session title bar.
+Trash opens the existing lifecycle chooser and confirmation. The details use the
+same fields as the session list. Its **Panel layout** group contains replace,
+split right/below, and **Close panel** (a panel outline with an ×). These actions
+remain icon buttons with hover labels. Closing a panel keeps its session available.
+The trash icon in the Session group remains reserved for session lifecycle actions.
+
+Use the control-panel icon or right-click a populated panel. Splitting immediately
 creates a focused empty panel; select its content separately with **+** or
 right-click. Drag a divider to resize; a keyboard-focused divider supports
 arrow keys and Home/End. Removing a panel expands its sibling into the freed
@@ -46,30 +84,42 @@ session. Each populated panel has an isolated session controller/subscription.
 
 ## Zen and opening a session
 
-The toolbar uses icons with hover labels: add panel, clear layout (eraser),
-share link, and enter zen (expand corners). **Clear MoA layout** asks for
-confirmation, then returns only the current tab to its blank **+** screen.
-Its name, other tabs, sessions, and canvases are preserved.
+The centered toolbar uses icons with hover labels: clear layout (eraser)
+and enter zen (expand corners). **Clear MoA layout** asks for
+confirmation, then returns the current dashboard to its blank **+** screen.
+Sessions and canvases are preserved.
 
 **Zen** hides the PilotSwarm header and MoA toolbar. The small **Exit zen**
 handle and Escape restore the regular MoA view. Panel controls remain available.
 
-**Open in main view** opens that panel's session, or maximizes its chosen
+**Focus panel** opens that panel's session, or maximizes its chosen
 canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
 the saved arrangement.
-Resizing to a mobile screen exits MoA and releases its panel subscriptions.
-Returning to desktop does not automatically reopen it.
 
-## Sharing a layout
+## Phone layout
 
-**Share** creates a snapshot link. Its URL fragment contains only the layout
-name, panel IDs, session IDs, canvas slot numbers, and split geometry. It does
-not contain transcripts, session titles, canvas documents, credentials, or
-access grants. It can be copied before anyone opens it; no new sharing service
-or public session permission is created.
+On phones, tap the down-triangle button at the far right of the header to switch dashboards. The picker
+shows each dashboard’s saved proportions and selected tile, with options to add,
+rename, or delete dashboards. Its list scrolls within the screen. A single header
+shows the current session and activity on the left, then panel controls, the
+minimap, and the dashboard selector on the right. Dashboard names stay in the
+picker; reordering is available on desktop only.
 
-Recipients sign in normally, preview the arrangement, and choose one of their
-five slots. Replacing an occupied slot requires an explicit second action.
-The copied layout is independent of the original; the session references still
-point to live sessions and retain their existing permissions. Inaccessible
-sessions show a placeholder with Retry, plus the normal Replace action.
+MoA keeps the saved desktop split geometry but displays one panel
+at a time. Tap the map icon to see a minimap with the same proportions as the
+desktop layout, then tap a tile or its full-size session row to select it.
+Swipe left to move clockwise and right to move counter-clockwise. Swipes that
+start on text selection, controls, horizontally scrolling content, or a canvas
+iframe keep their native behavior.
+
+The phone header exposes the map and the focused panel's control menu. Use the
+control menu to split right or below, replace content, or remove the panel.
+Hidden panels stay mounted so drafts, transcript positions, and canvas state
+survive panel changes. The compact composer always targets the visible panel.
+While that session is running, Stop remains available beside Send and preserves
+your draft when used.
+
+Mobile Zen reduces the view to a restore control, the shared searchable session
+picker, the transcript, and the compact composer. The picker includes session
+details, canvases, and the standard new-session action. Activity and queued
+prompt counts appear in the header instead of reserving a footer strip.

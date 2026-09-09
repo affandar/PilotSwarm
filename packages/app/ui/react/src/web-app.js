@@ -38,6 +38,7 @@ import {
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
+    selectActiveOutboxMessages,
     selectChatLines,
     selectChatPaneChrome,
     selectOutboxOverlayLines,
@@ -608,12 +609,8 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // synthesizing one here would let a poll clobber a fresh local toggle.
         ...(hasOwn(normalizedRemote, touchScaleKey())
             ? { touchScale: normalizedRemote[touchScaleKey()] }
-            // Profiles written before the per-device split carry a single
-            // `touchScale`, which IS the desktop key — so only a phone needs to
-            // inherit it, and only until it saves a slot of its own.
-            : (isNarrowViewport() && hasOwn(normalizedRemote, "touchScale")
-                ? { touchScale: normalizedRemote.touchScale }
-                : {})),
+            // Never inherit the other device class's preference.
+            : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
         // either — absent must stay absent so a poll cannot overwrite a toggle
@@ -1087,6 +1084,18 @@ export function computeAnchoredScrollTop(
         : Math.min(maxScroll, offsetPixels);
 }
 
+function scrollLineIdentity(line) {
+    if (!line) return "";
+    if (line.kind === "runs") return line.runs?.map((run) => run?.text || "").join("") || "";
+    if (line.kind === "assistantPreview") return `assistant:${line.previewKey || line.messageId || line.id || ""}`;
+    return `${line.kind || "text"}:${line.text || line.value || line.id || ""}`;
+}
+
+function scrollBoundaryIdentity(lines, fromEnd = false) {
+    const boundary = fromEnd ? lines.slice(-8) : lines.slice(0, 8);
+    return boundary.map(scrollLineIdentity).join("\u241e");
+}
+
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
@@ -1099,6 +1108,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         scrollMode,
         scrollOffset,
     });
+    const previousContentRef = React.useRef(null);
     // Touch scrolling relies on native momentum for speed: a hard flick keeps
     // scrolling long after the finger lifts. Re-asserting scrollTop from state
     // on every render (live events, status updates) kills that momentum at the
@@ -1128,30 +1138,44 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const node = ref.current;
         if (!node) return;
         const previousViewportState = previousViewportStateRef.current;
+        const firstLine = scrollBoundaryIdentity(normalizedLines);
+        const lastLine = scrollBoundaryIdentity(normalizedLines, true);
+        const previousContent = previousContentRef.current;
         const interaction = userScrollRef.current;
         const now = typeof performance !== "undefined" ? performance.now() : Date.now();
         const interacting = interaction.touching
             || (now - (interaction.lastUserScrollAt || 0)) < TOUCH_MOMENTUM_GRACE_MS;
         const isEchoOffset = interaction.lastDispatchedOffset != null
             && Math.abs((Number(scrollOffset) || 0) - interaction.lastDispatchedOffset) < 2;
-        if (
-            interacting
-            && scrollMode === previousViewportState?.scrollMode
-            && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
-        ) {
-            previousViewportStateRef.current = { scrollMode, scrollOffset };
-            return;
-        }
         const preservePausedStickyScroll = stickyBottom
             && scrollMode === "top"
             && previousViewportState?.scrollMode === "top"
             && previousViewportState?.scrollOffset === scrollOffset;
-        const nextScrollTop = computeAnchoredScrollTop(
-            node,
-            scrollOffset,
-            scrollMode,
-            preservePausedStickyScroll,
-        );
+        // A backward page inserts DOM above the reader. Top-anchored paused
+        // state normally preserves scrollTop, which would push the same visible
+        // message down by the inserted height. Compensate with the measured DOM
+        // height delta. Appended live text keeps the old scrollTop unchanged.
+        const prependedWhilePaused = stickyBottom
+            && previousContent?.lastLine === lastLine
+            && previousContent?.firstLine !== firstLine
+            && node.scrollHeight > previousContent.scrollHeight
+            && (preservePausedStickyScroll || node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX);
+        if (
+            !prependedWhilePaused
+            && interacting
+            && scrollMode === previousViewportState?.scrollMode
+            && (scrollOffset === previousViewportState?.scrollOffset || isEchoOffset)
+        ) {
+            previousViewportStateRef.current = { scrollMode, scrollOffset };
+            previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
+            return;
+        }
+        const nextScrollTop = prependedWhilePaused
+            ? Math.max(0, Math.min(
+                node.scrollTop + (node.scrollHeight - previousContent.scrollHeight),
+                node.scrollHeight - node.clientHeight,
+            ))
+            : computeAnchoredScrollTop(node, scrollOffset, scrollMode, preservePausedStickyScroll);
         if (Math.abs(node.scrollTop - nextScrollTop) > PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
             const pendingProgrammaticScroll = { target: nextScrollTop };
             programmaticScrollRef.current = pendingProgrammaticScroll;
@@ -1164,10 +1188,20 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                 }
             });
         }
+        if (prependedWhilePaused && paneKey && typeof controller.updatePaneScrollFromViewport === "function") {
+            // The measured DOM compensation above is the new durable paused
+            // position. Persist it too: otherwise switching sessions and back
+            // reapplies the pre-page offset and moves the reader by the full
+            // height of the newly inserted history.
+            const rowOffset = Math.max(0, nextScrollTop) / SCROLL_ROW_HEIGHT;
+            userScrollRef.current.lastDispatchedOffset = rowOffset;
+            controller.updatePaneScrollFromViewport(paneKey, rowOffset, { atBottom: false });
+        }
         previousViewportStateRef.current = {
             scrollMode,
             scrollOffset,
         };
+        previousContentRef.current = { firstLine, lastLine, scrollHeight: node.scrollHeight };
     }, [normalizedLines, ref, scrollMode, scrollOffset, stickyBottom, viewportRevision]);
 
     const dispatchScrollOffset = useFrameCoalescedCallback((offset) => {
@@ -1201,6 +1235,13 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
                 rowOffset,
                 { atBottom: isScrollViewportAtBottom(node) },
             );
+            // Pausing bottom-follow changes chat to top-anchored scroll state,
+            // but reaching the DOM's actual top must still arm backward CMS
+            // paging. Keep this next to the native measurement so the history
+            // gate does not depend on which anchoring mode currently renders.
+            if (paneKey === "chat" && node.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) {
+                controller.armChatTopHistoryLoad?.();
+            }
             return;
         }
 
@@ -1219,11 +1260,11 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
 
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
-        if (!node || paneKey !== "chat" || scrollMode !== "bottom" || event.deltaY >= 0) return;
+        if (!node || paneKey !== "chat" || event.deltaY >= 0) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
-        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT);
-    }, [controller, paneKey, ref, scrollMode]);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT, { preserveDomAnchor: true });
+    }, [controller, paneKey, ref]);
 
     // Touch equivalent of the wheel-at-top gesture: touch devices never fire
     // wheel events, and once scrollTop sits at 0 a further swipe-down emits no
@@ -1233,9 +1274,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const touchPullRef = React.useRef({ startY: null, fired: false });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
-        if (paneKey !== "chat" || scrollMode !== "bottom") return;
+        if (paneKey !== "chat") return;
         touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
-    }, [paneKey, scrollMode]);
+    }, [paneKey]);
     const onTouchEnd = React.useCallback(() => {
         userScrollRef.current.touching = false;
         // Momentum continues past the finger lift; onScroll keeps refreshing
@@ -1245,7 +1286,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
         const pull = touchPullRef.current;
-        if (!node || paneKey !== "chat" || scrollMode !== "bottom") return;
+        if (!node || paneKey !== "chat") return;
         if (pull.fired || pull.startY == null) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
         const y = event.touches?.[0]?.clientY;
@@ -1257,8 +1298,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         // on narrow viewports). The wheel path keeps the handshake — one
         // physical scroll emits MANY wheel events, so it needs debouncing.
         const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
-        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1, { force: true });
-    }, [controller, paneKey, ref, scrollMode]);
+        controller.handleChatTopHistoryScrollIntent?.(maxScroll / SCROLL_ROW_HEIGHT + 1, { force: true, preserveDomAnchor: true });
+    }, [controller, paneKey, ref]);
 
     return { normalizedLines, onScroll, onWheel, onTouchStart, onTouchMove, onTouchEnd };
 }
@@ -1337,6 +1378,22 @@ function SystemNoticeLine({ line, theme }) {
             ? React.createElement("div", { className: "ps-system-notice-body" },
                 React.createElement(MarkdownPreviewContent, { content: body, theme }))
             : null);
+}
+
+function ChatCallLine({ line }) {
+    const [open, setOpen] = React.useState(false);
+    return React.createElement("details", {
+        className: "ps-system-notice ps-chat-call",
+        "data-call-id": line.callKey,
+        onToggle: event => setOpen(event.currentTarget.open),
+    },
+    React.createElement("summary", { className: "ps-system-notice-summary ps-chat-call-summary" },
+        React.createElement("span", { className: "ps-chat-call-tag" }, line.category || "Tool"),
+        React.createElement("span", { className: "ps-system-notice-summary-text" }, line.text),
+        line.status ? React.createElement("span", { className: `ps-chat-call-status${line.status === "Failed" ? " is-failed" : ""}` }, line.status) : null),
+    open ? React.createElement("div", { className: "ps-system-notice-body" },
+        line.time ? React.createElement("div", { className: "ps-chat-call-time" }, line.time) : null,
+        React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
 }
 
 /**
@@ -2908,7 +2965,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             const bytes = await response.arrayBuffer();
             // Only MoA canvases opt into panel navigation. Ordinary canvases
             // retain native Tab behavior and their exact document bytes.
-            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
+            const bridge = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
             let parts = [bytes];
             if (panelKeys) {
                 const html = new TextDecoder().decode(bytes);
@@ -3243,6 +3300,13 @@ function parseStructuredChatBlocks(lines = []) {
             index += 1;
             continue;
         }
+        if (currentLine?.kind === "chatCall" || currentLine?.callPreview !== undefined) {
+            blocks.push({ type: "chatCall", line: currentLine.callPreview !== undefined
+                ? { ...currentLine, text: currentLine.callPreview, category: "Agent" } : currentLine });
+            index += 1;
+            continue;
+        }
+
         if (currentLine?.kind === "assistantPreview") {
             blocks.push({ type: "assistantPreview", line: currentLine });
             index += 1;
@@ -3674,6 +3738,9 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
                         waiting: resolveColor(theme, "yellow"), completed: resolveColor(theme, "green"),
                         failed: resolveColor(theme, "red"), cancelled: resolveColor(theme, "gray"), interrupted: resolveColor(theme, "yellow") } });
             }
+            if (block.type === "chatCall") {
+                return React.createElement(ChatCallLine, { key: block.line.callKey, line: block.line });
+            }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
                     key: block.line.previewKey,
@@ -3999,7 +4066,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4118,9 +4185,9 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 ? React.createElement(StructuredChatBlocks, { lines: normalizedLines, theme, controller })
                 : normalizedLines.map((line, index) => React.createElement(Line, { key: `line:${index}`, line, theme })),
         ),
-        normalizedBottomSticky.length > 0
+        (normalizedBottomSticky.length > 0 || reserveBottomSticky)
             ? React.createElement("div", {
-                className: "ps-panel-bottom-sticky",
+                className: `ps-panel-bottom-sticky${reserveBottomSticky ? " is-reserved" : ""}`,
             },
                 normalizedBottomSticky.map((line, index) => React.createElement(Line, { key: `bottom-sticky:${index}`, line, theme })),
             )
@@ -4235,7 +4302,7 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
-function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null }) {
+function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
     // height — a box that grew and shrank would shove the list under the
@@ -4332,12 +4399,12 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         pause && pause.clears
             ? React.createElement("span", { className: "ps-session-detail-clears" }, pause.clears)
             : null,
-        pause && controller ? React.createElement("button", {
+        pause && (controller || onOpenBudget) ? React.createElement("button", {
             type: "button", className: "ps-budget-link",
             title: pause.provider
                 ? `Open ${pause.provider} in Providers & Budgets`
                 : "Open providers and budgets",
-            onClick: () => controller.openBudget(
+            onClick: () => (onOpenBudget || (options => controller.openBudget(options)))(
                 pause.provider ? { provider: pause.provider } : {},
             ).catch(() => {}),
         }, pause.provider ? `Open ${pause.provider}` : "Open providers and budgets") : null));
@@ -4920,7 +4987,7 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null }) {
+function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
     // sessions-ONLY layout is the exception: it has the whole screen and the
@@ -5035,6 +5102,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             setManageOpen(true);
         }
     }, [modelFlowOpen]);
+    React.useEffect(() => { onDialogChange?.(manageOpen || Boolean(linkModal) || modelFlowOpen); }, [manageOpen, linkModal, modelFlowOpen, onDialogChange]);
     const requestSwitchModel = () => {
         reopenManageRef.current = true;
         setManageOpen(false);
@@ -5566,21 +5634,25 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             || focused.tagName === "SELECT"
             || focused.isContentEditable
         ));
-        if (focused !== activeButton && !isTypingTarget) {
+        if (viewState.focused && focused !== activeButton && !isTypingTarget) {
             activeButton.focus({ preventScroll: true });
         }
-        activeButton.scrollIntoView({ block: "nearest" });
+        // Selection can change from outside this pane (deep links, newly
+        // created sessions, MoA focus and other navigation surfaces). Center
+        // the row once for that selection so its surrounding sessions remain
+        // visible, without re-centering on routine status/catalog refreshes.
+        activeButton.scrollIntoView({ block: "center" });
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
-        isBulkSelection
+        !actionsOnly && isBulkSelection
             ? React.createElement("span", {
                 className: "ps-mini-button-label",
                 style: { padding: "0 6px", fontSize: "12px", opacity: 0.85 },
                 title: "Multiple sessions selected. Move to group or cancel selected sessions; click Clear to exit.",
             }, `${selectedCount} selected`)
             : null,
-        isBulkSelection
+        !actionsOnly && (isBulkSelection
             ? React.createElement(IconButton, {
                 className: "ps-mini-button",
                 icon: "✕",
@@ -5596,8 +5668,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 label: canPinActiveSession
                     ? (isActivePinned ? "Unpin this session" : "Pin this session to the top of the list")
                     : "Only top-level non-system sessions can be pinned",
-            }),
-        React.createElement(IconButton, {
+            })),
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: groupableIds.length > 1
                 ? React.createElement("span", { className: "ps-icon-badge" },
@@ -5638,9 +5710,9 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                         ? "Rename folder"
                         : !canModifyActiveSession
                             ? "Only this session's owner or an admin can manage it"
-                            : "Manage session — rename, switch model, and sharing",
+                            : actionsOnly ? "Manage session — rename and switch model" : "Manage session — rename, switch model, and sharing",
         }),
-        React.createElement(IconButton, {
+        !actionsOnly && React.createElement(IconButton, {
             className: "ps-mini-button",
             icon: React.createElement(LinkGlyph),
             onClick: () => {
@@ -5700,15 +5772,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     return React.createElement(React.Fragment, null,
     dragGhost,
-    React.createElement(Panel, {
+    actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
         title: [{ text: "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
         theme,
         actions: selection ? React.createElement(React.Fragment, null,
-            React.createElement(IconButton, { className: "ps-mini-button ps-pin-icon", icon: React.createElement(PinGlyph), disabled: !canPinActiveSession, active: isActivePinned,
-                label: isActivePinned ? "Unpin this session" : "Pin this session to the top of the list",
-                onClick: () => controller.dispatch({ type: "sessions/pinToggle", sessionId: activeSession.sessionId }) }), actions) : panelActions,
+            selection.onCreate ? React.createElement(IconButton, {
+                className: "ps-mini-button", icon: React.createElement(PlusGlyph),
+                label: "Create New Session", onClick: selection.onCreate,
+            }) : null, actions) : panelActions,
         className: combinedPanelClassName,
     },
     selection ? React.createElement("input", { className: "ps-modal-input", "aria-label": "Find a session", placeholder: "Find a session…", value: selection.query || "", onChange: e => selection.onQuery?.(e.target.value) }) : null,
@@ -5716,11 +5789,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ref: sessionListRef,
         onKeyDown: selection ? event => {
             if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
-            const current = rows.findIndex(row => row.sessionId === selection.sessionId);
-            const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
-            const row = rows[next]; if (!row) return;
+            const buttons = [...sessionListRef.current.querySelectorAll(".ps-session-list-button")];
+            const current = buttons.indexOf(event.target.closest(".ps-session-list-button"));
+            const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, current + (event.key === "ArrowUp" ? -1 : 1)));
+            const button = buttons[next]; if (!button) return;
             event.preventDefault(); event.stopPropagation();
-            selection.onSelect(row.sessionId); sessionButtonRefs.current.get(row.sessionId)?.focus();
+            if (button.dataset.sessionId) selection.onSelect(button.dataset.sessionId);
+            button.focus();
         } : undefined,
         className: `ps-action-list ps-session-list${dragState.dragging ? " is-dragging" : ""}`,
         // Clicking empty space below the rows clears the list selection while
@@ -5734,6 +5809,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             else controller.dispatch({ type: "sessions/listDeselect" });
         },
     },
+
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
                 ? `No sessions matched "@@${viewState.filterQuery}".`
@@ -5770,6 +5846,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             controller,
             sessionId: activeSession.sessionId,
             initialTitle: activeSession.title || "",
+            allowSharing: !actionsOnly,
             currentModel: activeSession.model || "",
             currentReasoningEffort: activeSession.reasoningEffort || "",
             principal: viewState.auth?.principal || null,
@@ -6159,7 +6236,7 @@ function useActiveSessionAccess(controller, activeSessionId, isGroup) {
 // rename, copy link, plus (for the owner/admin) sharing — visibility +
 // per-person grants. Fetches its own access snapshot so callers only pass the
 // session id + current title.
-function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged }) {
+function SessionModifyModal({ controller, sessionId, initialTitle, currentModel, currentReasoningEffort, principal, onClose, onSwitchModel, onChanged, allowSharing = true }) {
     const [tab, setTab] = React.useState("general");
     const [access, setAccess] = React.useState(null);
     const [title, setTitle] = React.useState(initialTitle || "");
@@ -6178,20 +6255,20 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             .then((a) => { if (!cancelled && a) { setAccess(a); setVisibility(a.visibility || "private"); } })
             .catch(() => {});
         // Member directory for name autocomplete (excludes synthetic principals).
-        if (typeof controller.transport.listKnownUsers === "function") {
+        if (allowSharing && typeof controller.transport.listKnownUsers === "function") {
             controller.transport.listKnownUsers({ limit: 500 })
                 .then((users) => { if (!cancelled) setDirectory(Array.isArray(users) ? users : []); })
                 .catch(() => {});
         }
         return () => { cancelled = true; };
-    }, [controller, sessionId]);
+    }, [controller, sessionId, allowSharing]);
 
     const loadShares = React.useCallback(() => {
         controller.transport.listSessionShares(sessionId)
             .then((rows) => { const list = Array.isArray(rows) ? rows : []; setShares(list); setDraftShares(list); })
             .catch(() => { setShares([]); setDraftShares([]); });
     }, [controller, sessionId]);
-    React.useEffect(() => { loadShares(); }, [loadShares]);
+    React.useEffect(() => { if (allowSharing) loadShares(); }, [loadShares, allowSharing]);
 
     const run = async (fn) => {
         setBusy(true); setError(null);
@@ -6297,7 +6374,7 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
     // only rename/switch model on their own session.
     const tabs = [
         { id: "general", label: "General" },
-        ...(canManage ? [{ id: "access", label: "Access" }] : []),
+        ...(allowSharing && canManage ? [{ id: "access", label: "Access" }] : []),
     ];
     const activeTab = tabs.some((t) => t.id === tab) ? tab : "general";
     // Regenerate is a change-this-session action, so it belongs here rather
@@ -6421,7 +6498,41 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true }) {
+function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
+    const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
+    const readOnly = session?.serviceKind || access?.canWrite === false;
+    React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
+    if (!session || session.isGroup || modal) return null;
+    return React.createElement("div", { className: "ps-chat-composer" }, readOnly
+        ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
+            ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+            : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+        : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
+}
+
+// The compact focus views use their existing header for activity. The same
+// selector powers the desktop footer, so stale-status and elapsed-time rules
+// remain identical; queued prompt bodies stay readable in the transcript.
+function SessionHeaderStatus({ controller }) {
+    const state = useControllerSelector(controller, s => s);
+    const session = state.sessions.byId[state.sessions.activeSessionId];
+    const spinnerFrame = useSpinnerFrame(session?.status === "running");
+    const activity = selectLiveActivityLines(state, { spinnerFrame, maxWidth: 120 });
+    const status = activity[0]?.map(run => run.text || "").join("")
+        || (session ? String(session.status || "idle").replace(/^./, c => c.toUpperCase()) : "");
+    const messages = selectActiveOutboxMessages(state);
+    const queue = ["pending", "queued", "cancelling", "rejected"].map(phase => {
+        const count = messages.filter(message => message.pendingPhase === phase).length;
+        return count ? `${count} ${phase}` : "";
+    }).filter(Boolean).join(" · ");
+    return React.createElement("div", { className: "ps-mobile-session-status", "aria-label": "Session status" },
+        React.createElement("span", { className: "ps-mobile-activity", title: status }, status),
+        queue ? React.createElement("span", { className: "ps-mobile-queue", title: queue }, queue) : null);
+}
+
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -6449,6 +6560,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             activeSessionStatus: activeSessionId ? String(state.sessions.byId[activeSessionId]?.status || "").toLowerCase() : "",
             focused: state.ui.focusRegion === "chat",
             scroll: state.ui.scroll.chat,
+            followBottom: state.ui.followBottom?.chat !== false,
             // Viewer identity — so the transcript can say "You" for the viewer's
             // own messages and name others (with an "(owner)" tag).
             authPrincipal: state.auth?.principal || null,
@@ -6532,6 +6644,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => (pinnedActivityLines.length > 0 ? [...outboxLines, ...pinnedActivityLines] : outboxLines),
         [outboxLines, pinnedActivityLines],
     );
+    const transcriptLines = React.useMemo(
+        () => activityInHeader && outboxLines.length ? [...lines, ...outboxLines] : lines,
+        [activityInHeader, lines, outboxLines],
+    );
     // Read-only gating: a view-only viewer (shared_read / read grant, no write)
     // gets an explanatory notice instead of the composer. The visibility chip
     // and Share affordance now live in the session list "Modify" modal and the
@@ -6587,13 +6703,15 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
-        actions: null,
+        actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
         color: chrome.color,
         focused: viewState.focused,
-        lines,
-        bottomStickyLines: stickyBottom,
+        lines: transcriptLines,
+        bottomStickyLines: activityInHeader ? EMPTY_ARRAY : stickyBottom,
+        reserveBottomSticky: !activityInHeader,
         scrollOffset: viewState.scroll,
-        scrollMode: "bottom",
+        scrollMode: viewState.followBottom ? "bottom" : "top",
+        stickyBottom: true,
         paneKey: "chat",
         ariaLive: "polite",
         className: "is-wrapped",
@@ -6941,7 +7059,7 @@ function useKeyboardTakeover(enabled) {
  * detail sub-panel). This replaced chat-focus mode, which was a second way to
  * say "chat only" with its own chrome and its own exit.
  */
-function MobileWorkspace({ controller, layout = "split" }) {
+function MobileWorkspace({ controller, layout = "split", onEnterZen }) {
     const sessionPane = React.createElement(SessionPane, {
         controller,
         panelClassName: "ps-mobile-session-pane",
@@ -6949,7 +7067,7 @@ function MobileWorkspace({ controller, layout = "split" }) {
     if (layout === "chat") {
         return React.createElement("div", { className: "ps-mobile-workspace is-chat-only" },
             React.createElement("div", { className: "ps-mobile-chat-pane" },
-                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true })));
+                React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
     }
     if (layout === "sessions") {
         return React.createElement("div", { className: "ps-mobile-workspace is-sessions-only" },
@@ -6962,7 +7080,7 @@ function MobileWorkspace({ controller, layout = "split" }) {
     return React.createElement("div", { className: "ps-mobile-workspace" },
         sessionPane,
         React.createElement("div", { className: "ps-mobile-chat-pane" },
-            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true })));
+            React.createElement(ChatPane, { controller, mobile: true, fullWidth: true, onEnterZen })));
 }
 
 /** Frame-and-easel glyph for the Canvas toggle. */
@@ -8688,7 +8806,7 @@ function formatAttachmentSize(sizeBytes) {
     return `${bytes} B`;
 }
 
-function PromptComposer({ controller, mobile, active = true, onAfterSend = null }) {
+function PromptComposer({ controller, mobile, compact = false, active = true, onAfterSend = null, autoFocus = true }) {
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const activeSession = activeSessionId ? state.sessions.byId[activeSessionId] || null : null;
@@ -8717,6 +8835,20 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
     const inputRef = React.useRef(null);
     const attachInputRef = React.useRef(null);
     const [dragOver, setDragOver] = React.useState(false);
+    const selectedQueued = promptState.selectedOutboxPhase === "queued";
+    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedReadOnly = selectedQueued || selectedCancelling;
+    const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
+        ? "Type an answer and press Enter"
+        : promptState.editingPending
+            ? selectedCancelling
+                ? "Cancellation requested"
+                : selectedQueued
+                    ? "Queued message selected"
+                    : "Edit the pending message, then send or cancel it"
+            : promptState.hasOutbox
+                ? "Type a message and press Enter to queue it behind the pending batch"
+                : "Type a message and press Enter";
 
     // Auto-grow: one line idle, sized to the RENDERED content (scrollHeight
     // sees soft wrap; counting "\n" does not). CSS max-height provides the
@@ -8744,7 +8876,10 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const mayHaveShrunk = length <= lastPromptLengthRef.current;
         lastPromptLengthRef.current = length;
         growInput(mayHaveShrunk || length === 0);
-    }, [growInput, promptState.value]);
+        // Empty textareas measure their placeholder too. Send briefly shows
+        // the long outbox hint; acknowledgement shortens it without changing
+        // the value or width, so neither input nor ResizeObserver will fire.
+    }, [growInput, promptState.value, placeholder]);
     React.useEffect(() => {
         // Width changes re-wrap the content; re-measure on viewport resizes
         // (covers rotation and the on-screen keyboard shrinking the pane).
@@ -8807,6 +8942,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         const inputNode = inputRef.current;
         if (!active || promptState.modalOpen || !promptState.focused || !inputNode) return;
         if (document.activeElement !== inputNode) {
+            if (!autoFocus || (typeof autoFocus === "function" && !autoFocus())) return;
             // Programmatic focus pops the on-screen keyboard on touch devices;
             // there, focus only ever comes from the user's own tap.
             if (mobile) return;
@@ -8826,7 +8962,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         if (inputNode.value === promptState.value && inputNode.selectionStart !== promptState.cursor) {
             inputNode.setSelectionRange(promptState.cursor, promptState.cursor);
         }
-    }, [active, mobile, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
+    }, [active, mobile, autoFocus, promptState.cursor, promptState.value, promptState.focused, promptState.modalOpen]);
 
     const sendPrompt = React.useCallback(() => {
         controller.handleCommand(UI_COMMANDS.SEND_PROMPT)
@@ -8863,12 +8999,9 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
         : promptState.hasOutbox
             ? "+"
             : "❯";
-    const selectedQueued = promptState.selectedOutboxPhase === "queued";
-    const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
-    const selectedReadOnly = selectedQueued || selectedCancelling;
 
     return React.createElement("div", {
-        className: `ps-prompt-shell${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
+        className: `ps-prompt-shell${compact ? " is-compact" : ""}${mobile ? " is-mobile" : ""}${dragOver ? " is-drag-over" : ""}`,
         ...(canAttachImages ? {
             onDragOver: (event) => {
                 if (event.dataTransfer?.types?.includes?.("Files")) {
@@ -8935,17 +9068,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             rows: 1,
             value: promptState.value,
             readOnly: selectedReadOnly,
-            placeholder: promptState.answerMode
-                ? "Type an answer and press Enter"
-                : promptState.editingPending
-                    ? selectedCancelling
-                        ? "Cancellation requested"
-                        : selectedQueued
-                        ? "Queued message selected"
-                        : "Edit the pending message, then send or cancel it"
-                    : promptState.hasOutbox
-                        ? "Type a message and press Enter to queue it behind the pending batch"
-                : "Type a message and press Enter",
+            placeholder,
             // On touch, Enter inserts a newline (the chevron sends) — the
             // keyboard must not advertise a send that will not happen.
             enterKeyHint: mobile ? "enter" : "send",
@@ -8996,7 +9119,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
             // pointerdown preventDefault on every action keeps focus in the
             // textarea — on a phone, tapping Send must not collapse the
             // keyboard between messages.
-            canAttachImages
+            canAttachImages && !compact
                 ? React.createElement(React.Fragment, null,
                     React.createElement("input", {
                         ref: attachInputRef,
@@ -9033,7 +9156,7 @@ function PromptComposer({ controller, mobile, active = true, onAfterSend = null 
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
                 : null,
-            promptState.canStopTurn || stoppingTurn
+            (promptState.canStopTurn || stoppingTurn)
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
@@ -9089,14 +9212,29 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
     const timerRef = React.useRef(null);
     const longPressRef = React.useRef(false);
 
-    // Keep the tooltip within the viewport horizontally — the leftmost/rightmost
-    // buttons would otherwise clip off the edge (the tooltip is center-anchored).
+    // Measure wrapped text against the visual viewport, including the keyboard.
     React.useLayoutEffect(() => {
-        if (!tip || !tipRef.current || typeof window === "undefined") return;
-        const half = tipRef.current.offsetWidth / 2;
-        const margin = 6;
-        const clampedX = Math.max(half + margin, Math.min(tip.x, window.innerWidth - half - margin));
-        tipRef.current.style.left = `${clampedX}px`;
+        if (!tip || !tipRef.current || !btnRef.current) return;
+        const el = tipRef.current, viewport = window.visualViewport;
+        const update = () => {
+        const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+        const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+        const margin = 6, r = btnRef.current.getBoundingClientRect();
+        el.style.width = "max-content";
+        el.style.maxWidth = `${Math.min(220, width - 2 * margin)}px`;
+        el.style.maxHeight = `${height - 2 * margin}px`;
+        const box = el.getBoundingClientRect();
+        let below = tip.placement === "below";
+        if (!below && r.top - box.height - margin < top) below = true;
+        if (below && r.bottom + box.height + margin > top + height && r.top - box.height - margin >= top) below = false;
+        const x = Math.max(left + margin, Math.min(r.left + r.width / 2 - box.width / 2, left + width - box.width - margin));
+        const y = Math.max(top + margin, Math.min(below ? r.bottom + margin : r.top - box.height - margin, top + height - box.height - margin));
+        el.style.transform = "none";
+        el.style.left = `${x}px`; el.style.top = `${y}px`;
+        };
+        update(); viewport?.addEventListener("resize", update); viewport?.addEventListener("scroll", update);
+        window.addEventListener("resize", update);
+        return () => { viewport?.removeEventListener("resize", update); viewport?.removeEventListener("scroll", update); window.removeEventListener("resize", update); };
     }, [tip]);
 
     const reveal = (preferAbove = false) => {
@@ -9361,7 +9499,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         }]),
     ];
 
-    if (!mobile && moa?.desktop) buttonDefs.push({
+    if (moa) buttonDefs.push({
         key: "moa", icon: React.createElement(MoaGlyph),
         label: moa.returnTo ? "Back to MoA — Master of Agents" : "Master of Agents",
         active: moa.active, disabled: !moa.loaded,
@@ -9425,8 +9563,9 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         ];
         return React.createElement("div", { className: "ps-toolbar is-mobile" },
             React.createElement("div", { className: "ps-toolbar-row ps-toolbar-row-primary" },
-                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.map(renderButton)),
+                React.createElement("div", { className: "ps-toolbar-row-actions" }, buttonDefs.filter(def => def.key !== "moa").map(renderButton)),
                 React.createElement("div", { className: "ps-toolbar-row-actions is-panes" },
+                    ...buttonDefs.filter(def => def.key === "moa").map(renderButton),
                     paneDefs.map((def) => React.createElement(IconButton, {
                         key: def.id === "workspace" ? "workspace" : "diagnostics",
                         icon: React.createElement(def.icon),
@@ -9485,14 +9624,14 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         ...pick(["theme"]),
     ];
 
-    const toolbar = React.createElement("div", { className: "ps-toolbar" },
+    const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
         // Three columns: left rail | main controls | right rail. Full-screen
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            canvasMaximized ? leftCluster : null),
+            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
-            canvasMaximized ? null : leftCluster),
+            moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
             // The portal header parks its version/status meta here, LEFT of
             // the tool buttons, and its sign-out glyph in the slot after
@@ -10224,32 +10363,30 @@ function budgetPlural(n, one, many) {
     return `${n} ${n === 1 ? one : many}`;
 }
 
-/**
- * A model reference a session can run: `<provider>:<model>`.
- *
- * The catalog's `providerId` is the TYPE ("azure-openai"); a provider is an
- * instance of that type with a name of its own, and both a model-scoped limit
- * and a default tuple are refused by the database unless the model half names
- * the provider it belongs to.
- */
-function budgetModelsForProvider(models, provider) {
-    if (!provider?.typeId) return [];
-    return models
-        .filter((model) => model.providerId === provider.typeId)
-        .map((model) => ({
-            qualifiedName: `${provider.name}:${model.modelName}`,
-            modelName: model.modelName,
-        }));
-}
-
-/** The provider TYPES this deployment can instantiate, from its model catalog. */
-function budgetProviderTypes(models) {
-    const seen = new Map();
+/** Runtime catalogs name a pool; type catalogs name a provider template. */
+function budgetModelsForProvider(models, provider, rawRows = []) {
+    if (!provider?.name) return [];
+    const choices = new Map();
     for (const model of models) {
-        if (!model.providerId || seen.has(model.providerId)) continue;
-        seen.set(model.providerId, { id: model.providerId, type: model.providerType || model.providerId });
+        const matches = model.catalogKind === "runtime_provider"
+            ? model.providerId === provider.name
+            : model.catalogKind === "provider_type"
+                ? model.providerId === provider.typeId
+                : model.providerId === provider.name || model.providerId === provider.typeId;
+        if (!matches) continue;
+        const qualifiedName = `${provider.name}:${model.modelName}`;
+        choices.set(qualifiedName, { qualifiedName, modelName: model.modelName });
     }
-    return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id));
+    // Existing caps remain editable even when the catalog is unavailable or a
+    // model was retired. Never borrow a model reference from another pool.
+    for (const row of rawRows) {
+        if (row.providerName !== provider.name || row.rowKind !== "model"
+            || !String(row.scope || "").startsWith(`${provider.name}:`)) continue;
+        choices.set(row.scope, {
+            qualifiedName: row.scope, modelName: row.scope.slice(provider.name.length + 1),
+        });
+    }
+    return [...choices.values()];
 }
 
 /** listModels() is flat on the web transport and grouped on the direct one. */
@@ -10259,15 +10396,18 @@ function budgetNormalizeModels(raw) {
         : (Array.isArray(raw?.providers) ? raw.providers : (Array.isArray(raw?.models) ? raw.models : []));
     const flat = top.flatMap((entry) => (
         Array.isArray(entry?.models)
-            ? entry.models.map((model) => ({ ...model, providerId: model.providerId || entry.providerId }))
+            ? entry.models.map((model) => ({
+                ...model, providerId: model.providerId || entry.providerId,
+                catalogKind: model.catalogKind || entry.catalogKind,
+            }))
             : [entry]
     ));
     return flat
         .filter((model) => model && (model.modelName || model.qualifiedName))
         .map((model) => ({
-            modelName: model.modelName || String(model.qualifiedName).split(":").pop(),
+            modelName: model.modelName || String(model.qualifiedName).split(":").slice(1).join(":"),
             providerId: model.providerId || "",
-            providerType: model.providerType || model.providerId || "",
+            catalogKind: model.catalogKind || null,
         }));
 }
 
@@ -10805,7 +10945,7 @@ function ProviderSystemSpend({ view }) {
  * reachable.
  */
 function EditProviderSheet({
-    row, rawRows, models, isAdmin, busy, error, onCancel, onRun,
+    row, rawRows, models, modelsLoading, modelsError, onRetryModels, isAdmin, busy, error, onCancel, onRun,
     initialPeriod = "day", initialScope = "*",
 }) {
     const shared = row.class === "shared";
@@ -10949,10 +11089,13 @@ function EditProviderSheet({
                 className: "ps-budget-input", "aria-label": "Model this limit applies to",
                 value: model, onChange: (event) => setModel(event.target.value),
             }, models.length === 0
-                ? React.createElement("option", { value: "" }, "No models are listed for this provider's type")
+                ? React.createElement("option", { value: "" }, modelsLoading ? "Loading models…" : modelsError ? "Model catalog unavailable" : "No models listed for this provider")
                 : models.map((option) => React.createElement("option", {
                     key: option.qualifiedName, value: option.qualifiedName,
-                }, option.qualifiedName))) : null),
+                }, option.qualifiedName))) : null,
+            modelsError ? React.createElement("div", { className: "ps-budget-note is-warn", role: "status" },
+                "Could not load the model catalog. Existing model limits remain editable. ",
+                React.createElement("button", { type: "button", onClick: onRetryModels, disabled: modelsLoading }, "Retry")) : null),
         React.createElement(SheetField, {
             label: "Tokens",
             hint: parsed
@@ -11738,6 +11881,9 @@ function ProviderBudgetView({ controller }) {
     // a failure is not fatal — the controls that need it say they have nothing
     // to offer.
     const [models, setModels] = React.useState([]);
+    const [modelsLoading, setModelsLoading] = React.useState(true);
+    const [modelsError, setModelsError] = React.useState(false);
+    const [modelsRequest, setModelsRequest] = React.useState(0);
     const [providerTypes, setProviderTypes] = React.useState(new Map());
     const [defaults, setDefaults] = React.useState(null);
     const readDefaults = React.useCallback(() => {
@@ -11748,11 +11894,14 @@ function ProviderBudgetView({ controller }) {
     }, [controller]);
     React.useEffect(() => {
         let live = true;
-        if (typeof controller.transport.listModels === "function") {
-            Promise.resolve(controller.transport.listModels())
-                .then((rows) => { if (live) setModels(budgetNormalizeModels(rows)); })
-                .catch(() => {});
-        }
+        setModelsLoading(true);
+        Promise.resolve().then(() => {
+            if (typeof controller.transport.listModels !== "function") throw new Error("Model catalog unavailable");
+            return controller.transport.listModels();
+        }).then((rows) => {
+            if (live) { setModels(budgetNormalizeModels(rows)); setModelsError(false); }
+        }).catch(() => { if (live) setModelsError(true); })
+            .finally(() => { if (live) setModelsLoading(false); });
         if (typeof controller.transport.listProviders === "function") {
             Promise.resolve(controller.transport.listProviders())
                 .then((rows) => {
@@ -11765,7 +11914,7 @@ function ProviderBudgetView({ controller }) {
         }
         readDefaults();
         return () => { live = false; };
-    }, [controller, readDefaults]);
+    }, [controller, readDefaults, modelsRequest]);
 
     // Opened by the toolbar, which loads it. Mounting with nothing behind it —
     // a restored state, a second mount — reads once rather than showing zeros.
@@ -11850,13 +11999,14 @@ function ProviderBudgetView({ controller }) {
     const modelsForSelected = selected
         ? budgetModelsForProvider(models, {
             name: selected.providerName, typeId: providerTypes.get(selected.providerName) || "",
-        })
+        }, rawRows)
         : [];
 
     let sheetEl = null;
     if (sheet?.kind === "edit" && selectedProvider) {
         sheetEl = React.createElement(EditProviderSheet, {
             row: selectedProvider, rawRows, models: modelsForSelected, isAdmin: view.isAdmin,
+            modelsLoading, modelsError, onRetryModels: () => setModelsRequest((value) => value + 1),
             // MAJOR 17: the sheet opens on the limit the reader was standing
             // on, rather than always on Daily / all models.
             initialPeriod: sheet.period || "day",
@@ -12689,6 +12839,14 @@ function DistillerModelPickers({ controller, extras }) {
             )
             : null,
     );
+}
+
+function ScopedModalLayer({ controller }) {
+    const modal = useControllerSelector(controller, state => state.ui.modal);
+    // Isolated MoA controllers own keyboard commands only while their dialog
+    // is open. They must never install normal-workspace shortcuts globally.
+    useKeyboardShortcuts(controller, false, !modal);
+    return React.createElement(ModalLayer, { controller });
 }
 
 function useKeyboardShortcuts(controller, mobile, suspended = false) {
@@ -14245,6 +14403,9 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         branding,
         docs,
     }));
+    // Only the initial device default. A saved value for this device wins
+    // when the profile loads, including an explicit mobile opt-out.
+    store.dispatch({ type: "ui/touchScale", enabled: isNarrowViewport });
     return new PilotSwarmUiController({ store, transport });
 }
 
@@ -14330,6 +14491,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
         activeSessionId: rootState.sessions.activeSessionId || null,
+        revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
         rightPaneMode: rootState.ui.rightPaneMode || "panes",
         // The two optional desktop columns, independent of each other.
@@ -14385,6 +14547,20 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
     useKeyboardShortcuts(controller, mobile, suspended);
+
+    const lastCreatedSessionRef = React.useRef(state.revealedCreatedSessionId);
+    React.useEffect(() => {
+        if (lastCreatedSessionRef.current === state.revealedCreatedSessionId) return;
+        lastCreatedSessionRef.current = state.revealedCreatedSessionId;
+        if (!state.revealedCreatedSessionId || state.activeSessionId !== state.revealedCreatedSessionId) return;
+        if (mobile) {
+            setMobilePane("workspace");
+            setMobileMainLayout("chat");
+        }
+        // Creation opens the ordinary session workspace, without modifying
+        // any of the user's saved Master of Agents panels.
+        if (moa?.active) moa.leave();
+    }, [state.revealedCreatedSessionId, state.activeSessionId, mobile, moa]);
 
     // Tell the reducer which device slot of the per-session views this tab
     // owns. Only a desktop applies and records them; a phone keeps its
@@ -14975,7 +15151,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     // it — the layer below is a SIBLING of this content and covers it. Drawing
     // a pane here would only be invisible work.
     else if (mobilePane === "canvas") mobileContent = null;
-    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout });
+    else mobileContent = React.createElement(MobileWorkspace, { controller, layout: mobileMainLayout, onEnterZen: moa?.openMobileZen });
 
     // The phone's canvas layer: a sibling of the content region's pane, NOT a
     // child of any pane. That is deliberate — panes mount and unmount as the
@@ -15039,4 +15215,4 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
 }
 
 // Browser hosts may compose these existing surfaces with isolated controllers.
-export { ChatPane, CanvasFrame, SessionPane, SessionRowContent, ControllerContext };
+export { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionRowContent, SessionDetailBox, SessionComposer, ScopedModalLayer, ControllerContext };

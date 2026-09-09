@@ -1365,6 +1365,8 @@ export interface SessionCatalog {
      * Replace the user's `profile_settings` JSON document. Creates the
      * user row lazily if needed so settings can be saved before the
      * principal owns any sessions.
+     * Saved multi-dashboard MoA settings are retained when a legacy client
+     * omits them or submits an older schema; clear them with a v3 layout.
      */
     setUserProfileSettings(principal: UserPrincipal, settings: Record<string, unknown>): Promise<UserProfile>;
 

@@ -718,6 +718,7 @@ export function* handleSubAgentAction(
                 ...parentConfig,
                 ...(agentModel ? { model: agentModel } : {}),
                 ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
+                ...(result.contextTier !== undefined ? { contextTier: result.contextTier } : {}),
                 ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                 ...(boundAgentName ? { boundAgentName } : {}),
                 ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),

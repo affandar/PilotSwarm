@@ -308,13 +308,16 @@ export const MODEL_DEFAULTS = {
     }],
 };
 
-// listModels is flat on the web transport. `providerId` is the provider TYPE,
-// not a provider: a provider is an instance of a type with a name of its own.
-export const MODELS = [
+// Bootstrap describes provider templates; HTTP listModels names runtime pools.
+const TYPE_MODELS = [
     { modelName: "gpt-5.4", providerId: "azure-openai", providerType: "azure-openai" },
     { modelName: "gpt-5.4-mini", providerId: "azure-openai", providerType: "azure-openai" },
     { modelName: "claude-sonnet-5", providerId: "github-copilot", providerType: "github-copilot" },
 ];
+export const MODELS = PROVIDERS.flatMap((provider) => TYPE_MODELS
+    .filter((model) => model.providerId === provider.typeId)
+    .map((model) => ({ ...model, catalogKind: "runtime_provider", providerId: provider.name,
+        qualifiedName: `${provider.name}:${model.modelName}` })));
 
 // Sessions whose models name THESE providers. Their ids are the ones
 // pausedFixture stops, and their status is "waiting" — which is exactly what
@@ -543,10 +546,11 @@ export async function startProviderBudgetStub({
         // read as "not an administrator" — every admin-only rule would then
         // be tested against the wrong person.
         if (/\/bootstrap$/.test(p)) {
-            const modelsByProvider = [...new Set(models.map((model) => model.providerId))].map((providerId) => ({
+            const modelsByProvider = [...new Set(TYPE_MODELS.map((model) => model.providerId))].map((providerId) => ({
                 providerId,
-                type: models.find((model) => model.providerId === providerId)?.providerType || providerId,
-                models: models.filter((model) => model.providerId === providerId),
+                type: TYPE_MODELS.find((model) => model.providerId === providerId)?.providerType || providerId,
+                catalogKind: "provider_type",
+                models: TYPE_MODELS.filter((model) => model.providerId === providerId),
             }));
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({
@@ -609,10 +613,11 @@ export async function startProviderBudgetStub({
             return answer(res, "getDefaults", defaults);
         }
         if (method === "GET" && /\/models\/by-provider$/.test(p)) {
-            const groups = [...new Set(models.map((model) => model.providerId))].map((providerId) => ({
+            const groups = [...new Set(TYPE_MODELS.map((model) => model.providerId))].map((providerId) => ({
                 providerId,
-                type: models.find((model) => model.providerId === providerId)?.providerType || providerId,
-                models: models.filter((model) => model.providerId === providerId),
+                type: TYPE_MODELS.find((model) => model.providerId === providerId)?.providerType || providerId,
+                catalogKind: "provider_type",
+                models: TYPE_MODELS.filter((model) => model.providerId === providerId),
             }));
             return answer(res, "getModelsByProvider", groups);
         }

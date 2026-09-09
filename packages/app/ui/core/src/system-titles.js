@@ -5,12 +5,14 @@ export function canonicalSystemTitle(session, brandingTitle = "PilotSwarm") {
     if (agentId === "sweeper") return "Sweeper Agent";
     if (agentId === "resourcemgr") return "Resource Manager Agent";
     if (agentId === "facts-manager") return "Facts Manager";
+    if (agentId === "agent-manager") return "Agent Smith";
 
     const rawTitle = String(session?.title || "").trim();
     if (/^pilotswarm(?: agent)?$/i.test(rawTitle)) return brandedRootTitle;
     if (/^sweeper agent$/i.test(rawTitle) || /^sweeper$/i.test(rawTitle)) return "Sweeper Agent";
     if (/^resource manager agent$/i.test(rawTitle) || /^resourcemgr$/i.test(rawTitle)) return "Resource Manager Agent";
     if (/^facts manager$/i.test(rawTitle) || /^facts-manager$/i.test(rawTitle)) return "Facts Manager";
+    if (/^agent manager$/i.test(rawTitle)) return "Agent Smith";
     return rawTitle || "System Agent";
 }
 

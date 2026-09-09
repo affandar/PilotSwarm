@@ -1,4 +1,4 @@
-/** Frozen catalog publication. 0076 is reserved by the upstream question fix. */
+/** Frozen catalog publication. 0076 preserves upstream MoA dashboards. */
 export function featureFlagsMigration(schema: string): string {
     const s = `"${schema.replace(/"/g, '""')}"`;
     return `

@@ -1672,6 +1672,7 @@ export class SessionManager {
             && holdsProviderTools(effectiveSerializableConfig.agentIdentity)
             ? createProviderTools({
                 catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? undefined,
                 // Resolved per invocation, as a session outlives the role
                 // that created it. The cluster Token Manager acts with
                 // cluster authority; the personal one acts as the session's
@@ -2514,7 +2515,7 @@ export class SessionManager {
             action: async (currentContent: string) => {
                 if (enhancedSearch) {
                     // Enhanced: DROP the capped-50 skills push — the agent pulls
-                    // ranked skills via search_skills every turn, so skip the
+                    // ranked skills via search_skills as needed, so skip the
                     // skills read entirely (includeSkills:false). Open asks still
                     // surface on their small push path, but without the namespace
                     // rules (the enhanced block owns them, avoiding duplication).

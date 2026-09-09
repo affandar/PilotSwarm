@@ -346,6 +346,7 @@ describe("orchestration warm resume durability", () => {
                 pendingPrompt: undefined,
                 pendingInputQuestion: {
                     question: "Authorize feature registration?",
+                    iteration: 3,
                     allowFreeform: true,
                 },
                 cancelledMessageIds: new Set(),
@@ -366,7 +367,7 @@ describe("orchestration warm resume durability", () => {
         expect(afterAnswer.done).toBe(true);
         expect(runtime.state.activeTimer).toBeNull();
         expect(JSON.parse(values.get("fifo.0"))).toEqual([
-            { kind: "answer", answer: "Authorize", wasFreeform: true },
+            { kind: "answer", answer: "Authorize", wasFreeform: true, expectedQuestion: { question: "Authorize feature registration?", iteration: 3 } },
         ]);
     });
 

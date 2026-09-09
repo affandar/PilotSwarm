@@ -2044,6 +2044,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 task?: string;
                 model?: string;
                 reasoning_effort?: import("./model-providers.js").ReasoningEffort;
+                context_tier?: import("./model-providers.js").ContextTier;
                 system_message?: string;
                 tool_names?: string[];
                 title?: string;
@@ -2158,6 +2159,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...parentConfig,
                         ...(agentModel ? { model: agentModel } : {}),
                         ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
+                        ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                         ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                         ...(boundAgentName ? { boundAgentName } : {}),
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
@@ -3198,7 +3200,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return;
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
-                    const persistedEvent = summarizeSdkSystemPromptEchoEvent(event);
+                    const persistedEvent = summarizeSdkSystemPromptEchoEvent(event.eventType === "session.input_required_started"
+                        ? { ...event, data: { ...(event.data as Record<string, unknown>), ...(input.turnIndex != null ? { questionIteration: input.turnIndex + 1 } : {}) } }
+                        : event);
                     if (!persistedEvent) return;
                     if (event.eventType === "session.wait_started") {
                         const data = (event.data ?? {}) as { reason?: string };

@@ -314,9 +314,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             inputSchema: {
                 session_id: sessionIdShape().describe("The session awaiting an answer"),
                 answer: z.string().describe("The answer to provide"),
+                expected_question: z.object({
+                    question: z.string(),
+                    iteration: z.number().int().nonnegative().optional(),
+                }).optional().describe("The pendingQuestion returned by get_session_detail; binds the answer to that question rather than a later one."),
             },
         },
-        async ({ session_id, answer }) => {
+        async ({ session_id, answer, expected_question }) => {
             try {
                 const existing = await ctx.mgmt.getSession(session_id);
                 if (!existing) {
@@ -325,7 +329,9 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         isError: true,
                     };
                 }
-                await ctx.mgmt.sendAnswer(session_id, answer);
+                await ctx.mgmt.sendAnswer(session_id, answer, {
+                    expectedQuestion: expected_question ?? existing.pendingQuestion ?? null,
+                });
                 return {
                     content: [
                         { type: "text" as const, text: JSON.stringify({ sent: true }) },

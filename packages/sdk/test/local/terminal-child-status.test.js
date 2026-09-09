@@ -1,3 +1,4 @@
+import { resolvePendingQuestion } from "../../src/session-status.ts";
 /**
  * Terminal child session lifecycle tests.
  *
@@ -15,7 +16,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { describe, it, beforeAll } from "vitest";
+import { describe, it, beforeAll, expect } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient } from "../helpers/local-workers.js";
 import { assertEqual, assertNotNull, assertThrows } from "../helpers/assertions.js";
@@ -91,3 +92,16 @@ describe("Terminal Child Sessions", () => {
     });
 });
 
+
+
+describe("pending question follows the current status", () => {
+    it("does not expose an old KV question during or after the next turn", () => {
+        const old = { type: "input_required", question: "Old question?" };
+        for (const status of ["running", "idle", "waiting", "completed", "failed", "cancelled"]) {
+            expect(resolvePendingQuestion(status, {}, old)).toBeUndefined();
+            expect(resolvePendingQuestion(status, { pendingQuestion: "Old question?" }, old)).toBeUndefined();
+        }
+        expect(resolvePendingQuestion("input_required", {}, old)?.question).toBe("Old question?");
+        expect(resolvePendingQuestion("input_required", { pendingQuestion: "New question?" }, old)?.question).toBe("New question?");
+    });
+});

@@ -101,6 +101,23 @@ test("the selection still lands on the right session and loads it", async ({ pag
     expect(id).toMatch(/^[0-9a-f-]{8,}/i);
 });
 
+test("a newly focused session is centered in the list once", async ({ page }) => {
+    await openListFocused(page);
+    await page.evaluate(() => {
+        window.__sessionRevealCalls = [];
+        Element.prototype.scrollIntoView = function(options) {
+            window.__sessionRevealCalls.push({ sessionId: this.getAttribute("data-session-id"), block: options?.block });
+        };
+    });
+    const target = page.locator(".ps-session-list-button").nth(75);
+    const sessionId = await target.getAttribute("data-session-id");
+    await target.click();
+    await expect.poll(() => page.evaluate(() => window.__sessionRevealCalls)).toContainEqual({ sessionId, block: "center" });
+    const count = await page.evaluate(id => window.__sessionRevealCalls.filter(call => call.sessionId === id).length, sessionId);
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(id => window.__sessionRevealCalls.filter(call => call.sessionId === id).length, sessionId)).toBe(count);
+});
+
 test("a burst of moves stays within a frame budget per move", async ({ page }) => {
     await openListFocused(page);
 

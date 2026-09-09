@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { collectContractViolations } from "../../src/session-proxy.ts";
 
@@ -540,7 +541,7 @@ describe("inline control tool execution", () => {
         expect(forwardedEvents.some((event) => event.eventType === "assistant.message" && String(event.data?.content || "").includes("<invoke"))).toBe(false);
     });
 
-    it("advertises model reasoning options through list_available_models", async () => {
+    it("returns catalog reasoning strengths and context tiers through list_available_models", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.assistantContent = "checked models";
 
@@ -549,7 +550,12 @@ describe("inline control tool execution", () => {
             reasoningEffort: "medium",
         });
         await managed.runTurn("list models", {
-            modelSummary: "Available models\n- github-copilot:gpt-5.5 [reasoning: medium, xhigh; default: medium]",
+            modelSummary: new ModelProviderRegistry({ providers: [{
+                id: "github-copilot", type: "github", githubToken: "test-token",
+                models: [{ name: "gpt-5.5", supportedReasoningEfforts: ["medium", "xhigh"],
+                    defaultReasoningEffort: "medium", supportedContextTiers: ["default", "long_context"],
+                    defaultContextTier: "default", contextWindowSizes: { default: 200000, long_context: 936000 } }],
+            }] }).getModelSummaryForLLM(),
         });
 
         const listTool = fakeSession.registeredTools.find((tool) => tool.name === "list_available_models");
@@ -562,6 +568,8 @@ describe("inline control tool execution", () => {
         expect(result).toContain("reasoning_effort: medium");
         expect(result).toContain("github-copilot:gpt-5.5");
         expect(result).toContain("reasoning: medium, xhigh; default: medium");
+        expect(result).toContain("context: default, long_context; default: default");
+        expect(result).toContain("context sizes: default: 200000 tokens, long_context: 936000 tokens");
     });
 
     it("advertises and forwards an optional spawn_agent reasoning_effort", async () => {
@@ -594,6 +602,42 @@ describe("inline control tool execution", () => {
         }));
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned reasoning child.");
+    });
+
+    it.each(["default", "long_context"])("forwards explicit child context %s in inline and fallback spawning", async (tier) => {
+        for (const inline of [true, false]) {
+            const fakeSession = new FakeCopilotSession();
+            const args = { task: "Review the proposal", model: "review:model", context_tier: tier };
+            fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args }];
+            const spawnAgent = vi.fn(async () => "spawned");
+            const managed = new ManagedSession("spawn-context", fakeSession, { contextTier: "long_context" });
+            const result = await managed.runTurn("review", inline ? { controlToolBridge: { spawnAgent } } : {});
+            const schema = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent").parameters;
+            expect(schema.properties.context_tier.enum).toEqual(["default", "long_context"]);
+            expect(ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent")
+                .parameters.properties.context_tier).toEqual(schema.properties.context_tier);
+            if (inline) expect(spawnAgent).toHaveBeenCalledWith(args);
+            else expect(result).toMatchObject({ type: "spawn_agent", contextTier: tier });
+        }
+    });
+
+    it("rejects invalid spawn context before invoking the bridge", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const spawnAgent = vi.fn();
+        const managed = new ManagedSession("invalid-context", fakeSession, {});
+        await managed.runTurn("register tools", { controlToolBridge: { spawnAgent } });
+        const tool = fakeSession.registeredTools.find((entry) => entry.name === "spawn_agent");
+        expect(await tool.handler({ task: "review", context_tier: "huge" })).toContain("context_tier must be one of");
+        expect(spawnAgent).not.toHaveBeenCalled();
+    });
+
+    it("leaves the legacy fallback action unchanged when context is omitted", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args: { task: "review" } }];
+        const managed = new ManagedSession("inherited-context", fakeSession, { contextTier: "long_context" });
+        const result = await managed.runTurn("review");
+        expect(result.type).toBe("spawn_agent");
+        expect(result).not.toHaveProperty("contextTier");
     });
 
     it("still suspends the turn for wait_for_agents", async () => {

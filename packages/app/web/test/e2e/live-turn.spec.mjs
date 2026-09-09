@@ -20,7 +20,9 @@ async function open(page) {
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
     await expect.poll(() => subscribed).toBe(true);
     let seq = 0;
-    let eventSeq = 0;
+    // Stay above fixture-loaded history so a test can seed the REST transcript
+    // and then append genuinely newer events over the live channel.
+    let eventSeq = 1_000_000;
     const event = (eventType, data) => socket.send(JSON.stringify({ type: "sessionEvent", sessionId, event: {
         sessionId, seq: ++eventSeq, eventType, createdAt: Date.now(), data,
     } }));
@@ -91,6 +93,55 @@ test("a response completed before reveal never flashes provisional chrome", asyn
     await expect(reasoning).not.toHaveAttribute("open");
     await reasoning.locator("summary").click();
     await expect(reasoning).toContainText("Brief thought");
+});
+
+test("new chat follows at the bottom but does not move a reader who scrolled up", async ({ page }) => {
+    // Fill the default 300-event window. This makes the paused-reader check
+    // exercise the real eviction boundary rather than an append with spare
+    // capacity, which cannot expose an anchor shift.
+    const earlier = Array.from({ length: 300 }, (_, i) => ({
+        sessionId,
+        seq: i + 1,
+        eventType: i % 2 === 0 ? "user.message" : "assistant.message",
+        createdAt: Date.now() - (300 - i) * 1_000,
+        data: { messageId: `scroll-${i}`, content: `Earlier message ${i}: ${"context ".repeat(5)}` },
+    }));
+    await page.route(`**/sessions/${sessionId}/events?*`, route => route.fulfill({
+        json: { ok: true, result: earlier },
+    }));
+    const wire = await open(page);
+
+    const viewport = page.locator(".ps-chat-panel .ps-scroll-panel");
+    await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight)).toBeGreaterThan(500);
+    await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
+
+    const pausedAnchor = page.getByText("Earlier message 12:", { exact: false }).first();
+    await pausedAnchor.evaluate(node => node.scrollIntoView({ block: "center" }));
+    await viewport.evaluate(node => {
+        node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(200);
+    const pausedTop = await viewport.evaluate(node => node.scrollTop);
+    const pausedAnchorBefore = await pausedAnchor.boundingBox();
+
+    wire.event("user.message", { messageId: "scroll-paused-new", content: "New text while reading older content" });
+    await expect(page.getByText("New text while reading older content", { exact: false })).toBeAttached();
+    await expect.poll(() => viewport.evaluate(node => node.scrollTop)).toBeCloseTo(pausedTop, 0);
+    const pausedAnchorAfter = await pausedAnchor.boundingBox();
+    expect(Math.abs(pausedAnchorAfter.y - pausedAnchorBefore.y), "a live append moved the paused reading anchor").toBeLessThan(3);
+
+    await viewport.evaluate(node => {
+        node.scrollTop = node.scrollHeight;
+        node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
+    // Let React commit the scroll-follow state before the simulated server
+    // event. A real gesture naturally spans frames; without this wait the test
+    // can append in the same task that dispatched the synthetic scroll event.
+    await page.waitForTimeout(50);
+    wire.event("user.message", { messageId: "scroll-follow-new", content: "Newest text while following" });
+    await expect(page.getByText("Newest text while following", { exact: false })).toBeAttached();
+    await expect.poll(() => viewport.evaluate(node => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThan(8);
 });
 
 test("message previews are compact canvas-style disclosures with bounded scrolling", async ({ page }) => {

@@ -38,6 +38,18 @@ PilotSwarm agents. Model-specific compatibility measurements remain in
   benchmark. The separate interrupted routing sweep remains partial; this entry
   does not claim it was completed. See `docs/models/native-delegation-testing.md`.
 
+## 2026-09-07 — Search shared skills when needed
+
+- **Agent:** framework knowledge-retrieval prompt and `search_skills` tool description.
+- **Models:** model-independent guidance; the reported screenshots did not identify the model.
+- **Problem:** the prompt required a search at the start of every turn, causing
+  greetings, arithmetic, and status checks to call `search_skills` unnecessarily.
+- **Change:** search for explicit skill requests or non-obvious context gaps;
+  answer routine exchanges directly and reuse relevant skills already loaded.
+  Retrieved instructions still load before use.
+- **Validation:** prompt-contract tests cover both semantic and lexical modes.
+  No live model behavior or compatibility sweep is claimed.
+
 ## 2026-07-20 — Finite delegation wake policy
 
 - **Agent:** framework base agent (`packages/sdk/plugins/system/agents/default.agent.md`)

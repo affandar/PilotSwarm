@@ -255,8 +255,21 @@ human-authored prose; the event's sender metadata remains authoritative.
 
 Retry warnings must survive CMS/detail status churn regardless of provider
 error wording. Stable message/card keys preserve the mounted browser card as
-the retry count changes. Explicit clears, newer recovered detail states, and
-terminal transitions resolve it; stale snapshots are not proof of recovery.
+the retry count changes. Recovery resolves the active error status, not its
+history. Keep warnings in chronological position, with later chat below them.
+Durable `session.error` events render in chat and survive backward paging.
+Status-only notices are captured once in shared state and reconciled with
+their durable event; never append the current error after every new message.
+
+Session creation seeds its response into the catalog and uses explicit
+navigation so filters and stale catalog pages cannot select an older row.
+Preserve the outgoing draft. A completed older load must not replace the new
+session's subscription. The browser returns to chat from other views without
+changing saved Master of Agents layouts.
+
+The browser composer measures wrapped text with `scrollHeight`. An empty
+textarea measures its placeholder too. Recompute when the placeholder changes
+(especially outbox acknowledgement), not just when the draft changes.
 
 Do not put event-shape interpretation in `components.js`.
 

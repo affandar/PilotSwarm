@@ -1,4 +1,4 @@
-import { useMoa, MoaWorkspace, MoaImport, stashMoaLink } from "./moa/MoaWorkspace.jsx";
+import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
 import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins } from "pilotswarm/ui-react";
@@ -689,7 +689,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         };
     }, [controller, deepLinkTarget, initialSessionId, transport]);
 
-    return React.createElement("div", { className: `portal-app-shell${chromeHidden ? " is-chromeless" : ""}${moa.zen ? " is-moa-zen" : ""}`, style: shellStyle },
+    return React.createElement("div", { className: `portal-app-shell${chromeHidden ? " is-chromeless" : ""}${moa.zen || moa.mobileZen || (moa.active && !moa.desktop) ? " is-moa-zen" : ""}`, style: shellStyle },
         // The dev-auth banner survives chrome hiding on purpose: it warns that
         // the deployment is running an auth mode with no real identity behind
         // it, and a cosmetic display option is not a reason to suppress a
@@ -735,9 +735,9 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 onDismiss: () => setDismissedStatus(statusText),
             }),
         React.createElement("main", { className: "portal-main" },
-            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active, moa }),
-            moa.active ? React.createElement(MoaWorkspace, { controller, moa, createTransport: createPanelTransport }) : null,
-            moa.shared ? React.createElement(MoaImport, { moa, controller }) : null),
+            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa }),
+            moa.mobileZen ? React.createElement(MobileZen, { controller, onClose: moa.closeMobileZen, drafts: moa.zenDrafts, createTransport: createPanelTransport }) : null,
+            moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, visible: moa.active, createTransport: createPanelTransport }) : null),
     );
 }
 
@@ -939,7 +939,7 @@ export default function App() {
     // URL param directly, and stashing then would leave a stale id behind.
     const showSignInGate = !publicConfig.loading && !auth.loading && !auth.signedIn;
     React.useEffect(() => {
-        if (showSignInGate) { stashDeepLinkTarget(); stashMoaLink(); }
+        if (showSignInGate) { stashDeepLinkTarget(); }
     }, [showSignInGate]);
     const shellStyle = appHeight
         ? { "--ps-app-height": `${appHeight}px` }

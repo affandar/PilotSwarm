@@ -24,8 +24,9 @@ export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "
 
 /**
  * Context-window tier accepted by the Copilot SDK (CLI 1.0.6x+).
- * "default" is the smaller/cheaper window; "long_context" pins the session to
- * the model's long-context tier (larger window, higher token cost).
+ * "default" selects the provider/model's standard tier, which may already
+ * be its largest window. "long_context" is an optional extended tier.
+ * Numeric capacities, when declared, live in contextWindowSizes.
  */
 export type ContextTier = "default" | "long_context";
 
@@ -448,8 +449,12 @@ export class ModelProviderRegistry {
                 const contextTierLabel = m.supportedContextTiers?.length
                     ? ` [context: ${m.supportedContextTiers.join(", ")}${m.defaultContextTier ? `; default: ${m.defaultContextTier}` : ""}]`
                     : "";
+                const contextSizeLabel = m.supportedContextTiers?.length && m.contextWindowSizes
+                    ? m.supportedContextTiers.filter(tier => m.contextWindowSizes?.[tier] != null)
+                        .map(tier => `${tier}: ${m.contextWindowSizes?.[tier]} tokens`).join(", ")
+                    : "";
                 const desc = m.description ? ` — ${m.description}` : "";
-                lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${contextTierLabel}${desc}`);
+                lines.push(`- ${m.qualifiedName}${costLabel}${reasoningLabel}${contextTierLabel}${contextSizeLabel ? ` [context sizes: ${contextSizeLabel}]` : ""}${desc}`);
             }
         }
         const defaultAllowed = this._defaultModel

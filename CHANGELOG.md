@@ -1,6 +1,116 @@
 # Changelog
 
-## Unreleased
+## 0.5.63 — 2026-09-07
+
+Faster Master of Agents navigation, stable reading positions, and compact
+mobile controls.
+
+- Drag desktop MoA tabs to reorder them and save that order in the user profile.
+  Cache visited dashboard views in browser memory for immediate display when
+  switching back; refresh session content only while its dashboard is visible.
+  Preserve drafts, panel state, and subscriptions across rapid switches.
+- Keep the mobile session title and status on the left, with a triangle-only
+  MoA picker on the right. Avoid a second tab row, overlapping icons, and mobile
+  drag reordering. Restore the compact Stop control beside Send while working.
+- Center the session list on the newly focused session, including navigation
+  from MoA panels. Preserve the reading position when new chat activity arrives;
+  follow new content only while the reader is at the bottom. Keep older-history
+  loading anchored and prevent delayed requests from reclaiming focus.
+- Use an X for Close panel and retain the trash can for Delete session. Closing
+  a panel leaves the session available to reopen.
+- Search skills when explicitly requested or when a task needs knowledge beyond
+  the current context. Answer routine greetings, arithmetic, and status questions
+  directly, and reuse already loaded relevant skills.
+- Update the Duroxide dependency to 0.1.29 or later for compatibility with the
+  deployed storage migrations. No PilotSwarm orchestration or CMS schema change
+  is introduced in this release.
+
+## 0.5.62 — 2026-09-07
+
+Multiple personal Master of Agents dashboards, live tool activity, durable
+question handling, explicit spawn context, and refined responsive controls.
+
+- Add up to five personal MoA dashboards with responsive desktop tabs and a
+  mobile picker. Preserve per-dashboard layouts, selection, session drafts,
+  attachments, and pending sends when switching. Protect saved layouts from
+  older clients overwriting the new format.
+- Keep the proportional mobile panel map visible while its session list scrolls.
+  Default touch sizing off on desktop and on on mobile, with separate saved choices.
+- Use a diagonal arrow for panel focus. Show session details directly inside
+  the control panel, with scrolling on smaller screens.
+- Show tool and cross-agent calls in chat as collapsible first-line previews;
+  keep disclosure state through progress and completion. Empty-response
+  diagnostics remain in Activity rather than warning cards.
+- Expose model reasoning strengths, context tiers and capacities; let spawned
+  agents explicitly select a supported context tier.
+- Rename the Agent Manager package display name to Agent Smith, preserving IDs
+  and routing configuration.
+- Stop replayed questions and old saved responses from reopening the answer
+  composer. Bind answers to their observed question/iteration so a second
+  writer's late answer cannot answer a later question. Render legacy generic
+  question placeholders as the preserved user answer only.
+- Reconcile legacy merged system-message receipts by their exact client message
+  identities so acknowledged prompts do not remain in the optimistic outbox.
+- Document the proposed durable scheduler operation protocol and its adversarial
+  test plan without changing runtime scheduling behavior.
+
+## 0.5.61 — 2026-09-06
+
+Mobile focus workspaces, stable live status, provider-budget recovery, and responsive portal controls.
+
+- Desktop toolbar groups adapt to available header space without overlapping;
+  narrow session panes keep their titles above the action buttons.
+- Mobile Zen now opens the shared searchable session picker from its header, including session details, canvases, and the new-session + action.
+- Move mobile Zen and MoA activity and queue counts into the existing header;
+  remove the reserved footer strip and keep queued prompt bodies in the transcript.
+- Expose the active panel control menu in the mobile MoA header so splitting,
+  replacing, and removing panels are accessible by tap.
+- Align the mobile composer label and input; move Zen entry to the chat header.
+  Keep the MoA session picker usable above the phone keyboard and measure
+  wrapped tooltips against the visible viewport.
+- Align desktop Zen restore at the right edge in a shorter strip; show panel
+  title-bar controls only for the focused panel, with a brighter theme-aware ring.
+
+- Add mobile Zen with a session dropdown, restore button, and compact composer.
+- Bring the personal MoA workspace to phones: one panel at a time, a minimap
+  preserving saved desktop geometry, and clockwise/reverse swipe navigation.
+  Keep drafts and scroll positions while switching; protect native horizontal
+  scrolling and retain a full-sized selection list for tiny map panels.
+- Use a short mobile composer placeholder and matching 16px input text.
+- Reject stale status snapshots in both directions, preserve status ordering
+  through detail polling, and reserve the chat status baseline to prevent flicker.
+- Match budget models to runtime provider pools, retain existing capped models
+  without a catalog, and expose catalog errors with retry. Agent-driven budget
+  changes now wake affected paused sessions to recheck admission.
+
+
+## 0.5.60 — 2026-09-06
+
+Personal desktop Master of Agents, session-navigation reliability, and chat UX.
+
+- Replace obsolete ZIP-extractor tests with coverage of the shipped tar.gz
+  extractor, including traversal, link, and unsupported-format rejection.
+- Keep routine MoA autosave status hidden. Show a retry icon only if saving fails.
+
+- Move MoA split-right/below shortcuts into panel headers, including the empty
+  workspace. Center reset and zen in the header. Replace the session-picker pin
+  with the standard new-session plus icon and restore its confirm checkmark.
+
+- Make MoA one personal workspace, with no dashboard tabs, names, sharing,
+  or links. Migrate the selected populated legacy layout, falling back to the
+  first populated layout. Keep clear and zen icons centered in the header.
+- Give MoA one bottom composer bound to the focused session; Tab/Shift+Tab
+  cycles panels with automatic composer focus. Arrow keys retain native editing.
+  Add Create New Session to the picker and group session/panel controls behind
+  a sliders icon. Keep zoom in the panel title bar. Normal session sharing is
+  unchanged; MoA omits sharing and link controls.
+
+- Shrink the mobile composer after send acknowledgement changes its wrapped
+  placeholder. Keep long drafts bounded and internally scrollable.
+- Select and open newly created sessions despite stale catalogs or filters.
+  Preserve drafts and prevent an older load from taking over the subscription.
+- Keep warnings in chronological chat history after recovery. New messages
+  appear below them without a reload; retry updates preserve the card's DOM.
 
 - Preserve multiline tool-call disclosures as single records when integrating
   the released chat-call UI, preventing stale rows after session switches.

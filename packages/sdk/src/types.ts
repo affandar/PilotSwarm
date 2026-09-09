@@ -1,6 +1,6 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
 import type { SessionStateStore } from "./session-store.js";
-import type { ReasoningEffort } from "./model-providers.js";
+import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
 
@@ -25,7 +25,7 @@ export type TurnAction =
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
@@ -63,7 +63,7 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -137,6 +137,7 @@ export interface TurnOptions {
             task?: string;
             model?: string;
             reasoning_effort?: ReasoningEffort;
+            context_tier?: ContextTier;
             system_message?: string;
             tool_names?: string[];
             title?: string;
@@ -384,7 +385,7 @@ export interface PilotSwarmSessionInfo {
     title?: string;
     createdAt: Date;
     updatedAt: Date;
-    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean; iteration?: number };
     waitingUntil?: Date;
     waitReason?: string;
     cronActive?: boolean;
@@ -602,7 +603,7 @@ export interface OrchestrationInput {
     /** Agent IDs being waited on (for wait_for_agents across CAN). v1.0.32+. */
     waitingForAgentIds?: string[];
     /** Pending input_required question context (for answer routing after CAN). v1.0.32+. */
-    pendingInputQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean };
+    pendingInputQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean; iteration?: number };
     /**
      * Prompts the budget gate refused before their turn could run, carried
      * across continue-as-new so a queued message survives a paused session's
@@ -1249,6 +1250,10 @@ export interface SessionCommandResponse extends CommandResponse {
 export interface SessionStatusSignal {
     status: PilotSwarmSessionStatus;
     iteration: number;
+    pendingQuestion?: string;
+    questionIteration?: number;
+    choices?: string[];
+    allowFreeform?: boolean;
     responseVersion?: number;
     commandVersion?: number;
     commandId?: string;

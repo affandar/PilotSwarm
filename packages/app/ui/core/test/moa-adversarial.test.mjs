@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    normalizeMoa, normalizeMoaLayout, replaceMoaNode, moaLeaves,
-    emptyMoaPanel, encodeMoaShare, decodeMoaShare, MOA_SHARE_LIMIT,
+    normalizeMoa, normalizeMoaLayout, replaceMoaNode, moaLeaves, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard,
+    emptyMoaPanel,
 } from "../src/moa.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
@@ -10,27 +10,21 @@ const chat = (id = "p1", sessionId = "session-1") => ({ id, type: "chat", sessio
 const canvas = (id = "p2", slot = 2) => ({ id, type: "canvas", sessionId: "session-1", slot });
 const split = (first = chat(), second = canvas()) => ({ id: "split", type: "split", direction: "row", ratio: 37, first, second });
 const layout = (tree = split()) => ({ name: "Operations", tree });
-const encodeRaw = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-
-test("malformed saved profiles recover five independent empty slots", () => {
-    for (const bad of [null, undefined, [], false, "garbage", { slots: [layout({ type: "chat" })] }]) {
-        const normalized = normalizeMoa(bad);
-        assert.equal(normalized.slots.length, 5);
-        assert.equal(normalized.activeSlot, 0);
-        assert.ok(normalized.slots.every((s) => s.tree === null));
-        assert.notEqual(normalized.slots[0], normalized.slots[1]);
+const profile = (tree, name = "MoA 1") => ({ version: 3, activeDashboardId: "moa-1", dashboards: [{id: "moa-1", name, tree, focusedPanelId: moaLeaves(tree)[0]?.id || null}] });
+test("malformed profiles recover one empty personal workspace", () => {
+    for (const bad of [null, undefined, [], false, "garbage", { version: 2, tree: { type: "chat" } }]) {
+        assert.deepEqual(normalizeMoa(bad), profile(null));
     }
-    const value = normalizeMoa({ activeSlot: 90, slots: Array.from({ length: 8 }, () => layout()) });
-    assert.equal(value.activeSlot, 4);
-    assert.equal(value.slots.length, 5);
-    assert.equal(normalizeMoa({ activeSlot: -2 }).activeSlot, 0);
 });
 
-test("one corrupt slot cannot destroy the other saved layouts", () => {
-    const value = normalizeMoa({ activeSlot: 1, slots: [layout(), layout({ type: "unknown" }), layout(chat("p3"))] });
-    assert.deepEqual(value.slots[0], layout());
-    assert.equal(value.slots[1].tree, null);
-    assert.deepEqual(value.slots[2], layout(chat("p3")));
+test("legacy migration keeps the selected populated layout or the first valid populated layout", () => {
+    const slots = [layout(), layout({ type: "unknown" }), layout(chat("p3")), layout(null)];
+    assert.deepEqual(normalizeMoa({ slots, activeSlot: 2 }), profile(chat("p3"), "Operations"));
+    for (const activeSlot of [1, 3, 99, -1]) assert.deepEqual(normalizeMoa({ slots, activeSlot }), profile(split(), "Operations"));
+    assert.deepEqual(activeMoaDashboard(normalizeMoa({ slots: [null, null, layout(canvas())], activeSlot: 0 })).tree, canvas());
+    const cleared = normalizeMoa({ version: 2, tree: null, slots });
+    assert.deepEqual(cleared, profile(null));
+    assert.deepEqual(normalizeMoa(cleared), cleared);
 });
 
 test("profile hydration preserves desktop layouts when an older or mobile payload omits MoA", () => {
@@ -53,30 +47,13 @@ test("saving a layout cannot change the default app's active session or prompt",
     assert.equal(next.sessions, state.sessions);
 });
 
-test("shared layouts contain only normalized references, geometry, and the workspace name", () => {
-    const secret = "PRIVATE-CONTENT";
-    const source = { ...layout(), accessToken: secret, grants: [secret], transcript: secret };
-    source.tree.first = { ...source.tree.first, title: secret, prompt: secret, owner: secret, html: secret, url: "javascript:alert(1)" };
-    source.tree.second = { ...source.tree.second, canvasShareToken: secret, access: "public" };
-    const wire = encodeMoaShare(source);
-    const decoded = decodeMoaShare(wire);
-    assert.deepEqual(decoded, layout());
-    assert.ok(!Buffer.from(wire, "base64url").toString().includes(secret));
-    decoded.tree.first.sessionId = "someone-else";
-    assert.equal(source.tree.first.sessionId, "session-1", "copied layout owns its references");
-});
-
-test("Unicode workspace names survive a share round trip", () => {
-    const value = { ...layout(), name: "🧭 故障対応 · équipe" };
-    assert.deepEqual(decodeMoaShare(encodeMoaShare(value)), value);
-    assert.equal(normalizeMoaLayout({ ...value, name: "  " }).name, "Untitled MoA");
-    assert.equal(normalizeMoaLayout({ ...value, name: "a".repeat(1000) }).name.length, 64);
-});
-
-test("malformed, oversize, unsupported, and invalid UTF-8 links fail closed", () => {
-    for (const bad of [null, "", "%%%", "abc=", "a".repeat(MOA_SHARE_LIMIT + 1), "_w", encodeRaw(null), encodeRaw({ version: 2, ...layout() }), encodeRaw({ version: 1, tree: chat("p", "../secret") })]) {
-        assert.throws(() => decodeMoaShare(bad));
-    }
+test("personal profiles serialize only panel references and geometry", () => {
+    const source = { version: 2, name: "discard", slots: [layout()], tree: { ...split(), first: { ...chat(), transcript: "SECRET", token: "SECRET" } }, grants: ["SECRET"] };
+    const normalized = normalizeMoa(source);
+    assert.deepEqual(normalized, profile(split(), "discard"));
+    assert.ok(!JSON.stringify(normalized).includes("SECRET"));
+    activeMoaDashboard(normalized).tree.first.sessionId = "other";
+    assert.equal(source.tree.first.sessionId, "session-1");
 });
 
 test("duplicate panel or split identities are rejected before rendering", () => {
@@ -156,13 +133,48 @@ test("canvas actions validate the frame's pinned slot, independent of another sl
     assert.match(sent[0].prompt, /"second"/);
 });
 
-test("tab migration preserves populated and renamed legacy slots and bounds added tabs", () => {
-    assert.equal(normalizeMoa(null).tabCount, 1);
-    const legacy = normalizeMoa({ slots: [null, null, layout()] });
-    assert.equal(legacy.tabCount, 3);
-    assert.deepEqual(legacy.slots[2], layout());
-    assert.equal(normalizeMoa({ slots: [{name:'Planning',tree:null}], tabCount:3 }).tabCount, 3);
-    assert.equal(normalizeMoa({ tabCount:999 }).tabCount, 5);
-    assert.equal(normalizeMoa({ tabCount:-1 }).tabCount, 1);
-    assert.equal(normalizeMoa({ activeSlot:4, tabCount:1 }).tabCount, 5);
+
+test("multiple dashboards preserve identity, active selection, geometry and per-dashboard focus", () => {
+    const first = { id: "operations", name: "Operations", tree: split(), aspectRatio: 2.2, focusedPanelId: "p2" };
+    const second = { id: "research", name: "Research", tree: chat("p3"), focusedPanelId: "p3" };
+    const value = normalizeMoa({ version: 3, activeDashboardId: "research", dashboards: [first, second] });
+    assert.deepEqual(value.dashboards, [first, second]);
+    const updated = updateMoaDashboard(value, "research", { tree: null });
+    assert.deepEqual(updated.dashboards[0], first);
+    assert.equal(activeMoaDashboard(updated).tree, null);
+    assert.equal(activeMoaDashboard(updated).focusedPanelId, null);
+    assert.deepEqual(value.dashboards[1], second, "updates must not mutate another saved snapshot");
+    assert.deepEqual(normalizeMoa(value), value);
+});
+
+test("dashboard reordering preserves active identity, layout data and profile array order", () => {
+    const first = { id: "operations", name: "Operations", tree: split(), focusedPanelId: "p2" };
+    const second = { id: "research", name: "Research", tree: chat("p3"), focusedPanelId: "p3" };
+    const third = { id: "review", name: "Review", tree: canvas("p4"), focusedPanelId: "p4" };
+    const value = normalizeMoa({ version: 3, activeDashboardId: "research", dashboards: [first, second, third] });
+    const moved = moveMoaDashboard(value, "operations", 2);
+    assert.deepEqual(moved.dashboards.map(d => d.id), ["research", "review", "operations"]);
+    assert.equal(moved.activeDashboardId, "research");
+    assert.deepEqual(moved.dashboards[2], first);
+    assert.deepEqual(value.dashboards.map(d => d.id), ["operations", "research", "review"], "reordering must not mutate saved state");
+    assert.deepEqual(moveMoaDashboard(value, "missing", 0), value);
+    assert.deepEqual(moveMoaDashboard(value, "review", -20).dashboards.map(d => d.id), ["review", "operations", "research"]);
+});
+
+test("dashboard validation caps five, repairs duplicate identities and invalid active/focus references", () => {
+    const value = normalizeMoa({ version: 3, activeDashboardId: "missing", dashboards: Array.from({length: 20}, () => ({ id: "duplicate", name: "x".repeat(100), tree: chat(), focusedPanelId: "missing", token: "SECRET" })) });
+    assert.equal(value.dashboards.length, 5);
+    assert.equal(new Set(value.dashboards.map(d => d.id)).size, 5);
+    assert.equal(value.activeDashboardId, value.dashboards[0].id);
+    assert.ok(value.dashboards.every(d => d.name.length === 64 && d.focusedPanelId === "p1"));
+    assert.ok(!JSON.stringify(value).includes("SECRET"));
+    assert.deepEqual(normalizeMoa(value), value);
+    assert.deepEqual(normalizeMoa({ version: 3, dashboards: [] }), profile(null));
+});
+
+test("single-dashboard migration preserves a cleared view and saved desktop aspect ratio", () => {
+    const migrated = normalizeMoa({ version: 2, tree: split(), aspectRatio: 2.13 });
+    assert.equal(activeMoaDashboard(migrated).aspectRatio, 2.13);
+    assert.deepEqual(activeMoaDashboard(migrated).tree, split());
+    assert.equal(activeMoaDashboard(normalizeMoa({ version: 2, tree: null, slots: [layout()] })).tree, null);
 });

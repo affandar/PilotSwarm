@@ -16,6 +16,18 @@ Build browser portal experiences on top of the shipped PilotSwarm web portal.
 - AKS deployment: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
+## Personal multi-session workspaces
+
+The shipped portal includes Master of Agents (MoA): up to five personal
+chat/canvas dashboards, split panels, a shared focused composer, and focus mode.
+It uses the same branding and session permissions. No plugin setting is needed.
+Desktop tabs can be reordered, with order and layouts saved in the user profile.
+Visited views are cached only in browser memory and refresh only while visible.
+Mobile shows one panel at a time, a proportional panel map, and a triangle-only
+dashboard picker in the session header; it does not support tab dragging.
+MoA has no sharing links and is unavailable in the native TUI.
+See `docs/user-guide/master-of-agents.md` for behavior and keyboard controls.
+
 ## Preferred Structure
 
 ```text

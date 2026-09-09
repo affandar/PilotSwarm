@@ -72,6 +72,33 @@ describe("user profile + github copilot key", () => {
         }
     });
 
+    it("legacy and concurrent preference writes cannot erase multi-dashboard layouts", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        try {
+            const principal = { provider: "test", subject: uniqueSubject("moa-version") };
+            const moa = { version: 3, activeDashboardId: "ops", dashboards: [{ id: "ops", name: "Operations", tree: null }] };
+            await catalog.setUserProfileSettings(principal, { theme: "green", moa });
+            for (const legacy of [{ theme: "blue", moa: { version: 2, tree: null } }, { theme: "blue" }, {}, { moa: { version: 3 } }]) {
+                const result = await catalog.setUserProfileSettings(principal, legacy);
+                assertEqual(JSON.stringify(result.profileSettings.moa), JSON.stringify((await catalog.getUserProfile(principal)).profileSettings.moa));
+                assertEqual(result.profileSettings.moa.dashboards[0].name, "Operations");
+                assertEqual(result.profileSettings.theme, legacy.theme);
+            }
+            for (let i = 0; i < 4; i++) {
+                const renamed = { ...moa, dashboards: [{ ...moa.dashboards[0], name: `Round ${i}` }] };
+                await Promise.all([
+                    catalog.setUserProfileSettings(principal, { moa: renamed }),
+                    catalog.setUserProfileSettings(principal, { theme: "legacy", moa: {version:2,tree:null} }),
+                ]);
+                assertEqual((await catalog.getUserProfile(principal)).profileSettings.moa.dashboards[0].name, `Round ${i}`);
+            }
+            const cleared = await catalog.setUserProfileSettings(principal, { moa });
+            assertEqual(cleared.profileSettings.moa.dashboards[0].name, "Operations", "current clients can replace or clear their layout");
+        } finally { await catalog.close(); }
+    });
+
     it("public profile read never exposes the raw github copilot key", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await PgSessionCatalogProvider.create(env.store, env.cmsSchema);

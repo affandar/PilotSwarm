@@ -4,6 +4,8 @@ import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent } from "./native-tasks.js";
+import { buildSessionWarning } from "./session-errors.js";
+import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -18,6 +20,7 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 // noisy sessions (thousands of tool/orchestration events between messages)
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
+    ...CHAT_CALL_EVENT_TYPES,
     "user.message",
     "assistant.message",
     // Needed to distinguish interim assistant output from the final answer
@@ -97,26 +100,16 @@ function buildRegenFailedItem(event) {
 }
 
 function buildSessionWarningItem(event) {
-    const data = event?.data || {};
-    const text = event.eventType === "session.error"
-        ? data.message
-        : event.eventType === "session.turn_completed" && data.resultType === "error"
-            ? data.errorMessage
-            : null;
-    if (typeof text !== "string" || !text.trim()) return null;
+    const completed = event.eventType === "session.turn_completed" && event.data?.resultType === "error";
+    if (event.eventType !== "session.error" && !completed) return null;
+    const warning = buildSessionWarning(event);
+    if (!warning) return null;
     return {
-        id: `session-warning:${event.sessionId}:${event.seq}`,
-        kind: "session-warning",
-        role: "system",
-        text: text.trim(),
-        errorText: text.trim(),
+        ...warning,
+        errorText: warning.text,
         sourceEventType: event.eventType,
-        ...(event.eventType === "session.turn_completed" ? { turnCompletedSeq: event.seq } : {}),
+        ...(completed ? { turnCompletedSeq: event.seq } : {}),
         time: formatTimestamp(event.createdAt),
-        createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
-        cardTitle: "Warning",
-        cardTitleColor: "yellow",
-        cardBorderColor: "yellow",
     };
 }
 
@@ -125,7 +118,10 @@ function appendSessionWarning(chat, event) {
     if (!warning) return;
     if (chat.some((item) => item.id === warning.id
         || (item.turnCompletedSeq != null && item.turnCompletedSeq === event.seq))) return;
-    const previous = chat.at(-1);
+    // Tool disclosures can arrive between the SDK error and the failed-turn
+    // summary. They do not start a different conversation/failure episode.
+    const previousIndex = chat.findLastIndex(item => item.kind !== "chat-call" && item.kind !== "native-task-group");
+    const previous = chat[previousIndex];
     // A runtime error and its failed-turn summary can describe one failure.
     // Retain the original anchor; subsequent failed turns remain distinct.
     if (previous?.kind === "session-warning"
@@ -133,10 +129,31 @@ function appendSessionWarning(chat, event) {
         && previous.turnCompletedSeq == null
         && event.eventType === "session.turn_completed"
         && matchesSessionError(previous.errorText, warning.errorText)) {
-        chat[chat.length - 1] = { ...previous, turnCompletedSeq: event.seq };
+        chat[previousIndex] = { ...previous, turnCompletedSeq: event.seq };
         return;
     }
     chat.push(warning);
+}
+
+const parentChatCallTypes = new Set(CHAT_CALL_EVENT_TYPES);
+function appendParentChatCall(chat, event) {
+    if (!parentChatCallTypes.has(event?.eventType)) return;
+    const data = event?.data || {};
+    // Native tasks have their own abridged disclosure. Generic call cards
+    // would duplicate them and reveal the full native prompt/arguments.
+    const name = data.toolName || data.name;
+    const namespace = `${event.sessionId}:${data.durableSessionId || ""}`;
+    const keys = [data.toolCallId && `call:${data.toolCallId}`, data.requestId && `request:${data.requestId}`].filter(Boolean);
+    // An empty diagnostic completion has neither a call to update nor useful
+    // content. Keep it in Activity without evicting real conversation cards.
+    const hasContent = name || data.arguments != null || data.args != null || data.result != null || data.output != null
+        || data.error || data.partialOutput || data.progressMessage || data.childSessionId || data.agentId || data.task;
+    if (!keys.length && !hasContent) return;
+    const parentCall = !name && chat.some(item => item.kind === "chat-call" && item.namespace === namespace
+        && item.callKeys.some(key => keys.includes(key)));
+    const nativeCall = name === "task" || Boolean(!name && !parentCall && data.toolCallId && chat.some(item =>
+        item.kind === "native-task-group" && item.tasks.some(task => task.toolCallId === data.toolCallId)));
+    if (!nativeCall) appendChatCall(chat, event);
 }
 
 function clampHistoryItems(items, maxItems) {
@@ -405,6 +422,7 @@ function buildSessionMessageChatCard(event, text) {
             time: formatTimestamp(event.createdAt),
             createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
             cardTitle: expectsResponse ? "Session Request" : "Session Message",
+            agentCallPreview: body,
             cardTitleColor: "cyan",
             cardBorderColor: "cyan",
         };
@@ -432,6 +450,7 @@ function buildSessionMessageChatCard(event, text) {
             time: formatTimestamp(event.createdAt),
             createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
             cardTitle: "Session Reply",
+            agentCallPreview: body,
             cardTitleColor: "green",
             cardBorderColor: "green",
         };
@@ -456,6 +475,13 @@ function sharesClientMessageId(left, right) {
 function areMessagesEquivalent(left, right) {
     if (!left || !right) return false;
     if (left.role !== right.role) return false;
+    // Different agents can send the same short acknowledgement. Only a
+    // durable identity or a redelivered queue envelope can merge those calls.
+    if (left.sender?.kind === "agent" || right.sender?.kind === "agent") {
+        return left.sender?.kind === right.sender?.kind
+            && left.sender?.sessionId === right.sender?.sessionId
+            && (left.id === right.id || sharesClientMessageId(left, right) === true);
+    }
     // Identical text in separate model messages still represents separate
     // preview slots (and one may later become the final answer).
     if (left.role === "assistant" && left.messageId && right.messageId) {
@@ -466,6 +492,7 @@ function areMessagesEquivalent(left, right) {
     // link) — the redelivery time-window below would eat rev N-1 on every
     // reload, making the transcript disagree with what live append showed.
     if (left.kind === "canvas-update" || right.kind === "canvas-update"
+        || left.kind === "chat-call" || right.kind === "chat-call"
         || left.kind === "session-warning" || right.kind === "session-warning") {
         return left.kind === right.kind && left.id === right.id;
     }
@@ -1280,6 +1307,7 @@ export function buildHistoryModel(events = [], options = {}) {
     for (const event of events) {
         storedEvents.push(event);
         appendNativeTaskEvent(chat, event);
+        appendParentChatCall(chat, event);
         appendSessionWarning(chat, event);
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
@@ -1380,6 +1408,7 @@ export function appendEventToHistory(history, event) {
     };
 
     appendNativeTaskEvent(next.chat, event);
+    appendParentChatCall(next.chat, event);
     appendSessionWarning(next.chat, event);
     next.chat = clampHistoryItems(next.chat, loadedEventLimit);
 

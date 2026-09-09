@@ -12,6 +12,7 @@ import {
     DEFAULT_HISTORY_EVENT_LIMIT,
     dedupeChatMessages,
     getNextHistoryEventLimit,
+    parseAskedAndAnsweredExchange,
 } from "./history.js";
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
@@ -380,6 +381,16 @@ function timestampMs(value) {
 }
 
 function isSameOrOlderSessionUpdate(previousSession, nextSession) {
+    // Detail patch construction must use the same ordering as the reducer.
+    // Client event timestamps can exceed the server's next status write.
+    const version = (value) => {
+        if (value == null || value === "" || typeof value === "boolean") return null;
+        const number = Number(value);
+        return Number.isSafeInteger(number) && number > 0 ? number : null;
+    };
+    const previousVersion = version(previousSession?.statusVersion);
+    const nextVersion = version(nextSession?.statusVersion);
+    if (previousVersion != null && nextVersion != null) return nextVersion <= previousVersion;
     const previousUpdatedAt = timestampMs(previousSession?.updatedAt);
     const nextUpdatedAt = timestampMs(nextSession?.updatedAt);
     return previousUpdatedAt > 0 && nextUpdatedAt > 0 && nextUpdatedAt <= previousUpdatedAt;
@@ -491,6 +502,13 @@ function buildSessionMergePatch(previousSession, nextSession) {
         changed = true;
     }
 
+    // Ordering metadata is required even when unchanged. A conflicting status
+    // at the same version must not masquerade as an unversioned live event.
+    if (changed) {
+        for (const key of ["statusVersion", "updatedAt"]) {
+            if (nextSession[key] !== undefined) patch[key] = nextSession[key];
+        }
+    }
     return changed ? patch : null;
 }
 
@@ -3278,6 +3296,8 @@ export class PilotSwarmUiController {
      */
     revealCreatedSession() {
         if (this.getState().admin?.visible) this.closeAdminConsole();
+        this.closeBudget();
+        this.dispatch({ type: "ui/revealCreatedSession", sessionId: this.getState().sessions.activeSessionId });
         this.setFocus(FOCUS_REGIONS.PROMPT);
     }
 
@@ -5596,7 +5616,9 @@ export class PilotSwarmUiController {
             return;
         }
         await this.ensureSessionHistory(sessionId, { force: true });
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
         await this.syncSessionDetail(sessionId).catch(() => {});
+        if (this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
         this.ensureInspectorData().catch(() => {});
         // Canvas snapshot rides the selection burst. Invalidate-then-fetch on
@@ -5611,6 +5633,7 @@ export class PilotSwarmUiController {
     /**
      * Reconcile outbox state against a single CMS event. Removes outbox items
      * whose `clientMessageIds` were observed as a durable `user.message`
+     * (or a legacy merged `system.message` carrying those exact identities)
      * (acknowledged → drop the local optimistic item) or as a
      * `pending_messages.cancelled` (cancel confirmed → drop the cancelling
      * item). Pure side-effect helper that is safe to call repeatedly.
@@ -5622,16 +5645,20 @@ export class PilotSwarmUiController {
      */
     reconcileOutboxAgainstEvent(sessionId, event) {
         if (!sessionId || !event) return;
-        if (event.eventType === "user.message") {
+        if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
                 ? event.data.clientMessageIds.filter((id) => typeof id === "string")
                 : (typeof event?.data?.clientMessageId === "string" ? [event.data.clientMessageId] : []);
             if (clientMessageIds.length > 0) {
                 for (const id of clientMessageIds) {
-                    this.acknowledgeOutboxPrompt(sessionId, content, id);
+                    // Older workers classified a merged internal + user turn
+                    // from its leading protocol marker. The preserved IDs are
+                    // still an exact receipt. Never text-match a system event:
+                    // its content can quote unrelated pending user input.
+                    this.acknowledgeOutboxPrompt(sessionId, event.eventType === "user.message" ? content : undefined, id);
                 }
-            } else if (typeof content === "string" && content.trim()) {
+            } else if (event.eventType === "user.message" && typeof content === "string" && content.trim()) {
                 // Fallback: text-match acknowledgement until clientMessageId is
                 // plumbed through every layer.
                 this.acknowledgeOutboxPrompt(sessionId, content);
@@ -5959,10 +5986,11 @@ export class PilotSwarmUiController {
                 }
                 const existing = this.getState().history.bySessionId.get(sessionId)
                     || { chat: [], activity: [], events: [], lastSeq: 0 };
+                const liveHistory = this.preservePausedChatWindow(sessionId, existing);
                 this.dispatch({
                     type: "history/set",
                     sessionId,
-                    history: applyLiveTurnToHistory(existing, event.data, {
+                    history: applyLiveTurnToHistory(liveHistory, event.data, {
                         sessionId,
                         seq: event.liveSeq,
                         createdAt: Date.now(),
@@ -5999,7 +6027,10 @@ export class PilotSwarmUiController {
             this._liveTurnIdleTimers.delete(sessionId);
         }
         const state = this.getState();
-        const existing = state.history.bySessionId.get(sessionId) || { chat: [], activity: [], lastSeq: 0 };
+        const existing = this.preservePausedChatWindow(
+            sessionId,
+            state.history.bySessionId.get(sessionId) || { chat: [], activity: [], events: [], lastSeq: 0 },
+        );
         if (event.seq <= (existing.lastSeq || 0)) return false;
         this.dispatch({
             type: "history/set",
@@ -6014,7 +6045,11 @@ export class PilotSwarmUiController {
         // misrouted into the outbox queue, where it would sit until a later send
         // flushed it. The eventual detail-sync reconciles to the authoritative
         // customStatus.
-        if (event.eventType === "session.input_required_started" && event.data?.question) {
+        const questionSession = this.getState().sessions.byId[sessionId];
+        const questionEventTime = timestampMs(event.createdAt);
+        const currentSessionTime = timestampMs(questionSession?.updatedAt);
+        if (event.eventType === "session.input_required_started" && event.data?.question
+            && (!questionEventTime || !currentSessionTime || questionEventTime >= currentSessionTime)) {
             this.dispatch({
                 type: "sessions/merged",
                 session: {
@@ -6022,11 +6057,26 @@ export class PilotSwarmUiController {
                     status: "input_required",
                     pendingQuestion: {
                         question: event.data.question,
+                        ...(questionEventTime ? { askedAt: questionEventTime } : {}),
+                        ...(Number.isSafeInteger(event.data.questionIteration) ? { iteration: event.data.questionIteration } : {}),
                         choices: Array.isArray(event.data.choices) ? event.data.choices : undefined,
                         allowFreeform: event.data.allowFreeform ?? true,
                     },
                 },
             });
+        }
+        // Catch-up events also include answers from other windows/writers.
+        // Retire the matching question before another send can use sendAnswer.
+        if (event.eventType === "user.message" && questionSession?.pendingQuestion) {
+            const exchange = parseAskedAndAnsweredExchange(event.data?.content);
+            const pendingSince = Math.max(currentSessionTime, timestampMs(questionSession.pendingQuestion.askedAt));
+            if (exchange?.question === questionSession.pendingQuestion.question
+                && (!questionEventTime || !pendingSince || questionEventTime >= pendingSince)) {
+                this.dispatch({ type: "sessions/merged", session: {
+                    sessionId, pendingQuestion: null,
+                    resolvedInputQuestion: { question: exchange.question, answeredAt: questionEventTime },
+                } });
+            }
         }
         // show_artifact: the agent is presenting something to look at, so the
         // inspector switches to Files and opens that preview live.
@@ -6079,6 +6129,31 @@ export class PilotSwarmUiController {
         this.maybeFlushQueuedOutbox(sessionId, this.getState().sessions.byId[sessionId] || currentSession);
         this.scheduleSessionDetailSync(sessionId);
         return true;
+    }
+
+    /**
+     * Do not evict the first rendered item while its active chat is paused.
+     * A fixed-size history window normally drops one old item for each live
+     * append. Keeping the same numeric scrollTop then moves the actual text the
+     * user is reading. Grow the in-memory window just enough for arrivals made
+     * during that pause; normal bottom-follow appends resume bounded trimming.
+     */
+    preservePausedChatWindow(sessionId, history) {
+        const state = this.getState();
+        if (state.sessions.activeSessionId !== sessionId || state.ui.followBottom?.chat !== false) {
+            return history;
+        }
+        const currentLimit = Math.max(
+            DEFAULT_HISTORY_EVENT_LIMIT,
+            Number(history?.loadedEventLimit ?? DEFAULT_HISTORY_EVENT_LIMIT) || DEFAULT_HISTORY_EVENT_LIMIT,
+        );
+        const requiredLimit = Math.max(
+            currentLimit,
+            (Array.isArray(history?.events) ? history.events.length : 0) + 1,
+            (Array.isArray(history?.chat) ? history.chat.length : 0) + 4,
+            (Array.isArray(history?.activity) ? history.activity.length : 0) + 1,
+        );
+        return requiredLimit === currentLimit ? history : { ...history, loadedEventLimit: requiredLimit };
     }
 
     async syncSessionEvents(sessionId) {
@@ -6160,15 +6235,42 @@ export class PilotSwarmUiController {
         this.maybeFlushQueuedOutbox(sessionId, session);
     }
 
+    async openCreatedSession(created, options = {}) {
+        const sessionId = created.sessionId;
+        // Creation is explicit navigation, even if a paged/stale catalog or
+        // the current filters omit the new row. Seed the response, preserve
+        // the outgoing draft, and latch the same visibility rules as a link.
+        // Invalidate catalog reads that started before this row existed.
+        this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
+        if (this.getState().ui.promptEdit) this.exitPendingPromptEdit({ restoreDraft: true });
+        this.dispatch({ type: "sessions/selected", sessionId });
+        this.dispatch({ type: "ui/sequenceExpandedTurns", turns: [] });
+        this.dispatch({ type: "ui/sequenceSelectedTurn", turn: null });
+        this.dispatch({ type: "sessions/navigationIntent", sessionId });
+        this.dispatch({ type: "sessions/merged", session: normalizeSessionListRow({
+            ...created,
+            ...(options.groupId ? { viewerGroupId: options.groupId } : {}),
+        }) });
+        this.revealCreatedSession();
+        this.dispatch({ type: "ui/status", text: `Created session ${sessionId.slice(0, 8)}` });
+        // A follow-up read failure must not masquerade as a failed create and
+        // invite a duplicate. The regular refresh loop can finish hydration.
+        try {
+            await this.loadSession(sessionId);
+        } catch (error) {
+            if (this.getState().sessions.activeSessionId === sessionId) {
+                this.dispatch({ type: "ui/status", text: `Created session ${sessionId.slice(0, 8)}; could not load it yet: ${error?.message || error}` });
+            }
+        }
+        this.scheduleSessionsRefresh(0);
+    }
+
     async createSession(options = {}) {
         try {
             const requestOptions = this.applyActiveGroupDefault(options);
             const created = await this.transport.createSession(requestOptions);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
-            await this.refreshSessions();
-            await this.loadSession(created.sessionId);
-            this.revealCreatedSession();
-            this.dispatch({ type: "ui/status", text: `Created session ${created.sessionId.slice(0, 8)}` });
+            await this.openCreatedSession(created, requestOptions);
             return created;
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
@@ -6188,13 +6290,7 @@ export class PilotSwarmUiController {
             // session that was just created, and a lost count only reorders a list.
             this._recordAgentPickerUse(agentName);
             await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
-            await this.refreshSessions();
-            await this.loadSession(created.sessionId);
-            this.revealCreatedSession();
-            this.dispatch({
-                type: "ui/status",
-                text: `Created ${formatAgentDisplayTitle(agentName, options.title)} session ${created.sessionId.slice(0, 8)}`,
-            });
+            await this.openCreatedSession(created, requestOptions);
             return created;
         } catch (error) {
             this.dispatch({ type: "ui/status", text: error?.message || String(error) || "Failed to create session" });
@@ -8791,7 +8887,10 @@ export class PilotSwarmUiController {
             });
             this.dispatch({ type: "ui/status", text: "Sending answer..." });
             try {
-                await this.transport.sendAnswer(sessionId, prompt);
+                await this.transport.sendAnswer(sessionId, prompt, { expectedQuestion: {
+                    question: activePendingQuestion.question,
+                    ...(Number.isSafeInteger(activePendingQuestion.iteration) ? { iteration: activePendingQuestion.iteration } : {}),
+                } });
                 this.dispatch({
                     type: "sessions/merged",
                     session: {
@@ -9256,6 +9355,7 @@ export class PilotSwarmUiController {
     }
 
     paneUsesStickyBottomFollow(pane, state = this.getState()) {
+        if (pane === "chat") return true;
         if (pane === "activity") return true;
         if (pane === "inspector") return state.ui.inspectorTab === "logs";
         return false;
@@ -9329,6 +9429,15 @@ export class PilotSwarmUiController {
             const current = this.getPaneVisualScrollOffset(pane, state);
             const nextOffset = Math.max(0, Math.min(current - delta, maxOffset));
             this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            if (pane === "chat" && delta > 0) {
+                if (current <= 0) {
+                    this.handleChatTopHistoryScrollIntent(nextOffset).catch(() => {});
+                } else if (nextOffset <= 0) {
+                    this.armChatTopHistoryLoad();
+                }
+            } else if (pane === "chat" && delta < 0) {
+                this.disarmChatTopHistoryLoad();
+            }
             return;
         }
         const current = Math.max(0, Math.min(Number(state.ui.scroll?.[pane]) || 0, maxOffset));
@@ -9351,6 +9460,10 @@ export class PilotSwarmUiController {
         const nextOffset = Math.max(0, Math.min(Number(offset) || 0, maxOffset));
         if (this.paneUsesStickyBottomFollow(pane, state)) {
             this.applyPaneVisualScrollOffset(pane, nextOffset, { followBottom: nextOffset >= maxOffset }, state);
+            if (pane === "chat") {
+                if (maxOffset > 0 && nextOffset <= 0) this.armChatTopHistoryLoad();
+                else this.disarmChatTopHistoryLoad();
+            }
             return;
         }
         this.dispatch({ type: "ui/scroll", pane, offset: nextOffset });
@@ -9386,6 +9499,7 @@ export class PilotSwarmUiController {
 
         await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
             pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
+            preserveDomAnchor: options.preserveDomAnchor === true,
             // Always bypass the offset gate. Every caller of this method fires
             // only when the DOM scroller is already AT the top — a direct
             // measurement. The gate is a second, weaker guess that compares a
@@ -9447,7 +9561,7 @@ export class PilotSwarmUiController {
         const pane = this.getScrollablePaneForFocus();
         if (!pane) return;
         if (this.paneUsesStickyBottomFollow(pane)) {
-            this.applyPaneVisualScrollOffset(pane, 0, { followBottom: false });
+            this.scrollPaneTo(pane, 0);
             return;
         }
         const inspectorUsesBottomScroll = pane === "inspector" && this.inspectorUsesBottomScroll();
@@ -9727,6 +9841,7 @@ export class PilotSwarmUiController {
             requestedScrollOffset: targetOffset,
             autoTriggered: true,
             pages: options.pages,
+            preserveDomAnchor: options.preserveDomAnchor === true,
             // Chat-driven pull: page backward over renderable message types
             // only, so each page is transcript instead of raw event noise.
             eventTypes: CHAT_HISTORY_EVENT_TYPES,
@@ -9864,9 +9979,12 @@ export class PilotSwarmUiController {
                     pane: "chat",
                     offset: 0,
                 });
-            } else if (preserveChatView && previousScrollOffset > 0 && !options.autoTriggered) {
-                // EXPLICIT "load older" (the TUI's `e`): jump up to the start
-                // of what was just fetched — the user asked to SEE it.
+            } else if (preserveChatView && options.autoTriggered && !options.preserveDomAnchor) {
+                // Terminal panes store paused chat as a top offset. Prepending
+                // must advance that offset by the rendered rows inserted above
+                // it, preserving the same visible message. Browser panes use
+                // measured DOM height because rich cards and wrapping do not
+                // match terminal row metrics.
                 const nextState = this.getState();
                 const nextRenderedLines = this.getActiveChatRenderMetrics(nextState).totalLines;
                 const addedLines = Math.max(0, nextRenderedLines - previousRenderedLines);
@@ -9878,14 +9996,6 @@ export class PilotSwarmUiController {
                     });
                 }
             }
-            // AUTO-triggered (scrolling reached the top): change NOTHING. The
-            // offset is distance-from-BOTTOM, which prepended content cannot
-            // move — leaving it alone keeps the viewport glued to the exact
-            // messages the user was reading, and they scroll on into the new
-            // page naturally. Adding the delta here teleported the view to
-            // the TOP of a 3.3x-larger window — observed as "loading history
-            // takes you way back instead of a few pages up".
-
             const stateLabel = history.hasOlderEvents
                 ? options.autoTriggered
                     ? `Loaded older history page from CMS (${history.loadedEventCount} events loaded)`

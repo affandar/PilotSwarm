@@ -105,6 +105,15 @@ az acr show --name "$ACR_NAME" --query id -o tsv   # /subscriptions/<id>/resourc
 
 ## Default Deploy Workflow
 
+If the user requires runtime configuration and model defaults to remain
+unchanged, do not run legacy scripts that recreate `copilot-runtime-secrets`
+or reapply deployment settings from local files. Run the same full
+`./scripts/run-tests.sh --all-providers` gate, build with the canonical
+Dockerfiles, and update only container image references to verified immutable
+digests. Record and compare the existing pod specs, secret data hashes, model
+defaults, and catalog hashes before/after. Roll the portal before MCP. This is
+an image-only variant of the deploy, with no data reset or config refresh.
+
 1. Inspect the deploy surface.
    - Run `git status --short`.
    - Review `.model_providers.example.json`, the real `.model_providers.json` when the user has asked for local config changes, `scripts/deploy-aks.sh`, and `deploy/k8s/worker-deployment.yaml` if model/env/deploy behavior changed.
@@ -283,6 +292,11 @@ corporate npm mirror. It is a package-source change, not a database reset.
 
 ## Extra Checks For Weird Behavior
 
+- If live embedding checks time out, inspect unfinished test embedder loops before changing test deadlines. `cleanup-test-schemas.js` preserves run IDs whose temporary directories are less than six hours old, and its HorizonDB cleanup covers `ps_test_facts_*`, not the provider tests' generated `hzt_*`/`hzg_*` schemas. Completed test runs can therefore leave loops consuming scheduler capacity.
+  - For test-data cleanup, first inventory the exact generated schemas and their `hz-embed-*-cron:<schema>` instance IDs. Check for active test runners and preserve resources belonging to active runs.
+  - Cancel only those test instances through `df.cancel`, remove their AGE graphs through `drop_graph`, then drop the inventoried test schemas and unset only their schema-specific `hz_<schema>_<suffix>` variables. Do not clear shared durable variables or reset runtime data.
+  - A broad `hzg_*` match is unsafe: named evaluation graphs such as `hzg_eval` and `hzg_sw_*` are not generated integration-test fixtures. Preserve those and all non-test workflows.
+  - Rerun `./scripts/run-tests.sh --with-horizondb embedder` with the original assertions, deadlines, and parallelism. On 2026-09-07, removing 14 orphan test loops cleared the three embedding timeouts; all 17 lifecycle/outcome checks then passed in 204 seconds without code or configuration changes.
 - Check for old worker pods across all namespaces:
   ```bash
   kubectl get pods --all-namespaces -l app.kubernetes.io/component=worker --no-headers

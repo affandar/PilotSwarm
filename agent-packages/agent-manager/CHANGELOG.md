@@ -1,5 +1,17 @@
 # Changelog — agent-manager
 
+## 1.2.0
+
+### Added
+
+- Feature flag tools for administrators to inspect and change cluster and user settings, with current authorization checked for each call.
+
+## 1.1.1
+
+### Changed
+
+- Rename the displayed package and agent to **Agent Smith**, including the desktop/mobile splash and self-introduction. Keep the `agent-manager` package and agent IDs, tools, authority, and configuration unchanged.
+
 ## 1.1.0
 
 ### Added

@@ -584,7 +584,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
                     hasChangelog: Boolean(staged.files[CHANGELOG_PATH]),
                     note: staged.files[CHANGELOG_PATH]
                         ? undefined
-                        : `No ${CHANGELOG_PATH} staged yet — add one describing this change, signed as Agent Manager.`,
+                        : `No ${CHANGELOG_PATH} staged yet — add one describing this change, signed as Agent Smith.`,
                 };
             } catch (err: any) {
                 return { error: `stage_agent_package_edit: ${err?.message || String(err)}` };
@@ -623,7 +623,7 @@ export function createAgentManagerTools(opts: CreateAgentManagerToolsOptions): T
             // away from what was actually shipped.
             const changelog = staged.files[CHANGELOG_PATH];
             if (!changelog) {
-                return { error: `publish_agent_package: no ${CHANGELOG_PATH} staged. Add one with an entry for ${args.semver}, signed as Agent Manager.` };
+                return { error: `publish_agent_package: no ${CHANGELOG_PATH} staged. Add one with an entry for ${args.semver}, signed as Agent Smith.` };
             }
             if (!changelog.includes(args.semver)) {
                 return { error: `publish_agent_package: ${CHANGELOG_PATH} has no entry for ${args.semver}. Add one before publishing.` };

@@ -45,7 +45,7 @@ nondeterministic: custom status mismatch: action=CallActivity { ... } vs event=C
 | Direct I/O in generator | Wrap in an activity (`ctx.scheduleActivity()`) |
 | `setTimeout` / `setInterval` | Use `yield ctx.scheduleTimer(ms)` |
 | `setCustomStatus()` order changed | Ensure it appears at the same position relative to yields |
-| Redeployed with changed yields | Reset database — `./scripts/deploy-aks.sh` does this automatically |
+| Redeployed with changed yields | Freeze the released handler and register a new orchestration version. Deploys never reset the database. |
 
 ## Deterministic alternatives
 

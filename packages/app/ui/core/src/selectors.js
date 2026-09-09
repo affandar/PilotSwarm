@@ -1,4 +1,5 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
+import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { isManuallyOrderableSession } from "./session-tree.js";
 import {
@@ -30,6 +31,7 @@ import {
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
+import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -1646,7 +1648,7 @@ function chatAlreadyContainsPendingQuestion(chat, question) {
 
 function buildSessionErrorMessage(session, events = []) {
     const errorText = String(session?.error || "").trim();
-    if (!errorText) return null;
+    if (!errorText || isActivityOnlySessionError(errorText)) return null;
 
     const errorKind = getSessionErrorVisualKind(session);
     if (!errorKind) return null;
@@ -1897,13 +1899,15 @@ export function selectActiveChat(state) {
         ? buildPendingQuestionMessage(session, events)
         : null;
     const answeredQuestionMessage = buildAnsweredPendingQuestionMessage(session, chat);
-    const sessionErrorMessage = buildSessionErrorMessage(session, events);
+    // Legacy/synthetic selector callers may not have passed through the
+    // reducer that captures status-only notices. Keep their fallback too.
+    const sessionErrorMessage = session?.chatWarnings?.length ? null : buildSessionErrorMessage(session, events);
 
-    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage) {
+    if ((!history || chat.length === 0) && !pendingQuestionMessage && !answeredQuestionMessage && !sessionErrorMessage && !session?.chatWarnings?.length) {
         return createSplashCard(state.branding, session);
     }
 
-    const messages = chat.length > 0 ? [...chat] : createSplashCard(state.branding, session);
+    const messages = withSessionWarnings(chat.length > 0 ? chat : createSplashCard(state.branding, session), session, events);
     if (pendingQuestionMessage) {
         messages.push(pendingQuestionMessage);
     }
@@ -1915,9 +1919,10 @@ export function selectActiveChat(state) {
         // current retry/failure details, but must not append the same warning
         // after the newer conversation on every poll.
         const warningIndex = messages.findLastIndex((message) => message.kind === "session-warning"
-            && matchesSessionError(message.errorText, session.error));
+            && matchesSessionError(message.text, session.error));
         if (warningIndex < 0) {
-            messages.push(sessionErrorMessage);
+            const index = messages.findIndex(message => sessionErrorMessage.createdAt != null && message.createdAt > sessionErrorMessage.createdAt);
+            messages.splice(index < 0 ? messages.length : index, 0, sessionErrorMessage);
         } else if (warningIndex === messages.length - 1 || sessionErrorMessage.cardTitle === "Error") {
             const warning = messages[warningIndex];
             messages[warningIndex] = {
@@ -2266,6 +2271,7 @@ function chatMessageSpacingKind(message) {
 
 function shouldInsertChatSpacer(currentMessage, nextMessage) {
     if (!currentMessage || !nextMessage) return false;
+    if (currentMessage.kind === "chat-call" || nextMessage.kind === "chat-call") return false;
     return chatMessageSpacingKind(currentMessage) !== chatMessageSpacingKind(nextMessage);
 }
 
@@ -2302,7 +2308,7 @@ function buildCollapsedSystemNoticeLine(text, timestamp = "") {
     };
 }
 
-function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "gray" }) {
+function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "gray", callPreview, callKey }) {
     const normalizedTitle = String(title || "System").trim() || "System";
     const normalizedSummary = String(summary || "").replace(/\s+/g, " ").trim();
     return {
@@ -2311,6 +2317,7 @@ function buildSystemNoticeLine({ title, summary, body, timestamp = "", color = "
         summary: normalizedSummary,
         body: decorateArtifactLinksForChat(body || normalizedSummary),
         color,
+        ...(callPreview !== undefined ? { callPreview: `${normalizedTitle} — ${firstCallLine(callPreview)}`, callKey } : {}),
     };
 }
 
@@ -2416,6 +2423,8 @@ function buildSystemNoticeCardLines(systemText, message, maxWidth) {
         ].filter((line, index) => index === 2 || line).join("\n");
         return [buildSystemNoticeLine({
             title: `Sub-agent Response — ${shortId}`,
+            callPreview: subAgent.result || subAgent.status,
+            callKey: `${message.id}:agent:${shortId}`,
             summary: subAgent.status || "completed",
             timestamp,
             body,
@@ -2435,6 +2444,8 @@ function buildSystemNoticeCardLines(systemText, message, maxWidth) {
             .join(" · ");
         return [buildSystemNoticeLine({
             title: `Sub-agent Responses (${subAgent.agents.length})`,
+            callPreview: subAgent.agents.map(agent => firstCallLine(agent.result) || agent.status).join(" · "),
+            callKey: `${message.id}:agents`,
             summary,
             timestamp,
             body: sections.join("\n\n---\n\n"),
@@ -2520,6 +2531,17 @@ function buildChatMessageLines(message, maxWidth, options = {}) {
 }
 
 function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
+    if (message?.kind === "chat-call") {
+        return options.tableMode === "sentinel" ? [chatCallLine(message)] : [];
+    }
+    if (options.tableMode === "sentinel" && (message?.sender?.kind === "agent" || message?.agentCallPreview !== undefined)) {
+        const label = message.cardTitle || message.sender?.display || "Agent message";
+        return [{
+            kind: "chatCall", callKey: message.id, category: "Agent",
+            text: `${label} — ${firstCallLine(message.agentCallPreview ?? message.text)}`,
+            body: message.text, time: message.time,
+        }];
+    }
     if (message?.splash) {
         // Swap in the narrow-viewport variant when the main art would
         // overflow the pane (mobile portal, narrow terminals). When the
@@ -2589,7 +2611,9 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         const askedAndAnswered = parseAskedAndAnsweredExchange(message?.text || "");
         if (askedAndAnswered) {
             return [
-                ...buildMessageCardLines({
+                // Older runtimes inserted this placeholder for late answers.
+                // Keep the user's answer, without displaying a fabricated card.
+                ...(askedAndAnswered.question === "a question" ? [] : buildMessageCardLines({
                     title: "Question",
                     timestamp: formatTimestamp(message?.createdAt || message?.time),
                     body: normalizeQuestionForDisplay(askedAndAnswered.question),
@@ -2597,7 +2621,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
                     titleColor: USER_CHAT_COLOR,
                     borderColor: USER_CHAT_COLOR,
                     tableMode: options.tableMode,
-                }),
+                })),
                 ...buildChatMessageLines({
                     ...message,
                     text: askedAndAnswered.answer,
@@ -2994,11 +3018,16 @@ let chatLinesMemo = [];
 
 export function selectChatLines(state, maxWidth = 80, options = {}) {
     const memoSessionId = state?.sessions?.activeSessionId ?? null;
+    const memoSession = memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null;
     const memoKey = {
         sessionId: memoSessionId,
-        session: memoSessionId ? state?.sessions?.byId?.[memoSessionId] ?? null : null,
+        session: memoSession,
         byId: state?.sessions?.byId ?? null,
         chat: state?.history?.bySessionId?.get?.(memoSessionId)?.chat ?? null,
+        // Raw tool activity affects warning/question reconciliation, but must
+        // not re-wrap an ordinary, unchanged transcript on every event.
+        events: memoSession?.chatWarnings?.length || memoSession?.error || memoSession?.pendingQuestion
+            ? state?.history?.bySessionId?.get?.(memoSessionId)?.events ?? null : null,
         branding: state?.branding ?? null,
         principal: state?.auth?.principal ?? null,
         maxWidth,
@@ -3009,6 +3038,7 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
             && entry.session === memoKey.session
             && entry.byId === memoKey.byId
             && entry.chat === memoKey.chat
+            && entry.events === memoKey.events
             && entry.viewMode === memoKey.viewMode
             && entry.branding === memoKey.branding
             && entry.principal === memoKey.principal

@@ -1,4 +1,5 @@
 import { normalizeMoa } from "./moa.js";
+import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -327,63 +328,67 @@ function isSameOrOlderSessionUpdate(previousSession, nextSession) {
     return previousAt > 0 && nextAt > 0 && nextAt <= previousAt;
 }
 
-// A run that has ended for good. These are authoritative and must always land,
-// even from an update that looks stale — stranding a finished session as
-// "running" is far worse than a brief wrong status.
+// Completion can come from orchestration metadata without another custom
+// status write. Allow it at the same version, but never at an older version.
 const TERMINAL_SESSION_STATUSES = new Set(["completed", "failed", "cancelled", "error"]);
 
-// Session state is written from several concurrent sources: the session-list
-// poll, live events, and a per-session detail fetch. They do not agree
-// instant-to-instant, and the list poll in particular can report a status the
-// orchestration has already moved on from — observed live as:
-//
-//   sessions/loaded  running + waiting -> waiting   prevAt == incomingAt
-//   sessions/merged  waiting + running -> running   (105ms later)
-//
-// while the server's own session row and orchestration both read "running"
-// throughout. Consumers gated on status === "running" — the live-activity
-// strip, the composer's Stop button — blink off for the width of that gap.
-//
-// Refuse ANY non-terminal downgrade out of "running" unless the incoming
-// update is genuinely newer. Deliberately not restricted to idle-like
-// statuses: the status actually observed clobbering a live run was "waiting",
-// and an earlier version of this guard missed the bug by excluding it.
-// Terminal statuses are exempt so a finished run can never be stranded.
-//
-// "Genuinely newer" is decided by the server's monotonic statusVersion when
-// both sides carry one — wall-clock updatedAt is only the fallback. The
-// timestamp heuristic alone can WEDGE a finished turn as "running" forever:
-// client-side event merges (turn_completed, context usage) inflate the held
-// session's updatedAt past the server row's idle-write timestamp, so every
-// subsequent idle poll compares as stale and only a terminal status could
-// ever land. Observed live (2026-07-21, local portal): server row idle at
-// statusVersion 5 while the client showed "Working.." indefinitely.
-function shouldPreserveRunningStatus(previousSession, nextSession) {
-    const nextStatus = String(nextSession?.status ?? "").toLowerCase();
-    if (previousSession?.status !== "running"
-        || nextStatus === "running"
-        || TERMINAL_SESSION_STATUSES.has(nextStatus)) {
-        return false;
-    }
-    const previousVersion = Number(previousSession?.statusVersion);
-    const nextVersion = Number(nextSession?.statusVersion);
-    if (Number.isFinite(previousVersion) && previousVersion > 0
-        && Number.isFinite(nextVersion) && nextVersion > 0) {
-        // Monotonic server counter: a higher version is authoritative and
-        // must land; a same-or-lower version is provably stale and is held
-        // regardless of what the timestamps claim.
-        return nextVersion <= previousVersion;
-    }
-    return isSameOrOlderSessionUpdate(previousSession, nextSession);
+function sessionStatusVersion(session) {
+    const value = session?.statusVersion;
+    if (value == null || value === "" || typeof value === "boolean") return null;
+    const version = Number(value);
+    return Number.isSafeInteger(version) && version > 0 ? version : null;
 }
+
+// List polls and detail requests can arrive out of order. Compare the server
+// counter in both directions: an old running row must not revive an idle
+// session, and an old idle row must not hide a running one. Keep the version
+// with its status; accepting an older counter would let the next stale row win.
+function shouldPreserveSessionStatus(previousSession, nextSession) {
+    const previousVersion = sessionStatusVersion(previousSession);
+    const nextVersion = sessionStatusVersion(nextSession);
+    if (previousVersion != null && nextVersion != null) {
+        if (nextVersion < previousVersion) return true;
+        if (nextVersion > previousVersion) return false;
+    }
+    const previousStatus = previousSession?.status;
+    const nextStatus = nextSession?.status;
+    if (!previousStatus || !nextStatus || previousStatus === nextStatus
+        || TERMINAL_SESSION_STATUSES.has(nextStatus)) return false;
+    if (previousVersion != null && nextVersion != null) return true;
+    // Legacy rows and live event patches may lack a counter. Do not guess
+    // their order without timestamps. Preserve the terminal-status escape
+    // hatch, since updatedAt also changes for non-status events.
+    if (previousStatus === "running") return isSameOrOlderSessionUpdate(previousSession, nextSession);
+    // An unversioned new turn may share its timestamp with the preceding idle
+    // row. Equal timestamps alone are not evidence that a start is stale.
+    const previousAt = sessionUpdateTimestampMs(previousSession);
+    const nextAt = sessionUpdateTimestampMs(nextSession);
+    return nextStatus === "running" && previousAt > 0 && nextAt > 0 && nextAt < previousAt;
+}
+
+// These values describe the same run as status. Mixing an old question or
+// pause reason with a newer status can change composer routing and controls.
+const SESSION_STATUS_FIELDS = new Set([
+    "status", "statusVersion", "updatedAt", "orchestrationStatus",
+    "pendingQuestion", "waitReason", "pauseState", "error", "result",
+]);
 
 function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
     let merged = previousSession || {};
-    const preserveRunning = shouldPreserveRunningStatus(previousSession, nextSession);
+    const preserveStatus = shouldPreserveSessionStatus(previousSession, nextSession);
+    const previousVersion = sessionStatusVersion(previousSession);
     for (const [key, value] of Object.entries(nextSession || {})) {
         if (value === undefined) continue;
-        if (key === "status" && preserveRunning) continue;
-        if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value)) {
+        if (preserveStatus && SESSION_STATUS_FIELDS.has(key)) continue;
+        // Repeated snapshots of one server version cannot roll its timestamp
+        // back and then admit an older unversioned running update.
+        if (key === "updatedAt" && previousVersion != null
+            && previousVersion === sessionStatusVersion(nextSession)
+            && sessionUpdateTimestampMs(nextSession) < sessionUpdateTimestampMs(previousSession)) continue;
+        // An absent/invalid counter must not erase the last known server version.
+        if (key === "statusVersion" && previousVersion != null
+            && sessionStatusVersion(nextSession) == null) continue;
+        if (key === "pendingQuestion" && isAnsweredPendingQuestion(previousSession, value, nextSession)) {
             if (merged === previousSession) {
                 merged = { ...(previousSession || {}) };
             }
@@ -559,10 +564,18 @@ function normalizedPendingQuestionText(pendingQuestion) {
     return String(pendingQuestion?.question || "").trim();
 }
 
-function isAnsweredPendingQuestion(previousSession, pendingQuestion) {
-    const answeredQuestion = normalizedPendingQuestionText(previousSession?.answeredPendingQuestion);
+function isAnsweredPendingQuestion(previousSession, pendingQuestion, nextSession) {
     const incomingQuestion = normalizedPendingQuestionText(pendingQuestion);
-    return Boolean(answeredQuestion && incomingQuestion && answeredQuestion === incomingQuestion);
+    if (!incomingQuestion) return false;
+    const incomingTime = sessionUpdateTimestampMs({ updatedAt: pendingQuestion?.askedAt })
+        || sessionUpdateTimestampMs(nextSession);
+    return [previousSession?.answeredPendingQuestion, previousSession?.resolvedInputQuestion].some(answered => {
+        if (normalizedPendingQuestionText(answered) !== incomingQuestion) return false;
+        const answeredAt = sessionUpdateTimestampMs({ updatedAt: answered?.answeredAt });
+        // Preserve the answer fence across stale detail polls, but let a new
+        // instance of the same question through when it was asked later.
+        return !incomingTime || !answeredAt || incomingTime <= answeredAt;
+    });
 }
 
 function pickDefaultActiveSessionId(sessions = []) {
@@ -642,6 +655,7 @@ function updateUiForSessionSelection(state, nextActiveSessionId) {
         },
         followBottom: {
             ...(state.ui.followBottom || {}),
+            chat: true,
             inspector: true,
             activity: true,
         },
@@ -1480,7 +1494,7 @@ function baseReducer(state, action) {
             };
 
         case "ui/followBottom": {
-            if (action.pane !== "inspector" && action.pane !== "activity") {
+            if (action.pane !== "chat" && action.pane !== "inspector" && action.pane !== "activity") {
                 return state;
             }
             const nextFollowBottom = Boolean(action.followBottom);
@@ -1643,7 +1657,8 @@ function baseReducer(state, action) {
             }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
-                byId[session.sessionId] = mergeDefinedSessionFields(previous, session);
+                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
+                    state.history.bySessionId.get(session.sessionId)?.events, nowMs);
             }
             if (
                 state.sessions.activeSessionId
@@ -1826,7 +1841,8 @@ function baseReducer(state, action) {
         case "sessions/merged": {
             if (!action.session?.sessionId) return state;
             const previousSession = state.sessions.byId[action.session.sessionId];
-            const mergedSession = mergeDefinedSessionFields(previousSession, action.session);
+            const mergedSession = retainSessionWarnings(previousSession, mergeDefinedSessionFields(previousSession, action.session),
+                state.history.bySessionId.get(action.session.sessionId)?.events);
             // A single session going running/idle changes its ANCESTORS' counts
             // and therefore their visual status, so both passes run over the
             // whole map rather than the one row. buildSessionTree below is
@@ -1873,14 +1889,15 @@ function baseReducer(state, action) {
 
         case "sessions/selected": {
             state = { ...state, sessions: { ...state.sessions, listDeselected: false } };
-            // Per-session chat scroll memory: stash the outgoing session's
-            // offset and restore the incoming one's. If new chat arrives on
-            // re-entry, history/set's activeChatUpdated reset still snaps to
-            // latest — "latest chat, or where you left it".
+            // Per-session chat scroll memory: stash both the outgoing offset
+            // and whether it follows the bottom. A paused reading position
+            // stays paused as new messages arrive and across session switches.
             const previousActiveId = state.sessions.activeSessionId;
             const savedChatScroll = { ...(state.ui.chatScrollBySession || {}) };
+            const savedChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
             if (previousActiveId && previousActiveId !== action.sessionId) {
                 savedChatScroll[previousActiveId] = Number(state.ui.scroll?.chat) || 0;
+                savedChatFollowBottom[previousActiveId] = state.ui.followBottom?.chat !== false;
             }
             // Per-session prompt drafts: a half-written message belongs to the
             // session it was written in. Stash the outgoing draft (text +
@@ -1933,6 +1950,7 @@ function baseReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: savedChatScroll,
+                    chatFollowBottomBySession: savedChatFollowBottom,
                     promptDraftBySession: savedDrafts,
                     prompt: nextPrompt,
                     promptCursor: nextPromptCursor,
@@ -1951,12 +1969,20 @@ function baseReducer(state, action) {
                     },
                     followBottom: {
                         ...(state.ui.followBottom || {}),
+                        chat: savedChatFollowBottom[action.sessionId] !== false,
                         inspector: true,
                         activity: true,
                     },
                 },
             };
         }
+
+        case "ui/revealCreatedSession":
+            return {
+                ...state,
+                files: { ...state.files, fullscreen: false, paneOpen: false },
+                ui: { ...state.ui, revealedCreatedSessionId: action.sessionId, fullscreenPane: null },
+            };
 
         case "ui/fullscreenPane": {
             const fullscreenPane = normalizeFullscreenPane(action.fullscreenPane);
@@ -2191,7 +2217,7 @@ function baseReducer(state, action) {
                     ...state.history,
                     bySessionId: nextHistory,
                 },
-                ui: activeChatUpdated
+                ui: activeChatUpdated && state.ui.followBottom?.chat !== false
                     ? {
                         ...state.ui,
                         scroll: {
@@ -2212,6 +2238,8 @@ function baseReducer(state, action) {
             for (const id of ids) delete nextOutbox[id];
             const nextChatScroll = { ...(state.ui.chatScrollBySession || {}) };
             for (const id of ids) delete nextChatScroll[id];
+            const nextChatFollowBottom = { ...(state.ui.chatFollowBottomBySession || {}) };
+            for (const id of ids) delete nextChatFollowBottom[id];
             const nextDrafts = { ...(state.ui.promptDraftBySession || {}) };
             for (const id of ids) delete nextDrafts[id];
             return {
@@ -2227,6 +2255,7 @@ function baseReducer(state, action) {
                 ui: {
                     ...state.ui,
                     chatScrollBySession: nextChatScroll,
+                    chatFollowBottomBySession: nextChatFollowBottom,
                     promptDraftBySession: nextDrafts,
                 },
             };

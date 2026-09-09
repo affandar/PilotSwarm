@@ -298,8 +298,8 @@ export class WebPilotSwarmManagementClient {
         await this._api.call("sendMessage", { sessionId, prompt, options });
     }
 
-    async sendAnswer(sessionId: string, answer: string): Promise<void> {
-        await this._api.call("sendAnswer", { sessionId, answer });
+    async sendAnswer(sessionId: string, answer: string, options?: { expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
+        await this._api.call("sendAnswer", { sessionId, answer, options });
     }
 
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {

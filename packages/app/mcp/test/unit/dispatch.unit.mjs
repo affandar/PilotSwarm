@@ -30,7 +30,10 @@ function recordingMgmt(calls) {
         getSession: track("getSession", { sessionId: "s" }),
         getDefaultModel: track("getDefaultModel", "m"),
         listRuntimeModels: track("listRuntimeModels", [
-            { providerId: "team", providerType: "github", modelName: "sonnet5", qualifiedName: "team:sonnet5" },
+            { providerId: "team", providerType: "github", modelName: "sonnet5", qualifiedName: "team:sonnet5",
+                supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium",
+                supportedContextTiers: ["default"], defaultContextTier: "default",
+                contextWindowSizes: { default: 1000000 } },
             { providerId: "mine", providerType: "github", modelName: "sonnet5", qualifiedName: "mine:sonnet5" },
         ]),
         getModelDefaults: track("getModelDefaults", {
@@ -360,6 +363,14 @@ async function main() {
             flat.default_model === "mine:sonnet5"
             && flat.count === 2
             && calls.some(([name]) => name === "getModelDefaults"));
+        const resource = await client.readResource({ uri: "pilotswarm://models" });
+        const resourceModels = JSON.parse(resource.contents[0].text)[0].models;
+        for (const [label, model] of [["flat", flat.models[0]], ["grouped", grouped.providers[0].models[0]], ["resource", resourceModels[0]]]) {
+            record(`model metadata → ${label}`, model.supported_context_tiers?.join() === "default"
+                && model.default_context_tier === "default" && model.context_window_sizes?.default === 1000000
+                && model.supported_reasoning_efforts?.join() === "low,medium,high" && model.default_reasoning_effort === "medium");
+        }
+        record("unknown capacities remain absent", !Object.hasOwn(flat.models[1], "context_window_sizes"));
         await client.close();
     }
 

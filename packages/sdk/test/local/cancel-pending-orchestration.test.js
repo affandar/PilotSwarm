@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildContinueInput } from "../../src/orchestration/lifecycle.ts";
+import { resolvePendingQuestion } from "../../src/session-status.ts";
+import { RESPONSE_LATEST_KEY } from "../../src/types.ts";
 import {
     createInitialState,
     normalizeRecentClientMessageIds,
@@ -14,7 +16,7 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createHarness({ values = new Map(), messages = [], inputOverrides = {} } = {}) {
+function createHarness({ values = new Map(), messages = [], inputOverrides = {}, turnResults = [] } = {}) {
     const scheduledMessages = [...messages]
         .map((entry) => ({
             atMs: entry.atMs ?? 0,
@@ -23,11 +25,12 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {} 
         .sort((left, right) => left.atMs - right.atMs);
     const traces = [];
     const runTurns = [];
+    const statuses = [];
     const state = { nowMs: 0 };
 
     const ctx = {
         traceInfo: (message) => traces.push(message),
-        setCustomStatus: () => {},
+        setCustomStatus: (value) => statuses.push(JSON.parse(value)),
         getValue: (key) => (values.has(key) ? values.get(key) : null),
         setValue: (key, value) => values.set(key, value),
         clearValue: (key) => values.delete(key),
@@ -77,7 +80,7 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {} 
                 return false;
             case "runTurn":
                 runTurns.push(effect);
-                return { type: "completed", message: "ok" };
+                return turnResults.shift() ?? { type: "completed", message: "ok" };
             case "checkpoint":
             case "hydrate":
             case "dehydrate":
@@ -125,7 +128,7 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {} 
         throw new Error("Exceeded step limit before idle.");
     }
 
-    return { runUntilIdle, traces, runTurns };
+    return { runUntilIdle, traces, runTurns, statuses, values };
 }
 
 describe("cancelPendingMessage orchestration", () => {
@@ -151,6 +154,41 @@ describe("cancelPendingMessage orchestration", () => {
             summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
             getOrchestrationStats: vi.fn(() => ({ effect: "getOrchestrationStats" })),
         };
+    });
+
+    it.each(["Next question?", "Proceed?"])("does not attribute a second queued answer to the next question: %s", async (nextQuestion) => {
+        const harness = createHarness({
+            inputOverrides: { pendingInputQuestion: { question: "Proceed?" } },
+            messages: [
+                { atMs: 0, payload: { answer: "First writer", expectedQuestion: { question: "Proceed?", iteration: 0 } } },
+                { atMs: 0, payload: { answer: "Second writer", expectedQuestion: { question: "Proceed?", iteration: 0 } } },
+            ],
+            turnResults: [{ type: "input_required", question: nextQuestion, choices: ["Yes", "No"], allowFreeform: false }],
+        });
+        await harness.runUntilIdle();
+        expect(harness.runTurns.map(turn => turn.prompt)).toEqual([
+            'The user was asked: "Proceed?"\nThe user responded: "First writer"',
+            "Second writer",
+        ]);
+        const status = harness.statuses.at(-1);
+        const latestResponse = JSON.parse(harness.values.get(RESPONSE_LATEST_KEY));
+        expect(latestResponse.type).toBe("completed");
+        expect(status).toMatchObject({ status: "input_required", iteration: 2, questionIteration: 1 });
+        expect(resolvePendingQuestion(status.status, status, latestResponse)).toEqual({
+            question: nextQuestion, iteration: 1, choices: ["Yes", "No"], allowFreeform: false,
+        });
+    });
+
+    it("keeps late answers as ordinary messages in FIFO order without inventing a question", async () => {
+        const harness = createHarness({ messages: [
+            { atMs: 0, payload: { answer: "First answer" } },
+            { atMs: 200, payload: { answer: "Late follow-up" } },
+        ], inputOverrides: { pendingInputQuestion: { question: "Proceed?" } } });
+        await harness.runUntilIdle();
+        expect(harness.runTurns.map(turn => turn.prompt)).toEqual([
+            'The user was asked: "Proceed?"\nThe user responded: "First answer"',
+            "Late follow-up",
+        ]);
     });
 
     it("drops a FIFO prompt when any contributing client message id is tombstoned before dispatch", async () => {

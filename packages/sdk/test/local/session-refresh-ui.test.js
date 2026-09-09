@@ -372,11 +372,13 @@ describe("session refresh UI recovery", () => {
 
         const afterRecoverySession = store.getState().sessions.byId["retry-session"];
         assertEqual(afterRecoverySession.error, null, "non-running refresh should clear the stale recoverable warning");
+        const historicalWarning = selectActiveChat(store.getState()).find((message) => message.cardTitle === "Warning");
         assertEqual(
-            selectActiveChat(store.getState()).some((message) => message.cardTitle === "Warning"),
-            false,
-            "warning card should disappear after the retry cycle recovers",
+            historicalWarning?.id,
+            beforeWarning?.id,
+            "recovery should retain the same historical warning card",
         );
+        assertEqual(afterRecoverySession.chatWarnings.at(-1).active, false, "the historical warning is no longer active");
     });
 
     it("shows agent-prefixed session titles with the uniquifier first", () => {
@@ -558,6 +560,55 @@ describe("session refresh UI recovery", () => {
         assertEqual(sendAnswerCalls.length, 1, "answer took the direct sendAnswer path");
         assertEqual(sendAnswerCalls[0].answer, "run the repo-cache cleanup and retry", "answer text delivered as the answer");
         assertEqual(sendMessageCalls.length, 0, "answer was NOT misrouted into the outbox queue");
+    });
+
+    it("does not reopen a historical question during event catch-up", async () => {
+        const answers = [];
+        const { controller, store } = createController({
+            sendAnswer: async (...args) => answers.push(args),
+            sendMessage: async () => {},
+        });
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "late-q", status: "idle", updatedAt: 500 }] });
+        store.dispatch({ type: "sessions/selected", sessionId: "late-q" });
+        controller.mergeSessionEvent("late-q", {
+            seq: 10, eventType: "session.input_required_started", createdAt: 100,
+            data: { question: "Proceed?" },
+        });
+        assertEqual(store.getState().sessions.byId["late-q"].pendingQuestion ?? null, null, "old question must not reopen");
+        controller.setPrompt("A new request", 0);
+        await controller.sendPrompt();
+        assertEqual(answers.length, 0, "ordinary message must not become a second answer");
+    });
+
+    it("clears a matching pending question when another writer's answer arrives", () => {
+        const { controller, store } = createController();
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "shared-q", status: "input_required", pendingQuestion: { question: "Proceed?" } }] });
+        controller.mergeSessionEvent("shared-q", {
+            seq: 10, eventType: "user.message", createdAt: 200,
+            data: { content: 'The user was asked: "Proceed?"\nThe user responded (answered by Another writer): "Yes"' },
+        });
+        assertEqual(store.getState().sessions.byId["shared-q"].pendingQuestion, null, "answered question must retire");
+    });
+
+    it("a stale detail cannot reopen another writer's answer, but a new identical question can", async () => {
+        const snapshot = { sessionId: "reconcile-q", status: "input_required", statusVersion: 10, updatedAt: 100, pendingQuestion: { question: "Proceed?" } };
+        const { controller, store } = createController({ getSession: async () => snapshot });
+        store.dispatch({ type: "sessions/loaded", sessions: [snapshot] });
+        controller.mergeSessionEvent("reconcile-q", { seq: 10, eventType: "user.message", createdAt: 200,
+            data: { content: 'The user was asked: "Proceed?"\nThe user responded: "Yes"' } });
+        await controller.syncSessionDetail("reconcile-q");
+        assertEqual(store.getState().sessions.byId["reconcile-q"].pendingQuestion, null, "same-version detail must not restore answered input");
+        controller.mergeSessionEvent("reconcile-q", { seq: 11, eventType: "session.input_required_started", createdAt: 300, data: { question: "Proceed?" } });
+        assertEqual(store.getState().sessions.byId["reconcile-q"].pendingQuestion?.question, "Proceed?", "a later identical question must remain answerable");
+    });
+
+    it("an old answer cannot dismiss a newly repeated question", () => {
+        const { controller, store } = createController();
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "repeat-q", status: "running", updatedAt: 100 }] });
+        controller.mergeSessionEvent("repeat-q", { seq: 10, eventType: "session.input_required_started", createdAt: 300, data: { question: "Proceed?" } });
+        controller.mergeSessionEvent("repeat-q", { seq: 11, eventType: "user.message", createdAt: 200,
+            data: { content: 'The user was asked: "Proceed?"\nThe user responded: "Yes"' } });
+        assertEqual(store.getState().sessions.byId["repeat-q"].pendingQuestion?.question, "Proceed?", "old answer must not clear the repeated question");
     });
 
     it("keeps a freshly-shown pending question when a stale same-age detail-sync races it", async () => {

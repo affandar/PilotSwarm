@@ -48,7 +48,7 @@ async function previewContrast(card, prefix) {
 }
 
 for (const themeId of ["win95", "winamp", "ms-dos"]) {
-    test(`${themeId}: default and MoA previews, tabs, empty state, and dialogs retain readable contrast`, async ({ page }) => {
+    test(`${themeId}: default and MoA previews, personal workspace, empty state, and dialogs retain readable contrast`, async ({ page }) => {
         const errors = [];
         page.on("pageerror", error => errors.push(error.message));
         let settings = { themeId, moa: normalizeMoa({ slots: [
@@ -89,13 +89,12 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await expect(card.locator(".ps-assistant-preview-viewport")).toHaveCSS("max-height", "none");
 
         await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
-        await expect(page.locator('[data-moa-panel="chat"] textarea')).toBeVisible();
+        await expect(page.locator(".ps-moa-composer-strip textarea")).toBeVisible();
+        await expect(page.locator(".ps-moa-save")).toHaveCount(0);
         const focusedPanel = page.locator('[data-moa-panel="chat"]');
         await contrast(focusedPanel, `${themeId} focus border against pane`, { property: "borderTopColor", minimum: 3 });
         const focusBorder = await focusedPanel.evaluate(el => getComputedStyle(el).borderTopColor);
         await contrast(page.locator(".ps-moa-toolbar"), `${themeId} focus border against chrome`, { foreground: focusBorder, minimum: 3 });
-        await contrast(page.getByRole("tab", { name: "Operations", exact: true }), `${themeId} active tab`);
-        await contrast(page.getByRole("tab", { name: "Reserve", exact: true }), `${themeId} inactive tab`);
         const empty = page.locator('[data-moa-panel="missing-canvas"] .ps-moa-empty');
         await expect(empty).toContainText("empty or no longer available");
         await contrast(empty, `${themeId} empty canvas notice`);
@@ -106,16 +105,16 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await moaCard.locator(":scope > summary").click();
         await previewContrast(moaCard, `${themeId} MoA expanded preview`);
         await page.screenshot({ path: test.info().outputPath(`${themeId}-moa-preview.png`) });
-        await page.getByRole("button", { name: "Rename MoA", exact: true }).click();
-        const rename = page.getByRole("dialog", { name: "Rename MoA", exact: true });
-        await contrast(rename.locator("header strong"), `${themeId} rename title`);
-        await contrast(rename.getByRole("textbox", { name: "MoA name" }), `${themeId} rename input`);
-        await contrast(rename.getByRole("button", { name: "Save name" }), `${themeId} rename action`);
-        await rename.getByRole("button", { name: "Close dialog" }).click();
-        await page.getByRole("button", { name: "Share", exact: true }).click();
-        const share = page.getByRole("dialog", { name: "Share MoA", exact: true });
-        await contrast(share.locator("p"), `${themeId} share explanation`);
-        await contrast(share.getByRole("textbox", { name: "MoA share link" }), `${themeId} share link`);
+        await focusedPanel.getByRole("button", { name: "Session control panel", exact: true }).click();
+        const controls = page.getByRole("dialog", { name: "Session control panel", exact: true });
+        await contrast(controls.getByRole("heading", { name: "Session", exact: true }), `${themeId} session controls heading`);
+        await contrast(controls.getByRole("heading", { name: "Panel layout", exact: true }), `${themeId} layout controls heading`);
+        await contrast(controls.getByRole("heading", { name: "Session details", exact: true }), `${themeId} inline session details`);
+        await expect(focusedPanel.locator(":scope > header button")).toHaveCount(4);
+        await page.screenshot({ path: test.info().outputPath(`${themeId}-control-panel.png`) });
+        await controls.getByRole("button", { name: "Close dialog", exact: true }).click();
+        await expect(page.getByRole("tab")).toHaveCount(1);
+        await expect(page.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
         expect(errors).toEqual([]);
     });
 }

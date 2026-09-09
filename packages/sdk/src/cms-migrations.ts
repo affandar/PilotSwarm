@@ -391,6 +391,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "cluster_admin_accounting",
             sql: migration_0075_cluster_admin_accounting(schema),
         },
+        {
+            version: "0076",
+            name: "preserve_moa_dashboards",
+            sql: migration_0076_preserve_moa_dashboards(schema),
+        },
         { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
     ];
 }
@@ -14723,5 +14728,42 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
+`;
+}
+
+// Keep old open portal clients from downgrading an upgraded personal layout.
+function migration_0076_preserve_moa_dashboards(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- Compare against the locked UPDATE row, so concurrent legacy/new writes
+-- preserve the newest dashboard document. Other preferences still replace.
+CREATE OR REPLACE FUNCTION ${s}.cms_set_user_profile_settings(
+    p_provider     TEXT,
+    p_subject      TEXT,
+    p_email        TEXT,
+    p_display_name TEXT,
+    p_settings     JSONB
+) RETURNS BIGINT AS $$
+DECLARE
+    v_user_id  BIGINT;
+    v_settings JSONB := COALESCE(p_settings, '{}'::jsonb);
+BEGIN
+    v_user_id := ${s}.cms_register_user(p_provider, p_subject, p_email, p_display_name);
+
+    UPDATE ${s}.users
+    SET profile_settings = CASE
+            WHEN profile_settings #> '{moa,version}' = '3'::jsonb
+                 AND jsonb_typeof(profile_settings #> '{moa,dashboards}') = 'array'
+                 AND (v_settings #> '{moa,version}' IS DISTINCT FROM '3'::jsonb
+                      OR jsonb_typeof(v_settings #> '{moa,dashboards}') IS DISTINCT FROM 'array')
+            THEN jsonb_set(v_settings, '{moa}', profile_settings -> 'moa')
+            ELSE v_settings
+        END,
+        updated_at       = now()
+    WHERE user_id = v_user_id;
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
 `;
 }

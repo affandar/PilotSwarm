@@ -49,13 +49,23 @@ describe("P6b: knowledge prompt blocks (capability-aware)", () => {
 
     it("enhanced retrieval block names the pull tools and owns the namespace rules", () => {
         const block = buildEnhancedRetrievalPromptBlock({ semantic: true });
-        assert(block.includes("search_skills"), "names search_skills (per-turn pull)");
+        assert(block.includes("search_skills"), "names search_skills (on-demand pull)");
         assert(block.includes("facts_search"), "names facts_search");
         assert(block.includes("facts_similar"), "names facts_similar");
         assert(block.includes(NS_HEADER), "enhanced block carries the namespace rules");
         // The capped-50 PUSH must be gone: this block tells the agent to PULL,
         // it must not embed a pre-listed skill catalogue.
         assert(!block.includes("[CURATED SKILLS]"), "no pushed skill list in enhanced mode");
+    });
+
+    for (const semantic of [true, false]) it(`skill discovery is conditional (semantic=${semantic})`, () => {
+        const block = buildEnhancedRetrievalPromptBlock({ semantic });
+        assert(!/start of every turn/i.test(block), "no mandatory search on each interaction");
+        assert(block.includes("user explicitly"), "explicit skill requests still trigger discovery");
+        assert(block.includes("non-obvious") && block.includes("current context does not resolve"), "search addresses a real context gap");
+        assert(block.includes("greetings, simple") && block.includes("arithmetic, status checks"), "routine exchanges can answer directly");
+        assert(block.includes("Reuse relevant skills already loaded"), "loaded guidance does not require another search");
+        assert(block.includes('read_facts(key_pattern="<key>", scope="shared") before applying'), "returned instructions still load before use");
     });
 
     // MED#2: the semantic wording is gated on an actual embedder. With

@@ -1290,6 +1290,7 @@ export function* handleTurnResult(
             });
 
             state.pendingInputQuestion = {
+                iteration: state.iteration,
                 question: result.question,
                 choices: result.choices,
                 allowFreeform: result.allowFreeform,
