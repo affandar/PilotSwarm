@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve multiline tool-call disclosures as single records when integrating
+  the released chat-call UI, preventing stale rows after session switches.
 - Render escaped newlines as paragraphs and lines in pending and answered
   Question cards, preserving code literals, Windows paths and stored answers.
 - Distinguish saved intermediate `Agent update` disclosures from live `Message

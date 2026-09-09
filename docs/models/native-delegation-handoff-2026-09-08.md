@@ -51,6 +51,19 @@ feature flighting. That work is now implemented/documented:
   Covers pending, optimistic answered and durable answered cards in both renderers.
   All 695 UI tests and the new built-browser layout test passed. Localhost serves
   the rebuilt bundle; no Waldemort deployment. Feature flags remain design-only.
+- Companion mixed-chat fix (2026-09-09): the released 0.5.62/0.5.63 chat-call
+  renderer passed escaped-newline previews through generic line splitting,
+  duplicating React call keys. A browser reproduction showed one `ask_user`
+  becoming six rows, with five surviving above another session's splash.
+  Preserve `chatCall` and `callPreview` records intact in `normalizeLines`.
+  Release-based branch `codex/chat-call-session-isolation`, commit `6668bcdb`,
+  contains the fix and two permanent browser regression tests. Those tests failed
+  before the fix and pass afterward; all seven targeted browser tests passed,
+  including live updates, reloads, MoA and mobile/theme layouts. Worktree:
+  `/Users/affandar/workshop/drox/pilotswarm.worktrees/chat-call-session-isolation`.
+  This older spike does not yet contain the upstream chat-call feature; it now
+  carries the identical guard for integration. Its 695 UI tests and web build
+  pass. Localhost 3017 serves the rebuilt spike; no Waldemort deployment.
 
 Worktree: `/Users/affandar/workshop/drox/pilotswarm.worktrees/native-copilot-subagents-spike`
 Branch: `codex/native-copilot-subagents-spike`

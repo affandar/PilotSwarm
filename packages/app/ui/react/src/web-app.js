@@ -842,6 +842,13 @@ function normalizeLines(lines) {
     };
 
     for (const line of lines || []) {
+        if (line?.kind === "chatCall" || line?.callPreview !== undefined) {
+            // A disclosure is one keyed record, even when its preview contains
+            // escaped newlines. Splitting it duplicates callKey and leaves
+            // orphaned React nodes behind when the session is replaced.
+            normalized.push(line);
+            continue;
+        }
         if (line?.kind === "assistantPreview" || line?.kind === "nativeTasks") {
             // Preserve selector-cache identity so another stream's ticks don't
             // rerender every completed response or recreate its scroll observer.
