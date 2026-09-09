@@ -866,7 +866,21 @@ function formatActivity(event) {
     const body = formatEventSnippet(event);
     let runs = null;
 
+    // Native child transcripts remain inspectable as events, but only their
+    // lifecycle belongs in the parent's activity feed.
+    if (event.eventType?.startsWith("native.")) return null;
     switch (event.eventType) {
+        case "subagent.started":
+        case "subagent.completed":
+        case "subagent.failed": {
+            const phase = event.eventType.slice("subagent.".length);
+            const name = event.data?.agentDisplayName || event.data?.agentName || "agent";
+            const duration = Number.isFinite(event.data?.durationMs)
+                ? ` (${formatHumanDurationSeconds(event.data.durationMs / 1000)})` : "";
+            runs = buildLabeledActivityRuns(time, "[native agent]", "cyan", `${name} ${phase}${duration}`, phase === "failed" ? "red" : "white");
+            break;
+        }
+        case "subagent.configured":
         case "assistant.usage":
         case "session.info":
         case "session.idle":

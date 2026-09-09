@@ -1,3 +1,4 @@
+import { resolveNativeSubagents } from "./native-subagents.js";
 import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
@@ -334,6 +335,7 @@ export class PilotSwarmWorker {
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
                 customAgents: this._loadedAgents,
+                nativeSubagents: resolveNativeSubagents(options.nativeSubagents),
                 // The `load_skill` catalog, BY REFERENCE (cleared and refilled
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,

@@ -1,3 +1,4 @@
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, NATIVE_SUBAGENT_GUIDANCE, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
@@ -179,6 +180,7 @@ export function pickAgentCopyForOwner(
 export interface WorkerDefaults {
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
     appDefaultPrompt?: string;
@@ -1676,6 +1678,10 @@ export class SessionManager {
         // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
         // in managed-session.ts runTurn — hard exclusion beats instructions.
         const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
+        const nativeEnabled = this.workerDefaults.nativeSubagents === "sync"
+            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
+            && config.promptLayering?.kind !== "pilotswarm-system-agent";
+        config.nativeSubagents = nativeEnabled ? "sync" : "off";
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
@@ -1737,7 +1743,7 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(allTools),
+            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId) : allTools),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //
@@ -1770,7 +1776,7 @@ export class SessionManager {
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
-            hooks: config.hooks,
+            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -1783,17 +1789,20 @@ export class SessionManager {
             // Suppress sub-agent streaming events — we never want the parent
             // session's event log polluted with grandchild deltas.
             includeSubAgentStreamingEvents: false,
-            // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
-            // its own durable sub-agent mechanism via spawn_agent / check_agents.
-            // The native "task" tool spawns in-process sub-agents that bypass the
-            // durable orchestration layer, causing the LLM to use the wrong mechanism.
-            excludedTools: ["task"],
+            // Native workers are explicitly scoped: built-ins inherit external
+            // tools, and loaded PilotSwarm agents expect durable child contracts.
+            excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
+            ...(nativeEnabled ? {
+                customAgents: nativeSubagentDefinitions(sdkModelName),
+                customAgentsLocalOnly: true,
+                excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
+            } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
-            ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
@@ -2746,14 +2755,17 @@ export class SessionManager {
 
     private _buildSystemMessage(
         sessionId: string,
-        config: SerializableSessionConfig,
+        config: ManagedSessionConfig,
         sessionOwnerKey: string | null = null,
     ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);
-        const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
+        const baseLastInstructions = this._buildLastInstructionsSection(sessionId, config);
+        const lastInstructions = config.nativeSubagents === "sync"
+            ? { ...baseLastInstructions, content: mergePromptSections([baseLastInstructions.content, NATIVE_SUBAGENT_GUIDANCE])! }
+            : baseLastInstructions;
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
             : { last_instructions: lastInstructions };

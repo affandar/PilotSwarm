@@ -230,6 +230,8 @@ export interface SerializableSessionConfig {
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
 export interface ManagedSessionConfig extends SerializableSessionConfig {
+    /** Worker-local native delegation policy; never a durable session setting. */
+    nativeSubagents?: "off" | "sync";
     /** Internal hash of resolved provider endpoint/credential; never serialized or exposed. */
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
@@ -814,6 +816,9 @@ export interface PilotSwarmWorkerOptions {
      * when `useManagedIdentity` is `true`.
      */
     aadDbUser?: string;
+    /** Experimental same-worker native Copilot delegation. Default: PILOTSWARM_NATIVE_SUBAGENTS or off. */
+    nativeSubagents?: "off" | "sync";
+
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 
