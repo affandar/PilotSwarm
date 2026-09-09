@@ -171,6 +171,34 @@
             ]
         },
         {
+            "id": "github-copilot-ambient",
+            "type": "github-ambient",
+            "models": [
+                {
+                    "name": "claude-sonnet-5",
+                    "description": "GitHub Copilot via ambient identity. No API key and no githubToken: the worker authenticates as the signed-in Copilot user under its own COPILOT_HOME (the `copilot` CLI login). Use this on a devbox worker running against the DB-backed provider catalog, where a keyless `github` provider would otherwise be dropped for having no stored credential. A worker with no Copilot login cannot serve it.",
+                    "cost": "medium",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 200000,
+                        "long_context": 936000
+                    }
+                }
+            ]
+        },
+        {
             "id": "azure-openai",
             "type": "openai",
             "baseUrl": "https://your-foundry-resource.services.ai.azure.com/openai/v1",

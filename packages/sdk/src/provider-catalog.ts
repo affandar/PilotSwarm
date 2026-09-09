@@ -18,10 +18,10 @@
  */
 import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
-    ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
+    ModelProviderRegistry, providerTypeUsesAmbientIdentity, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
 } from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
-import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
+import { AMBIENT_IDENTITY_KIND, WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
 
 export type RuntimeModelResolutionSource =
     | "explicit"
@@ -126,6 +126,13 @@ function configSecretRef(p: ModelProviderConfig): Record<string, unknown> | null
     if (providerTypeUsesWorkloadIdentity(p.type)) {
         return { kind: WORKLOAD_IDENTITY_KIND, source: CONFIG_ORIGIN };
     }
+    // `github-ambient` seeds keyless for the same reason: there is no key to
+    // find, and the credential is the worker's own signed-in Copilot login.
+    // The marker keeps the row `has_credential`, but is distinct from workload
+    // identity because nothing mints a token from it.
+    if (providerTypeUsesAmbientIdentity(p.type)) {
+        return { kind: AMBIENT_IDENTITY_KIND, source: CONFIG_ORIGIN };
+    }
     return p.apiKey && resolveEnvValue(p.apiKey)
         ? {
             kind: "apiKey", ref: p.apiKey, source: CONFIG_ORIGIN,
@@ -198,6 +205,7 @@ export function buildRuntimeRegistry(
         const type = byType.get(inst.typeId);
         if (!type) continue;      // a type the file no longer describes
         const workloadIdentity = providerTypeUsesWorkloadIdentity(type.type);
+        const ambient = providerTypeUsesAmbientIdentity(type.type);
         const secret = secretValue(inst.secretRef);
         // A provider whose own credential does not resolve is DROPPED, never
         // quietly run on the type's. Inheriting it meant a personal provider
@@ -209,7 +217,9 @@ export function buildRuntimeRegistry(
         // A workload-identity provider is exempt because it borrows nothing:
         // its credential is the worker's own identity, which is the same one
         // whatever row names it, so there is no other key to fall through to.
-        if (!secret && !workloadIdentity) continue;
+        // An ambient-identity provider is exempt for the same reason: its
+        // credential is the worker's signed-in Copilot login, not a stored key.
+        if (!secret && !workloadIdentity && !ambient) continue;
         // But it is a CLUSTER credential, so it may only be a shared provider.
         // A personal one would spend the organization's own Anthropic account
         // under a name no administrator can cap, hold or even delete —
@@ -241,7 +251,7 @@ export function buildRuntimeRegistry(
             // Anthropic token to it. Only the deployment's own config file
             // may say where this credential is allowed to go.
             ...(inst.baseUrl && !workloadIdentity ? { baseUrl: inst.baseUrl } : {}),
-            ...(workloadIdentity
+            ...(workloadIdentity || ambient
                 ? {}
                 : type.type === "github" ? { githubToken: secret } : { apiKey: secret }),
         });
@@ -391,6 +401,18 @@ export function resolveProviderCredential(
 ): ResolvedProvider | null {
     const type = types.allProviders.find((p) => p.id === credential.typeId);
     if (!type) return null;
+
+    // `github-ambient` resolves to a keyless `github` provider: no token here,
+    // no minted bearer. session-manager sees `type: "github"` with no token and
+    // authenticates as the signed-in Copilot user under the worker's
+    // COPILOT_HOME. A worker without that login cannot serve it (it throws).
+    if (providerTypeUsesAmbientIdentity(type.type)) {
+        return {
+            providerId: credential.name,
+            type: "github",
+            modelName,
+        };
+    }
 
     if (type.type === "github") {
         const token = secretValue(credential.secretRef);

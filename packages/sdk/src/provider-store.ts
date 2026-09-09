@@ -26,6 +26,17 @@ export type ProviderClass = "shared" | "personal";
  */
 export const WORKLOAD_IDENTITY_KIND = "workloadIdentity";
 
+/**
+ * What an ambient-identity (`github-ambient`) provider stores instead of a key.
+ *
+ * Like {@link WORKLOAD_IDENTITY_KIND} it holds no secret and exists only so the
+ * row reads as credentialed (`has_credential` is `secret_ref <> '{}'`), but it
+ * is a distinct marker: the credential is the worker's signed-in Copilot login,
+ * not a token this platform mints, so it must NOT be treated as workload
+ * identity. Nothing ever reads a value out of it.
+ */
+export const AMBIENT_IDENTITY_KIND = "ambientIdentity";
+
 /** Does this stored blob say "authenticate as the worker"? */
 export function isWorkloadIdentitySecret(secretRef: Record<string, unknown> | null | undefined): boolean {
     return secretRef?.kind === WORKLOAD_IDENTITY_KIND;

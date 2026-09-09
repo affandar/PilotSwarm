@@ -108,7 +108,7 @@ export interface ModelVisionCapability {
  * and the worker mints a short-lived token per request from the identity its
  * own platform issues it. See `wif-credentials.ts`.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "github-ambient";
 
 /**
  * Types that authenticate as the worker itself, with nothing stored.
@@ -120,6 +120,22 @@ export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "ant
  */
 export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | undefined | null): boolean {
     return type === "anthropic-wif";
+}
+
+/**
+ * Ambient GitHub Copilot identity: authenticate as the signed-in Copilot user
+ * under the worker's own COPILOT_HOME, with nothing stored.
+ *
+ * Like a workload-identity type it carries no key and seeds keyless, so every
+ * "is there a key?" test must ask this first or it drops the provider. Unlike
+ * one, the credential is not a token this code mints — it is the `copilot` CLI
+ * login already present on the worker. It therefore resolves to a plain
+ * keyless `github` provider (see `resolve` and `resolveProviderCredential`) and
+ * hands off to session-manager's tokenless COPILOT_HOME path; nothing here ever
+ * mints a bearer for it. A worker with no such login cannot serve it.
+ */
+export function providerTypeUsesAmbientIdentity(type: ProviderType | string | undefined | null): boolean {
+    return type === "github-ambient";
 }
 
 /**
@@ -265,7 +281,7 @@ export class ModelProviderRegistry {
         this.providers = opts.keepUncredentialed
             ? config.providers.slice()
             : config.providers.filter(p => {
-                if (p.type === "github") {
+                if (p.type === "github" || providerTypeUsesAmbientIdentity(p.type)) {
                     return true;
                 }
                 // A workload-identity type has no key to find, and looking
@@ -378,12 +394,14 @@ export class ModelProviderRegistry {
         const desc = this.descriptors.get(q);
         if (!provider || !desc) return undefined;
 
-        if (provider.type === "github") {
+        if (provider.type === "github" || provider.type === "github-ambient") {
             return {
                 providerId: provider.id,
                 type: "github",
                 modelName: desc.modelName,
-                githubToken: resolveEnvValue(provider.githubToken),
+                // `github-ambient` stores no token: it resolves keyless and
+                // session-manager authenticates as the signed-in Copilot user.
+                githubToken: provider.githubToken ? resolveEnvValue(provider.githubToken) : undefined,
             };
         }
 
@@ -816,7 +834,7 @@ export function applyByokContextWindow(
     descriptor: Pick<ModelDescriptor, "contextWindowSizes" | "defaultContextTier"> | undefined,
     contextTier?: ContextTier,
 ): void {
-    if (!providerConfig || !providerType || providerType === "github") return;
+    if (!providerConfig || !providerType || providerType === "github" || providerTypeUsesAmbientIdentity(providerType)) return;
     const tierWindow = resolveContextWindowTokens(descriptor, contextTier);
     if (typeof tierWindow !== "number" || tierWindow <= 0) return;
     if (providerConfig.maxPromptTokens === undefined) providerConfig.maxPromptTokens = tierWindow;
