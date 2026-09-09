@@ -194,9 +194,23 @@ Suggested shared methods: `listFeatureFlags`, `getClusterFeatureFlags`,
 `setClusterFeatureFlag`, `resetClusterFeatureFlag`, `getMyFeatureFlags`,
 `setMyFeatureFlag`, `unsetMyFeatureFlag`, `getUserFeatureFlags`,
 `setUserFeatureFlag`, `unsetUserFeatureFlag`, `listFeatureFlagChanges`.
-Web routes use `/management/features` and `/management/users/{me|userId}/features`;
-register literal `me` ahead of user ID routes. MCP and agent tools use equivalent
-snake-case names and arguments. Cluster updates save both booleans atomically.
+Proposed Web routes below are relative to `/api/v1`:
+
+| Method and route | Operation |
+| --- | --- |
+| GET `/management/features/catalog` | List code-published definitions |
+| GET `/management/features/cluster` | Read cluster settings/defaults |
+| PUT / DELETE `/management/features/cluster/:featureKey` | Set / reset cluster settings (admin) |
+| GET `/management/users/me/features` | Read my preferences and effective values |
+| PUT / DELETE `/management/users/me/features/:featureKey` | Set / unset my preference |
+| GET `/management/users/:userId/features` | Read a selected user's flags (admin) |
+| PUT / DELETE `/management/users/:userId/features/:featureKey` | Set / unset a selected user's preference (admin) |
+| GET `/management/features/changes` | Read feature-setting audit (admin) |
+
+Register literal `me` ahead of user ID routes. MCP and agent tools use the shared
+method names in snake case with equivalent arguments/results. Direct management
+and Web adapters expose the same method set. Cluster updates save both booleans
+atomically; mutations require request ID and expected epoch.
 Responses include configured cluster/user values, effective value, winning scope,
 configuration epoch, and whether a saved user preference is currently ignored.
 Mutations return the committed epoch; worker adoption is reported separately.
@@ -316,6 +330,13 @@ function nativeAllowed(owner, sessionEligibility) {
     && sessionEligibility
     && featureCache.resolve('copilot.native_tasks', owner).enabled;
 }
+
+function admitNativeTask(turn) {
+  return turn.startedWithNative && !turn.nativeRevoked
+    && nativeAllowed(turn.owner, turn.sessionEligibility);
+}
+// On a cache swap, latch nativeRevoked on any active turn now resolved OFF.
+// Clear the latch only for a new turn; never alter in-flight task cleanup mode.
 ```
 
 The polling request itself must not overlap without a bound; release its guard
@@ -344,11 +365,14 @@ polling caches settings, not administrator privileges.
    Reuse existing swarm profiles, named-agent restrictions, model inheritance,
    sync-only policy, inline task UI and event handling. The flag adds no new native
    executor and does not change durable `spawn_agent` availability.
-5. **Handle running/warm sessions.** Give the native `task` hook a callback to the
-   live cache. After a disabling snapshot is applied, reject new native admissions,
-   including later calls in a running parent turn. Previously admitted natives
-   finish with cleanup intact; do not mutate that turn's cleanup mode. On the next
-   turn, existing mode-change rebind removes/adds schemas, profiles and guidance.
+5. **Handle running/warm sessions.** Native admission uses the live cache plus
+   that turn's admitted mode and a local revocation latch. After a disabling
+   snapshot is applied, reject new native admissions for the rest of the turn,
+   even if a later snapshot re-enables the flag. Cache-swap notification must latch
+   affected active turns even when no task call occurs during the OFF interval.
+   Previously admitted natives finish with cleanup intact; do not mutate the turn's
+   cleanup mode. The next turn clears the latch and uses the latest cached decision;
+   existing mode-change rebind adds/removes schemas, profiles and guidance.
    An enable becomes callable on that next turn after the worker has refreshed.
 6. **Validate locally with two workers.** Run the existing native/delegation suite,
    extend on/off new/warm/cold tests to cluster/user decisions, and run both actual
@@ -385,6 +409,45 @@ This initializes only the requesting user as enabled, but it is **not an exclusi
 allowlist**: any user may opt in while `allowUserOverride` is true. This follows
 from the requested self-service model. Setting it false also ignores the requesting
 user's override; an admin-set user entry has no special precedence.
+
+## In-flight transition contract and test status
+
+**Status: the feature-flag catalog, APIs, polling cache and transition tests below
+are not implemented yet.** Existing committed native tests cover:
+
+- `native-subagents-runtime.test.js`: OFF on new/warm/cold sessions with durable
+  delegation preserved; saved ON→OFF cold resume rejects even a fabricated `task`
+  call and removes native profiles/guidance; stopping a parent terminates its native
+  child shell; ON sessions keep working through warm/cold reuse.
+- `native-subagents.test.js`: mode-change rebind detection and cleanup/stop races,
+  including a late timed-out cleanup result not cancelling a later turn's tasks.
+
+Those do not establish live cluster/user flag propagation or OFF→ON execution.
+The new implementation must pass this additional matrix before CHK rollout:
+
+| Transition/test | Required result |
+| --- | --- |
+| ON→OFF while native A is executing | After the worker applies OFF, A finishes and its real process/tasks are cleaned up; new task B is rejected, parent turn continues |
+| OFF→ON while a parent turn is executing | Current turn keeps its original OFF tool surface; next turn on the same session has native schemas/profiles/guidance and successfully executes native work |
+| ON→OFF→ON with each epoch applied during one turn | OFF revokes further native admissions for that turn, even if no call was attempted while OFF; re-enable works on the next turn; no leftover tasks or duplicate profiles/guidance |
+| ON/OFF round trips between turns | Execute successful native work, disable and prove denial, re-enable and execute again on the same warm session; repeat after eviction/cold resume |
+| User On/Off/Inherit | Only that owner's sessions change; Inherit follows cluster; durable descendants use the owner, not a shared-session viewer |
+| allowUserOverride false→true→false | Locked cluster values win; saved user preferences become active then inactive again without being deleted; test both cluster enabled values |
+| Several writes before one poll | Worker applies the latest snapshot; intermediate values need not be observed. A transient OFF entirely between polls is not a guaranteed stop |
+| Two workers at different polling points | Each follows its applied epoch; both converge after refresh. UI shows saved epoch, worker-applied epoch and next-turn activation accurately |
+| Failed/stale/overlapping refresh | Last good cache survives; old completion cannot replace newer snapshot; failed load retries. Slow package install does not block flags |
+| Prompt/stop during transitions | Existing message queue and stop behavior work; no stuck turn, lost input, implicit interruption or forced cancellation solely from a flag change |
+
+Use real SDK/CLI execution with deterministic local inference and explicit barriers
+(native A started, mutation committed, epoch applied, task B attempted), rather than
+sleeping 20 seconds and hoping the race occurs. Drive the real poll callback with a
+testable clock; instrument the store to prove zero feature DB reads on turn/task
+paths. Add a two-worker CMS integration case for actual propagation and browser
+checks for pending/effective state and self/admin editing.
+
+The revocation latch is temporary execution state, not a session setting or database
+column. It makes re-enable consistently take effect at a turn boundary while
+allowing disable to take effect after a poll during a running turn.
 
 ## Implementation tests
 

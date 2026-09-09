@@ -40,8 +40,10 @@ feature flighting. That work is now implemented/documented:
   heartbeat poll (20s default), using a separate feature-flags directive epoch.
   The latest schema is two tables: code-published `feature_flags` and unified
   cluster/user `feature_flag_settings`, reusing existing audit/directive tables.
-  The design includes the code sketch and native rollout plan; no per-turn/task
-  flag DB reads. No feature flags or CHK deployment applied.
+  The design includes exact proposed routes, code sketch, native rollout plan
+  and an explicit in-flight ON/OFF round-trip test matrix. That matrix is planned,
+  not existing coverage. No per-turn/task flag DB reads; no feature flags or CHK
+  deployment applied.
 - The old broad routing sweep remains partial; it was not resumed under the
   narrower current request. Historical details below describe the earlier pause.
 
