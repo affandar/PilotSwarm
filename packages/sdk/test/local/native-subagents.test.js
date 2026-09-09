@@ -200,12 +200,20 @@ describe("worker session assembly", () => {
             stop: async () => {},
         };
         try {
-            await manager.getOrCreate("native-config", { model: MODEL, ...config }, { turnIndex: 0 });
+            await manager.getOrCreate("native-config", {
+                model: MODEL, systemMessage: { content: "APP_CONTEXT" }, turnSystemPrompt: "LEGACY_TURN_NOTE", ...config,
+            }, { turnIndex: 0 });
             const options = created[0];
             expect(options.excludedTools.includes("task")).toBe(!enabled);
             expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : ["durable-agent"]);
             expect(options.customAgentsLocalOnly === true).toBe(enabled);
-            expect(JSON.stringify(options.systemMessage).includes("## Native local delegation")).toBe(enabled);
+            const transform = options.systemMessage.sections.last_instructions.action;
+            expect(typeof transform).toBe("function");
+            const rendered = await transform("COPILOT_LAST_INSTRUCTIONS");
+            expect(rendered).toContain("COPILOT_LAST_INSTRUCTIONS");
+            expect(rendered).toContain("APP_CONTEXT");
+            expect(rendered).toContain("LEGACY_TURN_NOTE");
+            expect(rendered.includes("## Native local delegation")).toBe(enabled);
         } finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
     });
 });

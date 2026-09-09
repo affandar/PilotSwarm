@@ -9,6 +9,8 @@ import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.
 
 const MODEL = "gpt-5.6-terra";
 const parentRequest = body => body.tools?.some(t => t.function?.name === "ps_marker");
+const systemPrompt = body => body.messages.filter(m => m.role === "system").map(m =>
+    typeof m.content === "string" ? m.content : m.content.map(part => part.text ?? "").join("\n")).join("\n");
 const nativeTask = overrides => ({ name: "task", args: {
     name: "probe", agent_type: "swarm-explore", description: "Inspect local fixture",
     prompt: "Inspect the assigned local fixture and return results", ...overrides,
@@ -52,9 +54,13 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 : { tools: [{ name: "view", args: { path: join(home, "fixture.txt") } }] };
         }, async ({ home, server, config, sessionId, createManager, leaks }) => {
             writeFileSync(join(home, "fixture.txt"), "local-native-proof-739");
+            config.systemMessage = { content: "RUNTIME_CONTEXT" };
+            config.turnSystemPrompt = "TURN_NOTE_IN_USER_PROMPT";
+            config.systemContextInPrompt = true;
             let manager = createManager();
             for (let turn = 0; turn < 3; turn++) {
                 if (turn === 2) { await manager.shutdown(); manager = createManager(); }
+                const requestStart = server.requests.length;
                 const managed = await manager.getOrCreate(sessionId, config, { turnIndex: turn });
                 const events = [];
                 const result = await managed.runTurn(`Delegate inspection, turn ${turn}`, { onEvent: e => events.push(e) });
@@ -69,6 +75,17 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 expect(usage.reduce((n, e) => n + e.data.inputTokens, 0)).toBe(80);
                 expect(usage.reduce((n, e) => n + e.data.outputTokens, 0)).toBe(20);
                 expect((await managed.getCopilotSession().rpc.tasks.list()).tasks.filter(t => t.type === "agent")).toEqual([]);
+                // Inspect actual inference requests, after SDK callback extraction
+                // and CLI prompt composition, on create, warm reuse, and cold resume.
+                const parentPrompts = server.requests.slice(requestStart).filter(parentRequest).map(systemPrompt);
+                expect(parentPrompts.length).toBeGreaterThan(0);
+                for (const prompt of parentPrompts) {
+                    expect(prompt.split("## Native local delegation")).toHaveLength(2);
+                    expect(prompt).toContain('task(agent_type="swarm-explore", mode="sync")');
+                    expect(prompt).toContain("Omit the model, reasoning_effort, and context_tier arguments");
+                    expect(prompt).toContain("RUNTIME_CONTEXT");
+                    expect(prompt).not.toContain("TURN_NOTE_IN_USER_PROMPT");
+                }
             }
             const childRequests = server.requests.filter(body => !parentRequest(body));
             expect(childRequests.length).toBe(6);
@@ -111,6 +128,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
             expect((await managed.runTurn("hello")).content).toBe("NO_DELEGATION");
             expect(server.requests[0].tools.map(t => t.function?.name)).not.toContain("task");
+            expect(systemPrompt(server.requests[0])).not.toContain("## Native local delegation");
         }, "off");
     });
 

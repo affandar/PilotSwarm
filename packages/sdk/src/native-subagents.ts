@@ -25,7 +25,9 @@ Provide full context and ask for findings/results. Simple lookups are best done 
 Native workers have local CLI tools only and use your current model. They return results through task.
 PilotSwarm child contracts, facts, wake-ups, and complete_agent apply ONLY to spawn_agent children.
 Use spawn_agent for independent durable work, timers, or future follow-ups.
-Native background mode and write_agent are unavailable. Do not override native worker models.
+Native background mode and write_agent are unavailable.
+Native workers inherit the parent model, reasoning effort, and context tier.
+Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.
 `;
 
 export function nativeSubagentDefinitions(model: string): CustomAgentConfig[] {

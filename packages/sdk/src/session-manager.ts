@@ -2508,7 +2508,7 @@ export class SessionManager {
 
     private _buildLastInstructionsSection(
         sessionId: string,
-        initialConfig: SerializableSessionConfig,
+        initialConfig: ManagedSessionConfig,
     ): SectionOverride {
         return {
             action: async (currentContent: string) => {
@@ -2544,6 +2544,10 @@ export class SessionManager {
                     runtimeContext,
                     ownSkillsIndex,
                     latest.systemContextInPrompt ? undefined : latest.turnSystemPrompt,
+                    // The SDK ignores sibling `content` when `action` is a
+                    // transform callback. Include worker guidance in the actual
+                    // rendered section, using the current session policy.
+                    latest.nativeSubagents === "sync" ? NATIVE_SUBAGENT_GUIDANCE : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);
@@ -2762,10 +2766,7 @@ export class SessionManager {
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);
-        const baseLastInstructions = this._buildLastInstructionsSection(sessionId, config);
-        const lastInstructions = config.nativeSubagents === "sync"
-            ? { ...baseLastInstructions, content: mergePromptSections([baseLastInstructions.content, NATIVE_SUBAGENT_GUIDANCE])! }
-            : baseLastInstructions;
+        const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
             : { last_instructions: lastInstructions };

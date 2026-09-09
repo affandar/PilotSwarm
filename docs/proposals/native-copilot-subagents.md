@@ -119,6 +119,26 @@ used.
   parent summary, completed durable turn. Child took about 5 seconds; whole
   turn about 12.6 seconds. This is functional evidence, not a benchmark.
 
+### Guidance delivery correction
+
+A subsequent user session requested background execution and a reasoning
+override. The native guidance had been attached as `content` alongside the
+`last_instructions` transform callback; the SDK ignores that sibling field.
+The guidance now forms part of the callback's returned text, including explicit
+instructions to omit model, reasoning-effort, and context-tier arguments.
+
+The regression checks reproduce the missing guidance before the fix and inspect
+actual inference requests through the pinned SDK/CLI on create, warm reuse, and
+cold resume. They also verify existing prompt overlays survive and disabled or
+ineligible sessions do not receive the guidance. All 49 focused tests and the
+full build pass after the correction.
+
+A fresh live GitHub Copilot session, asked to delegate without specifying
+execution arguments, selected `swarm-explore` with `mode="sync"` and omitted
+model/reasoning/context overrides. The native child completed 11 local tool
+calls in about 24 seconds, followed by the parent's summary, with no tool
+failures. Local session: `7cb2d383-c902-4669-a8bd-423c336cf871`.
+
 ## Local instance
 
 Portal: <http://127.0.0.1:3017>. Bound only to loopback, with local auth disabled.
