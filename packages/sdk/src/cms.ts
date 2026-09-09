@@ -16,6 +16,13 @@ import type { SessionOwnerInfo, SessionSummaryState, GitWorkspaceState } from ".
 
 // ─── Types ───────────────────────────────────────────────────────
 
+/** Immutable execution-routing fields persisted before a session can start. */
+export interface SessionRoutingContract {
+    repo?: string;
+    gitRef?: string;
+    ownerAffinityRequired?: boolean;
+}
+
 /** A persisted session event (non-ephemeral). */
 export interface SessionEvent {
     seq: number;
@@ -1061,6 +1068,22 @@ export interface JobGeneratorCycleRow {
     completedAt: Date | null;
 }
 
+export interface JobCleanupPlan {
+    aggregateType: "generator" | "job";
+    aggregateId: string;
+    generatorId: string;
+    jobId: string | null;
+    alreadyDeleted: boolean;
+    sessionIds: string[];
+}
+
+export interface JobCleanupResult {
+    aggregateType: "generator" | "job";
+    aggregateId: string;
+    alreadyDeleted: boolean;
+    deletedSessionCount: number;
+}
+
 export interface JobRow {
     jobId: string;
     generatorId: string;
@@ -1526,7 +1549,7 @@ export interface SessionCatalog {
         definition: JobGeneratorDefinitionRow;
     }>;
     listJobGenerators(owner?: Pick<SessionOwnerInfo, "provider" | "subject"> | null): Promise<JobGeneratorRow[]>;
-    getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null>;
+    getJobGenerator(generatorId: string, includeDeleted?: boolean): Promise<JobGeneratorRow | null>;
     publishJobGeneratorDefinition(input: {
         definitionId?: string;
         generatorId: string;
@@ -1542,7 +1565,31 @@ export interface SessionCatalog {
     listJobGeneratorDefinitions(generatorId: string): Promise<JobGeneratorDefinitionRow[]>;
     listJobGeneratorJobs(generatorId: string): Promise<JobRow[]>;
     listJobGeneratorCycles(generatorId: string, limit?: number): Promise<JobGeneratorCycleRow[]>;
-    getJob(jobId: string): Promise<JobRow | null>;
+    getJob(jobId: string, includeDeleted?: boolean): Promise<JobRow | null>;
+    beginJobGeneratorCleanup(input: {
+        generatorId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<JobCleanupPlan>;
+    beginJobCleanup(input: {
+        jobId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<JobCleanupPlan>;
+    recordJobCleanupSessions(
+        aggregateType: "generator" | "job",
+        aggregateId: string,
+        sessionIds: string[],
+    ): Promise<string[]>;
+    completeJobCleanup(
+        aggregateType: "generator" | "job",
+        aggregateId: string,
+        outcome: { status: "completed" | "failed"; error?: string | null; deletedSessionCount?: number },
+    ): Promise<void>;
+    beginSessionTreeDeletion(sessionId: string): Promise<void>;
+    /** True only while the session remains visible and outside a deletion fence. */
+    isSessionActive(sessionId: string): Promise<boolean>;
+    getDescendantSessionIdsIncludingDeleted(sessionId: string): Promise<string[]>;
     claimDueJobGenerators(workerId: string, limit?: number, leaseSeconds?: number): Promise<JobGeneratorRow[]>;
     beginJobGeneratorCycle(generatorId: string, workerId: string): Promise<{
         cycle: JobGeneratorCycleRow;
@@ -1729,6 +1776,8 @@ export interface SessionCatalog {
         serviceOf?: string | null;
         /** Durable creation config (migration 0072); see getSessionCreationConfig. */
         creationConfig?: Record<string, unknown> | null;
+        /** Immutable execution-routing contract for config-less pending-session recovery. */
+        routing?: SessionRoutingContract | null;
     }): Promise<void>;
 
     /**
@@ -1737,6 +1786,9 @@ export interface SessionCatalog {
      * in-memory map plus the worker-side bound-agent backfill.
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
+
+    /** Read the immutable execution-routing contract stored with the session. */
+    getSessionRouting?(sessionId: string): Promise<SessionRoutingContract | null>;
 
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
@@ -2363,10 +2415,11 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToJobGenerator);
     }
 
-    async getJobGenerator(generatorId: string): Promise<JobGeneratorRow | null> {
+    async getJobGenerator(generatorId: string, includeDeleted = false): Promise<JobGeneratorRow | null> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM "${this.sql.schema}".job_generators WHERE generator_id = $1`,
-            [generatorId],
+            `SELECT * FROM "${this.sql.schema}".job_generators
+             WHERE generator_id = $1 AND ($2 OR deleted_at IS NULL)`,
+            [generatorId, includeDeleted],
         );
         return rows[0] ? rowToJobGenerator(rows[0]) : null;
     }
@@ -2477,12 +2530,382 @@ export class PgSessionCatalog implements SessionCatalog {
         return rows.map(rowToJobGeneratorCycle);
     }
 
-    async getJob(jobId: string): Promise<JobRow | null> {
+    async getJob(jobId: string, includeDeleted = false): Promise<JobRow | null> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM "${this.sql.schema}".jobs WHERE job_id = $1`,
-            [jobId],
+            `SELECT * FROM "${this.sql.schema}".jobs
+             WHERE job_id = $1 AND ($2 OR deleted_at IS NULL)`,
+            [jobId, includeDeleted],
         );
         return rows[0] ? rowToJob(rows[0]) : null;
+    }
+
+    async beginJobGeneratorCleanup(input: {
+        generatorId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<JobCleanupPlan> {
+        return this.beginJobCleanupScope("generator", input.generatorId, input.actor, input.isAdmin ?? false);
+    }
+
+    async beginJobCleanup(input: {
+        jobId: string;
+        actor: SessionOwnerInfo;
+        isAdmin?: boolean;
+    }): Promise<JobCleanupPlan> {
+        return this.beginJobCleanupScope("job", input.jobId, input.actor, input.isAdmin ?? false);
+    }
+
+    private async beginJobCleanupScope(
+        aggregateType: "generator" | "job",
+        aggregateId: string,
+        actor: SessionOwnerInfo,
+        isAdmin: boolean,
+    ): Promise<JobCleanupPlan> {
+        const actorProvider = actor.provider?.trim();
+        const actorSubject = actor.subject?.trim();
+        if (!actorProvider || !actorSubject) {
+            throw new Error("Job cleanup actor provider and subject are required");
+        }
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const targetResult = aggregateType === "generator"
+                ? await client.query(
+                    `SELECT g.*, NULL::text AS job_id, g.deleted_at AS aggregate_deleted_at
+                     FROM "${this.sql.schema}".job_generators g
+                     WHERE g.generator_id = $1
+                     FOR UPDATE`,
+                    [aggregateId],
+                )
+                : await client.query(
+                    `SELECT g.*, j.job_id, j.deleted_at AS aggregate_deleted_at
+                     FROM "${this.sql.schema}".jobs j
+                     JOIN "${this.sql.schema}".job_generators g
+                       ON g.generator_id = j.generator_id
+                     WHERE j.job_id = $1
+                     FOR UPDATE OF g, j`,
+                    [aggregateId],
+                );
+            const target = targetResult.rows[0];
+            const ownerMatches = target
+                && target.owner_provider === actorProvider
+                && target.owner_subject === actorSubject;
+            if (!target || (!isAdmin && !ownerMatches)) {
+                throw Object.assign(new Error("JobGenerator not found."), {
+                    code: "NOT_FOUND",
+                    status: 404,
+                });
+            }
+            const generatorId = target.generator_id as string;
+            const jobId = aggregateType === "job" ? target.job_id as string : null;
+            const alreadyDeleted = Boolean(target.aggregate_deleted_at);
+
+            const tombstoneResult = await client.query(
+                `INSERT INTO "${this.sql.schema}".job_cleanup_tombstones AS tombstone (
+                     aggregate_type, aggregate_id, generator_id, job_id,
+                     owner_provider, owner_subject, actor_provider, actor_subject,
+                     actor_display_name
+                 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE
+                    SET cleanup_status = CASE
+                            WHEN tombstone.cleanup_status = 'completed'
+                                THEN 'completed'
+                            ELSE 'pending'
+                        END,
+                        cleanup_error = CASE
+                            WHEN tombstone.cleanup_status = 'completed'
+                                THEN tombstone.cleanup_error
+                            ELSE NULL
+                        END,
+                        updated_at = now()
+                 RETURNING session_ids`,
+                [
+                    aggregateType,
+                    aggregateId,
+                    generatorId,
+                    jobId,
+                    target.owner_provider,
+                    target.owner_subject,
+                    actorProvider,
+                    actorSubject,
+                    actor.displayName ?? null,
+                ],
+            );
+
+            if (aggregateType === "generator") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_generators
+                     SET operational_state = 'disabled', active_definition_id = NULL,
+                         lease_owner = NULL, lease_expires_at = NULL,
+                         deleted_at = COALESCE(deleted_at, now()), updated_at = now()
+                     WHERE generator_id = $1`,
+                    [generatorId],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_generator_cycles
+                     SET status = 'failed', error = COALESCE(error, 'JobGenerator deleted'),
+                         completed_at = COALESCE(completed_at, now())
+                     WHERE generator_id = $1 AND status = 'running'`,
+                    [generatorId],
+                );
+            }
+
+            const jobIdsResult = aggregateType === "generator"
+                ? await client.query(
+                    `SELECT job_id
+                     FROM "${this.sql.schema}".jobs
+                     WHERE generator_id = $1
+                     ORDER BY job_id
+                     FOR UPDATE`,
+                    [generatorId],
+                )
+                : { rows: [{ job_id: jobId }] };
+            const jobIds = jobIdsResult.rows.map((row: any) => row.job_id as string);
+            const sessionsResult = jobIds.length > 0
+                ? await client.query(
+                    `SELECT DISTINCT session_id
+                     FROM "${this.sql.schema}".job_sessions
+                     WHERE job_id = ANY($1::text[])
+                     ORDER BY session_id`,
+                    [jobIds],
+                )
+                : { rows: [] };
+            const persistedSessionIds = Array.isArray(tombstoneResult.rows[0]?.session_ids)
+                ? tombstoneResult.rows[0].session_ids
+                    .filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+                : [];
+            const sessionIds = [...new Set([
+                ...persistedSessionIds,
+                ...sessionsResult.rows.map((row: any) => row.session_id as string),
+            ])].sort();
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_cleanup_tombstones
+                 SET session_ids = $3, updated_at = now()
+                 WHERE aggregate_type = $1 AND aggregate_id = $2`,
+                [aggregateType, aggregateId, JSON.stringify(sessionIds)],
+            );
+
+            if (jobIds.length > 0) {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".jobs
+                     SET lifecycle_state = 'cancelled',
+                         deleted_at = COALESCE(deleted_at, now()),
+                         session_error = COALESCE(session_error, 'Job deleted'),
+                         updated_at = now()
+                     WHERE job_id = ANY($1::text[])`,
+                    [jobIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_state_runs
+                     SET status = 'failed', error = COALESCE(error, 'Job deleted'),
+                         lease_owner = NULL, lease_expires_at = NULL,
+                         completed_at = COALESCE(completed_at, now()), updated_at = now()
+                     WHERE job_id = ANY($1::text[])
+                       AND status IN ('reserved', 'unacked', 'active', 'waiting', 'input_required')`,
+                    [jobIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_external_operations
+                     SET status = CASE WHEN status = 'pending' THEN 'failed' ELSE status END,
+                         error = CASE WHEN status = 'pending' THEN COALESCE(error, 'Job deleted') ELSE error END,
+                         poll_lease_owner = NULL, poll_lease_expires_at = NULL,
+                         signal_status = CASE
+                             WHEN signal_status IN ('pending', 'delivering') THEN 'blocked'
+                             ELSE signal_status
+                         END,
+                         signal_lease_owner = NULL, signal_lease_expires_at = NULL,
+                         completed_at = CASE
+                             WHEN status = 'pending' THEN COALESCE(completed_at, now())
+                             ELSE completed_at
+                         END,
+                         wait_completed_at = COALESCE(wait_completed_at, now()),
+                         updated_at = now()
+                     WHERE job_id = ANY($1::text[])`,
+                    [jobIds],
+                );
+                await client.query(
+                    `UPDATE "${this.sql.schema}".job_sessions
+                     SET is_current = FALSE,
+                         status = CASE
+                             WHEN status IN ('completed', 'replaced') THEN status
+                             ELSE 'failed'
+                         END,
+                         error = CASE
+                             WHEN status IN ('completed', 'replaced') THEN error
+                             ELSE COALESCE(error, 'Job deleted')
+                         END,
+                         ended_at = COALESCE(ended_at, now())
+                     WHERE job_id = ANY($1::text[])`,
+                    [jobIds],
+                );
+            }
+
+            await client.query("COMMIT");
+            return {
+                aggregateType,
+                aggregateId,
+                generatorId,
+                jobId,
+                alreadyDeleted,
+                sessionIds,
+            };
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async recordJobCleanupSessions(
+        aggregateType: "generator" | "job",
+        aggregateId: string,
+        sessionIds: string[],
+    ): Promise<string[]> {
+        const normalizedSessionIds = [...new Set(
+            sessionIds
+                .map((sessionId) => sessionId.trim())
+                .filter(Boolean),
+        )];
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const tombstoneResult = await client.query(
+                `SELECT session_ids
+                 FROM "${this.sql.schema}".job_cleanup_tombstones
+                 WHERE aggregate_type = $1 AND aggregate_id = $2
+                 FOR UPDATE`,
+                [aggregateType, aggregateId],
+            );
+            if (!tombstoneResult.rows[0]) {
+                throw new Error(`Job cleanup tombstone not found: ${aggregateType}:${aggregateId}`);
+            }
+            const persistedSessionIds = Array.isArray(tombstoneResult.rows[0].session_ids)
+                ? tombstoneResult.rows[0].session_ids
+                    .filter((sessionId: unknown): sessionId is string => typeof sessionId === "string")
+                : [];
+            const mergedSessionIds = [...new Set([
+                ...persistedSessionIds,
+                ...normalizedSessionIds,
+            ])].sort();
+            await client.query(
+                `UPDATE "${this.sql.schema}".job_cleanup_tombstones
+                 SET session_ids = $3, updated_at = now()
+                 WHERE aggregate_type = $1 AND aggregate_id = $2`,
+                [aggregateType, aggregateId, JSON.stringify(mergedSessionIds)],
+            );
+            await client.query("COMMIT");
+            return mergedSessionIds;
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async completeJobCleanup(
+        aggregateType: "generator" | "job",
+        aggregateId: string,
+        outcome: { status: "completed" | "failed"; error?: string | null; deletedSessionCount?: number },
+    ): Promise<void> {
+        await this.pool.query(
+            `UPDATE "${this.sql.schema}".job_cleanup_tombstones
+             SET cleanup_status = CASE
+                     WHEN cleanup_status = 'completed' THEN 'completed'
+                     ELSE $3
+                 END,
+                 cleanup_error = CASE
+                     WHEN cleanup_status = 'completed' THEN cleanup_error
+                     ELSE $4
+                 END,
+                 final_outcome = CASE
+                     WHEN cleanup_status = 'completed' THEN final_outcome
+                     ELSE $5
+                 END,
+                 updated_at = now()
+             WHERE aggregate_type = $1 AND aggregate_id = $2`,
+            [
+                aggregateType,
+                aggregateId,
+                outcome.status,
+                outcome.error ?? null,
+                JSON.stringify({ deletedSessionCount: outcome.deletedSessionCount ?? 0 }),
+            ],
+        );
+    }
+
+    async beginSessionTreeDeletion(sessionId: string): Promise<void> {
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN");
+            const target = await client.query(
+                `SELECT session_id
+                 FROM "${this.sql.schema}".sessions
+                 WHERE session_id = $1
+                 FOR UPDATE`,
+                [sessionId],
+            );
+            if (!target.rows[0]) {
+                await client.query("COMMIT");
+                return;
+            }
+            await client.query(
+                `WITH RECURSIVE tree AS (
+                     SELECT session_id
+                     FROM "${this.sql.schema}".sessions
+                     WHERE session_id = $1
+                     UNION ALL
+                     SELECT child.session_id
+                     FROM "${this.sql.schema}".sessions child
+                     JOIN tree parent ON child.parent_session_id = parent.session_id
+                 )
+                 UPDATE "${this.sql.schema}".sessions session
+                 SET deletion_requested_at = COALESCE(deletion_requested_at, now()),
+                     updated_at = now()
+                 FROM tree
+                 WHERE session.session_id = tree.session_id`,
+                [sessionId],
+            );
+            await client.query("COMMIT");
+        } catch (error) {
+            await client.query("ROLLBACK").catch(() => {});
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async isSessionActive(sessionId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (
+                 SELECT 1
+                 FROM "${this.sql.schema}".sessions
+                 WHERE session_id = $1
+                   AND deleted_at IS NULL
+                   AND deletion_requested_at IS NULL
+             ) AS active`,
+            [sessionId],
+        );
+        return Boolean(rows[0]?.active);
+    }
+
+    async getDescendantSessionIdsIncludingDeleted(sessionId: string): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `WITH RECURSIVE descendants AS (
+                 SELECT session_id
+                 FROM "${this.sql.schema}".sessions
+                 WHERE parent_session_id = $1
+                 UNION ALL
+                 SELECT child.session_id
+                 FROM "${this.sql.schema}".sessions child
+                 JOIN descendants parent
+                   ON child.parent_session_id = parent.session_id
+             )
+             SELECT session_id FROM descendants`,
+            [sessionId],
+        );
+        return rows.map((row: any) => row.session_id as string);
     }
 
     async claimDueJobGenerators(workerId: string, limit = 10, leaseSeconds = 300): Promise<JobGeneratorRow[]> {
@@ -4917,6 +5340,7 @@ export class PgSessionCatalog implements SessionCatalog {
          * through the shared getSession row (viewers must not see it).
          */
         creationConfig?: Record<string, unknown> | null;
+        routing?: SessionRoutingContract | null;
     }): Promise<void> {
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
@@ -4925,6 +5349,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // existence up front (once) instead of catch-and-retry inside BEGIN.
         const useVisibilityCreate = await this.supportsVisibilityCreate();
         const useCreationConfig = Boolean(opts?.creationConfig) && await this.supportsCreationConfig();
+        const useRoutingConfig = Boolean(opts?.routing) && await this.supportsRoutingConfig();
         const useSplashMobileCreate = !useVisibilityCreate && Boolean(opts?.splashMobile) && await this.supportsSplashMobileCreate();
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
@@ -4965,6 +5390,30 @@ export class PgSessionCatalog implements SessionCatalog {
                     `UPDATE "${this.sql.schema}".sessions SET creation_config = $2::jsonb WHERE session_id = $1`,
                     [sessionId, JSON.stringify(opts!.creationConfig)],
                 );
+            }
+
+            // Immutable execution-routing contract (owner affinity + repo/gitRef).
+            // Write-once via COALESCE so retries and restarts can never re-home a
+            // session; a divergent re-write surfaces as SESSION_ROUTING_CONFLICT.
+            if (useRoutingConfig) {
+                const routing = {
+                    ...(opts!.routing!.repo ? { repo: opts!.routing!.repo } : {}),
+                    ...(opts!.routing!.gitRef ? { gitRef: opts!.routing!.gitRef } : {}),
+                    ...(opts!.routing!.ownerAffinityRequired ? { ownerAffinityRequired: true } : {}),
+                };
+                const { rows } = await client.query(
+                    `WITH persisted AS (
+                         UPDATE "${this.sql.schema}".sessions
+                            SET routing_config = COALESCE(routing_config, $2::jsonb)
+                          WHERE session_id = $1
+                      RETURNING routing_config
+                     )
+                     SELECT routing_config = $2::jsonb AS matches FROM persisted`,
+                    [sessionId, JSON.stringify(routing)],
+                );
+                if (!rows[0]?.matches) {
+                    throw new Error(`SESSION_ROUTING_CONFLICT: immutable routing differs for session ${sessionId}`);
+                }
             }
 
             // Service columns ride the same transaction as a raw UPDATE — the
@@ -5079,6 +5528,22 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         this._creationConfigColumnSupported = Boolean(rows[0]?.supported);
         return this._creationConfigColumnSupported;
+    }
+
+    private _routingConfigColumnSupported: boolean | null = null;
+
+    /** Whether the DB has the routing_config column. Cached per catalog instance. */
+    private async supportsRoutingConfig(): Promise<boolean> {
+        if (this._routingConfigColumnSupported !== null) return this._routingConfigColumnSupported;
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = 'sessions' AND column_name = 'routing_config'
+             ) AS supported`,
+            [this.sql.schema],
+        );
+        this._routingConfigColumnSupported = Boolean(rows[0]?.supported);
+        return this._routingConfigColumnSupported;
     }
 
     private async supportsVisibilityCreate(): Promise<boolean> {
@@ -5250,6 +5715,21 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         const value = rows[0]?.creation_config;
         return value && typeof value === "object" ? value : null;
+    }
+
+    async getSessionRouting(sessionId: string): Promise<SessionRoutingContract | null> {
+        if (!await this.supportsRoutingConfig()) return null;
+        const { rows } = await this.pool.query(
+            `SELECT routing_config FROM "${this.sql.schema}".sessions WHERE session_id = $1`,
+            [sessionId],
+        );
+        const routing = rows[0]?.routing_config;
+        if (!routing || typeof routing !== "object" || Array.isArray(routing)) return null;
+        return {
+            ...(typeof routing.repo === "string" && routing.repo ? { repo: routing.repo } : {}),
+            ...(typeof routing.gitRef === "string" && routing.gitRef ? { gitRef: routing.gitRef } : {}),
+            ...(routing.ownerAffinityRequired === true ? { ownerAffinityRequired: true } : {}),
+        };
     }
 
     async setSessionVisibility(sessionId: string, visibility: SessionVisibility): Promise<void> {

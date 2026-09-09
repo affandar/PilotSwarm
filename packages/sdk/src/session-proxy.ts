@@ -1,4 +1,5 @@
 import nodeCrypto from "node:crypto";
+import { runTurnRoutingTag } from "./activity-routing.js";
 import { createCopilotClient } from "./copilot-client.js";
 import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
 import {
@@ -699,7 +700,7 @@ export function createSessionProxy(
             //     repo. Support activities stay UNTAGGED (below) so any worker
             //     can serve them -- only the runTurn is pinned.
             if (typeof runTurnTask?.withTag !== "function") return runTurnTask;
-            return runTurnTask.withTag(config.repo ? `repo:${config.repo}` : "generic");
+            return runTurnTask.withTag(runTurnRoutingTag(config));
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -898,6 +899,97 @@ export function childModelCreationOptions(config: SerializableSessionConfig) {
     };
 }
 
+/** @internal Routing options inherited by every child of an owner-affined Job session. */
+export function childRoutingCreationOptions(config: SerializableSessionConfig) {
+    return {
+        repo: config.repo,
+        gitRef: config.gitRef,
+        requireOwnerAffinity: Boolean(config.ownerAffinity),
+    };
+}
+
+/**
+ * Resolve routing from a session's durable orchestration input without
+ * changing the orchestration's scheduled activity payload or replay history.
+ */
+export async function durableSessionRoutingConfig(
+    client: {
+        listExecutions(instanceId: string): Promise<number[]>;
+        readExecutionHistory(instanceId: string, executionId: number): Promise<Array<{
+            kind?: string;
+            data?: string;
+        }>>;
+    },
+    sessionId: string,
+) {
+    const instanceId = `session-${sessionId}`;
+    const executions = await client.listExecutions(instanceId);
+    if (!Array.isArray(executions) || executions.length === 0) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: no durable execution`);
+    }
+    const executionId = executions[executions.length - 1];
+    const history = await client.readExecutionHistory(instanceId, executionId);
+    const started = history.find((event) => event.kind === "OrchestrationStarted");
+    if (!started?.data) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: orchestration input is missing`);
+    }
+    let payload: unknown;
+    try {
+        payload = JSON.parse(started.data);
+    } catch {
+        throw new Error(`Cannot resolve routing for ${sessionId}: orchestration input is invalid`);
+    }
+    const input = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).input
+        : null;
+    const config = input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>).config
+        : null;
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new Error(`Cannot resolve routing for ${sessionId}: session config is missing`);
+    }
+    const routing = config as SerializableSessionConfig;
+    return {
+        repo: routing.repo,
+        gitRef: routing.gitRef,
+        ownerAffinity: routing.ownerAffinity,
+    };
+}
+
+export async function durableSessionRoutingCreationOptions(
+    client: Parameters<typeof durableSessionRoutingConfig>[0],
+    sessionId: string,
+) {
+    return childRoutingCreationOptions(
+        await durableSessionRoutingConfig(client, sessionId),
+    );
+}
+
+/** Persist the exact attempt-scoped distiller seed before any enqueue retry. */
+export async function loadOrCreateDistillerSeed(input: {
+    artifactStore: Pick<ArtifactStore, "statArtifact" | "downloadArtifactText" | "uploadArtifactIfAbsent">;
+    sessionId: string;
+    filename: string;
+    build: () => Promise<string>;
+}): Promise<string> {
+    if (await input.artifactStore.statArtifact(input.sessionId, input.filename)) {
+        return input.artifactStore.downloadArtifactText(input.sessionId, input.filename);
+    }
+    if (!input.artifactStore.uploadArtifactIfAbsent) {
+        throw new Error("Distiller seed persistence requires atomic artifact creation");
+    }
+    const seed = await input.build();
+    const created = await input.artifactStore.uploadArtifactIfAbsent(
+        input.sessionId,
+        input.filename,
+        Buffer.from(seed, "utf8"),
+        "text/markdown",
+    );
+    return created
+        ? seed
+        : input.artifactStore.downloadArtifactText(input.sessionId, input.filename);
+}
+
 /** @internal Initial turn options shared by every named-agent creation path. */
 export function bootstrapTurnOptions(requiredTool?: string) {
     return {
@@ -912,7 +1004,7 @@ export function bootstrapTurnOptions(requiredTool?: string) {
 // The orchestration's view of the SessionManager singleton.
 // Operations that don't require session affinity.
 
-export function createSessionManagerProxy(ctx: any) {
+export function createSessionManagerProxy(ctx: any, options: { ownerAwareRouting?: boolean } = {}) {
     return {
         listModels() {
             return ctx.scheduleActivity("listModels", {});
@@ -922,10 +1014,13 @@ export function createSessionManagerProxy(ctx: any) {
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
         spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string) {
-            return ctx.scheduleActivity("spawnChildSession", {
-                parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
-                ...(requiredTool ? { requiredTool } : {}),
-            });
+            return ctx.scheduleActivity(
+                options.ownerAwareRouting ? "spawnChildSession2" : "spawnChildSession",
+                {
+                    parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
+                    ...(requiredTool ? { requiredTool } : {}),
+                },
+            );
         },
     /**
      * Resolve a loaded agent config by name. Returns null if not found.
@@ -1029,7 +1124,10 @@ export function createSessionManagerProxy(ctx: any) {
         // ── Service-session distiller (1.0.68) ─────────────────
         /** Spawn the regen-distiller service session under the tree root (idempotent per attempt). */
         runRegenSpawnDistiller(sessionId: string, epoch: number, attemptId: string, opts?: { archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string }) {
-            return ctx.scheduleActivity("runRegenSpawnDistiller", { sessionId, epoch, attemptId, ...(opts ?? {}) });
+            return ctx.scheduleActivity(
+                options.ownerAwareRouting ? "runRegenSpawnDistiller2" : "runRegenSpawnDistiller",
+                { sessionId, epoch, attemptId, ...(opts ?? {}) },
+            );
         },
         /** Poll the distiller service session: running | completed (with response) | failed. */
         runRegenCheckDistiller(distillerSessionId: string) {
@@ -2236,6 +2334,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         nestingLevel: 0,
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
+                        ...childRoutingCreationOptions(input.config),
                         boundAgentName: agentDef.name,
                         promptLayering: { kind: "app-agent" as const },
                         ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
@@ -2457,6 +2556,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         parentSessionId: input.sessionId,
                         nestingLevel: childNestingLevel,
                         ...childModelCreationOptions(childConfig),
+                        ...childRoutingCreationOptions(childConfig),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         promptLayering: childConfig.promptLayering,
@@ -4697,7 +4797,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // System child agents with a stable agentId use a deterministic UUID.
     // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
-    runtime.registerActivity("spawnChildSession", async (
+    const spawnChildSessionActivity = async (
         activityCtx: any,
         input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string },
     ): Promise<string> => {
@@ -4784,6 +4884,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 parentSessionId: input.parentSessionId,
                 nestingLevel: input.nestingLevel,
                 ...childModelCreationOptions(input.config),
+                ...childRoutingCreationOptions(input.config),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 promptLayering: input.config.promptLayering,
@@ -4848,7 +4949,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await sdkClient.stop();
             trace(`sdkClient.stop done (${Date.now() - clientStopAt}ms total=${Date.now() - startedAt}ms)`);
         }
-    });
+    };
+    runtime.registerActivity("spawnChildSession", spawnChildSessionActivity);
+    // 1.0.74 owner-affinity: the owner-aware orchestration schedules this
+    // activity under the "2" name so the durable yield sequence changes with
+    // the version. Register the same handler under both names so every
+    // orchestration version replays safely.
+    runtime.registerActivity("spawnChildSession2", spawnChildSessionActivity);
 
     // ── sendToSession ───────────────────────────────────────
     // Sends a message to any session's orchestration event queue directly.
@@ -5369,7 +5476,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         }
     };
 
-    runtime.registerActivity("runRegenSpawnDistiller", async (
+    const runRegenSpawnDistillerActivity = async (
         activityCtx: any,
         input: { sessionId: string; epoch: number; attemptId: string; archiveArtifactId?: string; archiveChunkIds?: string[]; handoff?: string; instructions?: string; distillerModel?: string; distillerReasoningEffort?: string; distillerContextTier?: string },
     ) => {
@@ -5385,23 +5492,108 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const distillerSessionId = distillerSessionIdFor(input.sessionId, input.epoch, input.attemptId);
         // Build the seed once — reused by the fresh spawn and by the re-seed
         // path below so a create-then-crash-before-send retry still delivers it.
-        const buildSeed = async (): Promise<string> => {
-            const closure = await assembleRegenClosure({ catalog, artifactStore: artifactStore! }, input.sessionId);
-            const seed = buildMapReduceSeedPrompt({
-                servedSessionId: input.sessionId,
-                epoch: input.epoch,
-                attemptId: input.attemptId,
-                archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
-                ...(input.archiveChunkIds?.length ? { archiveChunkIds: input.archiveChunkIds } : {}),
-                closure,
-                ...(input.handoff ? { handoff: input.handoff } : {}),
-                ...(input.instructions ? { instructions: input.instructions } : {}),
-            });
-            // Dump the EXACT distiller input (§9 dumps) on the served session.
-            await artifactStore!.uploadArtifact(
-                input.sessionId, distillInputName(input.epoch, input.attemptId), Buffer.from(seed, "utf8"), "text/markdown",
+        const buildSeed = (): Promise<string> => loadOrCreateDistillerSeed({
+            artifactStore: artifactStore!,
+            sessionId: input.sessionId,
+            filename: distillInputName(input.epoch, input.attemptId),
+            build: async () => {
+                const closure = await assembleRegenClosure(
+                    { catalog, artifactStore: artifactStore! },
+                    input.sessionId,
+                );
+                return buildMapReduceSeedPrompt({
+                    servedSessionId: input.sessionId,
+                    epoch: input.epoch,
+                    attemptId: input.attemptId,
+                    archiveArtifactId: input.archiveArtifactId || archiveName(input.epoch, input.attemptId),
+                    ...(input.archiveChunkIds?.length ? { archiveChunkIds: input.archiveChunkIds } : {}),
+                    closure,
+                    ...(input.handoff ? { handoff: input.handoff } : {}),
+                    ...(input.instructions ? { instructions: input.instructions } : {}),
+                });
+            },
+        });
+        const resolveParentContext = async () => {
+            let rootId = input.sessionId;
+            for (let hop = 0; hop < 16; hop++) {
+                const row = await catalog.getSession(rootId).catch(() => null);
+                if (!row?.parentSessionId) break;
+                rootId = row.parentSessionId;
+            }
+            const owner = await resolveEffectiveSpawnOwner(
+                (id) => catalog.getSession(id),
+                rootId,
+            ).catch(() => null);
+            const routingClient = activityCtx.getClient();
+            if (!routingClient) {
+                throw new Error("distiller spawn cannot resolve the parent routing contract");
+            }
+            const routingConfig = await durableSessionRoutingConfig(
+                routingClient,
+                input.sessionId,
             );
-            return seed;
+            if (routingConfig.ownerAffinity && !owner) {
+                throw new Error("distiller spawn cannot resolve the owner-affined parent principal");
+            }
+            return {
+                rootId,
+                owner,
+                routingConfig,
+                routing: childRoutingCreationOptions(routingConfig),
+            };
+        };
+        const parent = await resolveParentContext();
+        const distillerMessageId = `regen-distiller:${input.sessionId}:${input.epoch}:${input.attemptId}`;
+        const ensureDistillerAndSend = async (
+            sdkClient: PilotSwarmClient,
+            model: string | undefined,
+            seed: string,
+        ) => {
+            const reasoningEffort = normalizeDistillerEffort(input.distillerReasoningEffort);
+            const contextTier = normalizeDistillerTier(input.distillerContextTier);
+            const createConfig = {
+                sessionId: distillerSessionId,
+                parentSessionId: parent.rootId,
+                nestingLevel: 1,
+                agentId: REGEN_DISTILLER_SERVICE_KIND,
+                ...parent.routing,
+                ...(model ? { model } : {}),
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+                systemMessage: DISTILLER_SYSTEM_MESSAGE,
+                toolNames: ["read_transcript_page"],
+                ...(parent.owner ? { owner: parent.owner } : {}),
+            };
+            await sdkClient.createSession(createConfig);
+            await catalog.markSessionService(
+                distillerSessionId,
+                REGEN_DISTILLER_SERVICE_KIND,
+                input.sessionId,
+            );
+            await cmsRetryBestEffort(
+                `runRegenSpawnDistiller.updateSession meta session=${distillerSessionId}`,
+                () => catalog.updateSession(distillerSessionId, {
+                    title: `Regen Distiller — ${input.sessionId.slice(0, 8)} e${input.epoch}→e${input.epoch + 1}`,
+                    agentId: REGEN_DISTILLER_SERVICE_KIND,
+                }),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            const session = await sdkClient.resumeSession(distillerSessionId, {
+                ...parent.routingConfig,
+                ...(model ? { model } : {}),
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+                systemMessage: DISTILLER_SYSTEM_MESSAGE,
+                toolNames: ["read_transcript_page"],
+            });
+            // Stamped as machinery: an unstamped user-role prompt would render
+            // as the reader's own words. The clientMessageId makes the seed
+            // send idempotent across activity retries.
+            await session.send(seed, {
+                bootstrap: true,
+                sender: { kind: "system", display: "regen distiller seed" },
+                clientMessageIds: [distillerMessageId],
+            });
         };
         const existing = await catalog.getSession(distillerSessionId).catch(() => null);
         if (existing) {
@@ -5411,7 +5603,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // mismatch is not a real attack, but defense-in-depth: never collect
             // a foreign/mislabelled session as the distiller (adversarial-review
             // finding). A mismatch throws → the pipeline falls back deterministically.
-            if (existing.serviceKind !== REGEN_DISTILLER_SERVICE_KIND || existing.serviceOf !== input.sessionId) {
+            const repairableUnmarkedCreate = existing.serviceKind == null
+                && existing.serviceOf == null
+                && existing.state === "pending"
+                && existing.parentSessionId === parent.rootId
+                && !existing.orchestrationId;
+            const matchingService = existing.serviceKind === REGEN_DISTILLER_SERVICE_KIND
+                && existing.serviceOf === input.sessionId;
+            if (!matchingService && !repairableUnmarkedCreate) {
                 throw new Error(
                     `distiller id collision: ${distillerSessionId} exists but is not this session's distiller `
                     + `(serviceKind=${existing.serviceKind ?? "null"}, serviceOf=${existing.serviceOf ?? "null"})`,
@@ -5429,14 +5628,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const reseedClient = new PilotSwarmClient(internalClientConfig());
                 try {
                     await reseedClient.start();
-                    await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
-                    // Stamped like the normal seed path below: a distiller
-                    // seed is machinery, and an unstamped user-role prompt is
-                    // rendered as the reader's own words.
-                    await (reseedClient as any)._startTurn(distillerSessionId, seed, {
-                        bootstrap: true,
-                        sender: { kind: "system", display: "regen distiller seed" },
-                    });
+                    await ensureDistillerAndSend(reseedClient, existing.model ?? undefined, seed);
                 } finally {
                     await reseedClient.stop().catch(() => {});
                 }
@@ -5457,57 +5649,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             activityCtx.traceInfo(`[runRegenSpawnDistiller] no distiller model resolvable — caller falls back deterministically`);
             return { fallback: "no-model" };
         }
-        // Root ancestor: service sessions collect under the tree root so a
-        // sub-agent's distiller is still visible at the top (§9.1).
-        let rootId = input.sessionId;
-        for (let hop = 0; hop < 16; hop++) {
-            const row = await catalog.getSession(rootId).catch(() => null);
-            if (!row?.parentSessionId) break;
-            rootId = row.parentSessionId;
-        }
         const seed = await buildSeed();
-        const owner = await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), rootId).catch(() => null);
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
-            const session = await sdkClient.createSession({
-                sessionId: distillerSessionId,
-                parentSessionId: rootId,
-                nestingLevel: 1,
-                agentId: REGEN_DISTILLER_SERVICE_KIND,
-                ...(resolvedRef ? { model: resolvedRef } : {}),
-                // Operator-chosen distiller knobs. The context tier is the one
-                // that decides whether a large archive can be read in a single
-                // pass or has to be sampled, so it is worth exposing.
-                ...(normalizeDistillerEffort(input.distillerReasoningEffort)
-                    ? { reasoningEffort: normalizeDistillerEffort(input.distillerReasoningEffort)! }
-                    : {}),
-                ...(normalizeDistillerTier(input.distillerContextTier)
-                    ? { contextTier: normalizeDistillerTier(input.distillerContextTier)! }
-                    : {}),
-                systemMessage: DISTILLER_SYSTEM_MESSAGE,
-                toolNames: ["read_transcript_page"],
-                ...(owner ? { owner } : {}),
-            });
-            await catalog.markSessionService(distillerSessionId, REGEN_DISTILLER_SERVICE_KIND, input.sessionId);
-            await cmsRetryBestEffort(
-                `runRegenSpawnDistiller.updateSession meta session=${distillerSessionId}`,
-                () => catalog.updateSession(distillerSessionId, {
-                    title: `Regen Distiller — ${input.sessionId.slice(0, 8)} e${input.epoch}→e${input.epoch + 1}`,
-                    agentId: REGEN_DISTILLER_SERVICE_KIND,
-                }),
-                (msg) => activityCtx.traceInfo(msg),
-            );
-            await session.send(seed, {
-                bootstrap: true,
-                sender: { kind: "system", display: "regen distiller seed" },
-            });
+            await ensureDistillerAndSend(sdkClient, resolvedRef, seed);
         } finally {
             await sdkClient.stop().catch(() => {});
         }
-        activityCtx.traceInfo(`[runRegenSpawnDistiller] spawned ${distillerSessionId} under root ${rootId} model=${resolvedRef ?? "(default)"}`);
+        activityCtx.traceInfo(`[runRegenSpawnDistiller] spawned ${distillerSessionId} under root ${parent.rootId} model=${resolvedRef ?? "(default)"}`);
         return { distillerSessionId, distillerModel: resolvedRef ?? "(default)" };
-    });
+    };
+    runtime.registerActivity("runRegenSpawnDistiller", runRegenSpawnDistillerActivity);
+    // 1.0.74 owner-affinity: same double-registration rationale as
+    // spawnChildSession2 — the owner-aware orchestration schedules the "2"
+    // name; both must resolve to this handler for replay safety.
+    runtime.registerActivity("runRegenSpawnDistiller2", runRegenSpawnDistillerActivity);
 
     runtime.registerActivity("runRegenCheckDistiller", async (
         _activityCtx: any,
