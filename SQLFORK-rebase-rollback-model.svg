@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="610" viewBox="0 0 980 610" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="ah-grey" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#6b7280"/>
+    </marker>
+    <marker id="ah-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="ah-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#059669"/>
+    </marker>
+    <marker id="ah-red" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="610" fill="#ffffff"/>
+
+  <!-- ===================== PANEL 1 ===================== -->
+  <text x="24" y="28" font-size="15" font-weight="700" fill="#111827">1 — Steady state (daily rebase): one stable branch name; every pre-rebase tip frozen under a from- tag</text>
+
+  <!-- frozen from- tags (concrete, daily) -->
+  <g font-size="9" fill="#92400e">
+    <rect x="87"  y="48" width="176" height="24" rx="5" fill="#fef3c7" stroke="#d97706"/>
+    <text x="175" y="64" text-anchor="middle">rebase/from-2026-09-05-a1b2c3d4</text>
+    <rect x="297" y="48" width="176" height="24" rx="5" fill="#fef3c7" stroke="#d97706"/>
+    <text x="385" y="64" text-anchor="middle">rebase/from-2026-09-06-b2c3d4e5</text>
+    <rect x="507" y="48" width="176" height="24" rx="5" fill="#fef3c7" stroke="#d97706"/>
+    <text x="595" y="64" text-anchor="middle">rebase/from-2026-09-07-c3d4e5f6</text>
+  </g>
+  <!-- stable branch pill on newest tip -->
+  <rect x="695" y="48" width="210" height="24" rx="12" fill="#d1fae5" stroke="#059669"/>
+  <text x="800" y="64" text-anchor="middle" font-size="9" fill="#065f46" font-weight="700">feature/aks-git-repo-worker (live)</text>
+
+  <!-- tag/pill connectors to fork tips -->
+  <g stroke="#9ca3af" stroke-width="1" stroke-dasharray="3,3">
+    <line x1="175" y1="72" x2="175" y2="117"/>
+    <line x1="385" y1="72" x2="385" y2="117"/>
+    <line x1="595" y1="72" x2="595" y2="117"/>
+    <line x1="800" y1="72" x2="800" y2="117"/>
+  </g>
+
+  <!-- fork tips row -->
+  <g>
+    <circle cx="175" cy="130" r="13" fill="#2563eb"/><text x="175" y="134" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">F0</text>
+    <circle cx="385" cy="130" r="13" fill="#2563eb"/><text x="385" y="134" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">F1</text>
+    <circle cx="595" cy="130" r="13" fill="#2563eb"/><text x="595" y="134" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">F2</text>
+    <circle cx="800" cy="130" r="13" fill="#059669"/><text x="800" y="134" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">F3</text>
+  </g>
+  <text x="24" y="134" font-size="11" fill="#6b7280">fork tips</text>
+  <text x="800" y="100" text-anchor="middle" font-size="9" fill="#065f46">tip e25ef7d5</text>
+
+  <!-- replay arrows (upstream U_n -> fork tip F_n) -->
+  <g stroke="#2563eb" stroke-width="1.5">
+    <line x1="175" y1="225" x2="175" y2="147" marker-end="url(#ah-blue)"/>
+    <line x1="385" y1="225" x2="385" y2="147" marker-end="url(#ah-blue)"/>
+    <line x1="595" y1="225" x2="595" y2="147" marker-end="url(#ah-blue)"/>
+    <line x1="800" y1="225" x2="800" y2="147" marker-end="url(#ah-blue)"/>
+  </g>
+  <text x="612" y="192" font-size="9" fill="#2563eb">daily replay of the ~140-commit fork delta (new SHAs)</text>
+
+  <!-- upstream trunk -->
+  <line x1="90" y1="238" x2="922" y2="238" stroke="#6b7280" stroke-width="3" marker-end="url(#ah-grey)"/>
+  <g>
+    <circle cx="175" cy="238" r="13" fill="#6b7280"/><text x="175" y="242" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">U0</text>
+    <circle cx="385" cy="238" r="13" fill="#6b7280"/><text x="385" y="242" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">U1</text>
+    <circle cx="595" cy="238" r="13" fill="#6b7280"/><text x="595" y="242" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">U2</text>
+    <circle cx="800" cy="238" r="13" fill="#6b7280"/><text x="800" y="242" text-anchor="middle" font-size="10" fill="#fff" font-weight="700">U3</text>
+  </g>
+  <text x="930" y="242" font-size="10" fill="#6b7280">origin/main →</text>
+  <text x="24" y="242" font-size="11" fill="#6b7280">upstream</text>
+  <g font-size="9" fill="#6b7280" text-anchor="middle">
+    <text x="175" y="262">2026-09-05</text><text x="175" y="274">11aa22bb</text>
+    <text x="385" y="262">2026-09-06</text><text x="385" y="274">22bb33cc</text>
+    <text x="595" y="262">2026-09-07</text><text x="595" y="274">33cc44dd</text>
+    <text x="800" y="262">2026-09-08</text><text x="800" y="274">44dd55ee</text>
+  </g>
+
+  <text x="24" y="296" font-size="10" fill="#6b7280">Frozen marker upstream-base (eaabdbf9) sits far to the left at the original divergence; the merge-base advances with each daily rebase.</text>
+  <text x="24" y="312" font-size="11" fill="#374151">Each Fn is a fresh replay onto Un — siblings, not a chain. Old tips stay reachable via their frozen tags; only the stable branch moves.</text>
+
+  <line x1="24" y1="332" x2="956" y2="332" stroke="#e5e7eb" stroke-width="1"/>
+
+  <!-- ===================== PANEL 2 ===================== -->
+  <text x="24" y="364" font-size="15" font-weight="700" fill="#111827">2 — Rollback after a bad daily rebase: the frozen from- tag is the anchor</text>
+
+  <!-- good tag (concrete) -->
+  <rect x="135" y="392" width="230" height="24" rx="5" fill="#fef3c7" stroke="#d97706"/>
+  <text x="250" y="408" text-anchor="middle" font-size="9" fill="#92400e">rebase/from-2026-09-08-e25ef7d5 (frozen)</text>
+  <line x1="250" y1="416" x2="250" y2="452" stroke="#9ca3af" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- good node G -->
+  <circle cx="250" cy="470" r="16" fill="#059669"/><text x="250" y="474" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">G</text>
+  <text x="250" y="500" text-anchor="middle" font-size="9" fill="#065f46">last-known-good · 2026-09-08</text>
+
+  <!-- bad node B -->
+  <circle cx="680" cy="470" r="16" fill="#dc2626"/><text x="680" y="474" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">B</text>
+  <text x="680" y="500" text-anchor="middle" font-size="9" fill="#991b1b">F(bad) · 2026-09-09 rebase (9a3f1c07)</text>
+
+  <!-- (1) bad rebase force-pushed -->
+  <line x1="272" y1="470" x2="658" y2="470" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#ah-red)"/>
+  <text x="475" y="460" text-anchor="middle" font-size="10" fill="#991b1b">(1) 2026-09-09 daily rebase, force-pushed →</text>
+
+  <!-- (2) rollback arc B -> G -->
+  <path d="M664,485 C 540,556 360,556 266,485" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#ah-green)"/>
+  <text x="460" y="562" text-anchor="middle" font-size="10" fill="#065f46" font-weight="700">(2) git reset --hard rebase/from-2026-09-08-e25ef7d5   +   git push --force-with-lease</text>
+
+  <!-- branch pill restored -->
+  <rect x="125" y="512" width="250" height="24" rx="12" fill="#d1fae5" stroke="#059669"/>
+  <text x="250" y="528" text-anchor="middle" font-size="10" fill="#065f46" font-weight="700">feature/aks-git-repo-worker (restored → G)</text>
+
+  <text x="720" y="466" font-size="9" fill="#374151">B's objects stay reachable</text>
+  <text x="720" y="480" font-size="9" fill="#374151">via the frozen tag — the</text>
+  <text x="720" y="494" font-size="9" fill="#374151">branch just repoints.</text>
+</svg>

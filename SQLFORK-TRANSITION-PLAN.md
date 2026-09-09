@@ -451,7 +451,11 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
 - **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
   every rebase; all by-name references (overlay core pin, CI, PR policy) point here.
 - **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
-- **Candidate branch (ephemeral):** `rebase/onto-<upstreamDate>-<upstreamSha>` — deleted after swap.
+- **Candidate branch (ephemeral):** `cand/<upstreamDate>-<upstreamSha>` — deleted after swap.
+  **Deliberately *not* named `rebase/onto-…`:** that name is the `onto-` *tag*, and git resolves a
+  bare ref as a **tag before a branch** — a same-named branch + tag makes `reset`/`push` silently
+  pick the tag (the upstream base, with **no fork commits**). Keep the candidate in its own `cand/`
+  namespace so the two can never collide.
 - **Per-rebase tags (immutable):** `rebase/from-<forkTipDate>-<forkTipSha>` (rollback point) and
   `rebase/onto-<upstreamDate>-<upstreamSha>` (the upstream tip rebased onto). Consumers needing a
   reproducible deploy pin to the `onto-` tag rather than the moving branch.
@@ -459,44 +463,237 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
   `rebase/onto-2026-08-08-eaabdbf9` (the merge-base this state rests on) — the first row of the
   audit trail, before any upstream rebase.
 
+**Model.** The stable branch name never changes (so no script, CI ref, or PR policy breaks); every
+pre-rebase tip is frozen under an immutable `from-` tag before the rewrite, so a bad force-push is
+always recoverable by repointing the branch back onto the frozen tip. We **keep every tag** — the
+full set is a permanent audit trail and rollback ledger.
+
+![Stable branch with frozen rollback tags: steady-state rebase model and post-force-push rollback](SQLFORK-rebase-rollback-model.svg)
+
+> **Reading the diagram.** *(1) Steady state:* each fork tip `Fn` is a fresh replay of the ~140-commit
+> delta onto the newest upstream tip `Un` (new SHAs — the tips are siblings, not a chain). Only the
+> `feature/aks-git-repo-worker` branch moves; every older tip stays reachable via its frozen `from-` tag.
+> *(2) Rollback:* a bad rebase force-pushed the branch to `B`; because the last-good tip `G` is still pinned
+> by a pushed `from-` tag, its objects were never GC-eligible, so
+> `git reset --hard rebase/from-2026-09-08-e25ef7d5 && git push --force-with-lease` restores the branch onto `G`.
+
 **Per-rebase steps.**
 1. `git fetch origin` — pull the new upstream `main`.
 2. Backup the current fork tip for rollback:
    `git tag -a rebase/from-<forkTipDate>-<forkTipSha> feature/aks-git-repo-worker -m "pre-rebase fork tip"`.
 3. Cut a candidate branch (or worktree) from the current fork tip:
-   `git switch -c rebase/onto-<upstreamDate>-<upstreamSha> feature/aks-git-repo-worker`.
+   `git switch -c cand/<upstreamDate>-<upstreamSha> feature/aks-git-repo-worker`.
 4. Replay the ~140 divergence commits onto the new upstream tip:
    `git rebase origin/main`  (equivalently `git rebase --onto origin/main upstream-base`).
 5. Resolve conflicts **by class**:
    - **Theme already upstreamed** → the commit is now redundant; resolve to upstream's version, or
      `git rebase --skip` if fully absorbed (the theme *drains* out and the delta shrinks).
-   - **Parallel implementation** (e.g. `orchestration_1_0_68/69`) → adopt upstream's and delete the
-     fork's divergent copy — this is the Strategy-B reconcile flagged in Open decisions.
+   - **Parallel implementation** (e.g. `orchestration_1_0_68/69`) → if the two sides implement the
+     *same* behavior, adopt upstream's and delete the fork's divergent copy (the Strategy-B reconcile
+     flagged in Open decisions). **But if the fork's copy layered fork-only behavior on top — e.g.
+     owner-affinity routing minted as `orchestration_1_0_69` — this is a *version-number collision
+     carrying a feature*, not a pure parallel impl.** Treat it exactly like a migration-version
+     collision: re-mint the fork behavior on a *new* version number after upstream's head (freeze the
+     current live orchestration, apply the fork delta, bump `DURABLE_SESSION_LATEST_VERSION`, register
+     it). **Never** resolve it by adopting upstream's version and dropping the fork feature — that
+     silently deletes shipped behavior (this is precisely how owner-affinity was lost on the
+     2026-09-07 crank). See the no-defer invariant below.
    - **Migration version collision** (both sides define the same `cms-migrations.ts` version `NNNN`
      — *seen on the day-1 crank: upstream `0045 session_canvases` vs. fork `0045 session_git_state_pinning`*)
-     → keep both and **renumber the fork's** to follow upstream (the list entry, the SQL function
-     name, and its definition). Numbers must stay unique and ordered, so `rerere` can't reliably
-     auto-resolve this — the target number shifts each rebase.
+     → keep both and **renumber the fork block** to sit *after* upstream's new head. This has a
+     **code half** (here) and a **DB half** (a deploy-time ledger re-stamp — see *Migration ledger
+     reconciliation* below); do **both**, or an already-deployed fork DB silently skips upstream's
+     migrations at the reused numbers.
+     - **Code half.** With `U = max(upstream version)` on the newly-rebased tip, renumber the fork's
+       migrations to `U+1 … U+n`. Compute the target from the fork's **divergence-baseline set** — the
+       migrations added after `upstream-base`, in their original fork order, keyed by *name* — **not**
+       from wherever they landed last cycle, so offsets don't compound. Update three places per
+       migration (the list entry `version`, the SQL function name, and its definition) plus every test
+       that asserts the number. Numbers must stay unique and ordered, so `rerere` can't reliably
+       auto-resolve this — the target shifts each rebase.
+     - **Idempotency invariant.** Every fork migration must be re-runnable (`CREATE … IF NOT EXISTS`,
+       `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then `ADD CONSTRAINT`) — the backstop
+       that makes any accidental replay a harmless no-op. Keep it true for new fork migrations.
    - **Genuine fork-only work** → keep; reapply on top.
+
+   > **No-defer invariant.** A dropped fork feature or unresolved divergence is **re-applied by
+   > default**. Never silently defer, `--skip`, or adopt-upstream-and-drop a fork behavior. When a
+   > divergence surfaces, surface it back to the owner and get **explicit approval before deferring**.
+   > "It looks large" is not grounds to defer — it is grounds to *ask*. Offline unit tests do **not**
+   > cover routing/deployment behavior (owner-affinity, worker tagging), so a green suite is not
+   > evidence a fork feature survived; verify feature presence against the pre-rebase tip explicitly.
+
    Continue with `git rebase --continue` until the replay completes.
 6. **Validate on the candidate — before swapping anything:**
    - build + unit/integration tests green,
    - smoke: bring up worker + portal, run one lifecycle-job E2E,
    - deploy to **non-prod** (overlay pinned at the candidate) and sanity-check.
 7. **Swap in** once green. If the live branch gained new commits during validation, rebase those
-   few onto the candidate first, then tag the upstream base and force-push the stable branch:
-   `git tag -a rebase/onto-<upstreamDate>-<upstreamSha> origin/main -m "upstream base rebased onto"`
-   `git switch feature/aks-git-repo-worker && git reset --hard rebase/onto-<upstreamDate>-<upstreamSha>`
-   `git push microsoft feature/aks-git-repo-worker --force-with-lease`
-   `git push microsoft --tags`.
+   few onto the candidate first. Then capture the SHAs up front and swap **by SHA** — never by the
+   ambiguous `rebase/onto-…` name (see the warning below):
+   ```
+   #   $CAND = validated candidate tip   (git rev-parse cand/<upstreamDate>-<upstreamSha>)
+   #   $OLD  = live tip being replaced    (git rev-parse feature/aks-git-repo-worker)  # the from- tag target
+   #   $BASE = upstream tip rebased onto  (git rev-parse origin/main)
+   git tag -a rebase/onto-<upstreamDate>-<upstreamSha> $BASE -m "upstream base rebased onto"
+   git branch -f feature/aks-git-repo-worker $CAND          # move the ref by SHA, no checkout, tree untouched
+   git push microsoft refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
+   git push microsoft feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
+   ```
+   > **Why by SHA, not name.** The `onto-` *tag* and (pre-2026-09) the candidate *branch* shared the
+   > name `rebase/onto-…`; git resolves a bare ref as a **tag before a branch**, so `git reset --hard
+   > rebase/onto-…` silently resolves to the *tag* — the bare upstream base with **no fork commits** —
+   > and would reset the live branch to upstream, dropping all ~140 fork commits. Hardened form:
+   > (a) the candidate lives in the `cand/` namespace so it can't collide with the tag; (b) move the
+   > live branch with `git branch -f … $CAND` (explicit SHA, **no** checkout — leaves your working
+   > tree and the candidate checkout untouched); (c) push tags via fully-qualified `refs/tags/…`
+   > (not `--tags`, which also sprays unrelated local tags and can't disambiguate a name); (d) pin the
+   > lease to the exact `$OLD` SHA so a stray background fetch can't defeat `--force-with-lease`.
+   > **Stash uncommitted/untracked work first (`git stash push -u`), and never land a follow-up
+   > commit on the ephemeral `cand/` branch — it is deleted in step 9; commit on the stable branch.**
 8. **Re-measure & refresh:** the new merge-base is now `origin/main`, so
    `git diff origin/main...HEAD` reports the *current* delta — update §3's metrics and the diagram.
    (`upstream-base` stays frozen at `eaabdbf9` as the original-divergence marker; advance it only if
    you'd rather the compare link track the shrinking current delta.)
-9. Clean up: delete the candidate branch; keep the `from-`/`onto-` tags as the permanent audit trail.
+9. Clean up: delete the candidate branch (`git branch -D cand/<upstreamDate>-<upstreamSha>`); keep the
+   `from-`/`onto-` tags as the permanent audit trail.
 
 **Rollback.** If validation fails, discard the candidate — the live branch never moved. If a bad
-rebase was already pushed, `git reset --hard rebase/from-<forkTipDate>-<forkTipSha>` and force-push.
+rebase was already pushed, restore **by SHA** and force-push with an explicit lease:
+`git branch -f feature/aks-git-repo-worker rebase/from-<forkTipDate>-<forkTipSha>` then
+`git push microsoft feature/aks-git-repo-worker --force-with-lease` — the `from-` tag name is
+unambiguous (no branch shares it) and its objects were never GC-eligible, so the last-good tip is
+always reachable.
+
+**Migration ledger reconciliation (deployed fork DBs).** The migrator is a per-version **ledger**
+(`copilot_sessions.schema_migrations`), not a high-water-mark: each migration runs iff its exact
+`version` string is absent from the table (gaps are allowed — it can run `0085` while `0080` sits
+unapplied). So the code renumber alone is **not** enough for an already-deployed fork DB: its ledger
+still records the fork's DDL under the *old* numbers (this cycle: `0045–0057`, **13** fork
+migrations — the divergence baseline is `0044`), which are exactly the numbers upstream's migrations
+now occupy. On the next deploy the runner sees those strings as applied and
+**silently skips upstream's migrations at those numbers** (per-version, so only the collided ones —
+everything around them still applies), while the fork's renumbered entries are unrecorded.
+
+Fix it with a **name-keyed re-stamp** (Variant B), run as a **pre-deploy hook in the same rollout**
+as the rebased image (so no old-code boot lands on a half-re-stamped ledger). Key on `name` — stable
+across cycles — **not** on the old number (which moves every rebase); that is what makes the recipe
+survive repeated rebases:
+
+```sql
+BEGIN;
+UPDATE copilot_sessions.schema_migrations m
+SET version = v.newver
+FROM (VALUES
+  ('<fork migration name>', '<U+1>'),
+  ...                                   -- one row per fork migration, in fork order
+) AS v(name, newver)
+WHERE m.name = v.name;                  -- expect n rows updated
+COMMIT;
+```
+
+> **Derive the VALUES list from a name-keyed ledger-vs-code diff — never from the renumber commit's
+> file diff.** The authoritative source set is *every* fork migration whose `name` is applied in the
+> **deployed ledger** but sits at a **different `version` in the target code** (join deployed
+> `schema_migrations.name` against the `version/name` pairs parsed from `cms-migrations.ts`). A
+> migration can be renumbered *anywhere* in the rebase — not only inside the contiguous block the
+> renumber commit touched — so the commit diff undercounts. **Day-1 incident:** the VALUES list was
+> built from the renumber commit's diff (11 rows, `0047–0057`) and missed two fork migrations
+> (`session_git_state_pinning` `0045→0077`, `fix_session_git_state_setter` `0046→0078`) that the
+> rebase relocated elsewhere. The half-re-stamp left `0045/0046` still keyed to the old fork names, so
+> the runner skipped upstream's new `0045 session_canvases` and then **stalled at `0064 canvas_kv`**
+> (`relation "…session_canvases" does not exist`). Run the name-diff as a **pre-flight gate** and
+> assert its row count equals the number of fork migrations above the divergence baseline before
+> committing the re-stamp.
+
+This unchecks the old numbers (upstream's `0047…0078` now run) and checks the new ones (the fork's
+DDL is **skipped, not replayed**) — no data deleted, only `n` bookkeeping rows renamed. Run it against
+**every** deployed fork DB. **Verify** read-only, before and after: the `n` fork rows are still at the
+old numbers and nothing already occupies the target range beforehand; afterwards the old numbers are
+gone, the target range is filled, and a fresh-DB dry-run of the candidate reaches the new max in
+strict order. Snapshot the DB first — this writes to a shared/prod store.
+
+> **Wording note (avoid a false-safety read).** The renumber commit's message says "*Migrations stay
+> name-keyed, so DDL already applied under the old numbers is recognized and skipped*." Read that as
+> describing the **re-stamp**, not the runner. The runner (`pg-migrator.ts`) is strictly
+> **per-version** — it builds its applied-set from the `version` column and skips on
+> `appliedSet.has(migration.version)`; the `name` column is stored but never consulted for the skip
+> decision. So recognition-and-skip only happens *after* the name-keyed re-stamp has moved the ledger
+> rows to the new numbers. Without the re-stamp the runner does **not** self-recognize by name — do
+> not treat the deploy as safe on that assumption.
+
+**Preventing the old-worker re-run race (advisory-lock gate).** The re-stamp and the new-image
+rollout are not naturally atomic: migrations run on process **boot** only — `PgSessionCatalog.initialize()`
+(`cms.ts`) is guarded by `this.initialized`, so an already-running pod never re-runs DDL, but a pod
+that **(re)starts** after the re-stamp and before it is replaced *will*. Old (pre-rebase) code whose
+migration list still puts the fork DDL at the old numbers (`0045–0057`) would then see those numbers as absent (we moved
+them to `0077–0089`) and **re-insert the fork rows at the old numbers**, recreating the exact collision
+— and idempotent (`IF NOT EXISTS`) DDL does **not** save you, because it is the ledger re-insert, not
+the DDL, that re-poisons the state. On spot node pools (the git-worker DaemonSets tolerate
+`scalesetpriority=spot`) a restart can happen at any moment, so the window is real.
+
+Close it with the **same advisory lock the migrator itself respects** — no code change required. The
+runner acquires a **session-level** `pg_try_advisory_lock` keyed on `hashSchemaName(schema, CMS_LOCK_SEED)`
+(polling form: a blocked worker sleeps with *no* open transaction and retries every 100 ms). For
+`schema = copilot_sessions`, `CMS_LOCK_SEED = 0x636D73`, that key is **`420573475`**. Hold it across
+the whole cutover and every booting worker — old or new — parks in the poll loop until you release:
+
+1. Admin session: `SELECT pg_advisory_lock(420573475);` — acquire and **hold** (session-scoped, so it
+   survives the re-stamp's `BEGIN…COMMIT`).
+2. In that **same held session**, run the re-stamp `UPDATE … COMMIT` and assert `n` rows changed.
+3. **Still holding the lock**, roll the rebased image across **every** workload. The fleet upgrades by
+   **two different mechanisms** — get this wrong and the roll either silently reverts or deadlocks:
+   - **The Deployments are Flux-managed** (`portal` + `worker` Kustomizations own `pilotswarm-portal`
+     and `copilot-runtime-worker`, reconciled from an Azure blob **Bucket** source on a **2-minute
+     interval**). A bare `kubectl set image` is **reverted on the next reconcile**, *and* the sanctioned
+     `--steps …,rollout` path blocks on `kubectl rollout status` (which hangs inside the lock window —
+     new pods never go Ready). So during the window, **suspend Flux and drive the Deployments directly**:
+     1. `flux suspend kustomization worker-worker portal-portal -n flux-system` — stop reconciles from
+        reverting our in-window changes.
+     2. `kubectl set image` the new tag directly on `pilotswarm-portal` and `copilot-runtime-worker`
+        (no env re-render → **zero config drift**; new pods park on the lock). *(Leave `kusto-mcp` —
+        a different, non-fork image — untouched.)*
+
+     **Do not `flux resume` until the Bucket carries the new tag** — resuming against a stale (old-tag)
+     Bucket reverts the Deployments to old code and re-opens the race. After release (step 5) make the
+     Bucket authoritative and *then* resume: `npm run deploy -- worker sqlwus2 --steps manifests,rollout
+     --image-tag <tag>` and the same for `portal` (uploads the new-tag tree + reconciles; readiness wait
+     is safe post-release), then `flux resume kustomization worker-worker portal-portal -n flux-system`.
+   - **The git-worker / git-cache DaemonSets are NOT Flux-managed** → `kubectl set image` per
+     DaemonSet: git-repo-worker bumps **both** the `git-repo-worker` container **and** the
+     `wait-for-mirror` initContainer; git-cache bumps its single `git-cache` container. (See the
+     per-DaemonSet loop in `SDLC_ORCHESTRATION_TESTING.md`.)
+   Old pods terminate; new pods boot and **block on `420573475`** — no migrations run.
+   > **Do not wait for readiness inside the lock window.** Because new pods block at `initialize()`
+   > while you hold the lock, they never become Ready — so `kubectl rollout status` and Flux's own
+   > `rollout` wait step **hang** if run here. Gate on *specs updated to the new tag (+ old-tag pods
+   > drained so none can grab the lock at release)*, **not** on Ready. Run `rollout status` / readiness
+   > checks **after** step 5.
+4. **Verify zero old-tag pods remain** (all workloads on the new tag; delete any lingering old-tag pod
+   so only new code can acquire the lock at release).
+5. Only then `SELECT pg_advisory_unlock(420573475);` (or end the session). New pods take the lock and
+   migrate against the corrected ledger — upstream's reused numbers run, the fork's re-stamped numbers
+   are skipped. *Now* wait for Ready / `rollout status` to confirm the cutover, make the Bucket
+   authoritative for the Deployments (`--steps manifests,rollout`), and **`flux resume`** the suspended
+   Kustomizations (see step 3 — never resume against a stale-tag Bucket).
+
+The gate turns the race into a controlled cutover: the only code that can migrate after the re-stamp is
+code that first takes the lock, and you do not release until the fleet is provably all-new. **Two
+hardening rules:** (a) the lock lives in one DB session — if that holder dies the lock auto-releases and
+the gate opens early, so keep it alive and **scale the worker `Deployment` to 0 first** to shrink the
+restart surface to near-zero (portal and the DaemonSets are still covered by the lock, since they call
+`initialize()` on boot too); (b) if any old-tag pod lingers at step 4, **do not release** — delete it or
+wait it out. A full **stop-the-world** (scale worker to 0 + cordon the git-worker node pools, re-stamp,
+roll, uncordon) is the simpler bulletproof alternative when a short fleet downtime is acceptable.
+
+> **Known risk — reduced capacity / no uptime guarantee during the lock window.** While the lock is
+> held (steps 3–5), new pods block at `initialize()` and are **not Ready**, so fleet serving capacity
+> is degraded for the duration of the roll: fewer pods are able to serve customer workloads, and if the
+> whole fleet cycles at once there can be a short window with **no** Ready pods. **We do not currently
+> promise 100% uptime across a re-stamp rollout.** Mitigations today: keep the lock window short, roll
+> DaemonSets in batches so some old-tag pods keep serving until their replacements are ready, and prefer
+> off-peak execution. A zero-downtime cutover (e.g. surge/blue-green or draining behind a load balancer)
+> is deferred — **TODO: revisit to eliminate the capacity gap.**
 
 ### Upstream-ahead ledger & rebase-risk
 
