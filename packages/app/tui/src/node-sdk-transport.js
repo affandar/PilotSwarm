@@ -1553,6 +1553,19 @@ export class NodeSdkTransport {
         return this.mgmt.listProviders(await this._modelProviderViewer());
     }
 
+    async listFeatureFlags() { return this.mgmt.listFeatureFlags(await this._modelProviderViewer()); }
+    async getClusterFeatureFlags() { return this.mgmt.getClusterFeatureFlags(await this._modelProviderViewer()); }
+    async getMyFeatureFlags() { return this.mgmt.getMyFeatureFlags(await this._modelProviderViewer()); }
+    async getUserFeatureFlags(userId) { return this.mgmt.getUserFeatureFlags(await this._modelProviderViewer(), userId); }
+    async setClusterFeatureFlag(input) { return this.mgmt.setClusterFeatureFlag(await this._modelProviderViewer(), input); }
+    async resetClusterFeatureFlag(input) { return this.mgmt.resetClusterFeatureFlag(await this._modelProviderViewer(), input); }
+    async setMyFeatureFlag(input) { return this.mgmt.setMyFeatureFlag(await this._modelProviderViewer(), input); }
+    async unsetMyFeatureFlag(input) { return this.mgmt.unsetMyFeatureFlag(await this._modelProviderViewer(), input); }
+    async setUserFeatureFlag(userId, input) { return this.mgmt.setUserFeatureFlag(await this._modelProviderViewer(), userId, input); }
+    async unsetUserFeatureFlag(userId, input) { return this.mgmt.unsetUserFeatureFlag(await this._modelProviderViewer(), userId, input); }
+    async listFeatureFlagChanges(limit) { return this.mgmt.listFeatureFlagChanges(await this._modelProviderViewer(), limit); }
+    async listFeatureFlagUsers(query) { return this.mgmt.listFeatureFlagUsers(await this._modelProviderViewer(), query); }
+
     async getModelDefaults() {
         return this.mgmt.getModelDefaults(await this._modelProviderViewer());
     }

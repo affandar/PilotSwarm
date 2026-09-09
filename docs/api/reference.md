@@ -353,3 +353,40 @@ curl -s -X POST $BASE/sessions/$SID/messages -H 'content-type: application/json'
 # poll status / read events
 curl -s "$BASE/management/sessions/$SID/events?limit=50" | jq '.result[].eventType'
 ```
+
+
+## Feature flags
+
+Settings → Feature flags exposes personal preferences and admin cluster/user controls.
+Definitions are published by code migrations; these APIs only manage values.
+All paths below are relative to `/api/v1`. A feature key such as
+`copilot.native_tasks` is a single path segment.
+
+| Method / path | Operation | Access |
+| --- | --- | --- |
+| GET `/management/features/catalog` | `listFeatureFlags` | Authenticated |
+| GET `/management/features/cluster` | `getClusterFeatureFlags` | Authenticated |
+| PUT / DELETE `/management/features/cluster/:featureKey` | `setClusterFeatureFlag` / `resetClusterFeatureFlag` | Admin |
+| GET `/management/users/me/features` | `getMyFeatureFlags` | Self |
+| PUT / DELETE `/management/users/me/features/:featureKey` | `setMyFeatureFlag` / `unsetMyFeatureFlag` | Self |
+| GET `/management/users/:userId/features` | `getUserFeatureFlags` | Admin |
+| PUT / DELETE `/management/users/:userId/features/:featureKey` | `setUserFeatureFlag` / `unsetUserFeatureFlag` | Admin |
+| GET `/management/features/users?query=...` | `listFeatureFlagUsers` | Admin |
+| GET `/management/features/changes?limit=50` | `listFeatureFlagChanges` | Admin |
+
+PUT bodies require `enabled`, `expectedRevision` (decimal string), and `requestId`.
+Cluster PUT also requires `allowUserOverride`. DELETE takes `expectedRevision`
+and `requestId` as query parameters. It removes the setting: cluster reset restores
+published defaults, user unset restores inheritance. No per-session setting exists.
+All mutations return the committed revision. Stale writes return 409
+`FEATURE_CONFLICT`; identical retries with the same actor/request/input return the
+original result. Reads include `effective`, `source`, `userOverrideIgnored`, and
+configured cluster/user settings. A successful save does not prove worker adoption;
+workers report applied revisions/capability in their `feature-flags` state.
+
+The SDK management client exposes the same operation names with a trusted
+`FeatureViewer` first argument. Web clients derive the viewer from authentication.
+MCP tools use snake case (for example `set_cluster_feature_flag`). Direct MCP mode
+requires `PILOTSWARM_MCP_ACTOR_PROVIDER` and `PILOTSWARM_MCP_ACTOR_SUBJECT`; admin
+writes additionally require `PILOTSWARM_MCP_FEATURE_ADMIN=true` and the trusted
+admin process context. In Web MCP mode, server authentication determines authority.

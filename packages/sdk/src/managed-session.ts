@@ -666,6 +666,15 @@ export class ManagedSession {
     }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
+    private nativeFeatureRevoked = false;
+    canAdmitNativeTask(): boolean {
+        return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
+            && (this.config.nativeFeatureAllowed?.() ?? false);
+    }
+    /** A cached OFF is sticky for this turn, even if the next poll is ON. */
+    refreshNativeFeaturePolicy(): void {
+        if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
+    }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
@@ -1222,6 +1231,7 @@ export class ManagedSession {
      * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
         let result: TurnResult | undefined;
         let turnError: unknown;
@@ -3326,6 +3336,8 @@ export class ManagedSession {
      * Update configuration for the next turn.
      */
     updateConfig(config: Partial<ManagedSessionConfig>): void {
+        if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
+        if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;
         if (config.model !== undefined) this.config.model = config.model;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
@@ -3355,6 +3367,8 @@ export class ManagedSession {
             : currentProviderFingerprint;
         if (config.nativeSubagents !== undefined
             && config.nativeSubagents !== (this.config.nativeSubagents ?? "off")) return true;
+        if (config.featureToolFingerprint !== undefined
+            && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(
             (currentModel || nextModel)
             && (currentModel !== nextModel

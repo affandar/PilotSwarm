@@ -1,6 +1,6 @@
 # Cluster and user feature flags
 
-Status: proposed; no feature-flag implementation or CHK deployment in this change.
+Status: implemented on `codex/native-copilot-subagents-spike`; validated and running on localhost. CHK rollout remains separate. See [implementation and test record](../models/feature-flighting-implementation-2026-09-09.md).
 
 Companion fix implemented on the spike branch: Question cards normalize literal
 newline escapes for display before Markdown parsing. Pending and answered cards
@@ -199,7 +199,8 @@ Reset/unset also increments the catalog revision, so worker caches remove entrie
 This serializes writes for the same feature and handles delete/recreate races
 without a tombstone table. Different features have independent counters.
 
-Use audit actions `feature_flag.set` / `feature_flag.unset`; keep scope, feature key,
+Use audit actions `feature_flag.set` / `feature_flag.unset`; placeholder adoption
+adds `feature_flag.user_adopt`, transfers preferences and bumps affected revisions; keep scope, feature key,
 target user, before/after, feature revision, canonical request hash and returned result in
 `details`. Existing actor/session/time fields identify who made the change.
 `updated_by` and audit actors are server-derived, never caller-claimed authority.
@@ -241,11 +242,11 @@ principal from authentication, never from a claimed body field.
 | Read/set/unset a selected user's flag | Admin |
 | Read change audit | Admin |
 
-Suggested shared methods: `listFeatureFlags`, `getClusterFeatureFlags`,
+Shared methods: `listFeatureFlags`, `getClusterFeatureFlags`,
 `setClusterFeatureFlag`, `resetClusterFeatureFlag`, `getMyFeatureFlags`,
 `setMyFeatureFlag`, `unsetMyFeatureFlag`, `getUserFeatureFlags`,
-`setUserFeatureFlag`, `unsetUserFeatureFlag`, `listFeatureFlagChanges`.
-Proposed Web routes below are relative to `/api/v1`:
+`setUserFeatureFlag`, `unsetUserFeatureFlag`, `listFeatureFlagChanges`, `listFeatureFlagUsers`.
+Web routes below are relative to `/api/v1`:
 
 | Method and route | Operation |
 | --- | --- |
@@ -257,6 +258,7 @@ Proposed Web routes below are relative to `/api/v1`:
 | GET `/management/users/:userId/features` | Read a selected user's flags (admin) |
 | PUT / DELETE `/management/users/:userId/features/:featureKey` | Set / unset a selected user's preference (admin) |
 | GET `/management/features/changes` | Read feature-setting audit (admin) |
+| GET `/management/features/users?query=...` | Search user IDs for preferences (admin; up to 500 results) |
 
 Register literal `me` ahead of user ID routes. MCP and agent tools use the shared
 method names in snake case with equivalent arguments/results. Direct management
@@ -279,7 +281,10 @@ saved preference is inactive. Do not expose another user's settings to nonadmins
 Add **Cluster → Feature flags** for admins, with an On/Off control and an
 **Allow user override** checkbox for each code-defined flag. Include reset to code
 defaults. No UI for adding or deleting flag definitions. Use the existing shared
-Admin/Settings controller and selectors so Web and terminal views share state.
+Admin/Settings controller and selectors. This implementation exposes the controls
+in browser Settings → Feature flags, with My preferences / Cluster / Users tabs.
+Terminal transport methods are available; terminal-specific interactive controls
+are not part of this UI implementation.
 
 ## Agent tools
 
@@ -332,7 +337,7 @@ Use the existing worker heartbeat JSON, with no new worker columns:
 ```text
 workers.info.consumes += 'feature-flags'
 workers.state['feature-flags'] = {
-  appliedRevisions: { 'copilot.native_tasks': 7 }, // illustrative
+  appliedRevisions: { 'copilot.native_tasks': '7' }, // BIGINT revisions remain strings
   supportedKeys, protocolVersion: 1, lastCheckedAt, lastLoadedAt, lastError
 }
 ```
@@ -466,8 +471,9 @@ user's override; an admin-set user entry has no special precedence.
 
 ## In-flight transition contract and test status
 
-**Status: the feature-flag catalog, APIs, polling cache and transition tests below
-are not implemented yet.** Existing committed native tests cover:
+**Status: implemented and tested.** The test record linked above distinguishes
+real CLI/PG evidence, deterministic fixtures and optional live-model tests.
+Existing native regression tests cover:
 
 - `native-subagents-runtime.test.js`: OFF on new/warm/cold sessions with durable
   delegation preserved; saved ON→OFF cold resume rejects even a fabricated `task`
@@ -476,8 +482,9 @@ are not implemented yet.** Existing committed native tests cover:
 - `native-subagents.test.js`: mode-change rebind detection and cleanup/stop races,
   including a late timed-out cleanup result not cancelling a later turn's tasks.
 
-Those do not establish live cluster/user flag propagation or OFF→ON execution.
-The new implementation must pass this additional matrix before CHK rollout:
+The new cluster/user transition tests additionally cover OFF→ON execution using
+the real Copilot CLI and scripted local inference. The following matrix remains
+the acceptance contract, including deployment-specific CHK checks:
 
 | Transition/test | Required result |
 | --- | --- |

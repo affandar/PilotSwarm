@@ -1,3 +1,4 @@
+import { createFeaturePolicy } from "./feature-policy.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,6 +44,7 @@ export async function runDurableFilesystemBoundary({ relation, respond, token, m
     const base = fs.readFileSync(new URL("../../plugins/system/agents/default.agent.md", import.meta.url), "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
     const manager = new SessionManager(token, null, { nativeSubagents: "sync", frameworkBasePrompt: base,
         ...(registry ? { modelProviders: registry } : {}), turnTimeoutMs: 90_000 }, path.join(home, "session-state"));
+    manager.setFeatureFlagCache((await createFeaturePolicy()).cache);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: 1 }) });
     const tools = artifacts.map(tool => ({ ...tool, handler: async (args, context) => {
         const native = context.sessionId !== childId;

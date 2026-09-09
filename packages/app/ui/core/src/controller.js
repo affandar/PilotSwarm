@@ -2523,6 +2523,8 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
+        this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
         this._liveTurnIdleTimers?.clear();
         if (this.catalogTimer) clearInterval(this.catalogTimer);
@@ -2593,6 +2595,7 @@ export class PilotSwarmUiController {
         // navigation-intent branch returns before the tail): the worker
         // registry must refresh on every tick of the loop that provably runs.
         this.refreshWorkerRegistryIfStale().catch(() => {});
+        this.refreshFeatureFlagsIfStale().catch(() => {});
         // Refreshes OVERLAP. The catalog loop ticks every 4s and a dozen
         // actions call this directly, while one run awaits several sequential
         // round-trips (N catalog pages, the folder list, up to two getSession
@@ -3238,6 +3241,7 @@ export class PilotSwarmUiController {
         if (this.getState().ui?.budgetOpen) this.closeBudget();
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
+        if (this.getState().admin?.section === "features") void this.refreshFeatureFlags();
         void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
     }
@@ -3706,6 +3710,7 @@ export class PilotSwarmUiController {
 
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
+        if (section === "features") void this.refreshFeatureFlags();
         if (section === "providers") {
             const providers = this.getState().admin?.modelProviders;
             if (!providers?.fetchedAt) void this.refreshAdminModelProviders().catch(() => {});
@@ -3719,6 +3724,124 @@ export class PilotSwarmUiController {
             // fetched minutes ago render as a dead fleet ("0 live").
             void this.refreshAdminWorkers().catch(() => {});
         }
+    }
+
+    async selectFeatureScope(mode, userId = null) {
+        if (!["mine", "cluster", "users"].includes(mode)) return;
+        if (this.getState().admin?.features?.saving || mode !== "mine" && !this._featureIsAdmin()) return;
+        if (mode === "users" && userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) return;
+        this.dispatch({ type: "admin/features", patch: { mode, userId: mode === "users" ? userId : null,
+            data: null, error: null, notice: null, fetchedAt: null, dirtyDrafts: {} } });
+        await this.refreshFeatureFlags();
+    }
+
+    _featureIsAdmin() {
+        const state = this.getState();
+        const role = state.auth?.authorization?.role;
+        return state.admin?.profile?.isAdmin === true && (!role || role === "admin" || role === "anonymous");
+    }
+
+    _featureContext() {
+        const state = this.getState();
+        const features = state.admin.features;
+        return JSON.stringify([features.generation, features.mode, features.userId,
+            state.auth?.principal?.provider, state.auth?.principal?.subject, state.auth?.authorization?.role,
+            state.admin.profile?.provider, state.admin.profile?.subject, state.admin.profile?.isAdmin]);
+    }
+
+    async _featureRequest(read) {
+        let timeout;
+        try {
+            return await Promise.race([Promise.resolve().then(read), new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error("Feature request timed out. Retry or refresh the settings.")), 10_000);
+                timeout?.unref?.();
+            })]);
+        } finally { clearTimeout(timeout); }
+    }
+
+    async refreshFeatureFlagsIfStale() {
+        const admin = this.getState().admin;
+        const features = admin?.features;
+        if (!admin?.visible || admin.section !== "features" || features?.loading || features?.saving
+            || Object.keys(features?.dirtyDrafts || {}).length
+            || features?.fetchedAt && Date.now() - features.fetchedAt < 20_000) return;
+        await this.refreshFeatureFlags({ background: true });
+    }
+
+    setFeatureDraftDirty(featureKey, dirty) {
+        const dirtyDrafts = { ...this.getState().admin.features.dirtyDrafts };
+        if (dirty) dirtyDrafts[featureKey] = true;
+        else delete dirtyDrafts[featureKey];
+        this.dispatch({ type: "admin/features", patch: { dirtyDrafts } });
+    }
+
+    async searchFeatureUsers(query = "") {
+        if (!this._featureIsAdmin()) return;
+        const serial = this._featureUserSerial = (this._featureUserSerial || 0) + 1;
+        const context = this._featureContext();
+        this.dispatch({ type: "admin/features", patch: { userQuery: String(query), usersLoading: true, metadataError: null } });
+        const current = () => this._featureUserSerial === serial && this._featureContext() === context;
+        try {
+            const users = await this._featureRequest(() => this.transport.listFeatureFlagUsers(String(query)));
+            if (current()) this.dispatch({ type: "admin/features", patch: { users, usersLoading: false } });
+        } catch (error) {
+            if (current()) this.dispatch({ type: "admin/features", patch: { usersLoading: false,
+                metadataError: `User directory: ${error?.message || error}` } });
+        }
+    }
+
+    async refreshFeatureFlags({ background = false } = {}) {
+        const serial = (this._featureRefreshSerial ?? 0) + 1;
+        this._featureRefreshSerial = serial;
+        const features = this.getState().admin?.features || { mode: "mine" };
+        if (features.mode !== "mine" && !this._featureIsAdmin()) return;
+        const context = this._featureContext();
+        const current = () => this._featureRefreshSerial === serial && this._featureContext() === context;
+        this.dispatch({ type: "admin/features", patch: { loading: true, ...(background ? {} : { error: null }) } });
+        // Directory/adoption are independent diagnostics: neither may block policy.
+        if (!background && this._featureIsAdmin()) {
+            void this.searchFeatureUsers(features.userQuery || "");
+            void this.refreshWorkerRegistryIfStale();
+        }
+        try {
+            const data = await this._featureRequest(() => features.mode === "cluster" ? this.transport.getClusterFeatureFlags()
+                : features.mode === "users" ? features.userId ? this.transport.getUserFeatureFlags(features.userId) : null
+                    : this.transport.getMyFeatureFlags());
+            if (!current()) return;
+            this.dispatch({ type: "admin/features", patch: { data, loading: false, fetchedAt: Date.now() } });
+        } catch (error) {
+            if (current()) this.dispatch({ type: "admin/features", patch: { loading: false, fetchedAt: Date.now(), error: String(error?.message || error) } });
+        }
+    }
+
+    async saveFeatureFlag(featureKey, values) {
+        const features = this.getState().admin?.features;
+        if (!features || features.saving || features.loading || features.mode !== "mine" && !this._featureIsAdmin()) return;
+        const definition = features.data?.flags?.find(flag => flag.featureKey === featureKey);
+        if (!definition || features.mode === "users" && !features.userId) return;
+        const target = this._featureContext();
+        const signature = JSON.stringify([target, featureKey, definition.revision, values]);
+        const requestId = this._featureMutationRetry?.signature === signature
+            ? this._featureMutationRetry.requestId : globalThis.crypto.randomUUID();
+        this._featureMutationRetry = { signature, requestId };
+        const input = { featureKey, expectedRevision: definition.revision, requestId, ...(values || {}) };
+        this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
+        try {
+            await this._featureRequest(() => {
+                if (features.mode === "cluster") return this.transport[values ? "setClusterFeatureFlag" : "resetClusterFeatureFlag"](input);
+                if (features.mode === "users") return this.transport[values ? "setUserFeatureFlag" : "unsetUserFeatureFlag"](features.userId, input);
+                return this.transport[values ? "setMyFeatureFlag" : "unsetMyFeatureFlag"](input);
+            });
+            if (this._featureMutationRetry?.signature === signature) this._featureMutationRetry = null;
+            if (this._featureContext() === target) {
+                await this.refreshFeatureFlags();
+                if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: { notice: "Saved. Workers apply changes on their next configuration poll; enabling native tasks takes effect on the next turn." } });
+            }
+        } catch (error) {
+            if (this._featureContext() === target) {
+                this.dispatch({ type: "admin/features", patch: { error: String(error?.message || error) } });
+            }
+        } finally { if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: { saving: false } }); }
     }
 
     /** Node Map: select a node (toggles off when re-selected). Scopes Activity. */

@@ -1,5 +1,13 @@
 # Paused at the user's request — 2026-09-08
 
+## Feature flag implementation — 2026-09-09
+
+Feature flighting is now implemented and tested after checkpoint `5f03b336`.
+The [implementation/test record](feature-flighting-implementation-2026-09-09.md)
+supersedes the design-only and next-step notes below. Localhost has been rebuilt
+and restarted; cluster OFF + overrides allowed, local testing user ON, applied
+revision 3. CHK has not been changed.
+
 ## Resumed work (supersedes the pause and unfinished-verifier notes below)
 
 The user resumed with: add the durable-child filesystem boundary test and design

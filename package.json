@@ -44,7 +44,8 @@
     "docker:local:reset": "bash ./scripts/docker-local-reset.sh",
     "worker": "node --env-file=.env.remote --import ./scripts/otel/register.mjs packages/sdk/examples/worker.js",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "test:feature-flags": "npm run build --workspace=packages/sdk && npm run build:mcp --workspace=pilotswarm && node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck packages/sdk/test/types/feature-flags.ts && npm exec --workspace=packages/sdk -- vitest run test/local/feature- test/local/native-subagents-runtime.test.js && node --test packages/app/ui/core/test/feature-flags-admin.test.mjs packages/app/mcp/test/unit/features.unit.mjs"
   },
   "author": "Affan Dar",
   "license": "MIT",

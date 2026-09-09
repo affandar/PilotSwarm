@@ -1,4 +1,8 @@
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, NATIVE_SUBAGENT_GUIDANCE, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
+import type { FeatureFlagCache } from "./feature-flag-cache.js";
+import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
+import { FeatureFlagError } from "./feature-flags.js";
+import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
@@ -408,6 +412,8 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+    private featureFlags: FeatureFlagCache | null = null;
+    private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
     get activeSessionCount(): number {
@@ -770,6 +776,15 @@ export class SessionManager {
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
     setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
+    }
+
+    setFeatureFlagCache(cache: FeatureFlagCache | null): void {
+        this.unsubscribeFeatureFlags?.();
+        this.featureFlags = cache;
+        this.unsubscribeFeatureFlags = cache?.onChange(() => {
+            for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
+        }) ?? null;
+        for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
     }
 
     /**
@@ -1678,20 +1693,36 @@ export class SessionManager {
         // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
         // in managed-session.ts runTurn — hard exclusion beats instructions.
         const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
-        const nativeEnabled = this.workerDefaults.nativeSubagents === "sync"
+        const featureTools = this.sessionCatalog?.features
+            && ["resourcemgr", "pilotswarm", "agent-manager"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            && (await this._resolveFeatureViewer(sessionId)).isAdmin
+            ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
+        // Handler refresh alone cannot change the CLI's tool declarations.
+        // Role transitions must recreate the warm SDK handle at the next turn.
+        config.featureToolFingerprint = createHash("sha256")
+            .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
+            .digest("hex");
+        const nativeOwner = catalogRow?.owner ?? null;
+        // An unreadable owner must not bypass a user-level OFF by resolving
+        // cluster policy. Ownerless resolution is only for standalone managers.
+        const nativeOwnerKnown = !this.sessionCatalog || Boolean(nativeOwner?.provider && nativeOwner?.subject);
+        config.nativeFeatureAllowed = () => nativeOwnerKnown
+            && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
+        const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
             && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
-        ].map((t: any) => t.name));
+        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -1701,6 +1732,7 @@ export class SessionManager {
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         config.tools = persistentSessionTools;
 
@@ -1776,7 +1808,7 @@ export class SessionManager {
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
-            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks) : config.hooks,
+            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks, () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -2326,6 +2358,8 @@ export class SessionManager {
 
     /** Shutdown: destroy all sessions, stop CopilotClient. */
     async shutdown(): Promise<void> {
+        this.unsubscribeFeatureFlags?.();
+        this.unsubscribeFeatureFlags = null;
         for (const [_, session] of this.sessions) {
             try { await session.destroy(); } catch {}
         }
@@ -2701,6 +2735,17 @@ export class SessionManager {
             // A read failure is not evidence of privilege.
             return false;
         }
+    }
+
+    private async _resolveFeatureViewer(sessionId: string): Promise<FeatureViewer> {
+        // Never use the inspect-viewer TTL for feature mutations: demotion must
+        // apply on the next invocation, including an already-hydrated session.
+        const row = await this.sessionCatalog?.getSession(sessionId);
+        const principal = row?.owner;
+        if (!principal?.provider || !principal.subject) throw new FeatureFlagError("FEATURE_FORBIDDEN", "Feature tools require an authenticated session owner", 403);
+        const system = row?.isSystem === true && principal.provider === SYSTEM_USER_PRINCIPAL.provider
+            && principal.subject === SYSTEM_USER_PRINCIPAL.subject;
+        return { principal, isAdmin: system || await this._resolveOwnerIsAdmin(principal) };
     }
 
     /**

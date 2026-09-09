@@ -232,6 +232,10 @@ export interface SerializableSessionConfig {
 export interface ManagedSessionConfig extends SerializableSessionConfig {
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
+    /** Memory-only owner policy; never serialize or reconfigure cleanup mid-turn. */
+    nativeFeatureAllowed?: () => boolean;
+    /** Internal feature tool declaration fingerprint; never a durable setting. */
+    featureToolFingerprint?: string;
     /** Internal hash of resolved provider endpoint/credential; never serialized or exposed. */
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */

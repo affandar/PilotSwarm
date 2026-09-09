@@ -74,7 +74,7 @@ export function nativeSubagentDefinitions(model: string): CustomAgentConfig[] {
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true): SessionHooks {
     return {
         ...hooks,
         onPreToolUse: async (input, invocation) => {
@@ -96,6 +96,7 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks): Sessio
                 }
             }
             if (input.toolName !== "task") return previous;
+            if (!canAdmit()) return deny("Native tasks are disabled by current feature policy for this turn. Use a durable spawn_agent if needed.");
             if (!args || typeof args !== "object" || Array.isArray(args)) return deny("task arguments must be an object");
             const task = args as Record<string, unknown>;
             if (!names.has(String(task.agent_type))) return deny("Use the native swarm-explore or swarm-task agent.");

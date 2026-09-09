@@ -983,6 +983,25 @@ export class PortalRuntime {
                     },
                 );
 
+            case "listFeatureFlags":
+            case "getClusterFeatureFlags":
+            case "getMyFeatureFlags":
+                return this.transport.mgmt[method]({ principal: owner, isAdmin });
+            case "getUserFeatureFlags":
+                return this.transport.mgmt.getUserFeatureFlags({ principal: owner, isAdmin }, Number(safeParams.userId));
+            case "setClusterFeatureFlag":
+            case "resetClusterFeatureFlag":
+            case "setMyFeatureFlag":
+            case "unsetMyFeatureFlag":
+                return this.transport.mgmt[method]({ principal: owner, isAdmin }, safeParams);
+            case "setUserFeatureFlag":
+            case "unsetUserFeatureFlag":
+                return this.transport.mgmt[method]({ principal: owner, isAdmin }, Number(safeParams.userId), safeParams);
+            case "listFeatureFlagChanges":
+                return this.transport.mgmt.listFeatureFlagChanges({ principal: owner, isAdmin }, safeParams.limit);
+            case "listFeatureFlagUsers":
+                return this.transport.mgmt.listFeatureFlagUsers({ principal: owner, isAdmin }, safeParams.query);
+
             // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──
             // One family, one handler. `owner` is the authenticated
             // principal and `isAdmin` the resolved role — both server-side,

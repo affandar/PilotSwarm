@@ -1,3 +1,4 @@
+import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 import { describe, it, expect, vi } from "vitest";
 import { nativeSubagentHooks, resolveNativeSubagents, settleNativeSubagents, guardNativeExternalTools } from "../../src/native-subagents.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
@@ -215,6 +216,7 @@ describe("worker session assembly", () => {
         const manager = new SessionManager(undefined, null, {
             nativeSubagents: "sync", customAgents: [{ name: "durable-agent", prompt: "Use complete_agent" }],
         }, join(home, "session-state"));
+        manager.setFeatureFlagCache((await createFeaturePolicy()).cache);
         manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
         const created = [];
         manager.client = {

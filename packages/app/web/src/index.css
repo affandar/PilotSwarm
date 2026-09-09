@@ -9337,3 +9337,21 @@ textarea.ps-link-input {
   color: #000;
   border-left: 2px solid #808080;
 }
+
+/* Feature policy shares the settings workspace on desktop and mobile. */
+.ps-feature-flags-panel { padding: 1rem; overflow: auto; min-width: 0; }
+.ps-feature-flag-heading, .ps-feature-tabs, .ps-feature-controls { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; }
+.ps-feature-flag-heading { justify-content: space-between; }
+.ps-feature-flag-heading h2, .ps-feature-flag-heading h3 { margin: 0; }
+.ps-feature-tabs { margin: 1rem 0; }
+.ps-feature-tabs [aria-selected="true"] { border-color: var(--ps-accent); color: var(--ps-accent); }
+.ps-feature-flag { border: 1px solid var(--ps-border); border-radius: .5rem; padding: 1rem; margin: 1rem 0; overflow-wrap: anywhere; }
+.ps-feature-controls { margin: 1rem 0; }
+.ps-feature-controls label { display: flex; align-items: center; gap: .4rem; }
+.ps-feature-user select, .ps-feature-controls select, .ps-feature-user input { min-width: 0; max-width: 100%; background: var(--ps-surface); color: var(--ps-foreground); border: 1px solid var(--ps-border); padding: .35rem; font: inherit; }
+.ps-feature-user { min-width: 0; }
+.ps-feature-user form { display: flex; gap: .5rem; flex-wrap: wrap; margin: .8rem 0; }
+.ps-feature-user label { min-width: 0; }
+.ps-feature-explanation, .ps-feature-adoption { color: var(--ps-muted); }
+.ps-feature-value { font-weight: 600; white-space: nowrap; }
+.ps-feature-value.is-on { color: var(--ps-accent); }

@@ -1,4 +1,5 @@
 import React from "react";
+import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -13054,9 +13055,16 @@ function formatAdminPrincipalLabel(principal) {
 
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
+    const features = useControllerSelector(controller, state => state.admin.features);
+    const featureWorkers = useControllerSelector(controller, state => state.admin.workers);
+    const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
+    const showFeatures = view.section === "features";
+    const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
+        workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
+        isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
     const [providerSheet, setProviderSheet] = React.useState(null);
     const [providerSheetBusy, setProviderSheetBusy] = React.useState(false);
     const [providerSheetError, setProviderSheetError] = React.useState(null);
@@ -13205,7 +13213,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -13234,7 +13242,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : providerSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -13328,6 +13336,8 @@ function AdminSettingsTree({ controller, view }) {
                     } else if (row.id === "sharedProviders") {
                         controller.setAdminSection("providers");
                         controller.setAdminModelProviderPage("shared");
+                    } else if (row.id === "features") {
+                        controller.setAdminSection("features");
                     } else {
                         controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                     }

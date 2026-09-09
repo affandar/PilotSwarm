@@ -8,6 +8,7 @@
  */
 
 import type { MigrationEntry } from "./pg-migrator.js";
+import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -390,6 +391,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "cluster_admin_accounting",
             sql: migration_0075_cluster_admin_accounting(schema),
         },
+        { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
     ];
 }
 

@@ -1,4 +1,5 @@
 import { resolveNativeSubagents } from "./native-subagents.js";
+import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
@@ -259,6 +260,8 @@ export class PilotSwarmWorker {
     private _eventLoopHist: IntervalHistogram | null = null;
     /** Last refresh failure — carried in heartbeat state until a clean pass. */
     private _agentPackagesRefreshError: string | null = null;
+    private _featureFlags: FeatureFlagCache | null = null;
+    private _registryReporting = false;
 
     constructor(options: PilotSwarmWorkerOptions) {
         this.config = {
@@ -605,6 +608,12 @@ export class PilotSwarmWorker {
             }
         }
 
+        if (this._catalog?.features) {
+            this._featureFlags = new FeatureFlagCache(this._catalog.features);
+            this.sessionManager.setFeatureFlagCache(this._featureFlags);
+            await this._featureFlags.pollRevisionsAndRefresh();
+        }
+
         // ── Provider budgets: the one-time deployment seed ──────────────
         //
         // A fresh cluster holds no providers, and the credentials in the
@@ -933,15 +942,9 @@ export class PilotSwarmWorker {
             this._evictionTimer.unref?.();
         }
 
-        // Agent-package epoch poll (model-providers-reloader pattern): one
-        // single-row SELECT per interval; a changed epoch triggers the full
-        // install + in-place swap. 0 disables.
-        if (this._agentPackagesCacheDir && this._agentPackagesRefreshMs > 0) {
-            this._agentPackagesTimer = setInterval(() => {
-                void this.refreshAgentPackages();
-            }, this._agentPackagesRefreshMs);
-            this._agentPackagesTimer.unref?.();
-        }
+        // One configuration timer for every CMS worker. Zero still disables
+        // package refresh, but cannot disable feature-policy convergence.
+        this._startConfigurationPolling();
 
         await new Promise(r => setTimeout(r, 200));
 
@@ -962,6 +965,7 @@ export class PilotSwarmWorker {
             clearInterval(this._agentPackagesTimer);
             this._agentPackagesTimer = null;
         }
+        await this._featureFlags?.stop();
         if (this._eventLoopHist) {
             this._eventLoopHist.disable();
             this._eventLoopHist = null;
@@ -1123,6 +1127,25 @@ export class PilotSwarmWorker {
      * prompts re-read per turn, tool HANDLERS re-register per turn, tool
      * DECLARATIONS and MCP configs reach the CLI only on cold create/resume.
      */
+    private _startConfigurationPolling(): void {
+        if (!this._catalog || this._agentPackagesTimer) return;
+        void this._reportAgentWorkerState();
+        this._agentPackagesTimer = setInterval(() => {
+            void this.refreshWorkerConfiguration();
+        }, this._agentPackagesRefreshMs > 0 ? this._agentPackagesRefreshMs : 20_000);
+        this._agentPackagesTimer.unref?.();
+    }
+
+    async refreshWorkerConfiguration(): Promise<void> {
+        await Promise.allSettled([
+            (async () => {
+                await this._featureFlags?.pollRevisionsAndRefresh();
+                await this._reportAgentWorkerState();
+            })(),
+            this._agentPackagesRefreshMs > 0 ? this.refreshAgentPackages() : Promise.resolve(),
+        ]);
+    }
+
     async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {
         if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
         if (this._agentPackagesRefreshing) return;
@@ -1259,7 +1282,7 @@ export class PilotSwarmWorker {
             sdkVersion,
             authz: { adminScope: loadAdminScope(), policyVersion: ADMIN_SCOPE_POLICY_VERSION },
             orchestrationVersions: DURABLE_SESSION_ORCHESTRATION_REGISTRY.map((r) => r.version),
-            consumes: this._agentPackagesCacheDir ? ["agent-packages"] : [],
+            consumes: [...(this._agentPackagesCacheDir ? ["agent-packages"] : []), "feature-flags"],
             capabilities: {
                 blobStore: Boolean(this.blobStore),
                 enhancedFacts: Boolean(this.factStore && isEnhancedFactStore(this.factStore)),
@@ -1306,7 +1329,8 @@ export class PilotSwarmWorker {
      * actuated domains are inert by protocol. Never throws.
      */
     private async _reportAgentWorkerState(): Promise<void> {
-        if (!this._catalog) return;
+        if (!this._catalog || this._registryReporting) return;
+        this._registryReporting = true;
         try {
             await this._catalog.workerHeartbeat({
                 workerNodeId: this._registryWorkerId,
@@ -1316,6 +1340,8 @@ export class PilotSwarmWorker {
                 info: this._buildRegistrarInfo(),
                 health: this._collectWorkerHealth(),
                 state: {
+                    "feature-flags": { ...this._featureFlags?.state,
+                        nativeCapability: resolveNativeSubagents(this.config.nativeSubagents) },
                     "agent-packages": {
                         epoch: this._agentPackagesEpoch,
                         installed: this._agentPackagesInstalled,
@@ -1325,6 +1351,8 @@ export class PilotSwarmWorker {
             });
         } catch (error: any) {
             console.warn(`[PilotSwarmWorker] worker-registry heartbeat failed: ${error?.message ?? error}`);
+        } finally {
+            this._registryReporting = false;
         }
     }
 
