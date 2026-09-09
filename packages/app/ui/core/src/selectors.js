@@ -29,6 +29,7 @@ import {
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
+import { normalizeQuestionForDisplay } from "./question-display.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -1560,7 +1561,7 @@ function buildPendingQuestionMessage(session, events = []) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
-    const body = [String(pendingQuestion.question).trim()];
+    const body = [normalizeQuestionForDisplay(pendingQuestion.question).trim()];
     const choices = Array.isArray(pendingQuestion.choices)
         ? pendingQuestion.choices.filter((choice) => typeof choice === "string" && choice.trim())
         : [];
@@ -1568,7 +1569,7 @@ function buildPendingQuestionMessage(session, events = []) {
     if (choices.length > 0) {
         body.push("", "Choices:");
         for (const choice of choices) {
-            body.push(`- ${choice}`);
+            body.push(`- ${normalizeQuestionForDisplay(choice)}`);
         }
     }
 
@@ -2591,7 +2592,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
                 ...buildMessageCardLines({
                     title: "Question",
                     timestamp: formatTimestamp(message?.createdAt || message?.time),
-                    body: askedAndAnswered.question,
+                    body: normalizeQuestionForDisplay(askedAndAnswered.question),
                     width: Math.max(20, maxWidth),
                     titleColor: USER_CHAT_COLOR,
                     borderColor: USER_CHAT_COLOR,

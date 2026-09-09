@@ -2,6 +2,12 @@
 
 Status: proposed; no feature-flag implementation or CHK deployment in this change.
 
+Companion fix implemented on the spike branch: Question cards normalize literal
+newline escapes for display before Markdown parsing. Pending and answered cards
+are covered in browser/terminal selector tests; a browser test verifies paragraph
+and list layout while preserving code/path literals. Stored questions, choices and
+answers remain unchanged. The feature-flag implementation itself is still proposed.
+
 ## Definitions and resolution
 
 Feature flags are authored **only in code** and published into a `feature_flags`

@@ -46,6 +46,11 @@ feature flighting. That work is now implemented/documented:
   deployment applied.
 - The old broad routing sweep remains partial; it was not resumed under the
   narrower current request. Historical details below describe the earlier pause.
+- Companion Question-card fix (2026-09-09): normalize escaped newlines only for
+  display, preserving code/path literals and stored question/answer identities.
+  Covers pending, optimistic answered and durable answered cards in both renderers.
+  All 695 UI tests and the new built-browser layout test passed. Localhost serves
+  the rebuilt bundle; no Waldemort deployment. Feature flags remain design-only.
 
 Worktree: `/Users/affandar/workshop/drox/pilotswarm.worktrees/native-copilot-subagents-spike`
 Branch: `codex/native-copilot-subagents-spike`
