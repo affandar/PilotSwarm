@@ -31,6 +31,7 @@ import type {
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
+    WorkerTimelineEntry,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
@@ -4445,6 +4446,14 @@ export class PilotSwarmManagementClient {
     async listWorkers(): Promise<WorkerRow[]> {
         this._ensureStarted();
         return this._catalog!.listWorkers();
+    }
+
+    async getWorkerTimeline(
+        workerNodeId: string,
+        options: { since?: Date; limit?: number } = {},
+    ): Promise<WorkerTimelineEntry[]> {
+        this._ensureStarted();
+        return this._catalog!.getWorkerTimeline(workerNodeId, options);
     }
 
     async setAgentPackageScope(

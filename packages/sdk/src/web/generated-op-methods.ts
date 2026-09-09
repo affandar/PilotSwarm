@@ -29,6 +29,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteGraphEdge",
     "deleteGraphNamespace",
     "deleteGraphNode",
+    "deleteJob",
+    "deleteJobGenerator",
     "deleteMyProvider",
     "deleteProvider",
     "deleteSession",
@@ -154,6 +156,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setClusterDefault",
     "setCurrentUserGitHubCopilotKey",
     "setCurrentUserProfileSettings",
+    "setJobWaitConditionOverride",
     "setModelDefault",
     "setMyDefault",
     "setProviderAllowance",
@@ -409,6 +412,22 @@ export interface ManagementOps {
     deleteGraphNode(params: {
         nodeKey?: any;
         namespace?: any;
+    }): Promise<any>;
+
+    /**
+     * Logically delete one owned induced Job and terminate its sessions.
+     * @remarks `DELETE /jobs/:jobId` — access: `job-generator:manage`
+     */
+    deleteJob(params: {
+        jobId: string;
+    }): Promise<any>;
+
+    /**
+     * Logically delete an owned JobGenerator and terminate all induced work.
+     * @remarks `DELETE /job-generators/:generatorId` — access: `job-generator:manage`
+     */
+    deleteJobGenerator(params: {
+        generatorId: string;
     }): Promise<any>;
 
     /**
@@ -1485,6 +1504,17 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Set or clear an operator override that mocks a single observed-condition check as satisfied so the wait can resume.
+     * @remarks `POST /jobs/:jobId/waits/:waitId/condition-overrides` — access: `job-generator:manage`
+     */
+    setJobWaitConditionOverride(params: {
+        jobId: string;
+        waitId: string;
+        conditionKey?: any;
+        overridden?: any;
+    }): Promise<any>;
+
+    /**
      * Set or clear the user or cluster ordinary-session default. Cluster scope requires admin.
      * @remarks `PUT /model-defaults` — access: `authed`
      */
@@ -1763,6 +1793,8 @@ export function createManagementOps(
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
         deleteGraphNode: (params: Record<string, unknown> = {}) => callOp("deleteGraphNode", params),
+        deleteJob: (params: Record<string, unknown> = {}) => callOp("deleteJob", params),
+        deleteJobGenerator: (params: Record<string, unknown> = {}) => callOp("deleteJobGenerator", params),
         deleteMyProvider: (params: Record<string, unknown> = {}) => callOp("deleteMyProvider", params),
         deleteProvider: (params: Record<string, unknown> = {}) => callOp("deleteProvider", params),
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
@@ -1888,6 +1920,7 @@ export function createManagementOps(
         setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
         setCurrentUserProfileSettings: (params: Record<string, unknown> = {}) => callOp("setCurrentUserProfileSettings", params),
+        setJobWaitConditionOverride: (params: Record<string, unknown> = {}) => callOp("setJobWaitConditionOverride", params),
         setModelDefault: (params: Record<string, unknown> = {}) => callOp("setModelDefault", params),
         setMyDefault: (params: Record<string, unknown> = {}) => callOp("setMyDefault", params),
         setProviderAllowance: (params: Record<string, unknown> = {}) => callOp("setProviderAllowance", params),

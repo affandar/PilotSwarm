@@ -97,6 +97,9 @@ test("management sendAnswer records input acceptance after the durable answer en
         },
     };
     client._catalog = {
+        async getSession() {
+            return null;
+        },
         async acceptJobResponse() {
             return null;
         },
@@ -115,6 +118,7 @@ test("management sendAnswer records input acceptance after the durable answer en
             payload: {
                 answer: "Approved",
                 wasFreeform: true,
+                expectedQuestion: null,
             },
         },
         {
@@ -141,6 +145,9 @@ test("management sendAnswer fences a durable Job response before enqueue", async
         },
     };
     client._catalog = {
+        async getSession() {
+            return null;
+        },
         async acceptJobResponse(input) {
             calls.push({ kind: "accept", input });
             return {
@@ -189,6 +196,7 @@ test("management sendAnswer fences a durable Job response before enqueue", async
             payload: {
                 answer: "Approved",
                 wasFreeform: true,
+                expectedQuestion: null,
                 sender: {
                     kind: "user",
                     provider: "test-identity",
@@ -232,6 +240,9 @@ test("management sendAnswer reopens a Job response wait when enqueue fails", asy
         },
     };
     client._catalog = {
+        async getSession() {
+            return null;
+        },
         async acceptJobResponse() {
             return {
                 waitId: "wait-1",
@@ -266,6 +277,9 @@ test("management sendAnswer does not enqueue a rejected Job response", async () 
         },
     };
     client._catalog = {
+        async getSession() {
+            return null;
+        },
         async acceptJobResponse() {
             throw new Error("Job response wait is already satisfied");
         },

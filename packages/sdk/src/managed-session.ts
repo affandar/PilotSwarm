@@ -28,7 +28,50 @@ const DEFAULT_WAIT_TOOL_DESCRIPTION ="The ONLY way to wait, pause, delay, or pau
     "NEVER use bash sleep, setTimeout, setInterval, or any other external timing mechanism. " +
     "Do NOT keep burning tokens in an in-turn polling loop; after one brief immediate re-check at most, yield with a durable timer. " +
     "For recurring or periodic schedules, use the cron tool instead (cron_at for wall-clock schedules); if it is " +
-    "genuinely ambiguous whether the task should become an ongoing monitor, clarify first.";
+    "genuinely ambiguous whether the task should become an ongoing monitor, clarify first. " +
+    "Do NOT use this tool to poll external provider-owned async state " +
+    "(build policies, pipeline or build completion, pull-request policy evaluation, coverage checks): " +
+    "for those, call start_external_operation to register the gate, then system_wait on the returned signalKey, " +
+    "so the wait is durable, observer-reconciled, and operator-overridable.";
+
+/**
+ * Reasons that describe polling external, provider-owned async state (CI/policy
+ * gates). A durable `wait` timer must never be used for these: a timer hides the
+ * wait from the operator UI and pins the current worker resident for the whole
+ * operation. They belong on the start_external_operation + system_wait
+ * observed-condition path instead. Patterns are stateless (no /g) so repeated
+ * .test() calls over the array do not depend on lastIndex.
+ */
+export const PROVIDER_STATE_POLL_PATTERNS: RegExp[] = [
+    /\bpolic(?:y|ies)\b/i,
+    /\bpipeline(?:s)?\b/i,
+    /\bgated?\b/i,
+    /\bcode\s*coverage\b/i,
+    /\bpull[\s-]?request\b/i,
+    /\bpr\b[^.]*\b(?:coverage|polic\w*|build|validation|merge|complet\w*|approv\w*)\b/i,
+    /\b(?:build|validation)\b[^.]*\b(?:running|complet\w*|finish\w*|queued|pending|pass\w*|fail\w*)\b/i,
+    /\b(?:running|complet\w*|finish\w*|queued|pending)\b[^.]*\b(?:build|validation|polic\w*)\b/i,
+];
+
+export function isProviderStatePoll(reason: string): boolean {
+    if (!reason) return false;
+    return PROVIDER_STATE_POLL_PATTERNS.some((pattern) => pattern.test(reason));
+}
+
+export const PROVIDER_STATE_POLL_REDIRECT =
+    "BLOCKED: `wait` (a durable timer) must not be used to poll external, provider-owned "
+    + "async state such as build policies, pipeline or build completion, pull-request policy "
+    + "evaluation, or coverage checks. A timer hides this wait from the operator UI so it "
+    + "cannot be overridden, and it pins the current worker resident for the entire operation.\n\n"
+    + "Register a durable observed condition instead:\n"
+    + "1. Call `start_external_operation` with the provider and kind for the gate, a `request` "
+    + "identifying the target (for a pull request: organization, project, repositoryId, "
+    + "pullRequestId, expectedSourceCommit), and a `conditions` object naming exactly the gate "
+    + "you need — for example `{ \"requiredPolicyDisplayNames\": [\"<policy display name>\"] }` for a "
+    + "single named policy, or `{ \"requireAllBlockingPolicies\": true }` for every blocking policy.\n"
+    + "2. Then call `system_wait` with the returned `signalKey`.\n"
+    + "This yields an event-driven wait the observer reconciles and the operator can override. "
+    + "Do NOT retry `wait`/`wait_on_worker` for this condition.";
 
 const SYSTEM_WAIT_TOOL_SPEC = {
     description:
@@ -1348,6 +1391,9 @@ export class ManagedSession {
                 if (args.seconds <= turnState.waitThreshold) {
                     await new Promise(r => setTimeout(r, args.seconds * 1000));
                     return `Waited for ${args.seconds} seconds. The wait is complete, you may continue.`;
+                }
+                if (!args.preserveWorkerAffinity && isProviderStatePoll(reason)) {
+                    return PROVIDER_STATE_POLL_REDIRECT;
                 }
                 if (opts?.onEvent) {
                     try {
