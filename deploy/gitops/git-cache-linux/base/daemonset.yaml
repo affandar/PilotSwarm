@@ -4,14 +4,14 @@
 #
 # THIS FILE IS A URL-FREE GENERIC. It is intentionally NOT directly applyable:
 # the __TOKENS__ below are filled per-repo by the deployment scripts that live
-# OUTSIDE this GitHub repo (SQL-AI-Marketplace/SqlOrchestrationPlatform/Admin/
-# PilotSwarm/git-hydration/apply.ps1), because the target ADO repo URLs must not
-# be persisted here. One instantiation per hot repo; a DaemonSet runs one pod on
-# every node matching its nodeSelector, so a 5-node labeled pool => 5 mirrors.
+# outside this repository, because concrete target repository URLs must not be
+# persisted in the platform source. One instantiation per hot repo; a DaemonSet
+# runs one pod on every node matching its nodeSelector, so a 5-node labeled
+# pool => 5 mirrors.
 #
 # Tokens (all substituted by apply.ps1 from a per-repo .env):
-#   __REPO_NAME__               DNS-safe short name (e.g. sql-ai-marketplace)
-#   __REPO_URL__                ADO clone URL (lives only in the ADO repo)
+#   __REPO_NAME__               DNS-safe short name (e.g. service-repo)
+#   __REPO_URL__                clone URL (supplied by deployment configuration)
 #   __FETCH_INTERVAL_SECONDS__  steady-state fetch cadence (default 3600)
 #   __FETCH_JITTER_SECONDS__    max added jitter per cycle (default 300)
 #   __CACHE_HOSTPATH__          node-local host dir backing the mirror. Default

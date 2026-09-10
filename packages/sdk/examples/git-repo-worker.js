@@ -390,7 +390,7 @@ if (gitCacheMirror) {
     // ── Devbox / local self-fetch worktree mode (Shape C) ────────────────
     // No node-local mirror. The worker hangs a single detached git WORKTREE off
     // an EXISTING local enlistment's shared object store (GIT_SHARED_STORE, e.g.
-    // C:\src\dsmaindev) — so there is no multi-GB re-clone, only a one-time
+    // C:\src\service-repo) — so there is no multi-GB re-clone, only a one-time
     // working-tree checkout. A background Phase-A fetch keeps that shared store
     // warm (additive; never disturbs a running worktree — see src/git-store.ts
     // + its unit test), so a new job claim is a local checkout only. Auth to ADO

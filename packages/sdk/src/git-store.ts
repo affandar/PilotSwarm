@@ -6,7 +6,7 @@
 //                         lifecycle, keepalive refs, gc/maintenance. In the AKS
 //                         mirror model the "store" is the enlistment's own .git;
 //                         in the devbox worktree model it is the shared
-//                         dsmaindev/.git that many worktrees hang off.
+//                         repository's .git directory that many worktrees use.
 //   Runner    (READER)  — owns ONE working tree: Phase-B checkout of a pinned
 //                         SHA. Never fetches, never gc's.
 //

@@ -161,8 +161,9 @@ values are not confidential.
 The known extraction areas include:
 - IcM and Kusto JobGenerator provider implementations, authentication details, response
   normalization, tests, and operational documentation.
-- Kusto-specific MCP adapters, executables, images, and deployment composition. The reusable
-  MCP proxy/authentication host remains platform code.
+- SQL-specific Kusto MCP deployment composition, environment values, and scenarios. The
+  reusable MCP proxy/authentication host and public-sample Kusto reference adapter remain
+  platform code.
 - SQL scenario lifecycles and fixtures such as IncidentFix, StandardFix, Flakebuster, PVS, and
   SQL repository/fleet names.
 - SQL environment composition: concrete images, identities, endpoints, cluster values, and
@@ -249,7 +250,7 @@ not a commit.)
    - Scrub Tier 2 terms as each PR is prepared.
 3. **Extract Tier 1 providers to `sqlmort`.** ADO WIQL, IcM, and Kusto JobGenerator
    implementations move behind the opaque, normalized remote-provider contract. Continue
-   with the Kusto MCP adapter and the remaining SQL-owned scenario/deployment surfaces.
+   with the remaining SQL-owned scenario and deployment surfaces.
 4. **Resolve DELETE items** (anything experimental we don't want to publish or keep) — none
    identified yet; flag as found.
 5. **Retire.** Once every §6 capability has landed upstream or moved internal — so the fork
@@ -428,13 +429,18 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   `sourceType: "icm"` definition end-to-end against the sqlmort provider.
 - [x] Extract the Kusto JobGenerator evaluator into a SQLmort-owned sibling module using the
   same provider ABI as ADO WIQL and IcM.
-- [ ] Extract the remaining SQL-owned scenario surfaces and the Kusto MCP adapter.
+- [ ] Extract the remaining SQL-owned scenario and deployment surfaces. The public-sample
+  Kusto MCP reference adapter remains in the platform; SQL-specific values and composition
+  move to `sqlmort`.
 - **Make the overlay the deployment/integration repo:** it depends on core (fork now, upstream
   later), injects the IcM plugin, and owns the compose→build→ship pipeline.
 - **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
   composition + env + infra (core-version pin, IcM injection, ACR/AKS/AFD/PG targeting,
   governance-restricted-subscription overrides) move to the **overlay**.
-- Genericize **Tier 2** labels/fixtures in place (`PVS`→`ExampleGate`, `DsMainDev`→placeholder,
+- [x] Neutralize identified fork-added SQL/org-specific comments and example paths in the SDK
+  and git-cache deployment documentation.
+- [ ] Genericize remaining **Tier 2** labels/fixtures in place (`PVS`→`ExampleGate`,
+  `DsMainDev`→placeholder,
   drop the real ACR name).
 - **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
   overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
@@ -873,8 +879,7 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 - [x] Provider module ABI and platform-owned runner implemented; ADO WIQL, IcM, and Kusto
       concrete
       implementations, tests, configuration, and image composition moved to `sqlmort`
-      *(ADO WIQL and IcM committed 2026-09-10; Kusto extraction prepared afterward;
-      deployment remains deferred)*.
+      *(ADO WIQL, IcM, and Kusto committed 2026-09-10; deployment remains deferred)*.
 - [x] Cross-repository loading and execution validated locally through SQLmort's `ado_wiql`
       plugin and the mock-delivery state machine, including authenticated provider dispatch,
       real Azure DevOps discovery, Job materialization, and terminal `Validated` state.
@@ -883,7 +888,8 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 - [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
 - [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
       the fork is a pure-platform repo.
-- [ ] Tier 2 genericized in place (Tier 3 is benign — no action; see §5).
+- [ ] Tier 2 genericized in place (comment/example neutralization complete; labels, fixtures,
+      and concrete deployment values remain; Tier 3 is benign — no action; see §5).
 - [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
   - [ ] (1) AKS git-hydration worker fleet
   - [ ] (2) Job Generator framework + durable lifecycle state machine *(generic runner/module

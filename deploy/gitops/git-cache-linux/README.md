@@ -19,9 +19,8 @@ per-repo node-pool autoscaling, and the balloon/standby buffer (§6) are separat
 | `base/rbac.yaml` | ServiceAccount + `ClusterRole`/binding granting `get/list/patch` on **nodes** (for the self taint/label). |
 
 > **Why no URLs here:** the target ADO repo URLs must not be persisted in this
-> GitHub repo. The concrete per-repo values (URLs, PAT, node provisioning) live
-> in the ADO deployment repo:
-> `SQL-AI-Marketplace/SqlOrchestrationPlatform/Admin/PilotSwarm/git-hydration/`.
+> GitHub repo. Concrete per-repo values such as URLs, credentials, and node
+> provisioning belong in the deployment or integration repository.
 
 ## How a repo gets a mirror
 
@@ -31,7 +30,7 @@ per-repo node-pool autoscaling, and the balloon/standby buffer (§6) are separat
      until the mirror is ready).
 2. **Instantiate** the DaemonSet by substituting the `__TOKENS__` in
    `base/daemonset.yaml` from a per-repo `.env`, then `kubectl apply`. The
-   deploy `apply.ps1` (ADO repo) does this.
+   deployment repository owns this composition step.
 3. Each node's pod clones the mirror once (**heavily logged + timed**), writes a
    `.ready` sentinel, then **self-patches its node**: removes the
    `cache-not-ready` taint and adds `pilotswarm.io/git-cache-<repo>=ready`.

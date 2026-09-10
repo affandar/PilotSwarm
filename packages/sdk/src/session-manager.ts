@@ -2096,8 +2096,8 @@ export class SessionManager {
         // ── Per-session delegated-token injection for STDIO MCP servers ──────
         // Caller-delegated tokens (resolved above into callerAuthEnvVars, keyed by
         // env-var NAME) must reach each stdio MCP server as an ENVIRONMENT VARIABLE
-        // (e.g. the flakebuster Kusto shim reads $KUSTO_ACCESS_TOKEN / the aria shim
-        // reads $ARIA_KUSTO_ACCESS_TOKEN / the WinDbg proxy reads $SYMWEB_TOKEN).
+        // (for example, a command-backed server may read a named service token
+        // instead of receiving an HTTP Authorization header).
         // The process.env export earlier is a one-time snapshot frozen into the
         // cached CopilotClient, so it only reaches the FIRST session's child. Here we
         // instead layer the tokens onto each stdio server's per-session `env` map,
