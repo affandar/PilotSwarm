@@ -18,6 +18,8 @@ const FULL = {
     workingDirectory: "/work",
     waitThreshold: 45,
     boundAgentName: "runbook-marshal",
+    boundAgentPackageId: "package-version-one",
+    detachedPackageToolPolicy: "reject",
     promptLayering: { kind: "app-agent" },
     childContract: { wakeOn: "any" },
     toolNames: ["alpha"],
@@ -34,6 +36,8 @@ test("every serializable field rides through; nothing non-serializable does", ()
     assert.equal(p.workingDirectory, "/work");
     assert.equal(p.waitThreshold, 45);
     assert.equal(p.boundAgentName, "runbook-marshal");
+    assert.equal(p.boundAgentPackageId, "package-version-one");
+    assert.equal(p.detachedPackageToolPolicy, "reject");
     assert.deepEqual(p.promptLayering, { kind: "app-agent" });
     assert.deepEqual(p.childContract, { wakeOn: "any" });
     assert.ok(!("tools" in p), "Tool objects (functions) must not ride durable state");

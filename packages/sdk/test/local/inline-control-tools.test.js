@@ -306,6 +306,28 @@ describe("inline control tool execution", () => {
         expect(result.content).toBe("Spawned titled child.");
     });
 
+    it("advertises and forwards required_tool for generic capability routing", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [
+            { name: "spawn_agent", args: { task: "inspect one shard", required_tool: "package_catalog" } },
+        ];
+        fakeSession.assistantContent = "Spawned capability owner.";
+        const controlToolBridge = {
+            spawnAgent: vi.fn(async () => "[SYSTEM: spawned]"),
+        };
+        const managed = new ManagedSession("inline-required-tool", fakeSession, {});
+
+        await managed.runTurn("delegate by capability", { controlToolBridge });
+
+        const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
+        expect(spawnTool?.parameters?.properties?.required_tool?.type).toBe("string");
+        expect(spawnTool?.description).toContain("pass required_tool");
+        expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
+            task: "inspect one shard",
+            required_tool: "package_catalog",
+        }));
+    });
+
     it("advertises and forwards child contracts and results", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [

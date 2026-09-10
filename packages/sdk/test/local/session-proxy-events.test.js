@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { registerActivities } from "../../src/session-proxy.ts";
+import { BoundAgentPackageUnavailableError, PackageToolBindingError } from "../../src/session-manager.ts";
 import { SESSION_STATE_MISSING_PREFIX } from "../../src/types.ts";
 
 function makeHarness(options = {}) {
@@ -17,7 +18,10 @@ function makeHarness(options = {}) {
 
     const sessionManager = {
         withRunTurnLock: vi.fn(async (_sessionId, _operation, fn) => await fn()),
-        getOrCreate: vi.fn(async () => session),
+        getOrCreate: vi.fn(async () => {
+            if (options.getOrCreateError) throw options.getOrCreateError;
+            return session;
+        }),
         getModelSummary: vi.fn(() => undefined),
         invalidateWarmSession: vi.fn(async () => {}),
         resetSessionState: vi.fn(async () => {}),
@@ -70,6 +74,40 @@ function makeHarness(options = {}) {
 }
 
 describe("session-proxy CMS prompt classification", () => {
+    it("returns detached package-tool misuse as a non-retryable turn error", async () => {
+        const { runTurn } = makeHarness({
+            getOrCreateError: new PackageToolBindingError("package_catalog"),
+        });
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            { sessionId: "detached-package-tool", prompt: "run package tool", config: {}, turnIndex: 0 },
+        );
+
+        expect(result).toEqual(expect.objectContaining({
+            type: "error",
+            retryable: false,
+            message: expect.stringContaining("requires its owning named-agent definition"),
+        }));
+    });
+
+    it("returns an unavailable exact package binding as a non-retryable turn error", async () => {
+        const { runTurn } = makeHarness({
+            getOrCreateError: new BoundAgentPackageUnavailableError("package-v1"),
+        });
+
+        const result = await runTurn(
+            { traceInfo: () => {}, isCancelled: () => false },
+            { sessionId: "missing-bound-package", prompt: "continue", config: {}, turnIndex: 0 },
+        );
+
+        expect(result).toEqual(expect.objectContaining({
+            type: "error",
+            retryable: false,
+            message: expect.stringContaining("no longer available"),
+        }));
+    });
+
     it("waits for the durable user.message acknowledgement before completing the turn", async () => {
         let releaseUserMessage;
         const userMessageBarrier = new Promise((resolve) => {

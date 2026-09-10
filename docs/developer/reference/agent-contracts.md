@@ -22,12 +22,16 @@ Why it matters:
 Contract:
 
 - if an agent is already known by name, spawn it with `spawn_agent(agent_name="...")`
+- if delegation requires a capability but should not hard-code an agent name, use `spawn_agent(required_tool="...")`; PilotSwarm binds the unique caller-visible creatable agent that declares it
+- combining `agent_name` and `required_tool` asserts that the named agent owns the tool; it does not attach the tool to a different agent
 - use `task=` only for ad hoc custom agents
+- do not pass package-owned tools through `tool_names`; package prompt, skills, startup contract, and handlers stay attached to their owning named-agent definition
 - known system agents like `sweeper` and `resourcemgr` should not be created via `task="..."`
 
 Why it matters:
 
 - named agents carry canonical metadata
+- capability routing preserves shared/private package visibility and exact package-copy identity across workers
 - system-agent titles and IDs depend on that named-agent path
 - generic `task=` spawns can lose `agentId`, `title`, and expected behavior
 

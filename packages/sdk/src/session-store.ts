@@ -20,6 +20,21 @@ import {
 
 const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-state");
 const DEFAULT_FILESYSTEM_STORE_DIR = path.join(os.homedir(), ".copilot", "session-store");
+const TRANSIENT_DIRECTORY_RENAME_CODES = new Set(["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"]);
+
+/** Windows can briefly retain directory handles after recursive removal. */
+export async function renameDirectoryWithRetry(source: string, destination: string): Promise<void> {
+    const maxAttempts = 8;
+    for (let attempt = 1; ; attempt += 1) {
+        try {
+            fs.renameSync(source, destination);
+            return;
+        } catch (error: any) {
+            if (!TRANSIENT_DIRECTORY_RENAME_CODES.has(error?.code) || attempt >= maxAttempts) throw error;
+            await new Promise((resolve) => setTimeout(resolve, attempt * 20));
+        }
+    }
+}
 
 export interface SessionMetadata {
     sessionId: string;
@@ -852,8 +867,8 @@ export class FilesystemSessionStore implements SessionStateStore, VersionedSnaps
                     throw new Error(`Snapshot archive for ${sessionId} did not contain the session directory`);
                 }
                 faultPoint("store.hydrate.before-swap");
-                fs.rmSync(sessionDir, { recursive: true, force: true });
-                fs.renameSync(extracted, sessionDir);
+                fs.rmSync(sessionDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 20 });
+                await renameDirectoryWithRetry(extracted, sessionDir);
             } finally {
                 fs.rmSync(tempRoot, { recursive: true, force: true });
             }

@@ -1007,10 +1007,11 @@ export class ManagedSession {
                 "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
                 "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
                 "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
+                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm resolves the unique visible creatable owner and binds its full definition. " +
                 "You MAY spawn multiple concurrent instances of the same agent_name (e.g. one per bug or per shard); they each get their own conversation. The only caps are the global maximum concurrent sub-agents and the maximum nesting depth. " +
                 "Sub-agents do NOT auto-terminate when they finish their task \u2014 they stay alive idle, ready for follow-up via message_agent. YOU are responsible for closing each child with complete_agent (graceful), cancel_agent (interrupt), or delete_agent (forceful) when you no longer need it. " +
                 "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead. Do not attach package-owned names through tool_names; use required_tool so prompt, skills, handler, and startup contract stay together. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
@@ -1022,6 +1023,10 @@ export class ManagedSession {
                     agent_name: {
                         type: "string",
                         description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                    },
+                    required_tool: {
+                        type: "string",
+                        description: "Generic capability selector. Resolve the unique visible creatable named agent declaring this tool, bind its complete definition, and require this tool during bootstrap. Use with task for delegated package-tool work. Ambiguous or missing ownership fails closed.",
                     },
                     task: {
                         type: "string",
@@ -2117,10 +2122,11 @@ export class ManagedSession {
                 "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name ONLY. " +
                 "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
                 "Do NOT pass task or system_message when using agent_name. " +
+                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm resolves the unique visible creatable owner and binds its full definition. " +
                 "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. Do not attach package-owned names through tool_names; use required_tool so prompt, skills, handler, and startup contract stay together. " +
                 "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
                 "If you want different reasoning power, also use only a reasoning_effort value listed for that model. " +
@@ -2131,6 +2137,10 @@ export class ManagedSession {
                     agent_name: {
                         type: "string",
                         description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                    },
+                    required_tool: {
+                        type: "string",
+                        description: "Generic capability selector. Resolve the unique visible creatable named agent declaring this tool, bind its complete definition, and require this tool during bootstrap. Use with task for delegated package-tool work. Ambiguous or missing ownership fails closed.",
                     },
                     task: {
                         type: "string",
@@ -2169,10 +2179,14 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
+            handler: async (args: { agent_name?: string; required_tool?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
-                if (!args.agent_name && !args.task) {
-                    return "Error: either agent_name or task is required.";
+                const requiredTool = typeof args.required_tool === "string" ? args.required_tool.trim() : "";
+                if (args.required_tool !== undefined && (!requiredTool || requiredTool.length > 128)) {
+                    return "Error: required_tool must be a non-empty tool name of at most 128 characters.";
+                }
+                if (!args.agent_name && !args.task && !requiredTool) {
+                    return "Error: agent_name, required_tool, or task is required.";
                 }
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
@@ -2182,7 +2196,11 @@ export class ManagedSession {
                     return "Error: context_tier must be one of default, long_context.";
                 }
                 if (controlBridge) {
-                    return await controlBridge.spawnAgent({ ...args, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
+                    return await controlBridge.spawnAgent({
+                        ...args,
+                        ...(requiredTool ? { required_tool: requiredTool } : {}),
+                        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                    });
                 }
                 turnState.pendingActions.push({
                     type: "spawn_agent",
@@ -2193,6 +2211,7 @@ export class ManagedSession {
                     systemMessage: args.system_message,
                     toolNames: args.tool_names,
                     agentName: args.agent_name,
+                    requiredTool: requiredTool || undefined,
                     title: typeof args.title === "string" && args.title.trim() ? args.title.trim() : undefined,
                     contract: args.contract,
                 });
