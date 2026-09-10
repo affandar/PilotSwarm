@@ -1,8 +1,9 @@
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
-import { handleSubAgentAction as frozenSpawn } from "../../src/orchestration_1_0_72/agents.ts";
+import { handleSubAgentAction as frozenSpawn } from "../../src/orchestration_1_0_73/agents.ts";
+import { resolveTopLevelAgentConfig } from "../../src/orchestration/runtime.ts";
 import { describe, expect, it, vi } from "vitest";
 import { PilotSwarmClient } from "../../src/client.ts";
-import { bootstrapTurnOptions, buildRunTurnConfig, childModelCreationOptions } from "../../src/session-proxy.ts";
+import { bootstrapTurnOptions, buildRunTurnConfig, childModelCreationOptions, createSessionManagerProxy } from "../../src/session-proxy.ts";
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("runTurn config backfill", () => {
@@ -55,6 +56,53 @@ describe("runTurn config backfill", () => {
             requiredTool: "package_catalog",
         });
         expect(bootstrapTurnOptions()).toEqual({ bootstrap: true });
+    });
+
+    it("binds a top-level named agent to its exact package copy", () => {
+        const runtime = {
+            ctx: { traceInfo() {} },
+            input: { sessionId: "top-level", agentId: "catalog-analyst" },
+            options: { isSystem: false },
+            state: { iteration: 0, config: { toolNames: ["caller_tool"] } },
+            manager: {
+                resolveAgentConfig: () => ({ activity: "resolveAgentConfig" }),
+            },
+            session: null,
+        };
+        const generator = resolveTopLevelAgentConfig(runtime);
+
+        expect(generator.next().value).toEqual({ activity: "resolveAgentConfig" });
+        expect(generator.next({
+            name: "catalog-analyst",
+            tools: ["package_catalog"],
+            initialRequiredTool: "package_catalog",
+            packageId: "package-catalog-v1",
+        }).done).toBe(true);
+        expect(runtime.state.config).toMatchObject({
+            boundAgentName: "catalog-analyst",
+            boundAgentPackageId: "package-catalog-v1",
+            toolNames: ["package_catalog", "caller_tool"],
+        });
+        expect(runtime.state.pendingRequiredTool).toBe("package_catalog");
+    });
+
+    it("uses the raw caller session id for active resolution while preserving the frozen default", () => {
+        const scheduleActivity = vi.fn((_name, payload) => payload);
+        const manager = createSessionManagerProxy({
+            instanceId: "session-raw-caller-id",
+            scheduleActivity,
+        });
+
+        manager.resolveAgentConfig("analyst", "raw-caller-id");
+        expect(scheduleActivity).toHaveBeenLastCalledWith("resolveAgentConfig", {
+            agentName: "analyst",
+            callerSessionId: "raw-caller-id",
+        });
+        manager.resolveAgentConfig("analyst");
+        expect(scheduleActivity).toHaveBeenLastCalledWith("resolveAgentConfig", {
+            agentName: "analyst",
+            callerSessionId: "session-raw-caller-id",
+        });
     });
 
     it("preserves the child wake contract in orchestration input", async () => {
@@ -112,8 +160,14 @@ describe("spawn context override and replay", () => {
             model: "review:model", contextTier: "default", reasoningEffort: "high",
         });
     });
-    it("preserves the frozen activity payload when no context override is supplied", () => {
-        expect(JSON.stringify(payload(handleSubAgentAction, {}))).toBe(JSON.stringify(payload(frozenSpawn, {})));
-        expect(payload(handleSubAgentAction, {})[1].contextTier).toBe("long_context");
+    it("keeps 1.0.73 frozen while 1.0.74 marks custom children as detached", () => {
+        const frozenConfig = payload(frozenSpawn, {})[1];
+        const activeConfig = payload(handleSubAgentAction, {})[1];
+        expect(frozenConfig.contextTier).toBe("long_context");
+        expect(frozenConfig.detachedPackageToolPolicy).toBeUndefined();
+        expect(activeConfig).toMatchObject({
+            contextTier: "long_context",
+            detachedPackageToolPolicy: "drop",
+        });
     });
 });

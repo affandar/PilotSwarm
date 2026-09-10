@@ -16,9 +16,13 @@ import assert from "node:assert/strict";
 import {
     agentOwnerKey,
     packageAgentKey,
+    pickAgentCopyByPackageIdForOwner,
     pickAgentCopyForOwner,
 } from "../../dist/session-manager.js";
-import { resolveAgentDefinitionForCaller } from "../../dist/session-proxy.js";
+import {
+    resolveAgentDefinitionForCaller,
+    resolveAgentDefinitionForRequiredToolForCaller,
+} from "../../dist/session-proxy.js";
 
 const ALICE = { provider: "test", subject: "alice" };
 const BOB = { provider: "test", subject: "bob" };
@@ -58,6 +62,13 @@ test("the owner gets their own copy; everyone else gets the shared default", () 
     assert.equal(pickAgentCopyForOwner(entry, agentOwnerKey(ALICE))?.prompt, "ALICE PROMPT");
     assert.equal(pickAgentCopyForOwner(entry, agentOwnerKey(BOB))?.prompt, "SHARED PROMPT");
     assert.equal(pickAgentCopyForOwner(entry, null)?.prompt, "SHARED PROMPT");
+});
+
+test("an exact package pin is revalidated against the session owner", () => {
+    assert.equal(pickAgentCopyByPackageIdForOwner(entry, "pkg-alice", agentOwnerKey(ALICE))?.prompt, "ALICE PROMPT");
+    assert.equal(pickAgentCopyByPackageIdForOwner(entry, "pkg-alice", agentOwnerKey(BOB)), undefined);
+    assert.equal(pickAgentCopyByPackageIdForOwner(entry, "pkg-shared", agentOwnerKey(BOB))?.prompt, "SHARED PROMPT");
+    assert.equal(pickAgentCopyByPackageIdForOwner(entry, "missing-package", agentOwnerKey(ALICE)), undefined);
 });
 
 test("a deployment or shared entry with no copies list is returned as-is", () => {
@@ -173,4 +184,56 @@ test("an unresolvable caller fails closed: no private agents", async () => {
         getCallerOwnerKey: async () => { throw new Error("catalog down"); },
     });
     assert.equal(def, null);
+});
+
+// ── Required-tool capability routing ────────────────────────────────
+
+const capabilityAgents = [
+    { name: "analyst", prompt: "SHARED", tools: ["inspect_catalog"], packageId: "pkg-shared", packageScope: "shared" },
+    { name: "analyst", prompt: "ALICE", tools: ["inspect_catalog"], packageId: "pkg-alice", packageScope: "user", packageOwner: ALICE },
+    { name: "plain-helper", prompt: "PLAIN", tools: ["plain_tool"] },
+];
+
+test("required tool binds the unique caller-visible owning agent", async () => {
+    const result = await resolveAgentDefinitionForRequiredToolForCaller({
+        requiredTool: "inspect_catalog",
+        userAgents: capabilityAgents,
+        getCallerOwnerKey: async () => agentOwnerKey(BOB),
+    });
+    assert.equal(result.status, "resolved");
+    assert.equal(result.agent.name, "analyst");
+    assert.equal(result.agent.packageId, "pkg-shared");
+});
+
+test("required tool honors private visibility and owner shadowing", async () => {
+    const result = await resolveAgentDefinitionForRequiredToolForCaller({
+        requiredTool: "inspect_catalog",
+        userAgents: capabilityAgents,
+        getCallerOwnerKey: async () => agentOwnerKey(ALICE),
+    });
+    assert.equal(result.status, "resolved");
+    assert.equal(result.agent.name, "analyst");
+    assert.equal(result.agent.packageId, "pkg-alice");
+});
+
+test("required tool rejects missing and ambiguous visible owners", async () => {
+    assert.deepEqual(
+        await resolveAgentDefinitionForRequiredToolForCaller({
+            requiredTool: "missing_tool",
+            userAgents: capabilityAgents,
+            getCallerOwnerKey: async () => agentOwnerKey(BOB),
+        }),
+        { status: "not_found", candidates: [] },
+    );
+    assert.deepEqual(
+        await resolveAgentDefinitionForRequiredToolForCaller({
+            requiredTool: "plain_tool",
+            userAgents: [
+                ...capabilityAgents,
+                { name: "second-helper", prompt: "SECOND", tools: ["plain_tool"] },
+            ],
+            getCallerOwnerKey: async () => agentOwnerKey(BOB),
+        }),
+        { status: "ambiguous", candidates: ["plain-helper", "second-helper"] },
+    );
 });

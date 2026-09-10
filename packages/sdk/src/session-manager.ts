@@ -130,6 +130,24 @@ export interface AgentPromptEntry extends AgentCopyEntry {
     copies?: AgentCopyEntry[];
 }
 
+export class PackageToolBindingError extends Error {
+    readonly code = "PACKAGE_TOOL_REQUIRES_BOUND_AGENT";
+
+    constructor(readonly toolName: string) {
+        super(`Package tool "${toolName}" requires its owning named-agent definition. Use spawn_agent with required_tool or agent_name.`);
+        this.name = "PackageToolBindingError";
+    }
+}
+
+export class BoundAgentPackageUnavailableError extends Error {
+    readonly code = "BOUND_AGENT_PACKAGE_UNAVAILABLE";
+
+    constructor(readonly packageId: string) {
+        super(`The bound agent package "${packageId}" is no longer available to this session.`);
+        this.name = "BoundAgentPackageUnavailableError";
+    }
+}
+
 /** Key under which a package copy's per-agent config (MCP) is registered. */
 export function packageAgentKey(packageId: string, agentName: string): string {
     return `pkg\u0001${packageId}\u0001${agentName}`;
@@ -178,6 +196,22 @@ export function pickAgentCopyForOwner(
     return copies.find((copy) => copy.packageScope == null)
         ?? copies.find((copy) => copy.packageScope === "shared")
         ?? undefined;
+}
+
+/** Resolve an already-authorized exact package copy while rechecking owner visibility. */
+export function pickAgentCopyByPackageIdForOwner(
+    entry: AgentPromptEntry | undefined,
+    packageId: string,
+    ownerKey: string | null,
+): AgentCopyEntry | undefined {
+    if (!entry || !packageId) return undefined;
+    const copies = entry.copies?.length ? entry.copies : [entry];
+    const copy = copies.find((candidate) => candidate.packageId === packageId);
+    if (!copy) return undefined;
+    if (copy.packageScope !== "user") return copy;
+    return agentOwnerKey(copy.packageOwner) === ownerKey && ownerKey !== null
+        ? copy
+        : undefined;
 }
 
 /** Worker-level defaults — applied to every session. */
@@ -436,6 +470,8 @@ export class SessionManager {
     private toolRegistry = new Map<string, Tool<any>>();
     /** Per-package tool maps, so a session prefers ITS package's handler on a name collision. */
     private packageToolRegistry: Map<string, Map<string, Tool<any>>> | null = null;
+    /** Package-owned names cannot be attached without the matching agent package binding. */
+    private packageToolNames = new Set<string>();
     /** Names registered by deployment code — a package tool must never shadow these. */
     private staticToolNames: Set<string> | null = null;
     /** Worker-level defaults for building blocks. */
@@ -760,6 +796,9 @@ export class SessionManager {
         this.toolRegistry = registry;
         this.packageToolRegistry = opts?.byPackage ?? null;
         this.staticToolNames = opts?.staticNames ?? null;
+        this.packageToolNames = new Set(
+            [...(this.packageToolRegistry?.values() ?? [])].flatMap((tools) => [...tools.keys()]),
+        );
     }
 
     /** Set the cluster facts store for always-on facts tools. */
@@ -1363,7 +1402,16 @@ export class SessionManager {
         const sessionOwnerKey = effectiveSerializableConfig.boundAgentName
             ? await this._sessionAgentOwnerKey(sessionId)
             : null;
-        const boundAgentCopy = pickAgentCopyForOwner(boundAgentEntry, sessionOwnerKey);
+        const boundAgentCopy = effectiveSerializableConfig.boundAgentPackageId
+            ? pickAgentCopyByPackageIdForOwner(
+                boundAgentEntry,
+                effectiveSerializableConfig.boundAgentPackageId,
+                sessionOwnerKey,
+            )
+            : pickAgentCopyForOwner(boundAgentEntry, sessionOwnerKey);
+        if (effectiveSerializableConfig.boundAgentPackageId && !boundAgentCopy) {
+            throw new BoundAgentPackageUnavailableError(effectiveSerializableConfig.boundAgentPackageId);
+        }
         // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
         const resolvedTools = this._resolveTools(storedConfig, effectiveSerializableConfig, boundAgentCopy?.packageId);
@@ -2393,15 +2441,34 @@ export class SessionManager {
             : undefined;
         if (serializableConfig.toolNames?.length) {
             for (const name of serializableConfig.toolNames) {
-                const tool = (this.staticToolNames?.has(name) ? this.toolRegistry.get(name) : undefined)
-                    ?? packageTools?.get(name)
-                    ?? this.toolRegistry.get(name);
+                const staticTool = this.staticToolNames?.has(name)
+                    ? this.toolRegistry.get(name)
+                    : undefined;
+                const packageTool = packageTools?.get(name);
+                if (!staticTool && !packageTool && this.packageToolNames.has(name)) {
+                    if (serializableConfig.detachedPackageToolPolicy === "drop") continue;
+                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                        throw new PackageToolBindingError(name);
+                    }
+                }
+                const tool = staticTool ?? packageTool ?? this.toolRegistry.get(name);
                 if (tool) registryTools.push(tool);
             }
         }
 
+        const storedTools = (storedConfig?.tools ?? []).filter((tool) => {
+            const name = String((tool as any)?.name || "");
+            if (!name || this.staticToolNames?.has(name) || !this.packageToolNames.has(name)) return true;
+            if (packageTools?.get(name) === tool) return true;
+            if (serializableConfig.detachedPackageToolPolicy === "drop") return false;
+            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                throw new PackageToolBindingError(name);
+            }
+            return true;
+        });
+
         const combined = [
-            ...(storedConfig?.tools ?? []),
+            ...storedTools,
             ...registryTools,
         ];
 

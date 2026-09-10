@@ -639,18 +639,8 @@ export function* handleSubAgentAction(
             let agentSplash: string | undefined;
             let bootstrapRequiredTool: string | undefined;
             let boundAgentName: string | undefined;
-            let boundAgentPackageId: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
-            let resolvedAgentName = result.agentName;
-            const requiredTool = typeof result.requiredTool === "string"
-                ? result.requiredTool.trim()
-                : "";
-            if (result.requiredTool !== undefined && (!requiredTool || requiredTool.length > 128)) {
-                queueFollowup(runtime,
-                    `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`);
-                return true;
-            }
-            let selectedByRequiredTool = false;
+            const resolvedAgentName = result.agentName;
 
             const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
                 agentTask = useDefinitionDefaults
@@ -666,7 +656,6 @@ export function* handleSubAgentAction(
                 agentSplash = agentDef.splash;
                 bootstrapRequiredTool = agentDef.initialRequiredTool;
                 boundAgentName = agentDef.name;
-                boundAgentPackageId = agentDef.packageId;
                 promptLayeringKind = agentDef.promptLayerKind
                     ?? (agentDef.system
                         ? ((agentDef.namespace || "pilotswarm") === "pilotswarm"
@@ -675,32 +664,13 @@ export function* handleSubAgentAction(
                         : "app-agent");
             };
 
-            let agentDef: any = null;
             if (resolvedAgentName) {
                 ctx.traceInfo(`[orch] resolving agent config for: ${resolvedAgentName}`);
-                agentDef = yield runtime.manager.resolveAgentConfig(resolvedAgentName, runtime.input.sessionId);
+                const agentDef = yield runtime.manager.resolveAgentConfig(resolvedAgentName);
                 if (!agentDef) {
                     queueFollowup(runtime, `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`);
                     return true;
                 }
-            } else if (requiredTool) {
-                ctx.traceInfo(`[orch] resolving agent config for required tool: ${requiredTool}`);
-                const resolution = yield runtime.manager.resolveAgentForRequiredTool(requiredTool, runtime.input.sessionId);
-                if (!resolution || resolution.status === "not_found") {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — no caller-visible creatable agent declares required tool "${requiredTool}".]`);
-                    return true;
-                }
-                if (resolution.status === "ambiguous") {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — required tool "${requiredTool}" is declared by multiple visible agents: ${resolution.candidates.join(", ")}. Retry with agent_name to disambiguate.]`);
-                    return true;
-                }
-                agentDef = resolution.agent;
-                resolvedAgentName = agentDef.name;
-                selectedByRequiredTool = true;
-            }
-            if (agentDef) {
                 if (agentDef.system && agentDef.creatable === false) {
                     queueFollowup(runtime,
                         `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
@@ -708,23 +678,7 @@ export function* handleSubAgentAction(
                     );
                     return true;
                 }
-                if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`);
-                    return true;
-                }
-                if (result.toolNames?.length) {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`);
-                    return true;
-                }
-                if (result.systemMessage) {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`);
-                    return true;
-                }
-                applyAgentDef(agentDef, !selectedByRequiredTool && resolvedAgentName !== result.agentName);
-                if (requiredTool) bootstrapRequiredTool = requiredTool;
+                applyAgentDef(agentDef, resolvedAgentName !== result.agentName);
             }
 
             // NOTE: a system parent does NOT make its children system.
@@ -757,11 +711,7 @@ export function* handleSubAgentAction(
 
             const {
                 boundAgentName: _parentBoundAgentName,
-                boundAgentPackageId: _parentBoundAgentPackageId,
                 promptLayering: _parentPromptLayering,
-                agentIdentity: _parentAgentIdentity,
-                isCrawler: _parentIsCrawler,
-                isHarvester: _parentIsHarvester,
                 ...parentConfig
             } = state.config;
             const childConfig: SerializableSessionConfig = {
@@ -771,10 +721,6 @@ export function* handleSubAgentAction(
                 ...(result.contextTier !== undefined ? { contextTier: result.contextTier } : {}),
                 ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                 ...(boundAgentName ? { boundAgentName } : {}),
-                ...(boundAgentPackageId ? { boundAgentPackageId } : {}),
-                ...(!boundAgentName ? {
-                    detachedPackageToolPolicy: result.toolNames?.length ? "reject" : "drop",
-                } : {}),
                 ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),

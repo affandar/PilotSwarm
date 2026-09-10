@@ -18,7 +18,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.73";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -95,7 +95,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
     const { state, options, input } = runtime;
     if (state.iteration !== 0 || options.parentSessionId || !input.agentId || options.isSystem) return;
 
-    const agentDef: any = yield runtime.manager.resolveAgentConfig(input.agentId, input.sessionId);
+    const agentDef: any = yield runtime.manager.resolveAgentConfig(input.agentId);
     if (agentDef?.system && agentDef?.creatable === false) {
         const message =
             `Agent "${input.agentId}" is a worker-managed system agent and cannot be started manually. ` +
@@ -107,8 +107,6 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         return;
     }
     if (agentDef) {
-        state.config.boundAgentName = agentDef.name;
-        state.config.boundAgentPackageId = agentDef.packageId;
         const mergedToolNames = Array.from(new Set([
             ...(agentDef.tools ?? []),
             ...(state.config.toolNames ?? []),
