@@ -60,6 +60,8 @@ Build the runner image from the repository root:
 
 ```powershell
 docker build -f packages\job-generator-provider\Dockerfile `
-  --build-arg NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/ `
   -t pilotswarm-job-generator-provider:local .
 ```
+
+The build defaults to the public npm registry. Environments that require a
+mirror can pass `--build-arg NPM_REGISTRY=<registry-url>`.
