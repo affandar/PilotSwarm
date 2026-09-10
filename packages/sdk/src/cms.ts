@@ -11,6 +11,7 @@
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
+import { FeatureStore } from "./feature-store.js";
 import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -954,6 +955,7 @@ export interface SessionCatalog {
      * See provider-store.ts.
      */
     readonly providers?: ProviderStore;
+    readonly features?: FeatureStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
@@ -1557,11 +1559,13 @@ export class PgSessionCatalog implements SessionCatalog {
     private initialized = false;
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
+    readonly features: FeatureStore;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
+        this.features = new FeatureStore(pool, schema);
     }
 
     /**
@@ -1597,6 +1601,10 @@ export class PgSessionCatalog implements SessionCatalog {
             max: poolMax,
         });
 
+        // Bound actual connection establishment/queueing as well as feature
+        // query deadlines. Abandoning pool.connect() alone leaves a pending
+        // physical connection that can prevent pool.end() during shutdown.
+        poolConfig.connectionTimeoutMillis = 10_000;
         const pool = new pg.Pool(poolConfig);
 
         // Handle idle client errors (e.g. EADDRNOTAVAIL when the network

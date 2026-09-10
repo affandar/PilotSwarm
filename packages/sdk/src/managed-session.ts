@@ -1,3 +1,4 @@
+import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -10,6 +11,7 @@ import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
+import { NativeTaskObserver } from "./native-task-observer.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -664,6 +666,15 @@ export class ManagedSession {
     }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
+    private nativeFeatureRevoked = false;
+    canAdmitNativeTask(): boolean {
+        return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
+            && (this.config.nativeFeatureAllowed?.() ?? false);
+    }
+    /** A cached OFF is sticky for this turn, even if the next poll is ON. */
+    refreshNativeFeaturePolicy(): void {
+        if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
+    }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
@@ -1226,9 +1237,26 @@ export class ManagedSession {
      * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        let result: TurnResult | undefined;
+        let turnError: unknown;
+        let failed = false;
         try {
-            const result = await this._runTurnInner(prompt, opts);
+            try {
+                // Also retire native tasks restored from an interrupted worker.
+                if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession);
+                result = await this._runTurnInner(prompt, opts);
+            } catch (err) {
+                failed = true;
+                turnError = err;
+            }
+            // Cleanup failures must escape stop/error classification: the
+            // activity cannot commit a snapshot with native work still live.
+            if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession, {
+                rejectRunning: result?.type === "completed" && !this.stopRequest,
+            });
+            // A stop can arrive DURING cleanup. Classify only after it settles.
             if (this.stopRequest) {
                 return {
                     type: "stopped",
@@ -1236,12 +1264,8 @@ export class ManagedSession {
                     ...((result as any)?.events ? { events: (result as any).events } : {}),
                 };
             }
-            return result;
-        } catch (err) {
-            if (this.stopRequest) {
-                return { type: "stopped", reason: this.stopRequest.reason };
-            }
-            throw err;
+            if (failed) throw turnError;
+            return result!;
         } finally {
             this.activeTurn = null;
             this.stopRequest = null;
@@ -2634,7 +2658,8 @@ export class ManagedSession {
         // registerTools from the public types (it was always @internal) but
         // ships it unchanged in dist/session.js — cast until a public
         // handler-refresh API exists.
-        (this.copilotSession as any).registerTools(allTools);
+        (this.copilotSession as any).registerTools(this.config.nativeSubagents === "sync"
+            ? guardNativeExternalTools(allTools, this.copilotSession.sessionId) : allTools);
 
         // Collect the final assistant content and all events via on()
         let finalContent: string | undefined;
@@ -2664,6 +2689,15 @@ export class ManagedSession {
                 try {
                     opts.onEvent!({ eventType: "assistant.live_tick", data: payload });
                 } catch {}
+            })
+            : null;
+        const nativeTasks = this.config.nativeSubagents === "sync"
+            ? new NativeTaskObserver(this.copilotSession, {
+                turnIndex: opts?.turnIndex,
+                emit: (event) => {
+                    if (event.eventType !== "session.native_tasks_tick") collectedEvents.push(event);
+                    try { opts?.onEvent?.(event); } catch {}
+                },
             })
             : null;
         // Note: we used to emit a synthetic `assistant.streaming_progress`
@@ -2799,6 +2833,25 @@ export class ManagedSession {
                         }
                     }
 
+                    nativeTasks?.observe({ ...event, data: eventData });
+                    // This empty ephemeral event only invalidates the CLI task
+                    // registry. It is neither activity nor durable history.
+                    if (eventType === "session.background_tasks_changed") return;
+                    if (isNativeChildEvent(event)) {
+                        // Child events share the parent subscription. Keep usage
+                        // in the existing accounting stream, but namespace child
+                        // transcript/tools so they cannot settle parent state or
+                        // satisfy a required parent tool invocation.
+                        if (/delta|streaming/.test(eventType)) return;
+                        const nativeEvent: CapturedEvent = {
+                            eventType: eventType === "assistant.usage" || eventType.startsWith("subagent.")
+                                ? eventType : `native.${eventType}`,
+                            data: { ...eventData, nativeAgentId: event.agentId ?? eventData.nativeAgentId ?? eventData.parentToolCallId },
+                        };
+                        collectedEvents.push(nativeEvent);
+                        try { opts?.onEvent?.(nativeEvent); } catch {}
+                        return;
+                    }
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
                         deferredSessionError = captured;
@@ -2918,6 +2971,7 @@ export class ManagedSession {
 
             unsubscribers.push(
                 this.copilotSession.on("assistant.reasoning", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
                     currentReasoning = String(extractReasoningText(event?.data ?? event) || "").trim();
                     if (currentReasoning) {
                         lastPublishedReasoning = currentReasoning;
@@ -2929,6 +2983,7 @@ export class ManagedSession {
             for (const eventType of ["assistant.reasoning_delta", "reasoning_delta"] as const) {
                 unsubscribers.push(
                     (this.copilotSession as any).on(eventType, (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         currentReasoning = mergeReasoningText(
                             currentReasoning,
                             extractReasoningText(event?.data ?? event),
@@ -2942,6 +2997,7 @@ export class ManagedSession {
             if (opts?.onDelta) {
                 unsubscribers.push(
                     this.copilotSession.on("assistant.message_delta", (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         if (opts.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) return;
                         if (event.data?.deltaContent) {
                             opts.onDelta!(event.data.deltaContent);
@@ -2954,6 +3010,7 @@ export class ManagedSession {
             if (opts?.onToolStart) {
                 unsubscribers.push(
                     this.copilotSession.on("tool.execution_start", (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         opts.onToolStart!(event.data?.toolName ?? "unknown", event.data?.toolArgs);
                     }),
                 );
@@ -2961,7 +3018,8 @@ export class ManagedSession {
 
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
-                this.copilotSession.on("session.idle", () => {
+                this.copilotSession.on("session.idle", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
@@ -3018,7 +3076,8 @@ export class ManagedSession {
         // the model's response to a mid-turn correction without tearing down the
         // event subscriptions set up above.
         const waitForNextIdle = (): Promise<void> => new Promise<void>((resolve) => {
-            const unsub = this.copilotSession.on("session.idle", () => {
+            const unsub = this.copilotSession.on("session.idle", (event: any) => {
+                if (isNativeChildEvent(event)) return;
                 flushStreamingProgress(true);
                 publishReasoningSnapshot("session.idle", true);
                 liveTurn?.finishTurn();
@@ -3199,6 +3258,7 @@ export class ManagedSession {
             // live row anyway so reconnecting viewers cannot see stale text.
             liveTurn?.finishTurn();
             liveTurn?.dispose();
+            nativeTasks?.finish(this.stopRequest ? "cancelled" : "interrupted");
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
         }
@@ -3292,6 +3352,8 @@ export class ManagedSession {
      * Update configuration for the next turn.
      */
     updateConfig(config: Partial<ManagedSessionConfig>): void {
+        if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
+        if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;
         if (config.model !== undefined) this.config.model = config.model;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
@@ -3319,6 +3381,10 @@ export class ManagedSession {
         const nextProviderFingerprint = config.providerFingerprint !== undefined
             ? config.providerFingerprint ?? null
             : currentProviderFingerprint;
+        if (config.nativeSubagents !== undefined
+            && config.nativeSubagents !== (this.config.nativeSubagents ?? "off")) return true;
+        if (config.featureToolFingerprint !== undefined
+            && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(
             (currentModel || nextModel)
             && (currentModel !== nextModel

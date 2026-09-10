@@ -1,3 +1,8 @@
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
+import type { FeatureFlagCache } from "./feature-flag-cache.js";
+import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
+import { FeatureFlagError } from "./feature-flags.js";
+import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
@@ -179,6 +184,7 @@ export function pickAgentCopyForOwner(
 export interface WorkerDefaults {
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
     appDefaultPrompt?: string;
@@ -406,6 +412,8 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+    private featureFlags: FeatureFlagCache | null = null;
+    private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
     get activeSessionCount(): number {
@@ -620,7 +628,6 @@ export class SessionManager {
      * cache would leak one identity's catalog onto another's sessions.
      */
     private modelCatalogCaches = new Map<string, { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> }>();
-
     /**
      * Resolve whether a session's model can be shown images, plus the
      * provider's vision limits. `modelRef` is the session-config value
@@ -768,6 +775,15 @@ export class SessionManager {
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
     setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
+    }
+
+    setFeatureFlagCache(cache: FeatureFlagCache | null): void {
+        this.unsubscribeFeatureFlags?.();
+        this.featureFlags = cache;
+        this.unsubscribeFeatureFlags = cache?.onChange(() => {
+            for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
+        }) ?? null;
+        for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
     }
 
     /**
@@ -1677,16 +1693,36 @@ export class SessionManager {
         // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
         // in managed-session.ts runTurn — hard exclusion beats instructions.
         const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
+        const featureTools = this.sessionCatalog?.features
+            && ["resourcemgr", "pilotswarm", "agent-manager"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            && (await this._resolveFeatureViewer(sessionId)).isAdmin
+            ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
+        // Handler refresh alone cannot change the CLI's tool declarations.
+        // Role transitions must recreate the warm SDK handle at the next turn.
+        config.featureToolFingerprint = createHash("sha256")
+            .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
+            .digest("hex");
+        const nativeOwner = catalogRow?.owner ?? null;
+        // An unreadable owner must not bypass a user-level OFF by resolving
+        // cluster policy. Ownerless resolution is only for standalone managers.
+        const nativeOwnerKnown = !this.sessionCatalog || Boolean(nativeOwner?.provider && nativeOwner?.subject);
+        config.nativeFeatureAllowed = () => nativeOwnerKnown
+            && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
+        const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
+            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
+            && config.promptLayering?.kind !== "pilotswarm-system-agent";
+        config.nativeSubagents = nativeEnabled ? "sync" : "off";
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
-        ].map((t: any) => t.name));
+        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -1696,6 +1732,7 @@ export class SessionManager {
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         config.tools = persistentSessionTools;
 
@@ -1738,7 +1775,7 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(allTools),
+            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId) : allTools),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //
@@ -1771,7 +1808,8 @@ export class SessionManager {
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
-            hooks: config.hooks,
+            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
+                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -1784,17 +1822,20 @@ export class SessionManager {
             // Suppress sub-agent streaming events — we never want the parent
             // session's event log polluted with grandchild deltas.
             includeSubAgentStreamingEvents: false,
-            // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
-            // its own durable sub-agent mechanism via spawn_agent / check_agents.
-            // The native "task" tool spawns in-process sub-agents that bypass the
-            // durable orchestration layer, causing the LLM to use the wrong mechanism.
-            excludedTools: ["task"],
+            // Native workers are explicitly scoped: built-ins inherit external
+            // tools, and loaded PilotSwarm agents expect durable child contracts.
+            excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
+            ...(nativeEnabled ? {
+                customAgents: nativeSubagentDefinitions(sdkModelName),
+                customAgentsLocalOnly: true,
+                excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
+            } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
-            ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
@@ -2318,6 +2359,8 @@ export class SessionManager {
 
     /** Shutdown: destroy all sessions, stop CopilotClient. */
     async shutdown(): Promise<void> {
+        this.unsubscribeFeatureFlags?.();
+        this.unsubscribeFeatureFlags = null;
         for (const [_, session] of this.sessions) {
             try { await session.destroy(); } catch {}
         }
@@ -2500,7 +2543,7 @@ export class SessionManager {
 
     private _buildLastInstructionsSection(
         sessionId: string,
-        initialConfig: SerializableSessionConfig,
+        initialConfig: ManagedSessionConfig,
     ): SectionOverride {
         return {
             action: async (currentContent: string) => {
@@ -2536,6 +2579,10 @@ export class SessionManager {
                     runtimeContext,
                     ownSkillsIndex,
                     latest.systemContextInPrompt ? undefined : latest.turnSystemPrompt,
+                    // The SDK ignores sibling `content` when `action` is a
+                    // transform callback. Include worker guidance in the actual
+                    // rendered section, using the current session policy.
+                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance() : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);
@@ -2691,6 +2738,20 @@ export class SessionManager {
         }
     }
 
+    private async _resolveFeatureViewer(sessionId: string): Promise<FeatureViewer> {
+        // Never use the inspect-viewer TTL for feature mutations: demotion must
+        // apply on the next invocation, including an already-hydrated session.
+        const row = await this.sessionCatalog?.getSession(sessionId);
+        // CMS deliberately leaves worker-provisioned system sessions ownerless.
+        // Their persisted service classification supplies the same identity used
+        // by credential and inspect resolution; an agent name grants nothing.
+        const principal = row?.owner ?? (row?.isSystem === true ? SYSTEM_USER_PRINCIPAL : null);
+        if (!principal?.provider || !principal.subject) throw new FeatureFlagError("FEATURE_FORBIDDEN", "Feature tools require an authenticated session owner", 403);
+        const system = row?.isSystem === true && principal.provider === SYSTEM_USER_PRINCIPAL.provider
+            && principal.subject === SYSTEM_USER_PRINCIPAL.subject;
+        return { principal, isAdmin: system || await this._resolveOwnerIsAdmin(principal) };
+    }
+
     /**
      * A one-line-per-skill index of the private skills this session's owner
      * published, or undefined when there are none. Mirrors the wording of the
@@ -2747,7 +2808,7 @@ export class SessionManager {
 
     private _buildSystemMessage(
         sessionId: string,
-        config: SerializableSessionConfig,
+        config: ManagedSessionConfig,
         sessionOwnerKey: string | null = null,
     ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;

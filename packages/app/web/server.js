@@ -83,7 +83,7 @@ function sendSpaIndex(res) {
 }
 
 export async function startServer(opts = {}) {
-    const { port = Number(process.env.PORT) || 3001, workers } = opts;
+    const { port = Number(process.env.PORT) || 3001, host = process.env.PORTAL_HOST, workers } = opts;
     if (Number.isFinite(workers) && !process.env.WORKERS) {
         process.env.WORKERS = String(workers);
     }
@@ -376,7 +376,7 @@ export async function startServer(opts = {}) {
 
     await new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(port, () => {
+        server.listen(port, host, () => {
             server.off("error", reject);
             resolve();
         });

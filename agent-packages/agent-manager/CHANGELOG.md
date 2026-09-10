@@ -1,5 +1,11 @@
 # Changelog — agent-manager
 
+## 1.2.0
+
+### Added
+
+- Feature flag tools for administrators to inspect and change cluster and user settings, with current authorization checked for each call.
+
 ## 1.1.1
 
 ### Changed

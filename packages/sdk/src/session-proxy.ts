@@ -54,6 +54,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
 import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
+import type { NativeTasksPayload } from "./native-task-observer.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -3136,6 +3137,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             };
             const EPHEMERAL_TYPES = new Set([
                 "assistant.live_tick",
+                "session.native_tasks_tick",
+                "session.background_tasks_changed",
+                "native.session.background_tasks_changed",
                 "assistant.message_delta",
                 "assistant.streaming_delta",
                 "assistant.reasoning_delta",
@@ -3176,10 +3180,23 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     ),
                 )
                 : null;
+            // Native task progress is independent of streaming assistant text.
+            // This queue is intentionally never drained on the model path: a
+            // stalled live-plane write must not hold the worker turn open.
+            const nativeTasksPublisher = typeof catalog?.publishLive === "function"
+                ? new LatestValuePublisher<NativeTasksPayload>(
+                    payload => catalog.publishLive!(input.sessionId, "native-tasks", { snapshot: { ...payload } }, workerNodeId || ""),
+                    error => activityCtx.traceInfo(`[runTurn.nativeTasks] publish failed for ${input.sessionId}: ${(error as any)?.message ?? error}`),
+                )
+                : null;
             const onEvent = catalog
                 ? (event: { eventType: string; data: unknown }) => {
                     if (event.eventType === "assistant.live_tick") {
                         if (liveTurnPublisher) liveTurnPublisher.enqueue(event.data as LiveTurnPayload);
+                        return;
+                    }
+                    if (event.eventType === "session.native_tasks_tick") {
+                        nativeTasksPublisher?.enqueue(event.data as NativeTasksPayload);
                         return;
                     }
                     if (EPHEMERAL_TYPES.has(event.eventType)) return;
@@ -3247,7 +3264,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         () => catalog.recordEvents(input.sessionId, [persistedEvent], workerNodeId),
                         (msg) => activityCtx.traceInfo(msg),
                     );
-                    trackEventWrite(writePromise);
+                    // Task summaries are a redundant UI projection. The
+                    // original tool/lifecycle events still use the barrier;
+                    // a stuck projection write must not delay turn commit.
+                    if (event.eventType !== "native.task_updated") trackEventWrite(writePromise);
                 }
                 : undefined;
 

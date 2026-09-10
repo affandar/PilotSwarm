@@ -8,6 +8,8 @@
  */
 
 import type { MigrationEntry } from "./pg-migrator.js";
+import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
+import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -395,6 +397,8 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "preserve_moa_dashboards",
             sql: migration_0076_preserve_moa_dashboards(schema),
         },
+        { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
+        { version: "0078", name: "native_tasks_default_policy", sql: nativeTasksDefaultPolicyMigration(schema) },
     ];
 }
 

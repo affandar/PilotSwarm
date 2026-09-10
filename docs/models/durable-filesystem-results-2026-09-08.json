@@ -1,0 +1,139 @@
+{
+  "date": "2026-09-08",
+  "method": "Real Terra/medium, production composed prompt and artifact tools, isolated SDK consumer with durable-child context; producer file removed before turn. No Duroxide scheduling in this layer.",
+  "versions": {
+    "before": "1.20.0",
+    "after": "1.21.0"
+  },
+  "runs": [
+    {
+      "stage": "before",
+      "relation": "parent",
+      "model": "gpt-5.6-terra",
+      "pass": false,
+      "failures": [
+        "Durable child did not materialize its source session's artifact bytes locally",
+        "No attributed native checksum execution",
+        "Durable child did not return the independently computed checksum",
+        "Native task did not complete successfully",
+        "Unexpected native shell command: shasum -a 256 /var/folders/t5/g455x6ns77d7cydlz_1qst240000gn/T/ps-durable-files-KEZHZ0/producer/payload.bin"
+      ],
+      "originalRemoved": true,
+      "transferredBytes": 0,
+      "nativeShellExecutions": 0,
+      "artifactReads": []
+    },
+    {
+      "stage": "after1",
+      "relation": "parent",
+      "model": "gpt-5.6-terra",
+      "pass": true,
+      "failures": [],
+      "originalRemoved": true,
+      "transferredBytes": 4096,
+      "nativeShellExecutions": 1,
+      "artifactReads": [
+        {
+          "from": "afef087b-079d-4f6d-a7b8-451d03e7e7cb",
+          "materialized": true,
+          "success": true
+        }
+      ]
+    },
+    {
+      "stage": "after2",
+      "relation": "parent",
+      "model": "gpt-5.6-terra",
+      "pass": true,
+      "failures": [],
+      "originalRemoved": true,
+      "transferredBytes": 4096,
+      "nativeShellExecutions": 1,
+      "artifactReads": [
+        {
+          "from": "0eee1cd7-009f-47c6-b959-7d16ff46b827",
+          "materialized": true,
+          "success": true
+        }
+      ]
+    },
+    {
+      "stage": "before",
+      "relation": "sibling",
+      "model": "gpt-5.6-terra",
+      "pass": false,
+      "failures": [
+        "Durable child did not materialize its source session's artifact bytes locally",
+        "No attributed native checksum execution",
+        "Durable child did not return the independently computed checksum",
+        "Native task did not complete successfully",
+        "Unexpected native shell command: shasum -a 256 /var/folders/t5/g455x6ns77d7cydlz_1qst240000gn/T/ps-durable-files-UxwDFS/producer/payload.bin"
+      ],
+      "originalRemoved": true,
+      "transferredBytes": 0,
+      "nativeShellExecutions": 0,
+      "artifactReads": []
+    },
+    {
+      "stage": "after1",
+      "relation": "sibling",
+      "model": "gpt-5.6-terra",
+      "pass": true,
+      "failures": [],
+      "originalRemoved": true,
+      "transferredBytes": 4096,
+      "nativeShellExecutions": 1,
+      "artifactReads": [
+        {
+          "from": "77e6146c-5a79-451d-bd36-d76e038d8699",
+          "materialized": true,
+          "success": true
+        }
+      ]
+    },
+    {
+      "stage": "after2",
+      "relation": "sibling",
+      "model": "gpt-5.6-terra",
+      "pass": true,
+      "failures": [],
+      "originalRemoved": true,
+      "transferredBytes": 4096,
+      "nativeShellExecutions": 1,
+      "artifactReads": [
+        {
+          "from": "9e6c9d30-9857-4b43-8ee8-d90281d1cb20",
+          "materialized": true,
+          "success": true
+        }
+      ]
+    }
+  ],
+  "localOrchestration": {
+    "pass": true,
+    "sessionId": "25bc9f77-e785-43b5-b26b-270b015880a8",
+    "childId": "7f9404d6-ec2b-43dc-a2b6-90c0ada75b6f",
+    "nativeAgentId": "7e1cd8ea-d385-4c39-98d4-5d0529e61129",
+    "producerUnavailable": true,
+    "transferredBytes": 4096,
+    "hash": "90661b9f97dd5f776f2bc3525395c3a7e8f74a10f677940aef5624e52a2a4580",
+    "transferSeq": 11446,
+    "checksumSeq": 11510,
+    "childStatus": "completed",
+    "observedStatus": "completed",
+    "postResultObservation": {
+      "rootStatusOnRecheck": "idle",
+      "note": "After the successful child result and completed turn, subsequent root wakes produced empty-response retries before recovering to idle. File transfer and native execution passed; sustained root coordination health is not asserted. Similar behavior was recorded before this prompt change."
+    }
+  },
+  "nativeSharingRecheck": {
+    "sessionId": "6a4edae7-973c-49a5-a53b-0b68d5bfda47",
+    "pass": true,
+    "finalHash": "51cb8bceacc4ff13f8ecf6bbbc7e6a81b469332b992899c8c1394c4c4465b3ff",
+    "nativeIds": [
+      "8bf6c700-926f-4c98-9487-32dd9811d9e3",
+      "0d0c2c14-2f7a-40dc-9168-a475122621d7"
+    ],
+    "note": "Original verdict rejected a read_agent status lookup; the verifier now permits read-only status inspection. Disk receipts and probe integrity independently checked again. Original failure output is preserved; its cleanup cancelled the root after successful child execution."
+  }
+}

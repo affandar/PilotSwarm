@@ -29,6 +29,8 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { matchesSessionError } from "./session-warning.js";
+import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
 import {
     BUDGET_PERIODS,
@@ -1543,11 +1545,11 @@ export function canStopSessionTurn(session) {
 // raised them. They used to stamp session.updatedAt, which moves on EVERY
 // poll and status tick — so the card's clock jumped forward with each update
 // and read as flicker.
-function latestEventCreatedAtMs(events = [], eventTypes = []) {
+function latestEventCreatedAtMs(events = [], eventTypes = [], predicate = () => true) {
     const wanted = new Set(eventTypes);
     for (let index = (events || []).length - 1; index >= 0; index -= 1) {
         const event = events[index];
-        if (!event || !wanted.has(event.eventType)) continue;
+        if (!event || !wanted.has(event.eventType) || !predicate(event)) continue;
         const createdAt = event.createdAt;
         const ms = createdAt instanceof Date
             ? createdAt.getTime()
@@ -1561,7 +1563,7 @@ function buildPendingQuestionMessage(session, events = []) {
     const pendingQuestion = session?.pendingQuestion;
     if (!pendingQuestion?.question) return null;
 
-    const body = [String(pendingQuestion.question).trim()];
+    const body = [normalizeQuestionForDisplay(pendingQuestion.question).trim()];
     const choices = Array.isArray(pendingQuestion.choices)
         ? pendingQuestion.choices.filter((choice) => typeof choice === "string" && choice.trim())
         : [];
@@ -1569,7 +1571,7 @@ function buildPendingQuestionMessage(session, events = []) {
     if (choices.length > 0) {
         body.push("", "Choices:");
         for (const choice of choices) {
-            body.push(`- ${choice}`);
+            body.push(`- ${normalizeQuestionForDisplay(choice)}`);
         }
     }
 
@@ -1661,10 +1663,11 @@ function buildSessionErrorMessage(session, events = []) {
         role: "system",
         text: body,
         time: "",
-        // The error event when one was recorded, else the end of the turn
-        // that produced the error; never the session's rolling updatedAt.
-        createdAt: latestEventCreatedAtMs(events, ["session.error"])
-            ?? latestEventCreatedAtMs(events, ["session.turn_completed", "assistant.turn_end"]),
+        // Only an actual failure can anchor this card. A later successful
+        // turn must never move an earlier warning's timestamp forward.
+        createdAt: latestEventCreatedAtMs(events, ["session.error", "session.turn_completed"],
+            (event) => matchesSessionError(event.eventType === "session.error" ? event.data?.message
+                : event.data?.resultType === "error" ? event.data?.errorMessage : null, errorText)),
         cardTitle: isFailed ? "Error" : "Warning",
         cardTitleColor: isFailed ? "red" : "yellow",
         cardBorderColor: isFailed ? "red" : "yellow",
@@ -1912,8 +1915,24 @@ export function selectActiveChat(state) {
         messages.push(answeredQuestionMessage);
     }
     if (sessionErrorMessage) {
-        const index = messages.findIndex(message => sessionErrorMessage.createdAt != null && message.createdAt > sessionErrorMessage.createdAt);
-        messages.splice(index < 0 ? messages.length : index, 0, sessionErrorMessage);
+        // History owns the warning's position and identity. Status may add
+        // current retry/failure details, but must not append the same warning
+        // after the newer conversation on every poll.
+        const warningIndex = messages.findLastIndex((message) => message.kind === "session-warning"
+            && matchesSessionError(message.text, session.error));
+        if (warningIndex < 0) {
+            const index = messages.findIndex(message => sessionErrorMessage.createdAt != null && message.createdAt > sessionErrorMessage.createdAt);
+            messages.splice(index < 0 ? messages.length : index, 0, sessionErrorMessage);
+        } else if (warningIndex === messages.length - 1 || sessionErrorMessage.cardTitle === "Error") {
+            const warning = messages[warningIndex];
+            messages[warningIndex] = {
+                ...warning,
+                ...sessionErrorMessage,
+                id: warning.id,
+                createdAt: warning.createdAt,
+                time: warning.time,
+            };
+        }
     }
     return messages;
 }
@@ -2597,7 +2616,7 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
                 ...(askedAndAnswered.question === "a question" ? [] : buildMessageCardLines({
                     title: "Question",
                     timestamp: formatTimestamp(message?.createdAt || message?.time),
-                    body: askedAndAnswered.question,
+                    body: normalizeQuestionForDisplay(askedAndAnswered.question),
                     width: Math.max(20, maxWidth),
                     titleColor: USER_CHAT_COLOR,
                     borderColor: USER_CHAT_COLOR,
@@ -3069,7 +3088,20 @@ export function selectChatLines(state, maxWidth = 80, options = {}) {
     };
     const lines = [];
     for (const [index, message] of messages.entries()) {
-        if (message?.kind === "epoch-divider") {
+        if (message?.kind === "native-task-group") {
+            if (options.tableMode === "sentinel") {
+                lines.push({ kind: "nativeTasks", group: message });
+            } else {
+                const labels = { starting: "Starting", running: "Running", waiting: "Waiting", completed: "Done",
+                    failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" };
+                appendChatBlockLines(lines, buildChatMessageLines({ ...message, cardTitle: "Native tasks",
+                    cardTitleColor: "cyan", cardBorderColor: "cyan",
+                    text: message.tasks.map(task => `[${labels[task.status] || task.status}] ${task.title}`
+                        + (task.toolCalls ? ` · ${task.toolCalls} calls` : "")
+                        + (task.error || task.result || task.preview ? `\n  ${String(task.error || task.result || task.preview).replace(/\s+/g, " ").slice(0, 240)}` : "")).join("\n\n"),
+                }, maxWidth, buildOptions));
+            }
+        } else if (message?.kind === "epoch-divider") {
             lines.push(buildEpochDividerLine(message, maxWidth));
         } else if (message?.kind === "regen-refused") {
             lines.push(buildRegenRefusedLine(message, maxWidth));
@@ -4422,11 +4454,12 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = ["providers", "packages", "workers"].includes(admin.section) ? admin.section : "providers";
+    const section = ["providers", "packages", "workers", "features"].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
+        { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
         { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
         { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
         ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),

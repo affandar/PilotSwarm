@@ -1,0 +1,192 @@
+[
+  {
+    "id": "nested-original",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "spawn a few subagents that will run some native tasks to use web searches to find pg_durable references online.",
+    "expectedChildNative": true
+  },
+  {
+    "id": "short-local",
+    "split": "calibration",
+    "expected": [
+      "native",
+      "durable"
+    ],
+    "prompt": "Use a couple of agents to inspect the local session manager and native-task observer in this checkout. Each should return a brief explanation of its file; combine the two results in this reply. This should take a few minutes."
+  },
+  {
+    "id": "overnight",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Assign an agent to each of microsoft/duroxide, microsoft/pg_durable, and affandar/PilotSwarm to monitor CI overnight, investigate failures as they appear, and send me a consolidated report tomorrow at 9am America/Los_Angeles. The monitoring must keep going after this conversation turn ends."
+  },
+  {
+    "id": "wide-fanout",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Delegate independent dependency audits for 48 repositories across the fleet: acme/service-01 through acme/service-48, all available to the workers. Each audit may take hours and needs its own results and progress updates. Start with a wave of three agents and queue the remaining repositories for subsequent waves."
+  },
+  {
+    "id": "explicit-native",
+    "split": "calibration",
+    "expected": [
+      "native"
+    ],
+    "prompt": "Use native tasks on this worker to inspect two local modules independently and return concise findings now: packages/sdk/src/session-manager.ts and packages/sdk/src/native-task-observer.ts."
+  },
+  {
+    "id": "explicit-separate",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Create two separate PilotSwarm agent sessions for a quick documentation check of this repository: one checks README.md, the other CONTRIBUTING.md. Give each access to its source and ask for three clarity improvements. I want to be able to open and message each session independently even though the work is short."
+  },
+  {
+    "id": "followup-separate",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Earlier in this conversation I asked for agents to search pg_durable references. You ran three native tasks: docs-search, code-search, and ecosystem-search, and returned the links. Now spawn separate subagents for this."
+  },
+  {
+    "id": "long-local-boundary",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Delegate an exhaustive investigation of all orchestration and persistence code in this repository. It is a several-hour project; findings should survive worker restarts, and I may message the investigators while they work. Give them the repository revision and arrange source access on their workers."
+  },
+  {
+    "id": "shared-workspace-build",
+    "split": "holdout",
+    "expected": [
+      "native"
+    ],
+    "prompt": "Have an agent run the existing SDK build in this exact checkout and return its output in this reply. It must include my uncommitted edits and use the already-installed dependencies on this worker; expected duration is about a minute."
+  },
+  {
+    "id": "nested-scale",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Launch separate agent sessions to audit each of six services: acme/auth, acme/billing, acme/catalog, acme/orders, acme/search, and acme/notifications. Each repository is available for its worker to clone; audit its source and run its existing test command. Each service agent should use native tasks for its own local source reads and test commands, then report back. Keep the service agents available for follow-up.",
+    "expectedChildNative": true
+  },
+  {
+    "id": "generic-short-fanout",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Use subagents in parallel to compare these two small local files, README.md and package.json. Give one agent each file, ask for five bullets, and merge their answers now."
+  },
+  {
+    "id": "native-incompatible",
+    "split": "holdout",
+    "expected": [
+      "durable",
+      "clarify"
+    ],
+    "prompt": "Use native tasks to have independent agents watch CI for the next 24 hours, survive worker restarts, and distribute across workers. I care more about reliable monitoring than which mechanism does it."
+  },
+  {
+    "id": "tiny-direct",
+    "split": "holdout",
+    "expected": [
+      "direct"
+    ],
+    "prompt": "What version is listed in the local package.json? Read it and tell me."
+  },
+  {
+    "id": "moderate-judgment",
+    "split": "holdout",
+    "expected": [
+      "native",
+      "durable"
+    ],
+    "prompt": "Have three agents independently review the SDK API, session handling, and UI integration for correctness, then consolidate the findings. Choose a sensible execution arrangement for the scope."
+  },
+  {
+    "id": "named-deepwiki",
+    "split": "calibration",
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "deepwiki",
+    "prompt": "Ask our DeepWiki agent to explain the architecture of microsoft/duroxide from its indexed GitHub documentation."
+  },
+  {
+    "id": "named-crawler",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "generic-crawler",
+    "prompt": "I need an agent to scope a documentation source, design its fact and graph schema, pilot the crawl, ingest the full corpus, and keep it fresh. Use the existing role in our agent catalog that fits this work."
+  },
+  {
+    "id": "spin-off-short",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Spin off an agent to check whether our SDK exports are documented. It should only take a couple minutes."
+  },
+  {
+    "id": "spawn-short",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Spawn an agent to summarize the SDK README for me. Keep its report brief."
+  },
+  {
+    "id": "native-word-precedence",
+    "split": "holdout",
+    "expected": [
+      "native"
+    ],
+    "prompt": "Spawn two native tasks on this worker to inspect the local API transport and history projector, then summarize their results in this turn."
+  },
+  {
+    "id": "named-over-native-convenience",
+    "split": "holdout",
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "deepwiki",
+    "prompt": "Can you use a quick native task to ask DeepWiki about microsoft/duroxide's architecture? Use the configured specialist if that is how we access DeepWiki; I mainly want a brief answer from its index."
+  },
+  {
+    "id": "discover-specialist",
+    "split": "holdout",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "generic-crawler",
+    "prompt": "Find our existing specialist for scoping a documentation source, designing fact and graph schemas, crawling the corpus and keeping it fresh. Spin off that configured agent to conduct the initial source-scoping conversation."
+  },
+  {
+    "id": "discover-deepwiki",
+    "split": "holdout",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "deepwiki",
+    "prompt": "Use our configured repository-documentation specialist to answer questions about microsoft/duroxide through its hosted knowledge index. I do not know the registered agent name; discover the matching role and spawn it."
+  }
+]

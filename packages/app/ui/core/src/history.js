@@ -2,6 +2,8 @@ import { formatHumanDurationSeconds, formatTimestamp, shortModelName, shortSessi
 import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-actions.js";
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { matchesSessionError } from "./session-warning.js";
+import { appendNativeTaskEvent } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 
@@ -19,13 +21,20 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
     ...CHAT_CALL_EVENT_TYPES,
-    "session.error",
     "user.message",
     "assistant.message",
     // Needed to distinguish interim assistant output from the final answer
     // when an older transcript page is loaded.
     "session.turn_completed",
     "session.turn_stopped",
+    // Warnings belong at the error's position in the transcript, including
+    // after recovery and when paging backward through a noisy session.
+    "session.error",
+    "subagent.started",
+    "subagent.configured",
+    "subagent.completed",
+    "subagent.failed",
+    "native.task_updated",
     "system.message",
     // Session regeneration boundary — rendered as an inline epoch divider in
     // the transcript, so it must survive backward chat-history paging.
@@ -88,6 +97,63 @@ function buildRegenFailedItem(event) {
         time: formatTimestamp(event.createdAt),
         createdAt: event.createdAt instanceof Date ? event.createdAt.getTime() : new Date(event.createdAt).getTime(),
     };
+}
+
+function buildSessionWarningItem(event) {
+    const completed = event.eventType === "session.turn_completed" && event.data?.resultType === "error";
+    if (event.eventType !== "session.error" && !completed) return null;
+    const warning = buildSessionWarning(event);
+    if (!warning) return null;
+    return {
+        ...warning,
+        errorText: warning.text,
+        sourceEventType: event.eventType,
+        ...(completed ? { turnCompletedSeq: event.seq } : {}),
+        time: formatTimestamp(event.createdAt),
+    };
+}
+
+function appendSessionWarning(chat, event) {
+    const warning = buildSessionWarningItem(event);
+    if (!warning) return;
+    if (chat.some((item) => item.id === warning.id
+        || (item.turnCompletedSeq != null && item.turnCompletedSeq === event.seq))) return;
+    // Tool disclosures can arrive between the SDK error and the failed-turn
+    // summary. They do not start a different conversation/failure episode.
+    const previousIndex = chat.findLastIndex(item => item.kind !== "chat-call" && item.kind !== "native-task-group");
+    const previous = chat[previousIndex];
+    // A runtime error and its failed-turn summary can describe one failure.
+    // Retain the original anchor; subsequent failed turns remain distinct.
+    if (previous?.kind === "session-warning"
+        && previous.sourceEventType === "session.error"
+        && previous.turnCompletedSeq == null
+        && event.eventType === "session.turn_completed"
+        && matchesSessionError(previous.errorText, warning.errorText)) {
+        chat[previousIndex] = { ...previous, turnCompletedSeq: event.seq };
+        return;
+    }
+    chat.push(warning);
+}
+
+const parentChatCallTypes = new Set(CHAT_CALL_EVENT_TYPES);
+function appendParentChatCall(chat, event) {
+    if (!parentChatCallTypes.has(event?.eventType)) return;
+    const data = event?.data || {};
+    // Native tasks have their own abridged disclosure. Generic call cards
+    // would duplicate them and reveal the full native prompt/arguments.
+    const name = data.toolName || data.name;
+    const namespace = `${event.sessionId}:${data.durableSessionId || ""}`;
+    const keys = [data.toolCallId && `call:${data.toolCallId}`, data.requestId && `request:${data.requestId}`].filter(Boolean);
+    // An empty diagnostic completion has neither a call to update nor useful
+    // content. Keep it in Activity without evicting real conversation cards.
+    const hasContent = name || data.arguments != null || data.args != null || data.result != null || data.output != null
+        || data.error || data.partialOutput || data.progressMessage || data.childSessionId || data.agentId || data.task;
+    if (!keys.length && !hasContent) return;
+    const parentCall = !name && chat.some(item => item.kind === "chat-call" && item.namespace === namespace
+        && item.callKeys.some(key => keys.includes(key)));
+    const nativeCall = name === "task" || Boolean(!name && !parentCall && data.toolCallId && chat.some(item =>
+        item.kind === "native-task-group" && item.tasks.some(task => task.toolCallId === data.toolCallId)));
+    if (!nativeCall) appendChatCall(chat, event);
 }
 
 function clampHistoryItems(items, maxItems) {
@@ -881,7 +947,21 @@ function formatActivity(event) {
     const body = formatEventSnippet(event);
     let runs = null;
 
+    // Native child transcripts remain inspectable as events, but only their
+    // lifecycle belongs in the parent's activity feed.
+    if (event.eventType?.startsWith("native.") || event.eventType === "session.background_tasks_changed") return null;
     switch (event.eventType) {
+        case "subagent.started":
+        case "subagent.completed":
+        case "subagent.failed": {
+            const phase = event.eventType.slice("subagent.".length);
+            const name = event.data?.agentDisplayName || event.data?.agentName || "agent";
+            const duration = Number.isFinite(event.data?.durationMs)
+                ? ` (${formatHumanDurationSeconds(event.data.durationMs / 1000)})` : "";
+            runs = buildLabeledActivityRuns(time, "[native agent]", "cyan", `${name} ${phase}${duration}`, phase === "failed" ? "red" : "white");
+            break;
+        }
+        case "subagent.configured":
         case "assistant.usage":
         case "session.info":
         case "session.idle":
@@ -1226,11 +1306,9 @@ export function buildHistoryModel(events = [], options = {}) {
 
     for (const event of events) {
         storedEvents.push(event);
-        appendChatCall(chat, event);
-        if (event.eventType === "session.error") {
-            const warning = buildSessionWarning(event);
-            if (warning) chat.push(warning);
-        }
+        appendNativeTaskEvent(chat, event);
+        appendParentChatCall(chat, event);
+        appendSessionWarning(chat, event);
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
@@ -1309,6 +1387,7 @@ export function appendEventToHistory(history, event) {
         ? existingEvents
         : [...existingEvents, event].slice(-loadedEventLimit);
     const next = {
+        nativeTaskSnapshot: history?.nativeTaskSnapshot,
         closedLiveKeys: history?.closedLiveKeys || [],
         closedLiveStreams: history?.closedLiveStreams || [],
         chat: clampHistoryItems(history?.chat || [], loadedEventLimit),
@@ -1328,14 +1407,10 @@ export function appendEventToHistory(history, event) {
         stoppedMessageIds: Array.isArray(history?.stoppedMessageIds) ? history.stoppedMessageIds : [],
     };
 
-    if (event.eventType === "session.error") {
-        const warning = buildSessionWarning(event);
-        if (warning && !next.chat.some(item => item.id === warning.id)) {
-            next.chat = clampHistoryItems([...next.chat, warning], loadedEventLimit);
-        }
-    }
-
-    appendChatCall(next.chat, event);
+    appendNativeTaskEvent(next.chat, event);
+    appendParentChatCall(next.chat, event);
+    appendSessionWarning(next.chat, event);
+    next.chat = clampHistoryItems(next.chat, loadedEventLimit);
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

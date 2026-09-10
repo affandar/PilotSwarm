@@ -1,3 +1,5 @@
+import { matchesSessionError } from "./session-warning.js";
+
 // Copilot emits this diagnostic for an accepted turn without visible text.
 // Keep its durable event and Activity entry, but do not turn it into a chat
 // warning. Match only this message and the runtime's known retry wrapper.
@@ -27,9 +29,13 @@ export function shouldKeepSessionWarning(previousSession, nextSession) {
 
 const timeMs = value => value instanceof Date ? value.getTime()
     : typeof value === "number" ? value : Date.parse(value || "");
-const errorText = event => typeof event?.data === "string" ? event.data
+const isWarningEvent = event => event?.eventType === "session.error"
+    || event?.eventType === "session.turn_completed" && event.data?.resultType === "error";
+const errorText = event => event?.eventType === "session.turn_completed"
+    ? String(event.data?.resultType === "error" ? event.data.errorMessage || "" : "").trim()
+    : typeof event?.data === "string" ? event.data
     : String(event?.data?.message || event?.data?.error || event?.data?.text || "").trim();
-const sameError = (statusText, eventText) => Boolean(eventText) && statusText.includes(eventText);
+const sameError = (statusText, eventText) => matchesSessionError(eventText, statusText);
 
 export function buildSessionWarning(event) {
     const text = errorText(event);
@@ -62,7 +68,7 @@ export function retainSessionWarnings(previous, next, events = [], now = Date.no
         return { ...next, chatWarnings: [...warnings.slice(0, -1), { ...last, active: false }] };
     }
     const since = last?.createdAt || 0;
-    const event = events.findLast(e => e.eventType === "session.error"
+    const event = events.findLast(e => isWarningEvent(e)
         && timeMs(e.createdAt) > since && sameError(text, errorText(e)));
     // A retained error field can outlive a terminal/wait state. A later
     // running snapshot alone is not evidence of another failure episode.
@@ -92,7 +98,7 @@ export function withSessionWarnings(chat, session, events = []) {
         // Status often wins the race against its durable event. Match only
         // that boundary, never a later failure after a new user/agent message.
         const following = events.filter(e => Number(e.seq) > warning.afterSeq);
-        const boundary = following.find(e => ["session.error", "user.message", "assistant.message"].includes(e.eventType));
+        const boundary = following.find(e => isWarningEvent(e) || ["user.message", "assistant.message"].includes(e.eventType));
         // On initial load the catalog can arrive before any history at all.
         // Find its matching older event by the captured failure time, without
         // reusing an event from a previous error episode with identical text.
@@ -103,8 +109,9 @@ export function withSessionWarnings(chat, session, events = []) {
             && timeMs(m.createdAt) <= warning.createdAt
             && sameError(warning.text, m.text));
         const eventSeq = warning.eventSeq ?? recorded?.warningSeq
-            ?? (boundary?.eventType === "session.error" && sameError(warning.text, errorText(boundary)) ? Number(boundary.seq) : null);
-        const index = messages.findIndex(m => m.kind === "session-warning" && m.warningSeq === eventSeq);
+            ?? (isWarningEvent(boundary) && sameError(warning.text, errorText(boundary)) ? Number(boundary.seq) : null);
+        const index = messages.findIndex(m => m.kind === "session-warning"
+            && (m.warningSeq === eventSeq || eventSeq != null && m.turnCompletedSeq === eventSeq));
         const notice = {
             id: warning.id, kind: "session-warning", role: "system", text: warning.text,
             createdAt: warning.createdAt,

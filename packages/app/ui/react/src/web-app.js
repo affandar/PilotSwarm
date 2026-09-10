@@ -1,4 +1,6 @@
 import React from "react";
+import { FeatureFlagsPanel } from "./feature-flags-panel.js";
+import { NativeTaskCard } from "./native-task-card.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
 // and react-dom is a dependency wherever this file loads, so it is safe in the
@@ -838,7 +840,14 @@ function normalizeLines(lines) {
     };
 
     for (const line of lines || []) {
-        if (line?.kind === "assistantPreview") {
+        if (line?.kind === "chatCall" || line?.callPreview !== undefined) {
+            // A disclosure is one keyed record, even when its preview contains
+            // escaped newlines. Splitting it duplicates callKey and leaves
+            // orphaned React nodes behind when the session is replaced.
+            normalized.push(line);
+            continue;
+        }
+        if (line?.kind === "assistantPreview" || line?.kind === "nativeTasks") {
             // Preserve selector-cache identity so another stream's ticks don't
             // rerender every completed response or recreate its scroll observer.
             normalized.push(line);
@@ -1385,6 +1394,65 @@ function ChatCallLine({ line }) {
     open ? React.createElement("div", { className: "ps-system-notice-body" },
         line.time ? React.createElement("div", { className: "ps-chat-call-time" }, line.time) : null,
         React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
+}
+
+function ChatActivityRun({ calls }) {
+    const latest = calls[calls.length - 1] || {};
+    const active = latest.status === "Called" || latest.status === "Started";
+    const failed = calls.some((call) => call.status === "Failed");
+    const [open, setOpen] = React.useState(active);
+    const viewportRef = React.useRef(null);
+    const followRef = React.useRef(true);
+    const categories = new Set(calls.map((call) => call.category || "Tool"));
+    const countLabel = categories.size === 1 && categories.has("Tool")
+        ? `${calls.length} tool ${calls.length === 1 ? "call" : "calls"}`
+        : categories.size === 1 && categories.has("Agent")
+            ? `${calls.length} agent ${calls.length === 1 ? "activity" : "activities"}`
+            : `${calls.length} activities`;
+    const latestName = String(latest.text || latest.category || "activity").split(" — ")[0];
+    const status = active ? "Working" : failed ? "Failed" : "Done";
+    const updateKey = `${latest.callKey || ""}:${latest.status || ""}:${String(latest.body || "").length}`;
+
+    React.useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        if (open && viewport && followRef.current) viewport.scrollTop = viewport.scrollHeight;
+    }, [open, calls.length, updateKey]);
+
+    return React.createElement("details", {
+        className: "ps-native-tasks ps-activity-run",
+        open,
+        onToggle: (event) => setOpen(event.currentTarget.open),
+    },
+    React.createElement("summary", { className: "ps-native-tasks-header ps-activity-run-summary" },
+        React.createElement("span", { className: "ps-native-tasks-title" },
+            React.createElement("span", { className: "ps-native-task-branch", "aria-hidden": true }, "⌘"),
+            countLabel),
+        React.createElement("span", { className: "ps-activity-run-latest", title: latest.text || "" }, `latest: ${latestName}`),
+        React.createElement("span", { className: `ps-activity-run-status${failed ? " is-failed" : ""}` }, status),
+        React.createElement("span", { className: "ps-activity-run-chevron", "aria-hidden": true }, "›")),
+    React.createElement("div", {
+        ref: viewportRef,
+        className: "ps-activity-run-viewport",
+        role: "region",
+        "aria-label": `${countLabel} activity log`,
+        tabIndex: 0,
+        onScroll: (event) => {
+            event.stopPropagation();
+            followRef.current = getScrollDistanceToBottom(event.currentTarget) <= 24;
+        },
+        onWheel: (event) => {
+            event.stopPropagation();
+            if (event.deltaY < 0) followRef.current = false;
+        },
+        onTouchStart: (event) => {
+            event.stopPropagation();
+            followRef.current = false;
+        },
+        onTouchMove: (event) => event.stopPropagation(),
+        onTouchEnd: (event) => event.stopPropagation(),
+    }, calls.map((call) => React.createElement(ChatCallLine, { key: call.callKey, line: call }))),
+    React.createElement("div", { className: "ps-activity-run-footer" },
+        `Showing ${calls.length} ${calls.length === 1 ? "entry" : "entries"} · Scroll for earlier activity`));
 }
 
 /**
@@ -3286,10 +3354,22 @@ function parseStructuredChatBlocks(lines = []) {
     for (let index = 0; index < lines.length;) {
         const currentLine = lines[index];
 
-        if (currentLine?.kind === "chatCall" || currentLine?.callPreview !== undefined) {
-            blocks.push({ type: "chatCall", line: currentLine.callPreview !== undefined
-                ? { ...currentLine, text: currentLine.callPreview, category: "Agent" } : currentLine });
+        if (currentLine?.kind === "nativeTasks") {
+            blocks.push({ type: "nativeTasks", group: currentLine.group });
             index += 1;
+            continue;
+        }
+        if (currentLine?.kind === "chatCall" || currentLine?.callPreview !== undefined) {
+            const calls = [];
+            while (index < lines.length) {
+                const line = lines[index];
+                if (line?.kind !== "chatCall" && line?.callPreview === undefined) break;
+                calls.push(line.callPreview !== undefined
+                    ? { ...line, text: line.callPreview, category: "Agent" }
+                    : line);
+                index += 1;
+            }
+            blocks.push({ type: "chatCallGroup", groupKey: calls[0]?.callKey, calls });
             continue;
         }
 
@@ -3718,8 +3798,14 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
 function StructuredBlockList({ blocks, theme, controller = null }) {
     return React.createElement(React.Fragment, null,
         (blocks || []).map((block, index) => {
-            if (block.type === "chatCall") {
-                return React.createElement(ChatCallLine, { key: block.line.callKey, line: block.line });
+            if (block.type === "nativeTasks") {
+                return React.createElement(NativeTaskCard, { key: block.group.id, group: block.group,
+                    colors: { starting: resolveColor(theme, "cyan"), running: resolveColor(theme, "cyan"),
+                        waiting: resolveColor(theme, "yellow"), completed: resolveColor(theme, "green"),
+                        failed: resolveColor(theme, "red"), cancelled: resolveColor(theme, "gray"), interrupted: resolveColor(theme, "yellow") } });
+            }
+            if (block.type === "chatCallGroup") {
+                return React.createElement(ChatActivityRun, { key: block.groupKey, calls: block.calls });
             }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
@@ -5599,8 +5685,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // shortcut handler decides "am I editable?" from the event target, the
         // rest of what the user typed ran as commands (d = complete,
         // D = delete). Scrolling on every refresh has a milder failure but the
-        // same shape: the list yanks back to the active row while the user is
-        // deliberately scrolled away browsing older sessions.
+        // same shape. Selection must never alter the list's scroll position;
+        // only the user's own scroll gestures move it.
         if (revealedRowKeyRef.current === activeRowRevealKey) return;
         revealedRowKeyRef.current = activeRowRevealKey;
 
@@ -5617,11 +5703,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         if (viewState.focused && focused !== activeButton && !isTypingTarget) {
             activeButton.focus({ preventScroll: true });
         }
-        // Selection can change from outside this pane (deep links, newly
-        // created sessions, MoA focus and other navigation surfaces). Center
-        // the row once for that selection so its surrounding sessions remain
-        // visible, without re-centering on routine status/catalog refreshes.
-        activeButton.scrollIntoView({ block: "center" });
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,
@@ -13193,9 +13274,16 @@ function formatAdminPrincipalLabel(principal) {
 
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
+    const features = useControllerSelector(controller, state => state.admin.features);
+    const featureWorkers = useControllerSelector(controller, state => state.admin.workers);
+    const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
+    const showFeatures = view.section === "features";
+    const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
+        workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
+        isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
     const [providerSheet, setProviderSheet] = React.useState(null);
     const [providerSheetBusy, setProviderSheetBusy] = React.useState(false);
     const [providerSheetError, setProviderSheetError] = React.useState(null);
@@ -13344,7 +13432,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -13373,7 +13461,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : providerSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -13467,6 +13555,8 @@ function AdminSettingsTree({ controller, view }) {
                     } else if (row.id === "sharedProviders") {
                         controller.setAdminSection("providers");
                         controller.setAdminModelProviderPage("shared");
+                    } else if (row.id === "features") {
+                        controller.setAdminSection("features");
                     } else {
                         controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                     }

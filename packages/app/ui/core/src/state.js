@@ -771,6 +771,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // replaces the legacy GitHub-key editor in new UI; the legacy
             // state remains available for rollback compatibility only.
             section: "providers",
+            features: { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false, error: null, generation: 0, fetchedAt: null, userQuery: "" },
             // Agent packages (docs/proposals/agent-packages.md) — registry
             // list, selected package detail, and the workspace viewer.
             packages: {

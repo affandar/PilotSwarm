@@ -41,6 +41,15 @@ function packageResponseIsStale(packages, action) {
     return false;
 }
 
+function clearFeatureIdentity(features) {
+    return { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false,
+        error: null, generation: (features?.generation || 0) + 1, fetchedAt: null, userQuery: "" };
+}
+
+function featurePrincipalKey(principal) {
+    return JSON.stringify([principal?.provider, principal?.subject]);
+}
+
 /** A provider name, or null. Names are cluster-unique and never blank. */
 function normalizeProviderName(value) {
     const name = String(value ?? "").trim();
@@ -965,6 +974,9 @@ function baseReducer(state, action) {
         case "auth/context":
             return {
                 ...state,
+                admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
+                    || state.auth?.authorization?.role !== action.authorization?.role
+                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
@@ -2513,6 +2525,9 @@ function baseReducer(state, action) {
                     loading: false,
                     loadError: null,
                     profile: action.profile || null,
+                    features: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
+                        || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
+                        ? clearFeatureIdentity(state.admin.features) : state.admin.features,
                     ghcpKey: {
                         ...state.admin.ghcpKey,
                         // A successful load doesn't clobber an in-progress
@@ -2964,9 +2979,11 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["packages", "workers", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
+        case "admin/features":
+            return { ...state, admin: { ...state.admin, features: { ...state.admin.features, ...action.patch } } };
         case "admin/workers/attempt": {
             const workers = state.admin.workers || {};
             return { ...state, admin: { ...state.admin, workers: { ...workers, attempts: (workers.attempts || 0) + 1, lastAttemptAt: Date.now(), lastSkip: action.skip || null } } };

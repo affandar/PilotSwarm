@@ -1,24 +1,13 @@
 /**
- * The selected row must come back into view when the list re-populates.
+ * Selecting a session must not move the session list.
  *
- * On a page reload the active session id is restored from the profile BEFORE
- * the session listing arrives. The reveal effect therefore ran once against an
- * empty list (no button to scroll to), and its dependency array deliberately
- * excluded the listing — so when the rows finally arrived nothing re-ran, and a
- * selection far down a long list stayed off-screen with no indication of where
- * it was.
+ * The active row still receives keyboard focus after a restored listing loads,
+ * but focus always uses preventScroll and no selection path may call a DOM
+ * scrolling API. This keeps the list exactly where the user left it while live
+ * session refreshes and external navigation continue to change the selection.
  *
- * The exclusion itself is correct and must stay: re-running scrollIntoView on
- * every 4s `sessions/loaded` would yank the list back to the active row while
- * the user is deliberately scrolled away browsing older sessions. So the fix is
- * not "add the listing to the deps" — it is "add the listing AND consume the
- * reveal exactly once per arming", where an arming is a change of session,
- * focus or modal state.
- *
- * This is a source-shape test. The effect needs a real DOM with layout to
- * exercise, which the render smoke test (server-rendered, effects never run)
- * cannot provide — so the three properties that make the fix correct are
- * pinned here instead of silently regressing.
+ * This is a source-shape test because server rendering never runs effects and
+ * has no layout to inspect.
  *
  * Run: node --test test/active-row-reveal.test.mjs
  */
@@ -33,7 +22,7 @@ const source = readFileSync(
     "utf8",
 );
 
-// The single effect that focuses and scrolls the active session row.
+// The single effect that focuses the active session row without moving it.
 const effect = (() => {
     const start = source.indexOf("const activeButton = sessionButtonRefs.current.get(viewState.activeSessionId)");
     assert.notEqual(start, -1, "active-row reveal effect not found — did it get renamed?");
@@ -54,15 +43,14 @@ test("the reveal is still armed by session, focus and modal changes", () => {
     }
 });
 
-test("scrollIntoView is consumed once per arming, not once per listing", () => {
-    // The guard is what keeps the listing dependency from re-introducing the
-    // "list yanks back while I am scrolling" behaviour.
+test("selection never changes the session list scroll position", () => {
     const guardIndex = effect.indexOf("revealedRowKeyRef.current === activeRowRevealKey");
-    const scrollIndex = effect.indexOf("scrollIntoView");
     assert.notEqual(guardIndex, -1, "reveal guard missing");
-    assert.notEqual(scrollIndex, -1, "scrollIntoView missing");
-    assert.ok(guardIndex < scrollIndex, "the guard must short-circuit BEFORE scrollIntoView");
     assert.match(effect, /revealedRowKeyRef\.current = activeRowRevealKey/);
+    assert.doesNotMatch(effect, /scrollIntoView\s*\(/);
+    assert.doesNotMatch(effect, /\.scrollTo\s*\(/);
+    assert.doesNotMatch(effect, /\.scrollTop\s*=/);
+    assert.match(effect, /focus\(\{ preventScroll: true \}\)/);
 });
 
 test("a missing row leaves the arming unconsumed so it can retry", () => {

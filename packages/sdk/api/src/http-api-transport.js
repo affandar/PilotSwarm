@@ -430,6 +430,18 @@ export class HttpApiTransport {
     // so a reader can line them up against the table.
 
     listProviders() { return this.api.call("listProviders"); }
+    listFeatureFlags() { return this.api.call("listFeatureFlags"); }
+    getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
+    getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }
+    getUserFeatureFlags(userId) { return this.api.call("getUserFeatureFlags", { userId }); }
+    setClusterFeatureFlag(input) { return this.api.call("setClusterFeatureFlag", input); }
+    resetClusterFeatureFlag(input) { return this.api.call("resetClusterFeatureFlag", input); }
+    setMyFeatureFlag(input) { return this.api.call("setMyFeatureFlag", input); }
+    unsetMyFeatureFlag(input) { return this.api.call("unsetMyFeatureFlag", input); }
+    setUserFeatureFlag(userId, input) { return this.api.call("setUserFeatureFlag", { ...input, userId }); }
+    unsetUserFeatureFlag(userId, input) { return this.api.call("unsetUserFeatureFlag", { ...input, userId }); }
+    listFeatureFlagChanges(limit) { return this.api.call("listFeatureFlagChanges", { limit }); }
+    listFeatureFlagUsers(query) { return this.api.call("listFeatureFlagUsers", { query }); }
     getProviderStatus(names) { return this.api.call("getProviderStatus", { names: providerNamesParam(names) }); }
     getProviderUsageGrid() { return this.api.call("getProviderUsageGrid"); }
     getProviderUsageSummary({ days, providers } = {}) {
@@ -685,10 +697,24 @@ export class HttpApiTransport {
                 data,
             });
         });
+        const unsubscribeNativeTasks = this.api.subscribeLive(sessionId, "native-tasks", (message) => {
+            if (message?.kind === "signal") return;
+            const data = message?.kind === "unavailable" ? { phase: "unavailable" } : message?.data;
+            if (!data || typeof data !== "object") return;
+            handler({
+                eventType: "session.native_tasks_tick",
+                sessionId,
+                transient: true,
+                liveSeq: Number(message.seq) || 0,
+                liveUpdatedAt: message.updatedAt,
+                data,
+            });
+        });
         return () => {
             unsubscribeEvents();
             unsubscribeCanvas();
             unsubscribeLive();
+            unsubscribeNativeTasks();
             const handlers = this._canvasEmitHandlers.get(sessionId);
             if (handlers) {
                 handlers.delete(handler);
