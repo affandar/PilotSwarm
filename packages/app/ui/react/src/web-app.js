@@ -6341,7 +6341,7 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
                 key: "blockingPrincipals",
                 label: "Blocking principals",
                 kind: "text",
-                placeholder: "jobCreator, team:SQL ES",
+                placeholder: "jobCreator, team:service-owners",
                 help: "Comma-separated users, groups, or symbolic principals.",
             },
         ],
