@@ -42,7 +42,7 @@ function packageResponseIsStale(packages, action) {
 }
 
 function clearFeatureIdentity(features) {
-    return { mode: "mine", userId: null, data: null, users: [], loading: false, saving: false,
+    return { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false,
         error: null, generation: (features?.generation || 0) + 1, fetchedAt: null, userQuery: "" };
 }
 

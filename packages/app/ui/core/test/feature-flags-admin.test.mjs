@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore, selectAdminConsole } from "../src/index.js";
-import { FeatureFlagsPanel } from "../../react/src/feature-flags-panel.js";
+import { FeatureFlagsPanel, featureWorkerStatus } from "../../react/src/feature-flags-panel.js";
+import { projectWorker } from "../../../../sdk/api/src/admin-diagnostics.js";
 
 const KEY = "copilot.native_tasks";
 const ADMIN = { provider: "test", subject: "admin", isAdmin: true };
@@ -64,7 +65,7 @@ test("role/identity changes clear private state and reject pending responses and
     assert.equal(features().mode, "mine"); assert.equal(features().data, null); assert.deepEqual(features().users, []);
     await controller.selectFeatureScope("cluster"); assert.equal(features().mode, "mine");
     await controller.saveFeatureFlag(KEY, { enabled: true }); assert.equal(writes, 0);
-    assert.doesNotMatch(render(controller, store), />Cluster<|>Users<|Native tasks preference/);
+    assert.doesNotMatch(render(controller, store), />Cluster settings<|>User settings<|data-feature-key=/);
     // Authentication changes may precede the profile refresh.
     store.dispatch({ type: "admin/profile/loaded", profile: ADMIN });
     store.dispatch({ type: "admin/features", patch: { mode: "cluster", data: data(), users: [{ userId: 42 }] } });
@@ -81,7 +82,7 @@ test("uncertain mutation retries reuse identity; conflicts remain visible until 
     await controller.saveFeatureFlag(KEY, { enabled: true }); assert.match(features().error, /connection dropped/);
     await controller.saveFeatureFlag(KEY, { enabled: true });
     assert.equal(calls[0].requestId, calls[1].requestId); assert.equal(calls[1].expectedRevision, "1");
-    assert.equal(features().data.flags[0].revision, "2"); assert.match(features().notice, /Saved.*next configuration poll/);
+    assert.equal(features().data.flags[0].revision, "2"); assert.equal(features().notice, "Setting saved.");
     assert.equal(features().saving, false);
     const other = setup({ setMyFeatureFlag: async () => { throw Object.assign(new Error("Feature changed; reload before saving"), { status: 409 }); } }, { ...ADMIN, isAdmin: false });
     await other.controller.refreshFeatureFlags(); await other.controller.saveFeatureFlag(KEY, { enabled: true });
@@ -139,41 +140,103 @@ test("visible feature settings refresh on the existing cadence and on reopen, wi
     store.dispatch({ type: "admin/section", section: "features" });
     await controller.openAdminConsole(); await tick(); assert.equal(reads, 1);
     store.dispatch({ type: "admin/features", patch: { fetchedAt: Date.now() - 21_000 } });
-    controller.setFeatureDraftDirty(KEY, true);
-    await controller.refreshFeatureFlagsIfStale(); assert.equal(reads, 1);
-    controller.setFeatureDraftDirty(KEY, false);
+    controller.setFeatureDraft(KEY, { enabled: true });
     await controller.refreshFeatureFlagsIfStale(); assert.equal(reads, 2);
+    assert.deepEqual(controller.getFeatureDraft(KEY).values, { enabled: true });
+    assert.equal(controller.getFeatureDraft(KEY).expectedRevision, "1", "background reads preserve the edit's conflict baseline");
     await controller.refreshFeatureFlagsIfStale(); assert.equal(reads, 2);
     controller.closeAdminConsole(); await controller.openAdminConsole(); await tick();
     assert.equal(reads, 3); assert.equal(features().data.flags[0].revision, "3");
+    assert.deepEqual(controller.getFeatureDraft(KEY).values, { enabled: true }, "reopening retains unsaved choices");
+    assert.match(render(controller, store), /Settings changed since this edit began/);
 });
 
 test("adoption follows shared worker refresh and exposes errors/capability without claiming application on save", async () => {
     const { controller, store } = setup();
     store.dispatch({ type: "admin/features", patch: { data: data("5") } });
-    const worker = revision => ({ workerNodeId: "worker-1", updatedAt: new Date().toISOString(), state: { "feature-flags": {
-        supportedKeys: [KEY], appliedRevisions: { [KEY]: revision }, nativeCapability: "off", lastError: "database unavailable" } } });
+    const worker = revision => ({ workerNodeId: "worker-1", phase: "ready", updatedAt: new Date().toISOString(), state: { "feature-flags": {
+        protocolVersion: 1, initialized: true, supportedKeys: [KEY], appliedRevisions: { [KEY]: revision },
+        nativeCapability: "off", lastError: "PRIVATE database hostname and credentials" } } });
     store.dispatch({ type: "admin/workers/loaded", list: [worker("4")] });
-    assert.match(render(controller, store), /0\/1 workers applied this revision/);
+    assert.match(render(controller, store), /Settings delivery: 0 of 1 reporting workers updated/);
     store.dispatch({ type: "admin/workers/loaded", list: [worker("5")] });
     const html = render(controller, store);
-    assert.match(html, /1\/1 workers applied this revision/); assert.match(html, /0\/1 allow native execution/);
-    assert.match(html, /database unavailable/); assert.match(html, /Saved policy and worker adoption are separate/);
+    assert.match(html, /Settings delivery: 1 of 1 reporting workers updated/);
+    assert.match(html, /Native task support: 0 of 1 reporting workers configured; 1 configured Off; 0 unknown/);
+    assert.match(html, /1 reported a refresh problem/); assert.match(html, /settings refresh problem/);
+    assert.doesNotMatch(html, /PRIVATE database hostname and credentials|allow native execution/);
+    assert.match(html, /Settings delivery does not confirm that each session has refreshed its tools/);
+    assert.match(html, /Off for you/, "received settings must not imply the feature is On");
 });
 
 test("React controls show self/admin scopes, locked preference, empty catalog, search and unsupported rows", () => {
     const { controller, store } = setup();
     store.dispatch({ type: "admin/features", patch: { data: data("2", { user: { enabled: true }, userOverrideIgnored: true }) } });
     let html = render(controller, store);
-    assert.match(html, />Cluster</); assert.match(html, />Users</); assert.match(html, /saved preference is inactive/); assert.match(html, /value="true" selected/);
+    assert.match(html, />My settings</); assert.match(html, />Cluster settings</); assert.match(html, />User settings</);
+    assert.match(html, /Off for you/); assert.match(html, /Required by the cluster/);
+    assert.match(html, /Saved future preference: On/); assert.match(html, /Preference for when personal settings are allowed/);
+    const onChoice = [...html.matchAll(/<input\b[^>]*>/g)].map(match => match[0]).find(input => input.includes('value="true"'));
+    assert.match(onChoice, /checked=""/, "the retained On choice stays selected even while cluster Off applies");
     store.dispatch({ type: "admin/features", patch: { mode: "users", userId: 900, users: Array.from({ length: 500 }, (_, i) => ({ userId: i + 1, subject: `user-${i}` })) } });
     html = render(controller, store); assert.match(html, /Find feature settings user/); assert.match(html, /first 500 users/); assert.match(html, /Selected user ID: 900/);
     // Even stale caller state cannot render another user's controls after demotion.
-    assert.doesNotMatch(render(controller, store, { isAdmin: false }), /Native tasks preference/);
+    assert.doesNotMatch(render(controller, store, { isAdmin: false }), /data-feature-key=|On for this user|Off for this user|>User settings</);
     store.dispatch({ type: "admin/features", patch: { mode: "mine", data: { flags: [] } } });
     assert.match(render(controller, store), /No feature definitions are published/);
     store.dispatch({ type: "admin/features", patch: { data: data("1", { supported: false }) } });
     assert.match(render(controller, store), /does not support changing/);
     const tree = selectAdminConsole(store.getState()).settingsTree;
     assert.ok(tree.findIndex(row => row.id === "features") > tree.findIndex(row => row.id === "myProviders"));
+});
+
+const NOW = Date.parse("2026-09-09T18:00:00.000Z");
+const telemetryWorker = (id, state = {}, row = {}) => ({ workerNodeId: id, phase: "ready", updatedAt: new Date(NOW).toISOString(),
+    state: { "feature-flags": { protocolVersion: 1, initialized: true, supportedKeys: [KEY],
+        appliedRevisions: { [KEY]: "5" }, nativeCapability: "sync", lastError: null, ...state } }, ...row });
+
+test("delivery accepts only lossless positive BIGINT revisions and separates older from newer settings", () => {
+    const current = flag("5");
+    const status = revision => featureWorkerStatus(current, [telemetryWorker("worker", { appliedRevisions: { [KEY]: revision } })], NOW);
+    for (const revision of ["5", "6", "9223372036854775807"]) {
+        assert.equal(status(revision).updated, 1, `${revision} is at least the saved revision`);
+    }
+    assert.equal(status("4").reports[0].delivery, "pending");
+    for (const revision of [undefined, null, 5, "0", "-1", "05", "5.0", "5e2", "9223372036854775808", "9".repeat(10_000), {}, []]) {
+        const result = status(revision);
+        assert.equal(result.updated, 0); assert.equal(result.unknown, 1, "malformed revisions must stay unknown");
+        assert.equal(result.capable, 1, "configuration capability is separate from revision validity");
+    }
+});
+
+test("delivery counts recent ready workers and separates unknown, stale, draining, and unsupported reports", () => {
+    const rows = [telemetryWorker("current"), telemetryWorker("older", { appliedRevisions: { [KEY]: "4" } }),
+        telemetryWorker("missing", {}, { state: {} }), telemetryWorker("unsupported", { supportedKeys: [] }),
+        telemetryWorker("loading", { initialized: false, appliedRevisions: {} }),
+        telemetryWorker("stale", {}, { updatedAt: new Date(NOW - 90_000).toISOString() }),
+        telemetryWorker("undated", {}, { updatedAt: "invalid" }), telemetryWorker("draining", {}, { phase: "draining" }),
+        telemetryWorker("starting", {}, { phase: "starting" }), telemetryWorker("future", {}, { updatedAt: new Date(NOW + 60_000).toISOString() })];
+    const result = featureWorkerStatus(flag("5"), rows, NOW);
+    assert.equal(result.eligible, 5); assert.equal(result.updated, 1); assert.equal(result.unknown, 1);
+    assert.equal(result.unsupported, 1); assert.equal(result.stale, 3); assert.equal(result.draining, 1); assert.equal(result.other, 1);
+    assert.equal(result.reports.find(report => report.workerNodeId === "loading").delivery, "loading");
+    assert.ok(result.reports.filter(report => !report.eligible).every(report => report.delivery === "unknown" && report.capability === "unknown"));
+});
+
+test("restricted worker diagnostics render current delivery without raw state or false zero counts", () => {
+    const { controller, store } = setup();
+    store.dispatch({ type: "admin/features", patch: { data: data("5") } });
+    const source = telemetryWorker("restricted", { lastError: "PRIVATE-CANARY", secret: "PRIVATE-CANARY" }, { updatedAt: new Date().toISOString() });
+    const projected = projectWorker(source);
+    store.dispatch({ type: "admin/workers/loaded", list: [projected] });
+    const html = render(controller, store);
+    assert.match(html, /Settings delivery: 1 of 1 reporting workers updated/);
+    assert.match(html, /Native task support: 1 of 1 reporting workers configured/);
+    assert.match(html, /settings refresh problem/); assert.doesNotMatch(html, /PRIVATE-CANARY/);
+    for (const supportedKeys of [[7, null], [KEY, 7], [null]]) {
+        const projectedMalformed = projectWorker(telemetryWorker("malformed", { supportedKeys }));
+        const result = featureWorkerStatus(flag("5"), [projectedMalformed], NOW);
+        assert.equal(result.unknown, 1, "projection must not turn malformed support claims into confirmed unsupported status");
+        assert.equal(result.unsupported, 0);
+    }
 });

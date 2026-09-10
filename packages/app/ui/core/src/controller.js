@@ -3795,6 +3795,86 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/features", patch: { dirtyDrafts } });
     }
 
+    _featureDraftKey(featureKey) {
+        const features = this.getState().admin.features;
+        return JSON.stringify([features.mode, features.mode === "users" ? features.userId : null, featureKey]);
+    }
+
+    getFeatureDraft(featureKey) {
+        return this.getState().admin.features.drafts?.[this._featureDraftKey(featureKey)];
+    }
+
+    getFeatureDraftCount(mode) {
+        return Object.values(this.getState().admin.features.drafts || {}).filter(draft => draft.mode === mode).length;
+    }
+
+    setFeatureDraft(featureKey, values) {
+        const features = this.getState().admin.features;
+        if (features.saving || features.mode !== "mine" && !this._featureIsAdmin()
+            || features.mode === "users" && !features.userId) return;
+        const flag = features.data?.flags?.find(item => item.featureKey === featureKey);
+        if (!flag?.supported) return;
+        const key = this._featureDraftKey(featureKey);
+        const existing = features.drafts?.[key];
+        const stored = features.mode === "cluster" ? flag.cluster : flag.user;
+        // Null is an operation (remove the override), not merely a pair of
+        // values equal to today's defaults. Keep reset intent when a row exists.
+        const equal = values === null ? !stored : features.mode === "cluster"
+            ? values.enabled === (flag.cluster?.enabled ?? flag.defaultEnabled)
+                && values.allowUserOverride === (flag.cluster?.allowUserOverride ?? flag.defaultAllowUserOverride)
+            : Boolean(stored) && values.enabled === stored.enabled;
+        const drafts = { ...features.drafts };
+        if (equal && !existing?.uncertain && !existing?.needsReview) delete drafts[key];
+        else drafts[key] = { featureKey, mode: features.mode, userId: features.userId,
+            values: values === null ? null : { ...values }, expectedRevision: existing?.expectedRevision ?? flag.revision,
+            ...(existing?.uncertain ? { uncertain: true } : {}), ...(existing?.needsReview ? { needsReview: true } : {}) };
+        this.dispatch({ type: "admin/features", patch: { drafts, error: null, notice: null } });
+    }
+
+    async discardFeatureDraft(featureKey) {
+        if (this.getState().admin.features.saving) return;
+        const draft = this.getFeatureDraft(featureKey);
+        const context = this._featureContext();
+        // A lost response may hide a committed save. Reconcile it before
+        // discarding so the old cached value cannot look authoritative.
+        if (draft?.uncertain && !await this.refreshFeatureFlags()) return;
+        if (context !== this._featureContext() || this.getFeatureDraft(featureKey) !== draft) return;
+        if (draft?.uncertain) {
+            const revision = this.getState().admin.features.data?.flags?.find(flag => flag.featureKey === featureKey)?.revision;
+            // A GET at the old revision cannot rule out the timed-out write
+            // committing later. A newer revision fences its compare-and-set.
+            if (!revision || BigInt(revision) <= BigInt(draft.expectedRevision)) {
+                this.dispatch({ type: "admin/features", patch: { error: "The earlier save is still unconfirmed. Retry Save or refresh before discarding changes." } });
+                return;
+            }
+        }
+        const drafts = { ...this.getState().admin.features.drafts };
+        delete drafts[this._featureDraftKey(featureKey)];
+        this.dispatch({ type: "admin/features", patch: { drafts, error: null, notice: null } });
+    }
+
+    reviewFeatureDraft(featureKey) {
+        const features = this.getState().admin.features;
+        if (features.saving || features.loading || features.mode !== "mine" && !this._featureIsAdmin()) return;
+        const key = this._featureDraftKey(featureKey);
+        const draft = features.drafts?.[key];
+        const flag = features.data?.flags?.find(item => item.featureKey === featureKey);
+        if (!draft || !flag?.supported || draft.needsReview && draft.expectedRevision === flag.revision) return;
+        this.dispatch({ type: "admin/features", patch: { drafts: { ...features.drafts,
+            [key]: { ...draft, expectedRevision: flag.revision, needsReview: false, uncertain: false } }, error: null, notice: "Latest saved setting reviewed. Your changes are still unsaved." } });
+    }
+
+    async saveFeatureDraft(featureKey) {
+        const draft = this.getFeatureDraft(featureKey);
+        if (!draft) return;
+        const flag = this.getState().admin.features.data?.flags?.find(item => item.featureKey === featureKey);
+        if (draft.needsReview || draft.expectedRevision !== flag?.revision) {
+            this.dispatch({ type: "admin/features", patch: { error: "Settings changed elsewhere. Review the latest saved setting before saving your changes." } });
+            return;
+        }
+        await this.saveFeatureFlag(featureKey, draft.values, { draft });
+    }
+
     async searchFeatureUsers(query = "") {
         if (!this._featureIsAdmin()) return;
         const serial = this._featureUserSerial = (this._featureUserSerial || 0) + 1;
@@ -3803,7 +3883,17 @@ export class PilotSwarmUiController {
         const current = () => this._featureUserSerial === serial && this._featureContext() === context;
         try {
             const users = await this._featureRequest(() => this.transport.listFeatureFlagUsers(String(query)));
-            if (current()) this.dispatch({ type: "admin/features", patch: { users, usersLoading: false } });
+            if (current()) {
+                const features = this.getState().admin.features;
+                const selected = features.users?.find(user => user.userId === features.userId);
+                const selectedUserOutsideResults = Boolean(selected && !users.some(user => user.userId === selected.userId));
+                // Searching must not remove the identity/option of the user
+                // whose saved policy and draft remain active below the picker.
+                this.dispatch({ type: "admin/features", patch: {
+                    users: selectedUserOutsideResults ? [selected, ...users] : users,
+                    selectedUserOutsideResults, usersLoading: false,
+                } });
+            }
         } catch (error) {
             if (current()) this.dispatch({ type: "admin/features", patch: { usersLoading: false,
                 metadataError: `User directory: ${error?.message || error}` } });
@@ -3827,38 +3917,75 @@ export class PilotSwarmUiController {
             const data = await this._featureRequest(() => features.mode === "cluster" ? this.transport.getClusterFeatureFlags()
                 : features.mode === "users" ? features.userId ? this.transport.getUserFeatureFlags(features.userId) : null
                     : this.transport.getMyFeatureFlags());
-            if (!current()) return;
+            if (!current()) return false;
             this.dispatch({ type: "admin/features", patch: { data, loading: false, fetchedAt: Date.now() } });
+            return true;
         } catch (error) {
             if (current()) this.dispatch({ type: "admin/features", patch: { loading: false, fetchedAt: Date.now(), error: String(error?.message || error) } });
+            return false;
         }
     }
 
-    async saveFeatureFlag(featureKey, values) {
+    async saveFeatureFlag(featureKey, values, { draft } = {}) {
         const features = this.getState().admin?.features;
         if (!features || features.saving || features.loading || features.mode !== "mine" && !this._featureIsAdmin()) return;
         const definition = features.data?.flags?.find(flag => flag.featureKey === featureKey);
-        if (!definition || features.mode === "users" && !features.userId) return;
+        if (!definition?.supported || features.mode === "users" && !features.userId) return;
         const target = this._featureContext();
-        const signature = JSON.stringify([target, featureKey, definition.revision, values]);
-        const requestId = this._featureMutationRetry?.signature === signature
-            ? this._featureMutationRetry.requestId : globalThis.crypto.randomUUID();
-        this._featureMutationRetry = { signature, requestId };
-        const input = { featureKey, expectedRevision: definition.revision, requestId, ...(values || {}) };
+        const draftKey = this._featureDraftKey(featureKey);
+        const expectedRevision = draft?.expectedRevision ?? definition.revision;
+        const signature = JSON.stringify([target, featureKey, expectedRevision, values]);
+        this._featureMutationRetries ??= new Map();
+        const requestId = this._featureMutationRetries.get(signature) ?? globalThis.crypto.randomUUID();
+        this._featureMutationRetries.set(signature, requestId);
+        const input = { featureKey, expectedRevision, requestId, ...(values || {}) };
         this.dispatch({ type: "admin/features", patch: { saving: true, error: null, notice: null } });
         try {
-            await this._featureRequest(() => {
+            const outcome = await this._featureRequest(() => {
                 if (features.mode === "cluster") return this.transport[values ? "setClusterFeatureFlag" : "resetClusterFeatureFlag"](input);
                 if (features.mode === "users") return this.transport[values ? "setUserFeatureFlag" : "unsetUserFeatureFlag"](features.userId, input);
                 return this.transport[values ? "setMyFeatureFlag" : "unsetMyFeatureFlag"](input);
             });
-            if (this._featureMutationRetry?.signature === signature) this._featureMutationRetry = null;
+            this._featureMutationRetries.delete(signature);
             if (this._featureContext() === target) {
+                // The acknowledged mutation is authoritative even if the
+                // following GET fails. Do not show the old value as saved.
+                if (/^[1-9]\d*$/.test(String(outcome?.revision)) && Object.hasOwn(outcome, "setting")) {
+                    const updated = { ...definition, revision: outcome.revision,
+                        [features.mode === "cluster" ? "cluster" : "user"]: outcome.setting };
+                    const allowUser = updated.cluster?.allowUserOverride ?? updated.defaultAllowUserOverride;
+                    updated.effective = allowUser && updated.user ? updated.user.enabled
+                        : updated.cluster?.enabled ?? updated.defaultEnabled;
+                    updated.source = allowUser && updated.user ? "user" : updated.cluster ? "cluster" : "default";
+                    updated.userOverrideIgnored = Boolean(updated.user && !allowUser);
+                    const data = this.getState().admin.features.data;
+                    this.dispatch({ type: "admin/features", patch: { data: { ...data,
+                        flags: data.flags.map(flag => flag.featureKey === featureKey ? updated : flag) } } });
+                }
+                if (draft && this.getState().admin.features.drafts?.[draftKey] === draft) {
+                    const drafts = { ...this.getState().admin.features.drafts };
+                    delete drafts[draftKey];
+                    this.dispatch({ type: "admin/features", patch: { drafts } });
+                }
                 await this.refreshFeatureFlags();
-                if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: { notice: "Saved. Workers apply changes on their next configuration poll; enabling native tasks takes effect on the next turn." } });
+                if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: { notice: "Setting saved." } });
             }
         } catch (error) {
             if (this._featureContext() === target) {
+                if (draft && (error?.status === 409 || error?.code === "FEATURE_CONFLICT")) {
+                    this._featureMutationRetries.delete(signature);
+                    this.dispatch({ type: "admin/features", patch: { drafts: { ...this.getState().admin.features.drafts,
+                        [draftKey]: { ...draft, needsReview: true } } } });
+                    const refreshed = await this.refreshFeatureFlags({ background: true });
+                    if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: {
+                        error: refreshed ? "Settings changed elsewhere. Review the latest saved setting before saving your changes."
+                            : "Settings changed elsewhere, but the latest setting could not be loaded. Refresh settings before reviewing and saving your changes." } });
+                    return;
+                }
+                if (draft && !(error?.status >= 400 && error?.status < 500)) {
+                    this.dispatch({ type: "admin/features", patch: { drafts: { ...this.getState().admin.features.drafts,
+                        [draftKey]: { ...draft, uncertain: true } } } });
+                }
                 this.dispatch({ type: "admin/features", patch: { error: String(error?.message || error) } });
             }
         } finally { if (this._featureContext() === target) this.dispatch({ type: "admin/features", patch: { saving: false } }); }
