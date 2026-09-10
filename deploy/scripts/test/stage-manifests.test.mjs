@@ -129,6 +129,38 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+test("stageManifests(worker): renders the configured generic-worker replica count", () => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-worker-"));
+  const stagedRoot = stageManifests({
+    service: "worker",
+    envName: "dev",
+    env: {
+      IMAGE: "stub.azurecr.io/pilotswarm-worker:test",
+      NAMESPACE: "pilotswarm",
+      KV_NAME: "stub-kv",
+      WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+      AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000",
+      PILOTSWARM_WORKER_TAGS: "generic",
+      WORKER_REPLICAS: "2",
+      CALLER_AUTH_KEYVAULT_NAME: "stub-kv",
+      AZURE_STORAGE_CONTAINER: "copilot-sessions",
+      PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+      PILOTSWARM_LIVE_TURN: "0",
+      PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+      AZURE_STORAGE_ACCOUNT_URL: "https://stub.blob.core.windows.net",
+      PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
+      PILOTSWARM_DB_AAD_USER: "stub",
+      DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
+      SPC_KEYS_HASH: "stub",
+      FOUNDRY_ENDPOINT: "",
+    },
+    stagingDir,
+  });
+  const deployment = readFileSync(join(stagedRoot, "base", "deployment.yaml"), "utf8");
+  assert.match(deployment, /replicas:\s+2/);
+  assert.ok(!deployment.includes("__WORKER_REPLICAS__"));
+});
+
 test("stageManifests(portal): copies worker base model_providers.json into portal staging tree", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-"));
   const stagedRoot = stageManifests({
@@ -151,6 +183,7 @@ test("stageManifests(portal): copies worker base model_providers.json into porta
       AZURE_STORAGE_ACCOUNT_URL: "https://stub.blob.core.windows.net/",
       PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
       PILOTSWARM_DB_AAD_USER: "stub",
+      CALLER_AUTH_KEYVAULT_NAME: "stub-kv",
       DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
       // Portal config keys (non-credentials). Stubbed with non-empty values
       // so substituteOverlayEnv's fail-closed gate passes; this test cares
@@ -198,6 +231,7 @@ function makePortalEnv(extra = {}) {
     AZURE_STORAGE_ACCOUNT_URL: "https://stub.blob.core.windows.net/",
     PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u@h:5432/d?sslmode=require",
     PILOTSWARM_DB_AAD_USER: "stub",
+    CALLER_AUTH_KEYVAULT_NAME: "stub-kv",
     DATABASE_URL: "postgresql://u:p@h:5432/d?sslmode=require",
     PORTAL_AUTH_PROVIDER: "none",
     PORTAL_AUTH_ENTRA_TENANT_ID: "00000000-0000-0000-0000-000000000000",

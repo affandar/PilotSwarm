@@ -293,8 +293,8 @@ The audit found the following candidates, in recommended execution order:
    reusable render/apply mechanics with environment-owned composition:
    - `deploy/apps/git-cache/apply-cache.ps1`
    - `deploy/apps/git-worker/apply-worker.ps1`
-   - `deploy/apps/worker/apply-generic-worker.ps1`
-   - `deploy/apps/worker/generic-worker.deployment.yaml`
+   - the former `deploy/apps/worker/apply-generic-worker.ps1`
+   - the former `deploy/apps/worker/generic-worker.deployment.yaml`
 
    Generic dotenv loading, token substitution, manifest validation/application, rollout
    waiting, and repo-less worker-pool mechanics belong in PilotSwarm when they are not already
@@ -302,6 +302,16 @@ The audit found the following candidates, in recommended execution order:
    node-pool names, identities, Key Vault references, image values, and environment files.
    Reconcile this against PilotSwarm's existing base manifests before moving code; do not
    create a second deployment implementation.
+
+   **Initial slice (2026-09-10):** PilotSwarm's existing Flux-managed `worker`
+   service now explicitly owns the `generic` repo-less pool and accepts a
+   declarative replica count. The generic `deploy.mjs --env-overlay <path>`
+   capability lets any composition repository overlay versioned deployment
+   values without adding a platform-specific wrapper. SQLmort now invokes that
+   OSS CLI directly with its private `deploy/values/generic.env`; all generic-
+   worker PowerShell wrappers and the duplicate direct-`kubectl` manifest were
+   removed, leaving Flux as the sole deployment path. Git-cache and repo-pinned
+   worker DaemonSet migration remains pending.
 
 4. **Upstream the generic functional-test harness and neutral smoke clients (optional
    platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,

@@ -38,6 +38,12 @@ import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
 const PLACEHOLDER_FILES = {
   worker: [
     {
+      relPath: "base/deployment.yaml",
+      tokens: [
+        { placeholder: "__WORKER_REPLICAS__", envKey: "WORKER_REPLICAS" },
+      ],
+    },
+    {
       relPath: "base/model_providers.json",
       tokens: [
         // Foundry data-plane endpoint, emitted by base-infra (see

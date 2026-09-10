@@ -7,7 +7,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { redactArgs } from "../lib/common.mjs";
+import { applyProcessEnvOverrides, redactArgs } from "../lib/common.mjs";
+
+test("process env overrides composed file keys without importing unrelated variables", () => {
+  const env = { EXISTING: "file", OVERLAY_KEY: "overlay" };
+  applyProcessEnvOverrides(env, {
+    EXISTING: "process",
+    OVERLAY_KEY: "process",
+    UNRELATED: "ignored",
+  });
+  assert.deepEqual(env, {
+    EXISTING: "process",
+    OVERLAY_KEY: "process",
+  });
+});
 
 test("redactArgs masks long-form --password value (space-separated)", () => {
   const out = redactArgs(["az", "login", "--username", "u", "--password", "s3cret"]);

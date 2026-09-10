@@ -7,6 +7,37 @@ import assert from "node:assert/strict";
 
 import { composeDerivedEnv } from "../lib/compose-env.mjs";
 
+test("defaults the Flux-managed worker to the generic repo-less pool", () => {
+  const env = {};
+  composeDerivedEnv(env);
+  assert.equal(env.PILOTSWARM_WORKER_TAGS, "generic");
+  assert.equal(env.WORKER_REPLICAS, "3");
+});
+
+test("preserves an explicit generic-worker replica count", () => {
+  const env = {
+    PILOTSWARM_WORKER_TAGS: "generic,region:east",
+    WORKER_REPLICAS: "7",
+  };
+  composeDerivedEnv(env);
+  assert.equal(env.PILOTSWARM_WORKER_TAGS, "generic,region:east");
+  assert.equal(env.WORKER_REPLICAS, "7");
+});
+
+test("rejects routing tags that would stop the worker from serving repo-less turns", () => {
+  assert.throws(
+    () => composeDerivedEnv({ PILOTSWARM_WORKER_TAGS: "repo:example" }),
+    /must include 'generic'/,
+  );
+});
+
+test("rejects an invalid generic-worker replica count", () => {
+  assert.throws(
+    () => composeDerivedEnv({ WORKER_REPLICAS: "0" }),
+    /integer from 1 to 100/,
+  );
+});
+
 test("composes DATABASE_URL from POSTGRES_FQDN with bootstrap defaults", () => {
   const env = { POSTGRES_FQDN: "ps.example.postgres.database.azure.com" };
   composeDerivedEnv(env);

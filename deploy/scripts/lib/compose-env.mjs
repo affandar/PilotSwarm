@@ -19,6 +19,28 @@
 import { log } from "./common.mjs";
 
 export function composeDerivedEnv(env) {
+  // The normal worker Deployment is the repo-less pool. Keep these defaults
+  // here as well as template.env so local envs scaffolded before the fields
+  // were introduced continue to stage successfully.
+  const workerTags = (env.PILOTSWARM_WORKER_TAGS || "generic")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  if (!workerTags.includes("generic")) {
+    throw new Error(
+      `PILOTSWARM_WORKER_TAGS must include 'generic' for the repo-less worker service; got '${env.PILOTSWARM_WORKER_TAGS}'.`,
+    );
+  }
+  env.PILOTSWARM_WORKER_TAGS = workerTags.join(",");
+  if (!env.WORKER_REPLICAS) {
+    env.WORKER_REPLICAS = "3";
+  }
+  if (!/^[1-9][0-9]*$/.test(env.WORKER_REPLICAS) || Number(env.WORKER_REPLICAS) > 100) {
+    throw new Error(
+      `WORKER_REPLICAS must be an integer from 1 to 100; got '${env.WORKER_REPLICAS}'.`,
+    );
+  }
+
   // DATABASE_URL — overlay ConfigMap value, NOT a KV secret in the
   // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
   // Embeds the deterministic bootstrap admin password from postgres.bicep.

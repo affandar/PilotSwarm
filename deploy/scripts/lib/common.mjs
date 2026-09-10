@@ -109,35 +109,51 @@ export function templateEnvPath() {
   return join(REPO_ROOT, "deploy", "envs", "template.env");
 }
 
-// Load env map for a given local env name. Reads
-// `deploy/envs/local/<name>/.env` standalone — no cascade onto the
-// template (that file is only used at scaffold time).
-//
-// process.env values override file values key-by-key (so a contributor can
-// `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc tests). We do NOT
-// merge the entire process environment.
-export function loadEnv(envName) {
-  const envFile = envFilePath(envName);
+export function applyProcessEnvOverrides(env, processEnv = process.env) {
+  for (const k of Object.keys(env)) {
+    if (processEnv[k] !== undefined && processEnv[k] !== "") {
+      env[k] = processEnv[k];
+    }
+  }
+  return env;
+}
 
-  if (!existsSync(envFile)) {
+// Load env map for a given local env name. The required local file remains
+// standalone — no cascade onto the template (that file is only used at
+// scaffold time). An optional external env file overlays the local file so a
+// composition repository can retain its values outside PilotSwarm.
+//
+// process.env values override keys present after file composition (so a
+// contributor can `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc
+// tests). We do NOT merge the entire process environment.
+export function loadEnv(
+  envName,
+  { overlayEnvFile = null, processEnv = process.env } = {},
+) {
+  const localEnvFile = envFilePath(envName);
+
+  if (!existsSync(localEnvFile)) {
     throw new Error(
-      `Local env '${envName}' not found at ${envFile}.\n` +
+      `Local env '${envName}' not found at ${localEnvFile}.\n` +
         `Create it with: npm run deploy:new-env -- ${envName}`,
     );
   }
 
-  const merged = parseEnvFile(envFile);
-
-  // process.env override for keys already in the merged map.
-  for (const k of Object.keys(merged)) {
-    if (process.env[k] !== undefined && process.env[k] !== "") {
-      merged[k] = process.env[k];
+  const merged = parseEnvFile(localEnvFile);
+  let resolvedOverlay = null;
+  if (overlayEnvFile !== null) {
+    resolvedOverlay = resolve(overlayEnvFile);
+    if (!existsSync(resolvedOverlay) || !statSync(resolvedOverlay).isFile()) {
+      throw new Error(`External env file not found or not a file: ${resolvedOverlay}`);
     }
+    Object.assign(merged, parseEnvFile(resolvedOverlay));
   }
+
+  applyProcessEnvOverrides(merged, processEnv);
 
   return {
     env: merged,
-    sources: { base: null, local: envFile },
+    sources: { base: null, local: localEnvFile, overlay: resolvedOverlay },
   };
 }
 

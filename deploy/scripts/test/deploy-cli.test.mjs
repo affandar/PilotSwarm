@@ -1,0 +1,47 @@
+// Focused CLI parsing tests for deploy.mjs. These cases exit before any
+// Azure, Docker, Flux, or Kubernetes preflight can run.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+
+import { REPO_ROOT } from "../lib/common.mjs";
+
+const DEPLOY_SCRIPT = join(REPO_ROOT, "deploy", "scripts", "deploy.mjs");
+
+function runDeploy(args) {
+  return spawnSync(process.execPath, [DEPLOY_SCRIPT, ...args], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+test("deploy help documents the external env overlay", () => {
+  const result = runDeploy(["--help"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--env-overlay <path>/);
+});
+
+test("deploy accepts equals-form env overlay before help", () => {
+  const result = runDeploy(["--env-overlay=composition.env", "--help"]);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("deploy rejects env overlay without a path", () => {
+  const result = runDeploy(["worker", "tstenv", "--env-overlay"]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--env-overlay requires a path/);
+});
+
+test("deploy rejects duplicate env overlay flags", () => {
+  const result = runDeploy([
+    "worker",
+    "tstenv",
+    "--env-overlay",
+    "first.env",
+    "--env-overlay=second.env",
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--env-overlay may be specified only once/);
+});

@@ -42,6 +42,7 @@ function parseArgs(argv) {
     steps: null,
     region: null,
     imageTag: null,
+    envOverlay: null,
     clean: false,
     force: false,
     forceModules: [],
@@ -76,6 +77,20 @@ function parseArgs(argv) {
       flags.imageTag = a.slice("--image-tag=".length);
     } else if (a === "--image-tag") {
       flags.imageTag = args[++i];
+    // Node reserves --env-file for its own runtime, so the deploy CLI uses
+    // --env-overlay for a file that is composed after the script starts.
+    } else if (a.startsWith("--env-overlay=")) {
+      const value = a.slice("--env-overlay=".length);
+      if (!value) throw new Error("--env-overlay requires a path (got empty value)");
+      if (flags.envOverlay !== null) throw new Error("--env-overlay may be specified only once");
+      flags.envOverlay = value;
+    } else if (a === "--env-overlay") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--env-overlay requires a path (e.g. --env-overlay ../composition/worker.env)");
+      }
+      if (flags.envOverlay !== null) throw new Error("--env-overlay may be specified only once");
+      flags.envOverlay = value;
     } else if (a.startsWith("--")) {
       throw new Error(`Unknown flag: ${a}`);
     } else {
@@ -90,7 +105,7 @@ function parseArgs(argv) {
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
         "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
-        "Flags: --steps, --region, --image-tag, --clean, --force, --help",
+        "Flags: --steps, --region, --image-tag, --env-overlay, --clean, --force, --help",
     );
   }
 
@@ -122,6 +137,8 @@ function printHelp() {
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
       "  --image-tag <tag>   Explicit image tag. Default: <env>-<short-sha>[-dirty].",
+      "  --env-overlay <path> Overlay an external KEY=VALUE file on the local env.",
+      "                      Relative paths resolve from the current working directory.",
       "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
@@ -272,7 +289,17 @@ async function main() {
     return;
   }
 
-  const { service, envName, steps, region, imageTag, clean, force, forceModules } = parsed;
+  const {
+    service,
+    envName,
+    steps,
+    region,
+    imageTag,
+    envOverlay,
+    clean,
+    force,
+    forceModules,
+  } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
@@ -280,9 +307,10 @@ async function main() {
 
   // 2) Load env (FR-004) — single shared map so Bicep outputs cascade across
   // services in `all` mode (e.g. BaseInfra → Worker/Portal).
-  const { env, sources } = loadEnv(envName);
+  const { env, sources } = loadEnv(envName, { overlayEnvFile: envOverlay });
   if (region) env.LOCATION = region; // CLI override
   log("info", `Loaded env: ${sources.local}`);
+  if (sources.overlay) log("info", `Applied external env overlay: ${sources.overlay}`);
 
   // 3a) Load any cached Bicep outputs from previous runs in this env. This lets
   // single-service runs (e.g. `worker mytestenv`) re-use upstream
@@ -470,12 +498,23 @@ async function main() {
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
   if (service === "all") {
-    await runAll({ envName, env, steps, imageTag: resolvedTag, clean, force, forceModules, edgeMode });
+    await runAll({
+      envName,
+      env,
+      envOverlay: sources.overlay,
+      steps,
+      imageTag: resolvedTag,
+      clean,
+      force,
+      forceModules,
+      edgeMode,
+    });
   } else {
     await runOneService({
       service,
       envName,
       env,
+      envOverlay: sources.overlay,
       steps,
       imageTag: resolvedTag,
       clean,
@@ -490,7 +529,18 @@ async function main() {
 
 // Single-service execution path. Used directly for explicit `<service> <env>`
 // invocations and as the per-service step inside `runAll`.
-async function runOneService({ service, envName, env, steps, imageTag, clean, force, forceModules, moduleListOverride }) {
+async function runOneService({
+  service,
+  envName,
+  env,
+  envOverlay,
+  steps,
+  imageTag,
+  clean,
+  force,
+  forceModules,
+  moduleListOverride,
+}) {
   if (clean) {
     const { rmSync } = await import("node:fs");
     const dir = stagingDir(service, envName);
@@ -536,8 +586,11 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
     } catch (e) {
       log("err", `Failed: ${service} ${step}`);
       process.stderr.write(`${e.message}\n`);
+      const overlayArg = envOverlay
+        ? ` --env-overlay ${JSON.stringify(envOverlay)}`
+        : "";
       process.stderr.write(
-        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}\n`,
+        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}${overlayArg}\n`,
       );
       process.exit(1);
     }
@@ -549,7 +602,17 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
 // server, deployment storage account) cascade forward. Each service deploys
 // only its own Bicep module (ALL_MODE_MODULES) — dependencies were deployed
 // by an earlier item in the same invocation.
-async function runAll({ envName, env, steps, imageTag, clean, force, forceModules, edgeMode }) {
+async function runAll({
+  envName,
+  env,
+  envOverlay,
+  steps,
+  imageTag,
+  clean,
+  force,
+  forceModules,
+  edgeMode,
+}) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
   // entirely AFD provisioning and would otherwise create an empty RG with no
   // resources. Mirrors the single-service short-circuit above. cert-manager
@@ -570,6 +633,7 @@ async function runAll({ envName, env, steps, imageTag, clean, force, forceModule
       service: svc,
       envName,
       env,
+      envOverlay,
       steps,
       imageTag,
       clean,

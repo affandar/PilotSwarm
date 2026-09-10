@@ -5,8 +5,9 @@ metadata:
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: worker
+    pilotswarm.io/worker-kind: generic
 spec:
-  replicas: 3
+  replicas: __WORKER_REPLICAS__
   selector:
     matchLabels:
       app.kubernetes.io/name: pilotswarm
@@ -16,6 +17,7 @@ spec:
       labels:
         app.kubernetes.io/name: pilotswarm
         app.kubernetes.io/component: worker
+        pilotswarm.io/worker-kind: generic
         azure.workload.identity/use: "true"
       annotations:
         # SPC keys hash. Filled by the worker-replacements kustomize

@@ -13,6 +13,13 @@ Same outcome as the enterprise path: Bicep deployed → image pushed to ACR →
 Kustomize manifests staged with `.env` substitution → tree uploaded to
 the Flux Storage Bucket → rollout verified against the running cluster.
 
+The `worker` service is the platform-owned **generic repo-less worker pool**.
+It advertises `PILOTSWARM_WORKER_TAGS=generic`; repository-pinned workers are
+separate git-hydration DaemonSets. `WORKER_REPLICAS` controls the generic pool
+size and defaults to `3`. Composition repositories may override these settings
+through process environment variables while keeping their private values
+outside PilotSwarm.
+
 ## Prerequisites
 
 - **Node.js ≥ 20** (already a repo dep — `node --version`)
@@ -101,6 +108,9 @@ The `package.json` wrapper exposes the same CLI:
 
 ```bash
 npm run deploy -- worker foo --steps manifests
+
+# Overlay values owned by another repository or deployment system
+npm run deploy -- worker foo --env-overlay ../org-deployment/worker.env
 ```
 
 > **Note**: when invoking via `npm run deploy`, separate npm flags from
@@ -120,6 +130,8 @@ Flags:
   --steps <list>      build,bicep,push,manifests,rollout (or 'noop')
   --region <name>     Override LOCATION from <env>.env
   --image-tag <tag>   Default: <env>-<short-sha>[-dirty]
+  --env-overlay <path> Overlay an external KEY=VALUE file on the local env.
+                       Relative paths resolve from the current working directory.
   --clean             Wipe deploy/.tmp/<service>-<env>/ before running
   --force             Ignore deploy markers; redeploy every Bicep module even
                       if its template + rendered params are unchanged
@@ -154,6 +166,25 @@ Every deploy targets a personal local env at `deploy/envs/local/<name>/.env`
 **standalone** — `deploy.mjs` reads them directly with no runtime cascade
 onto a shared base file.
 
+Use `--env-overlay <path>` when deployment composition is owned outside the
+PilotSwarm checkout. The external file uses the same flat dotenv syntax and is
+overlaid without being copied into PilotSwarm. Relative paths resolve from the
+current working directory, so automation should prefer an absolute path. The
+flag is named `--env-overlay` because Node.js reserves `--env-file` for its own
+runtime configuration before `deploy.mjs` can parse arguments.
+
+Environment precedence, from lowest to highest, is:
+
+1. `deploy/envs/local/<name>/.env`
+2. the optional external `--env-overlay`
+3. matching process-environment variables
+4. explicit CLI flags such as `--region`
+
+Only keys present in one of the composed files are eligible for process-
+environment overrides; `deploy.mjs` does not import the entire parent process
+environment. This keeps composition explicit while allowing any organization
+to retain versioned deployment values in its own repository.
+
 `deploy/envs/template.env` is a checked-in template consumed only by the
 scaffolder (`npm run deploy:new-env`): it copies the template, substitutes
 deployment-target keys, prompts for per-stamp secrets, and writes the
@@ -172,6 +203,9 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `GLOBAL_RESOURCE_GROUP`, `GLOBAL_RESOURCE_PREFIX` | bicep (globalinfra) | Front Door RG + prefix. |
 | `PORTAL_RESOURCE_NAME` | bicep (portal) | Portal logical name. |
 | `NAMESPACE` | manifests, rollout | Target Kubernetes namespace (`pilotswarm` per A-11). |
+| `PILOTSWARM_WORKER_TAGS` | manifests (worker) | Comma-separated routing tags for the repo-less worker pool. Defaults to and must include `generic`; additional platform-neutral capacity tags are allowed. |
+| `WORKER_REPLICAS` | manifests (worker) | Replica count for the Flux-managed generic worker Deployment. Defaults to `3`. |
+| `CALLER_AUTH_KEYVAULT_NAME` | manifests (worker/portal) | Vault used for delegated caller credentials. Defaults to the Bicep-emitted `KV_NAME`; composition repositories may override it. |
 | `EDGE_MODE` | bicep, manifests, rollout | `afd` (default) or `private`. Controls AFD/AppGw/AGIC vs AKS web-app-routing addon. Drives Portal overlay path. |
 | `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/developer/deploy/aks.md](../../docs/developer/deploy/aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
 | `HOST`, `PRIVATE_DNS_ZONE` | bicep (portal), rollout (portal) | Required when `EDGE_MODE=private`. Bicep provisions the Private DNS Zone + VNet link; deploy.mjs writes the A record `${HOST}.${PRIVATE_DNS_ZONE}` → internal LB IP after Portal rollout. |
@@ -197,7 +231,7 @@ placeholder" error directing you to run a prior `--steps bicep`.
 
 | | Enterprise path | OSS path |
 |---|---|---|
-| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env` (standalone, scaffolded from `deploy/envs/template.env`) |
+| Source | `*.Configuration.json` per service | `deploy/envs/local/<name>/.env`, optionally overlaid by an external `--env-overlay` |
 | Scope binding | the enterprise orchestrator injects subscription / region / IDs into the parameters JSON | `deploy/scripts/lib/common.mjs` resolves env file → JS Map |
 | `.env` substitution | the enterprise param-substitution helper rewrites overlay `.env` from JSON params | `deploy/scripts/lib/substitute-env.mjs` rewrites overlay `.env` from the env map |
 | Per-service identity | Per-service scope binding | Shared `csiIdentity` UAMI clientId cascades from BaseInfra Bicep output → both worker and portal overlays |

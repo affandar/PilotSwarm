@@ -4,8 +4,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   loadEnv,
@@ -103,6 +104,67 @@ test("loadEnv does NOT cascade values from template.env", () => {
     assert.equal(env.NAMESPACE, undefined);
     assert.equal(env.AZURE_TENANT_ID, undefined);
     assert.equal(env.EDGE_MODE, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("loadEnv overlays an external env file before process-env overrides", () => {
+  cleanup();
+  const overlayDir = mkdtempSync(join(tmpdir(), "pilotswarm-env-overlay-"));
+  const overlayFile = join(overlayDir, "worker.env");
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(
+      TEST_FILE,
+      [
+        "VALUE=local",
+        "LOCAL_ONLY=local",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      overlayFile,
+      [
+        "VALUE=overlay",
+        "OVERLAY_ONLY=overlay",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const overlayArgument = relative(process.cwd(), overlayFile);
+    const { env, sources } = loadEnv(TEST_NAME, {
+      overlayEnvFile: overlayArgument,
+      processEnv: {
+        VALUE: "process",
+        OVERLAY_ONLY: "process",
+        UNRELATED: "ignored",
+      },
+    });
+
+    assert.equal(env.VALUE, "process");
+    assert.equal(env.LOCAL_ONLY, "local");
+    assert.equal(env.OVERLAY_ONLY, "process");
+    assert.equal(env.UNRELATED, undefined);
+    assert.equal(sources.local, TEST_FILE);
+    assert.equal(sources.overlay, resolve(overlayArgument));
+  } finally {
+    cleanup();
+    rmSync(overlayDir, { recursive: true, force: true });
+  }
+});
+
+test("loadEnv rejects a missing external env file", () => {
+  cleanup();
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "VALUE=local\n", "utf8");
+    assert.throws(
+      () => loadEnv(TEST_NAME, { overlayEnvFile: join(dirname(TEST_FILE), "missing.env") }),
+      /External env file not found or not a file/,
+    );
   } finally {
     cleanup();
   }
