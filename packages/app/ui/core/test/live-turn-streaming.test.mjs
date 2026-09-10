@@ -106,6 +106,52 @@ test("a successfully completed streamed answer uses the normal Agent prefix with
     assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
 });
 
+test("ask_user preamble becomes normal transcript text at the input-required boundary", () => {
+    const events = [
+        evt(1, "assistant.message", {
+            messageId: "m1",
+            content: "I need two details before I can continue.",
+            toolRequests: [{ name: "ask_user" }],
+        }),
+        evt(2, "session.input_required_started", { question: "Which environment?" }),
+        evt(3, "session.turn_completed", { resultType: "input_required" }),
+    ];
+    const select = history => selectChatLines(state(history), 100, { tableMode: "sentinel" })
+        .find(line => line?.kind === "assistantPreview");
+
+    const replayed = select(buildHistoryModel(events, {}));
+    let appendedHistory = buildHistoryModel([], {});
+    for (const event of events) appendedHistory = appendEventToHistory(appendedHistory, event);
+    const appended = select(appendedHistory);
+
+    for (const line of [replayed, appended]) {
+        assert.equal(line?.final, true);
+        assert.match(line?.headerRuns?.map(run => run.text).join("") || "", /Agent: /);
+        assert.equal(line?.body, "I need two details before I can continue.");
+    }
+    assert.deepEqual(appended, replayed, "live append and replay classify the boundary identically");
+});
+
+test("input-required never promotes ordinary or ambiguous tool-loop narration", () => {
+    for (const toolRequests of [
+        [{ name: "read_file" }],
+        [{ name: "ask_user" }, { name: "read_file" }],
+    ]) {
+        const history = buildHistoryModel([
+            evt(1, "assistant.message", {
+                messageId: "m1",
+                content: "Interim tool-loop narration.",
+                toolRequests,
+            }),
+            evt(2, "session.turn_completed", { resultType: "input_required" }),
+        ], {});
+        const line = selectChatLines(state(history), 100, { tableMode: "sentinel" })
+            .find(candidate => candidate?.kind === "assistantPreview");
+        assert.equal(line?.final, false);
+        assert.equal(line?.text, "Agent update");
+    }
+});
+
 test("durable-only history renders saved updates, never streaming previews, on append and replay", () => {
     const events = [
         evt(1, "user.message", { content: "Check the report" }),

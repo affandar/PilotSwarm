@@ -628,6 +628,15 @@ function buildChatMessage(event, role) {
         ? event.data.messageId
         : null;
     const chatRole = deriveChatRole(event, role, text);
+    const toolRequests = Array.isArray(event?.data?.toolRequests) ? event.data.toolRequests : [];
+    // Copilot records the user-facing text immediately before ask_user on the
+    // same assistant.message as that tool request. The turn then ends at an
+    // input_required boundary rather than a completed boundary. Mark only
+    // that narrow shape as eligible for transcript promotion; ordinary
+    // tool-loop narration must remain an Agent update.
+    const canFinalizeOnInputRequired = toolRequests.length === 1
+        && String(toolRequests[0]?.name || toolRequests[0]?.toolName || "") === "ask_user"
+        && !event?.data?.parentToolCallId;
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: chatRole,
@@ -642,7 +651,8 @@ function buildChatMessage(event, role) {
             assistantPreview: true,
             responsePending: true,
             responseFinal: false,
-            responseCanFinalize: !event?.data?.parentToolCallId && !event?.data?.toolRequests?.length,
+            responseCanFinalize: !event?.data?.parentToolCallId && toolRequests.length === 0,
+            responseCanFinalizeOnInputRequired: canFinalizeOnInputRequired,
             ...(typeof event?.data?.reasoningText === "string" && event.data.reasoningText
                 ? { liveReasoningText: event.data.reasoningText } : {}),
         } : {}),
@@ -656,10 +666,13 @@ function settleAssistantResponses(chat, event) {
     const resultType = event?.data?.resultType || event?.data?.result;
     const successful = event?.eventType === "session.turn_completed"
         && (!resultType || resultType === "completed");
+    const inputRequired = event?.eventType === "session.turn_completed"
+        && resultType === "input_required";
     let finalIndex = -1;
     for (let index = chat.length - 1; index >= 0; index -= 1) {
         if (chat[index]?.responsePending) {
-            if (successful && chat[index].responseCanFinalize) finalIndex = index;
+            if ((successful && chat[index].responseCanFinalize)
+                || (inputRequired && chat[index].responseCanFinalizeOnInputRequired)) finalIndex = index;
             break;
         }
     }
