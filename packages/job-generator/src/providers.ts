@@ -288,47 +288,6 @@ export function createEvaluatorsFromEnv(
     const remoteDefinitions = parseRemoteSourceProviderDefinitions(
         env.JOBGEN_SOURCE_PROVIDERS_JSON,
     );
-    const hasLegacyKustoConfiguration = [
-        env.JOBGEN_KUSTO_ENDPOINT,
-        env.JOBGEN_KUSTO_TOKEN,
-    ].some((value) => value?.trim());
-    if (
-        hasLegacyKustoConfiguration
-        && !remoteDefinitions.some((definition) => definition.id === "kusto")
-    ) {
-        throw new Error(
-            "JOBGEN_KUSTO_* settings are no longer supported by JobGenerator core; "
-            + "register provider 'kusto' through JOBGEN_SOURCE_PROVIDERS_JSON",
-        );
-    }
-    const hasLegacyAdoWiqlConfiguration = [
-        env.JOBGEN_ADO_WIQL_ENDPOINT,
-        env.JOBGEN_ADO_WIQL_TOKEN,
-        env.JOBGEN_ADO_WIQL_DIRECT,
-    ].some((value) => value?.trim());
-    if (
-        hasLegacyAdoWiqlConfiguration
-        && !remoteDefinitions.some((definition) => definition.id === "ado_wiql")
-    ) {
-        throw new Error(
-            "JOBGEN_ADO_WIQL_* settings are no longer supported by JobGenerator core; "
-            + "register provider 'ado_wiql' through JOBGEN_SOURCE_PROVIDERS_JSON",
-        );
-    }
-    const hasLegacyIcmConfiguration = [
-        env.JOBGEN_ICM_ENDPOINT,
-        env.JOBGEN_ICM_TOKEN,
-        env.JOBGEN_ICM_DIRECT,
-    ].some((value) => value?.trim());
-    if (
-        hasLegacyIcmConfiguration
-        && !remoteDefinitions.some((definition) => definition.id === "icm")
-    ) {
-        throw new Error(
-            "JOBGEN_ICM_* settings are no longer supported; register provider 'icm' "
-            + "through JOBGEN_SOURCE_PROVIDERS_JSON",
-        );
-    }
     for (const definition of remoteDefinitions) {
         const token = definition.tokenEnv ? env[definition.tokenEnv]?.trim() : undefined;
         if (definition.tokenEnv && !token) {

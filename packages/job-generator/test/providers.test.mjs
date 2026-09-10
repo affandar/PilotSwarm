@@ -255,7 +255,7 @@ test("provider registry only includes explicitly configured remote providers", (
     assert.deepEqual([...evaluators.keys()], ["ado_wiql"]);
 });
 
-test("provider registry rejects missing token env and legacy provider settings", () => {
+test("provider registry rejects missing token env and invalid timeout", () => {
     assert.throws(
         () => createEvaluatorsFromEnv({
             JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
@@ -265,51 +265,6 @@ test("provider registry rejects missing token env and legacy provider settings",
             }]),
         }),
         /requires token env MISSING_TOKEN/,
-    );
-    assert.throws(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_ADO_WIQL_ENDPOINT: "https://legacy.example/evaluate",
-        }),
-        /register provider 'ado_wiql' through JOBGEN_SOURCE_PROVIDERS_JSON/,
-    );
-    assert.doesNotThrow(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_ADO_WIQL_TOKEN: "legacy-token",
-            JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
-                id: "ado_wiql",
-                endpoint: "https://provider.example/evaluate",
-            }]),
-        }),
-    );
-    assert.throws(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_ICM_ENDPOINT: "https://legacy.example/evaluate",
-        }),
-        /register provider 'icm' through JOBGEN_SOURCE_PROVIDERS_JSON/,
-    );
-    assert.doesNotThrow(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_ICM_ENDPOINT: "https://legacy.example/evaluate",
-            JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
-                id: "icm",
-                endpoint: "https://provider.example/evaluate",
-            }]),
-        }),
-    );
-    assert.throws(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_KUSTO_ENDPOINT: "https://legacy.example/evaluate",
-        }),
-        /register provider 'kusto' through JOBGEN_SOURCE_PROVIDERS_JSON/,
-    );
-    assert.doesNotThrow(
-        () => createEvaluatorsFromEnv({
-            JOBGEN_KUSTO_TOKEN: "legacy-token",
-            JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
-                id: "kusto",
-                endpoint: "https://provider.example/evaluate",
-            }]),
-        }),
     );
     assert.throws(
         () => createEvaluatorsFromEnv({

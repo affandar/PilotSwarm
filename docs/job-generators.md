@@ -266,19 +266,6 @@ Controller-side source configuration is:
   `tokenEnv` names an environment variable; credentials are never embedded in
   the registration JSON.
 
-Legacy `JOBGEN_ICM_ENDPOINT`, `JOBGEN_ICM_TOKEN`, and `JOBGEN_ICM_DIRECT`
-settings no longer register an evaluator. If any remain during migration, the
-controller fails startup unless provider ID `icm` is present in
-`JOBGEN_SOURCE_PROVIDERS_JSON`.
-The same migration guard applies to `JOBGEN_ADO_WIQL_ENDPOINT`,
-`JOBGEN_ADO_WIQL_TOKEN`, and `JOBGEN_ADO_WIQL_DIRECT`: these settings now
-configure the provider-runner deployment, not JobGenerator core, and the
-controller requires an explicit remote registration for provider ID
-`ado_wiql`.
-Legacy `JOBGEN_KUSTO_ENDPOINT` and `JOBGEN_KUSTO_TOKEN` are also rejected unless
-provider ID `kusto` is explicitly registered through
-`JOBGEN_SOURCE_PROVIDERS_JSON`.
-
 Optional loop settings are `JOBGEN_POLL_INTERVAL_MS` (15000),
 `JOBGEN_CLAIM_LIMIT` (10), `JOBGEN_LEASE_SECONDS` (300), and
 `JOBGEN_WORKER_ID`. `JOBGEN_SOURCE_PROVIDER_TIMEOUT_MS` bounds each remote

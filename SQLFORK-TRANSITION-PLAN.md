@@ -425,8 +425,9 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   `fcadf52f-eae6-42e7-beab-54b361330425` loaded the external module through PilotSwarm's
   generic runner, discovered work item `5565721`, created one Job, and reached `Validated`
   after both durable mock waits.
-- [ ] Deploy the committed ADO WIQL/IcM changes, then verify an existing
-  `sourceType: "icm"` definition end-to-end against the sqlmort provider.
+- [x] Waive legacy in-process provider migration: no deployed use cases depend
+  on the old ADO WIQL, IcM, or Kusto environment contracts, so remove their
+  provider-specific startup guards instead of carrying migration scaffolding.
 - [x] Extract the Kusto JobGenerator evaluator into a SQLmort-owned sibling module using the
   same provider ABI as ADO WIQL and IcM.
 - [ ] Extract the remaining SQL-owned scenario and deployment surfaces. The public-sample
@@ -880,12 +881,13 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 - [x] Provider module ABI and platform-owned runner implemented; ADO WIQL, IcM, and Kusto
       concrete
       implementations, tests, configuration, and image composition moved to `sqlmort`
-      *(ADO WIQL, IcM, and Kusto committed 2026-09-10; deployment remains deferred)*.
+      *(ADO WIQL, IcM, and Kusto committed 2026-09-10; no legacy deployment
+      migration is required)*.
 - [x] Cross-repository loading and execution validated locally through SQLmort's `ado_wiql`
       plugin and the mock-delivery state machine, including authenticated provider dispatch,
       real Azure DevOps discovery, Job materialization, and terminal `Validated` state.
-- [ ] Combined PilotSwarm + sqlmort rollout validated against an existing
-      `sourceType: "icm"` definition.
+- [x] Legacy provider rollout waived because no deployed definitions depend on
+      the removed in-process ADO WIQL, IcM, or Kusto environment contracts.
 - [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
 - [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
       the fork is a pure-platform repo.
