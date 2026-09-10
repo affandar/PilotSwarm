@@ -88,7 +88,7 @@ async function seedActiveStateRun(env, {
     await directQuery(
         env,
         `INSERT INTO "${s}".job_generator_definitions (definition_id, generator_id, version, source_type)
-         VALUES ($1, $2, 1, 'kusto')`,
+         VALUES ($1, $2, 1, 'test-source')`,
         [ids.definitionId, ids.generatorId],
     );
     await directQuery(

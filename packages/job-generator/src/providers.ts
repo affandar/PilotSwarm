@@ -142,13 +142,6 @@ function stableKey(value: unknown, label: string): string {
     return key;
 }
 
-function arrayFrom(body: Record<string, unknown>, names: string[]): unknown[] {
-    for (const name of names) {
-        if (Array.isArray(body[name])) return body[name] as unknown[];
-    }
-    return [];
-}
-
 export function normalizeSourceProviderId(value: unknown): JobGeneratorSourceType {
     const id = String(value ?? "").trim();
     if (!SOURCE_PROVIDER_ID_RE.test(id)) {
@@ -238,41 +231,6 @@ function parseNormalizedProviderResponse(body: unknown, providerId: string): Eva
     };
 }
 
-export function parseKustoResponse(body: unknown, keyColumn = "key"): EvaluationResult {
-    const root = record(body);
-    const directRows = arrayFrom(root, ["items", "value"]);
-    if (directRows.length > 0) {
-        return {
-            discoveries: directRows.map((value) => {
-                const item = record(value);
-                return {
-                    key: stableKey(item[keyColumn] ?? item.key ?? item.id, "Kusto"),
-                    payload: item,
-                };
-            }),
-            watermark: root.watermark,
-        };
-    }
-
-    const table = record(arrayFrom(root, ["Tables", "tables"])[0]);
-    const columns = arrayFrom(table, ["Columns", "columns"]).map((column) => {
-        const value = record(column);
-        return String(value.ColumnName ?? value.columnName ?? value.name ?? "");
-    });
-    const rows = arrayFrom(table, ["Rows", "rows"]);
-    return {
-        discoveries: rows.map((rowValue) => {
-            if (!Array.isArray(rowValue)) throw new Error("Kusto table row must be an array");
-            const payload = Object.fromEntries(columns.map((column, index) => [column, rowValue[index]]));
-            return {
-                key: stableKey(payload[keyColumn] ?? payload.key ?? payload.id, "Kusto"),
-                payload,
-            };
-        }),
-        watermark: root.watermark,
-    };
-}
-
 export class RemoteSourceEvaluator extends HttpSourceEvaluator {
     readonly type: JobGeneratorSourceType;
 
@@ -295,16 +253,6 @@ export class RemoteSourceEvaluator extends HttpSourceEvaluator {
 
     protected parse(body: unknown): EvaluationResult {
         return parseNormalizedProviderResponse(body, this.type);
-    }
-}
-
-export class KustoEvaluator extends HttpSourceEvaluator {
-    readonly type = "kusto" as const;
-    protected parse(body: unknown, config: Record<string, unknown>): EvaluationResult {
-        const keyColumn = typeof config.keyColumn === "string" && config.keyColumn.trim()
-            ? config.keyColumn.trim()
-            : "key";
-        return parseKustoResponse(body, keyColumn);
     }
 }
 
@@ -337,17 +285,22 @@ export function createEvaluatorsFromEnv(
         }
         evaluators.set(evaluator.type, evaluator);
     };
-    if (env.JOBGEN_KUSTO_ENDPOINT?.trim()) {
-        register(new KustoEvaluator({
-            endpoint: env.JOBGEN_KUSTO_ENDPOINT,
-            token: env.JOBGEN_KUSTO_TOKEN,
-            fetch: fetchImpl,
-            requestTimeoutMs,
-        }));
-    }
     const remoteDefinitions = parseRemoteSourceProviderDefinitions(
         env.JOBGEN_SOURCE_PROVIDERS_JSON,
     );
+    const hasLegacyKustoConfiguration = [
+        env.JOBGEN_KUSTO_ENDPOINT,
+        env.JOBGEN_KUSTO_TOKEN,
+    ].some((value) => value?.trim());
+    if (
+        hasLegacyKustoConfiguration
+        && !remoteDefinitions.some((definition) => definition.id === "kusto")
+    ) {
+        throw new Error(
+            "JOBGEN_KUSTO_* settings are no longer supported by JobGenerator core; "
+            + "register provider 'kusto' through JOBGEN_SOURCE_PROVIDERS_JSON",
+        );
+    }
     const hasLegacyAdoWiqlConfiguration = [
         env.JOBGEN_ADO_WIQL_ENDPOINT,
         env.JOBGEN_ADO_WIQL_TOKEN,

@@ -247,9 +247,9 @@ not a commit.)
      entangled per-commit history; reserve commit-by-commit replay for the few themes whose
      history is already tight. Stack dependent PRs (foundation → features → UI/deploy).
    - Scrub Tier 2 terms as each PR is prepared.
-3. **Extract Tier 1 providers to `sqlmort`.** The first slice moves `IcmEvaluator` out of
-   `providers.ts` behind an opaque, normalized remote-provider contract. Continue with Kusto
-   and the remaining SQL-owned scenario/deployment surfaces.
+3. **Extract Tier 1 providers to `sqlmort`.** ADO WIQL, IcM, and Kusto JobGenerator
+   implementations move behind the opaque, normalized remote-provider contract. Continue
+   with the Kusto MCP adapter and the remaining SQL-owned scenario/deployment surfaces.
 4. **Resolve DELETE items** (anything experimental we don't want to publish or keep) — none
    identified yet; flag as found.
 5. **Retire.** Once every §6 capability has landed upstream or moved internal — so the fork
@@ -418,15 +418,17 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   operational documentation out of the platform implementation into **`sqlmort`**. The
   SQL-owned module contains only IcM connector behavior; its image composes that module over
   the platform runner. Kubernetes resources, controller registration, and coordinated rollout
-  tooling were implemented on 2026-09-10.
+  tooling remain deferred until the composition image can be exercised against a target stamp.
 - [x] Validate the cross-repository provider boundary with SQLmort's `ado_wiql` sibling plugin
   and the deterministic mock-delivery lifecycle. On 2026-09-10 generator
   `fcadf52f-eae6-42e7-beab-54b361330425` loaded the external module through PilotSwarm's
   generic runner, discovered work item `5565721`, created one Job, and reached `Validated`
   after both durable mock waits.
-- [ ] Commit and deploy the combined changes, then verify an existing `sourceType: "icm"`
-  definition end-to-end against the sqlmort provider.
-- [ ] Extract the remaining SQL-owned providers and scenario surfaces, beginning with Kusto.
+- [ ] Deploy the committed ADO WIQL/IcM changes, then verify an existing
+  `sourceType: "icm"` definition end-to-end against the sqlmort provider.
+- [x] Extract the Kusto JobGenerator evaluator into a SQLmort-owned sibling module using the
+  same provider ABI as ADO WIQL and IcM.
+- [ ] Extract the remaining SQL-owned scenario surfaces and the Kusto MCP adapter.
 - **Make the overlay the deployment/integration repo:** it depends on core (fork now, upstream
   later), injects the IcM plugin, and owns the compose→build→ship pipeline.
 - **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
@@ -868,10 +870,11 @@ small weekly rebases keep each migration/orchestration collision to one commit's
       gate enforces "source change ⇒ test in same commit" going forward (see §10 Phase 0).
 - [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
-- [x] Provider module ABI and platform-owned runner implemented; ADO WIQL and IcM concrete
+- [x] Provider module ABI and platform-owned runner implemented; ADO WIQL, IcM, and Kusto
+      concrete
       implementations, tests, configuration, and image composition moved to `sqlmort`
-      *(working-tree implementation complete 2026-09-10; not yet
-      committed or deployed)*.
+      *(ADO WIQL and IcM committed 2026-09-10; Kusto extraction prepared afterward;
+      deployment remains deferred)*.
 - [x] Cross-repository loading and execution validated locally through SQLmort's `ado_wiql`
       plugin and the mock-delivery state machine, including authenticated provider dispatch,
       real Azure DevOps discovery, Job materialization, and terminal `Validated` state.

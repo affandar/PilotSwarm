@@ -255,13 +255,12 @@ Required:
 Concrete source connectors are not implemented in this repository. Domain
 repositories build modules against the public v1 ABI, compose them over the
 platform-owned `pilotswarm-job-generator-provider` runner, and register the
-resulting endpoint with the controller. For example, SQLmort owns both its
-`ado_wiql` and `icm` modules; PilotSwarm does not import either connector.
+resulting endpoint with the controller. For example, SQLmort owns its
+`ado_wiql`, `icm`, and `kusto` modules; PilotSwarm does not import those
+connectors.
 
 Controller-side source configuration is:
 
-- `JOBGEN_KUSTO_ENDPOINT`, optional `JOBGEN_KUSTO_TOKEN` — retained built-in
-  compatibility adapter.
 - `JOBGEN_SOURCE_PROVIDERS_JSON` — JSON array of remote provider registrations:
   `{"id":"example-source","endpoint":"http://provider/evaluate","tokenEnv":"OPTIONAL_TOKEN_ENV"}`.
   `tokenEnv` names an environment variable; credentials are never embedded in
@@ -276,6 +275,9 @@ The same migration guard applies to `JOBGEN_ADO_WIQL_ENDPOINT`,
 configure the provider-runner deployment, not JobGenerator core, and the
 controller requires an explicit remote registration for provider ID
 `ado_wiql`.
+Legacy `JOBGEN_KUSTO_ENDPOINT` and `JOBGEN_KUSTO_TOKEN` are also rejected unless
+provider ID `kusto` is explicitly registered through
+`JOBGEN_SOURCE_PROVIDERS_JSON`.
 
 Optional loop settings are `JOBGEN_POLL_INTERVAL_MS` (15000),
 `JOBGEN_CLAIM_LIMIT` (10), `JOBGEN_LEASE_SECONDS` (300), and

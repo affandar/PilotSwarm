@@ -4,23 +4,9 @@ import {
     createEvaluatorsFromEnv,
     effectiveJobGeneratorLeaseSeconds,
     normalizeSourceProviderId,
-    parseKustoResponse,
     parseRemoteSourceProviderDefinitions,
     RemoteSourceEvaluator,
 } from "../dist/providers.js";
-
-test("Kusto parser maps table columns and configurable stable key", () => {
-    const result = parseKustoResponse({
-        Tables: [{
-            Columns: [{ ColumnName: "WorkId" }, { ColumnName: "Title" }],
-            Rows: [["abc", "hello"]],
-        }],
-    }, "WorkId");
-    assert.deepEqual(result.discoveries, [{
-        key: "abc",
-        payload: { WorkId: "abc", Title: "hello" },
-    }]);
-});
 
 test("source provider ids are opaque but syntax constrained", () => {
     assert.equal(normalizeSourceProviderId("example.provider-v2"), "example.provider-v2");
@@ -232,9 +218,8 @@ test("remote evaluator bounds stalled requests and propagates cancellation", asy
     assert.equal(cancellationSignal.aborted, true);
 });
 
-test("provider registry includes retained Kusto and configured remote providers", async () => {
+test("provider registry includes configured remote providers", async () => {
     const evaluators = createEvaluatorsFromEnv({
-        JOBGEN_KUSTO_ENDPOINT: "https://kusto.example/query",
         JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([
             {
                 id: "external-items",
@@ -251,7 +236,7 @@ test("provider registry includes retained Kusto and configured remote providers"
         });
     });
 
-    assert.deepEqual([...evaluators.keys()], ["kusto", "external-items"]);
+    assert.deepEqual([...evaluators.keys()], ["external-items"]);
     await evaluators.get("external-items").evaluate({
         generator: { generatorId: "g1" },
         definition: { definitionId: "d1", sourceConfig: {} },
@@ -307,6 +292,21 @@ test("provider registry rejects missing token env and legacy provider settings",
             JOBGEN_ICM_ENDPOINT: "https://legacy.example/evaluate",
             JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
                 id: "icm",
+                endpoint: "https://provider.example/evaluate",
+            }]),
+        }),
+    );
+    assert.throws(
+        () => createEvaluatorsFromEnv({
+            JOBGEN_KUSTO_ENDPOINT: "https://legacy.example/evaluate",
+        }),
+        /register provider 'kusto' through JOBGEN_SOURCE_PROVIDERS_JSON/,
+    );
+    assert.doesNotThrow(
+        () => createEvaluatorsFromEnv({
+            JOBGEN_KUSTO_TOKEN: "legacy-token",
+            JOBGEN_SOURCE_PROVIDERS_JSON: JSON.stringify([{
+                id: "kusto",
                 endpoint: "https://provider.example/evaluate",
             }]),
         }),

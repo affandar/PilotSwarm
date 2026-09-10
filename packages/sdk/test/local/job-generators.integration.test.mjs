@@ -26,8 +26,8 @@ test("Postgres JobGenerator reconciliation is exactly-once and retains session h
             owner: { provider: "test", subject: "owner" },
             cadenceSeconds: 60,
             definition: {
-                sourceType: "kusto",
-                sourceConfig: { query: "SampleRecords | take 10" },
+                sourceType: "test-source",
+                sourceConfig: { filter: "sample-records" },
             },
         });
         const { generator, definition } = created;
@@ -121,8 +121,8 @@ test("Postgres Job cleanup is owner-scoped, idempotent, and fenced from stale wo
             owner,
             cadenceSeconds: 60,
             definition: {
-                sourceType: "kusto",
-                sourceConfig: { query: "SampleRecords | take 10" },
+                sourceType: "test-source",
+                sourceConfig: { filter: "sample-records" },
             },
         });
         await catalog.claimDueJobGenerators("worker-1", 1, 60);
@@ -213,8 +213,8 @@ test("Postgres Job cleanup is owner-scoped, idempotent, and fenced from stale wo
             owner,
             cadenceSeconds: 60,
             definition: {
-                sourceType: "kusto",
-                sourceConfig: { query: "SampleRecords | take 10" },
+                sourceType: "test-source",
+                sourceConfig: { filter: "sample-records" },
             },
         });
         assert.notEqual(replacement.generator.generatorId, generator.generatorId);
