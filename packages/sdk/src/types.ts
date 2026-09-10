@@ -778,7 +778,7 @@ export interface SessionPolicy {
  * Invoked at the very top of the `runTurn` activity — BEFORE the session
  * touches its working directory or spawns the Copilot CLI. A worker that is
  * collocated with a node-local git-cache mirror (see
- * SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md) uses this to fetch its
+ * docs/architecture/aks-git-hydration.md) uses this to fetch its
  * reused local enlistment from the mirror and hard-reset it to the target
  * ref, so every job runs on a tree that matches the latest periodic fetch.
  *

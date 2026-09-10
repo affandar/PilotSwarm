@@ -5,7 +5,7 @@
  *
  * Identical polling/execution behaviour to examples/worker.js, but designed to
  * run 1:1 on the same nodes as the git-cache mirror DaemonSet (see
- * SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md, sections 5 & 6). The pod
+ * docs/architecture/aks-git-hydration.md, sections 5 & 6). The pod
  * is co-scheduled with the mirror daemon from node boot, but an initContainer
  * gate (`wait-for-mirror`) blocks THIS process from starting until the daemon
  * has finished the initial `git clone --mirror` on this node and written the

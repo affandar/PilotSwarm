@@ -1,7 +1,8 @@
 # PilotSwarm git-cache DaemonSet (AKS git-hydration data plane)
 
 Node-local **bare-mirror maintainer** for the AKS git-hydration design
-(`SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md`, §5). One pod per node
+([`docs/architecture/aks-git-hydration.md`](../../../docs/architecture/aks-git-hydration.md),
+§5). One pod per node
 keeps a fresh `git --mirror` of a single repo on the node's disk
 (`hostPath: /var/lib/pilotswarm-git-cache`), so PilotSwarm worker pods later
 materialize a working tree by **local reference-clone**, never a network clone.

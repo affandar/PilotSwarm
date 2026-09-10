@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache
 # The node-local mirror maintainer for the AKS git-hydration data plane
-# (see SqlOrchestrationPlatform/docs/AKS-GIT-HYDRATION.md, section 5). This
+# (see docs/architecture/aks-git-hydration.md, section 5). This
 # script is intentionally URL-FREE: the repo it maintains is supplied entirely
 # via env (REPO_URL / REPO_NAME) by the concrete per-repo DaemonSet, whose
 # values live OUTSIDE this GitHub repo. One pod per node keeps a bare mirror
