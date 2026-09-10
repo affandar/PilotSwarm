@@ -1,7 +1,7 @@
 # Follow-up: Efficient Windows worker **image** build (deferred)
 
 **Status:** Deferred / parked (2026-08-11)
-**Author:** kchung
+**Author:** @andrewkcchung
 **Referenced from:** [`deploy/Dockerfile.worker`](../../deploy/Dockerfile.worker) (pwsh-install comment)
 
 ## TL;DR

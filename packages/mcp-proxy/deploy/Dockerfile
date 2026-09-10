@@ -1,7 +1,7 @@
 # pilotswarm-mcp-proxy image — the in-cluster Kusto MCP auth proxy.
 #
 # Build context is the REPO ROOT (needs the root lockfile + the workspace
-# package.jsons), e.g. from Q:\src\PilotSwarm:
+# package.jsons). Run from the repository root:
 #   docker buildx build --platform linux/amd64 \
 #     -f packages/mcp-proxy/deploy/Dockerfile -t <acr>/pilotswarm-mcp-proxy:<tag> .
 #
