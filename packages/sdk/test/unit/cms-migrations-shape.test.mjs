@@ -156,5 +156,8 @@ test("0090: JobGenerator source providers use opaque identifiers", () => {
         migration.sql,
         /CHECK \(source_type ~ '\^\[a-z\]\[a-z0-9\._-\]\{0,127\}\$'\)/i,
     );
-    assert.doesNotMatch(migration.sql, /ado_wiql|icm|kusto/i);
+    assert.doesNotMatch(
+        migration.sql,
+        /CHECK\s*\(\s*source_type\s+IN\s*\(/i,
+    );
 });
