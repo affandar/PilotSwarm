@@ -24,8 +24,8 @@ image build recipe, Dockerfile, or CI is committed on this branch**.
 pwsh-on-Linux covers the "must run PowerShell" need for the AKS fleet today, but
 there are Windows-specific reasons a native Windows worker stays on the roadmap:
 
-1. **ADO Windows VMs with a VHD-baked enlistment.** The SQL-AI-Marketplace ADO
-   worker path targets a 1ES managed Windows pool where the target enlistment is
+1. **ADO Windows VMs with a VHD-baked enlistment.** An ADO worker path can target
+   a managed Windows pool where the target enlistment is
    pre-hydrated into the agent VHD. A worker running there as a **host process**
    gets same-filesystem access to that enlistment — no container boundary, no
    bind-mount over the VHD.

@@ -23,11 +23,11 @@
 # bind-mounted, UNENCRYPTED az token cache (mounted at AZURE_CONFIG_DIR), no popup.
 # Inert on AKS: the workload-identity / managed-identity stages resolve first.
 #
-# Build:
-#   az acr build --registry pssqlwus2acr --platform windows `
-#     --image pilotswarm-worker-base:dotnet10-az `
+# Build locally:
+#   docker build `
 #     --file deploy/Dockerfile.worker-base-az.windows `
-#     --build-arg BASE_IMAGE=pssqlwus2acr.azurecr.io/pilotswarm-worker-base:dotnet10 .
+#     --build-arg BASE_IMAGE=example.azurecr.io/pilotswarm-worker-base:dotnet10 `
+#     --tag pilotswarm-worker-base:dotnet10-az .
 # =============================================================================
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

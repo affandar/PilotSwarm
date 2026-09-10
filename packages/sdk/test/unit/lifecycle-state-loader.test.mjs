@@ -28,10 +28,10 @@ function sources() {
             resolvedCommit: "abc123",
         },
         {
-            sourceId: "standard-fix-delivery@1",
+            sourceId: "standard-delivery@1",
             owner: "platform",
-            filePrefix: "StandardFix",
-            basePath: "profiles/standard-fix",
+            filePrefix: "StandardDelivery",
+            basePath: "profiles/standard-delivery",
             version: "1",
             digest: "profile-digest",
         },
@@ -51,8 +51,8 @@ function stateFiles() {
     return new Map([
         ["hello-world-user:lifecycles/hello-world/HelloWorld.WorkDetailsGathered.md", workDetailsMarkdown],
         ["hello-world-user:lifecycles/hello-world/HelloWorld.Diagnosed.md", diagnosedMarkdown],
-        ["standard-fix-delivery@1:profiles/standard-fix/StandardFix.FixProposed.md", fixProposedMarkdown],
-        ["standard-fix-delivery@1:profiles/standard-fix/StandardFix.PRPublished.md", prPublishedMarkdown],
+        ["standard-delivery@1:profiles/standard-delivery/StandardDelivery.FixProposed.md", fixProposedMarkdown],
+        ["standard-delivery@1:profiles/standard-delivery/StandardDelivery.PRPublished.md", prPublishedMarkdown],
     ]);
 }
 
@@ -80,7 +80,7 @@ test("loads the exact user-owned Markdown for the current state", async () => {
     assert.match(loaded.sha256, /^[0-9a-f]{64}$/);
     assert.deepEqual(reads, [
         ["hello-world-user", "lifecycles/hello-world/HelloWorld.WorkDetailsGathered.md"],
-        ["standard-fix-delivery@1", "profiles/standard-fix/StandardFix.WorkDetailsGathered.md"],
+        ["standard-delivery@1", "profiles/standard-delivery/StandardDelivery.WorkDetailsGathered.md"],
     ]);
 });
 
@@ -124,8 +124,8 @@ test("loads platform Markdown without assembling or renaming it", async () => {
     });
 
     assert.equal(loaded.owner, "platform");
-    assert.equal(loaded.source.sourceId, "standard-fix-delivery@1");
-    assert.equal(loaded.sourcePath, "profiles/standard-fix/StandardFix.FixProposed.md");
+    assert.equal(loaded.source.sourceId, "standard-delivery@1");
+    assert.equal(loaded.sourcePath, "profiles/standard-delivery/StandardDelivery.FixProposed.md");
     assert.equal(loaded.markdown, fixProposedMarkdown);
     assert.equal("files" in loaded, false, "a combined lifecycle package must not be materialized");
 });
@@ -141,7 +141,7 @@ test("worker activation probes only the requested state path in each source", as
 
     assert.deepEqual(reads, [
         ["hello-world-user", "lifecycles/hello-world/HelloWorld.PRPublished.md"],
-        ["standard-fix-delivery@1", "profiles/standard-fix/StandardFix.PRPublished.md"],
+        ["standard-delivery@1", "profiles/standard-delivery/StandardDelivery.PRPublished.md"],
     ]);
 });
 

@@ -15,10 +15,10 @@ export type LifecycleStateOwner = "user" | "platform";
 export type LifecycleStateSourceKind = "ado" | "github";
 
 export interface LifecycleStateSource {
-    /** Stable identity, such as user-diagnostic or standard-fix-delivery@1. */
+    /** Stable identity, such as user-diagnostic or standard-delivery@1. */
     sourceId: string;
     owner: LifecycleStateOwner;
-    /** Filename prefix in this source, such as HelloWorld or StandardFix. */
+    /** Filename prefix in this source, such as HelloWorld or StandardDelivery. */
     filePrefix: string;
     /** Safe source-relative directory containing the state files. */
     basePath?: string;

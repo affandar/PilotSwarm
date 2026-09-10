@@ -264,7 +264,7 @@ Require exactly one match and execute that Markdown
 
 For example, a Job in `FixProposed` may probe
 `HelloWorld.FixProposed.md` in its pinned user source and
-`StandardFix.FixProposed.md` in its pinned platform profile. If only the
+`StandardDelivery.FixProposed.md` in its pinned platform profile. If only the
 platform file exists, that exact file is executed. A missing state or a state
 present in multiple sources is an explicit error.
 
@@ -329,7 +329,7 @@ The selected lifecycle policy must:
 The profile registry stores versioned lifecycle fragments, for example:
 
 ```text
-standard-fix-delivery@1
+standard-delivery@1
 repository-specific-triage@2
 custom-only@1
 ```
@@ -364,10 +364,10 @@ The immutable JobGeneratorDefinition should retain:
         "digest": "<source-digest>"
       },
       {
-        "sourceId": "standard-fix-delivery@1",
+        "sourceId": "standard-delivery@1",
         "owner": "platform",
-        "filePrefix": "StandardFix",
-        "basePath": "profiles/standard-fix",
+        "filePrefix": "StandardDelivery",
+        "basePath": "profiles/standard-delivery",
         "kind": "ado",
         "repositoryUrl": "https://dev.azure.com/example/platform/_git/lifecycle-profiles",
         "resolvedCommit": "<commit>",
@@ -999,7 +999,7 @@ After a handoff:
 
 ```text
 State: FixProposed
-Owner: standard-fix-delivery@1
+Owner: standard-delivery@1
 Status: Active
 ```
 
@@ -1241,7 +1241,7 @@ The observed target's organization, project, and repository must match the Job
 `affinities.repo` entry in the server-owned `JOBGEN_ADO_REPOSITORY_BINDINGS`
 array so the observers authorize the target before using any credential. A
 convenient live proof points at a recently-completed pull request already
-signed off by all required reviewers (for example a DsMainDev pull request), so
+signed off by all required reviewers (for example a service-repository pull request), so
 a single `--full-run` observes real reviewer, policy, and completion state —
 including the real merge commit — with no mutation.
 
