@@ -50,7 +50,7 @@
 .ps-moa-session-picker .ps-panel-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ps-moa-session-picker .ps-session-list { flex: 1; min-height: 100px; }
 .ps-moa-session-picker .ps-session-detail-box { max-height: 25dvh; overflow-y: auto; }
-.ps-moa-session-picker > .ps-modal-input, .ps-moa-session-picker .ps-panel-body > .ps-modal-input { margin: 8px; flex-shrink: 0; width: auto; }
+.ps-moa-session-picker .ps-session-search { flex-shrink: 0; }
 
 /* Win95 desktop teal is an outer desktop, not a readable control surface. */
 :root[data-ps-theme="win95"] .ps-moa-panel,

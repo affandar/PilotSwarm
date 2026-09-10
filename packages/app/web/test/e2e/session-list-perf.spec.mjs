@@ -101,7 +101,7 @@ test("the selection still lands on the right session and loads it", async ({ pag
     expect(id).toMatch(/^[0-9a-f-]{8,}/i);
 });
 
-test("a newly focused session is centered in the list once", async ({ page }) => {
+test("selecting a session does not recenter the list", async ({ page }) => {
     await openListFocused(page);
     await page.evaluate(() => {
         window.__sessionRevealCalls = [];
@@ -109,13 +109,16 @@ test("a newly focused session is centered in the list once", async ({ page }) =>
             window.__sessionRevealCalls.push({ sessionId: this.getAttribute("data-session-id"), block: options?.block });
         };
     });
+    const list = page.locator(".ps-session-list");
+    await list.evaluate((element) => { element.scrollTop = 1_500; });
     const target = page.locator(".ps-session-list-button").nth(75);
-    const sessionId = await target.getAttribute("data-session-id");
+    await target.scrollIntoViewIfNeeded();
+    await page.evaluate(() => { window.__sessionRevealCalls = []; });
+    const positioned = await list.evaluate((element) => element.scrollTop);
     await target.click();
-    await expect.poll(() => page.evaluate(() => window.__sessionRevealCalls)).toContainEqual({ sessionId, block: "center" });
-    const count = await page.evaluate(id => window.__sessionRevealCalls.filter(call => call.sessionId === id).length, sessionId);
     await page.waitForTimeout(500);
-    expect(await page.evaluate(id => window.__sessionRevealCalls.filter(call => call.sessionId === id).length, sessionId)).toBe(count);
+    expect(await page.evaluate(() => window.__sessionRevealCalls)).toEqual([]);
+    expect(await list.evaluate((element) => element.scrollTop)).toBe(positioned);
 });
 
 test("a burst of moves stays within a frame budget per move", async ({ page }) => {

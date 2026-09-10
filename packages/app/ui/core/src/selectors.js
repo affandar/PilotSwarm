@@ -1,7 +1,12 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
-import { isManuallyOrderableSession } from "./session-tree.js";
+import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
+import {
+    buildSessionSearchDocument,
+    parseSessionSearchQuery,
+    scoreSessionSearchDocument,
+} from "./session-search.js";
 import {
     createSplashCard,
     isRehydrationNoticeText,
@@ -1287,6 +1292,132 @@ function matchesSearchQuery(value, query) {
     return String(value || "").toLowerCase().includes(normalizedQuery);
 }
 
+const searchedSessionFlatCache = new WeakMap();
+
+function sessionGroupTitle(session, byId) {
+    if (session?.isGroup) return session.title || "";
+    if (session?.groupId) return byId?.[`group:${session.groupId}`]?.title || "";
+    let current = session;
+    const seen = new Set();
+    while (current?.parentSessionId && !seen.has(current.parentSessionId)) {
+        seen.add(current.parentSessionId);
+        current = byId?.[current.parentSessionId];
+        if (current?.groupId) return byId?.[`group:${current.groupId}`]?.title || "";
+    }
+    return "";
+}
+
+function sessionSearchOwner(session, byId) {
+    const direct = effectiveSessionOwner(session, byId);
+    if (direct) return direct;
+    let current = session;
+    const seen = new Set();
+    while (current?.parentSessionId && !seen.has(current.parentSessionId)) {
+        seen.add(current.parentSessionId);
+        current = byId?.[current.parentSessionId];
+        if (current?.owner) return current.owner;
+    }
+    return null;
+}
+
+function buildSearchedSessionFlat(state, query) {
+    const existingFlat = Array.isArray(state.sessions?.flat) ? state.sessions.flat : [];
+    if (!query) return existingFlat;
+    const cached = searchedSessionFlatCache.get(existingFlat);
+    if (cached?.query === query) return cached.result;
+
+    const byId = state.sessions?.byId || {};
+    const parsed = parseSessionSearchQuery(query);
+    const expanded = buildSessionTree(
+        Object.values(byId),
+        new Set(),
+        state.sessions?.orderById,
+        state.sessions?.pinnedIds,
+        state.sessions?.manualOrder,
+    );
+    const parentById = new Map();
+    const entryById = new Map();
+    const baseIndex = new Map();
+    const stack = [];
+    for (let index = 0; index < expanded.length; index += 1) {
+        const entry = expanded[index];
+        stack[entry.depth] = entry.sessionId;
+        stack.length = entry.depth + 1;
+        parentById.set(entry.sessionId, entry.depth > 0 ? stack[entry.depth - 1] : null);
+        entryById.set(entry.sessionId, entry);
+        baseIndex.set(entry.sessionId, index);
+    }
+
+    const directScores = new Map();
+    for (const entry of expanded) {
+        const session = byId[entry.sessionId] || entry.standIn;
+        if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
+        const owner = sessionSearchOwner(session, byId);
+        const document = buildSessionSearchDocument(session, {
+            owner,
+            groupTitle: sessionGroupTitle(session, byId),
+        });
+        const score = scoreSessionSearchDocument(document, parsed);
+        if (score > 0) directScores.set(entry.sessionId, score);
+    }
+    const matchedIds = new Set(directScores.keys());
+    // A just-created or deep-linked session may be admitted explicitly while
+    // the user's prior query still excludes it. Preserve that established
+    // visibility contract and rank the exception first until the user edits
+    // the search (which clears filterExceptionId in the reducer).
+    const exceptionId = state.sessions?.filterExceptionId;
+    if (exceptionId && entryById.has(exceptionId)) {
+        directScores.set(exceptionId, Number.MAX_SAFE_INTEGER);
+    }
+
+    const included = new Set();
+    const subtreeScores = new Map();
+    for (const [sessionId, score] of directScores) {
+        let current = sessionId;
+        const seen = new Set();
+        while (current && !seen.has(current)) {
+            seen.add(current);
+            included.add(current);
+            subtreeScores.set(current, Math.max(subtreeScores.get(current) || 0, score));
+            current = parentById.get(current) || null;
+        }
+    }
+
+    const children = new Map();
+    for (const sessionId of included) {
+        const parentId = parentById.get(sessionId) || null;
+        if (!children.has(parentId)) children.set(parentId, []);
+        children.get(parentId).push(sessionId);
+    }
+    for (const siblings of children.values()) {
+        siblings.sort((a, b) => (subtreeScores.get(b) || 0) - (subtreeScores.get(a) || 0)
+            || (baseIndex.get(a) || 0) - (baseIndex.get(b) || 0));
+    }
+
+    const result = [];
+    const visit = (sessionId, depth) => {
+        const entry = entryById.get(sessionId);
+        if (!entry) return;
+        const childIds = children.get(sessionId) || [];
+        result.push({
+            ...entry,
+            depth,
+            collapsed: false,
+            hasChildren: childIds.length > 0,
+            searchIncluded: true,
+            searchMatch: matchedIds.has(sessionId),
+            searchScore: directScores.get(sessionId) || 0,
+        });
+        for (const childId of childIds) visit(childId, depth + 1);
+    };
+    for (const rootId of children.get(null) || []) visit(rootId, 0);
+    // A user can type an unbounded number of distinct queries while the
+    // catalog array keeps the same identity. Keep only the latest result for
+    // that catalog rather than retaining every intermediate keystroke.
+    searchedSessionFlatCache.set(existingFlat, { query, result });
+    return result;
+}
+
 // The transient deep-link filter exception covers the linked session AND its
 // ancestor chain (real parents plus the synthetic group:<id> row) so the
 // linked row renders with its tree context instead of as an orphan.
@@ -1330,22 +1461,25 @@ function sameRowDeps(a, b) {
 }
 
 export function selectSessionRows(state) {
+    // Keep field punctuation and quotes for the parser (`author:"Ada Lovelace"`).
+    // Individual values are normalized inside session-search.
+    const query = String(state.sessions?.filterQuery || "").trim();
+    const sessionFlat = buildSearchedSessionFlat(state, query);
     const totalDescendantCounts = getTotalDescendantCounts(state.sessions.byId);
-    const visibleDescendantCounts = getVisibleDescendantCounts(state.sessions.flat, state.sessions.byId);
-    const query = normalizeSearchQuery(state.sessions?.filterQuery || "");
+    const visibleDescendantCounts = getVisibleDescendantCounts(sessionFlat, state.sessions.byId);
     const ownerFilter = state.sessions?.ownerFilter || { all: true };
     const auth = state.auth || {};
     const pinnedSet = new Set(Array.isArray(state.sessions?.pinnedIds) ? state.sessions.pinnedIds : []);
     const selectedSet = new Set(Array.isArray(state.sessions?.selectedIds) ? state.sessions.selectedIds : []);
     const filterExceptionIds = collectFilterExceptionIds(state.sessions);
 
-    let memo = sessionRowMemo.get(state.sessions.flat);
+    let memo = sessionRowMemo.get(sessionFlat);
     if (!memo) {
         memo = new Map();
-        sessionRowMemo.set(state.sessions.flat, memo);
+        sessionRowMemo.set(sessionFlat, memo);
     }
 
-    return state.sessions.flat.filter((entry) => (
+    return sessionFlat.filter((entry) => (
         // A row whose session is in neither place can render nothing but an
         // owner chip and a dash - the "[?]" ghost. Drop it rather than show it.
         Boolean(state.sessions.byId[entry.sessionId] || entry.standIn)
@@ -1433,10 +1567,13 @@ export function selectSessionRows(state) {
             // `chrome` as well so a host that draws its own row (the phone's
             // list) can act on it without reading the portal's descriptor.
             pause: rowView.chrome?.pause || null,
+            searchMatch: entry.searchMatch === true,
+            searchScore: Number(entry.searchScore) || 0,
         };
         memo.set(entry.sessionId, { deps, row });
         return row;
     }).filter((row) => {
+        if (query) return true; // searchedSessionFlat already contains only matches and their ancestors.
         if (filterExceptionIds?.has(row.sessionId)) return true;
         const session = state.sessions.byId[row.sessionId];
         if (!matchesOwnerFilter(session, ownerFilter, auth, state.sessions.byId)) return false;
@@ -1444,11 +1581,9 @@ export function selectSessionRows(state) {
         const ownerSearchText = effectiveOwner
             ? `${ownerDisplayName(effectiveOwner, "")} ${effectiveOwner.email || ""}`
             : "";
-        const summarySearchText = "";
         return matchesSearchQuery(row.text, query)
             || matchesSearchQuery(row.sessionId, query)
-            || matchesSearchQuery(ownerSearchText, query)
-            || matchesSearchQuery(summarySearchText, query);
+            || matchesSearchQuery(ownerSearchText, query);
     });
 }
 

@@ -2024,6 +2024,130 @@ body.is-resizing-pane-y iframe {
   padding: 2px 0 6px;
 }
 
+/* One search surface for the workspace list and the MoA session picker. The
+   list owns scrolling; this footer stays put and never drags the selected row
+   into view when a query changes. */
+.ps-session-search {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--ps-border-strong) 72%, transparent);
+  background: var(--ps-chrome);
+}
+
+.ps-session-search-fields {
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 1px solid var(--ps-border-strong);
+  border-radius: 4px;
+  background: var(--ps-input-background, var(--ps-surface));
+  color: var(--ps-foreground);
+}
+
+.ps-session-search-fields:focus-within {
+  border-color: var(--ps-panel-accent, var(--ps-accent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ps-panel-accent, var(--ps-accent)) 35%, transparent);
+}
+
+.ps-session-search-fields > .ps-share-glyph {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--ps-muted);
+}
+
+.ps-session-search-fields input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
+}
+
+.ps-session-search-fields input::placeholder { color: var(--ps-muted); }
+.ps-session-search-fields input::-webkit-search-cancel-button { display: none; }
+
+.ps-session-search-count {
+  flex: 0 0 auto;
+  color: var(--ps-muted);
+  font-size: var(--ps-font-size-dense);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-session-search-clear,
+.ps-session-search-trigger {
+  border: 0;
+  background: transparent;
+  color: var(--ps-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ps-session-search-clear {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 22px;
+}
+
+.ps-session-search-clear:hover,
+.ps-session-search-trigger:hover { color: var(--ps-foreground); }
+
+.ps-session-search-trigger { display: none; }
+
+/* In the compact phone split, search is a floating finger target until asked
+   for. Opening it temporarily gives Sessions more height. Sessions-only mode
+   has room and shows the field continuously. */
+.ps-mobile-session-pane .ps-panel-body { position: relative; }
+
+.ps-mobile-session-pane .ps-session-search:not(.is-open) {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  z-index: 4;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-fields { display: none; }
+.ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-trigger {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 7px;
+  border: 1px solid var(--ps-border-strong);
+  border-radius: 50%;
+  background: var(--ps-chrome);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.28);
+}
+.ps-mobile-session-pane .ps-session-search-trigger .ps-share-glyph { width: 16px; height: 16px; }
+.ps-mobile-session-pane .ps-session-search.is-open .ps-session-search-trigger { display: none; }
+.ps-mobile-session-pane:has(.ps-session-search.is-open) { max-height: min(28vh, 180px); }
+.ps-mobile-session-pane .ps-session-search-fields input { font-size: 16px; }
+
+.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane:has(.ps-session-search) { max-height: none; }
+.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search:not(.is-open) {
+  position: static;
+  padding: 6px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--ps-border-strong) 72%, transparent);
+  background: var(--ps-chrome);
+}
+.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-fields { display: flex; }
+.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search-trigger { display: none; }
+
 /* Session rows never wrap: whenever a row is wider than the pane the list
    scrolls horizontally, at any pane width. (Mobile keeps ellipsis rows.) */
 .ps-session-pane:not(.ps-mobile-session-pane) .ps-session-list {
