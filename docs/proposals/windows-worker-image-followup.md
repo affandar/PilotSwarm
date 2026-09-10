@@ -7,7 +7,8 @@
 ## TL;DR
 
 The git-hydration fleet (git-cache + git-repo-worker DaemonSets) needs a worker
-image that can run PowerShell (the SQL agent skills shell out to `pwsh`). We
+image that can run PowerShell (repository-provided skills and tools may invoke
+`pwsh`). We
 **parked the native Windows container image** and shipped a **shared Linux image
 with PowerShell Core installed** instead (`Dockerfile.worker` now installs pwsh
 7.4.6 from the distro-agnostic release tarball). PowerShell Core runs natively on

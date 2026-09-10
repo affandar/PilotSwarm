@@ -34,7 +34,7 @@ ENV GIT_LFS_SKIP_SMUDGE=1
 # env, so this must be baked into the image (not passed via the DaemonSet env).
 RUN git config --system --add safe.directory '*'
 
-# PowerShell (pwsh) — the SQL agent skills/tooling drive `powershell`/`pwsh`, and
+# PowerShell (pwsh) — repository-provided skills and tools may invoke `powershell`/`pwsh`, and
 # PowerShell Core runs natively on Linux, so a Linux worker image satisfies the
 # "must run PowerShell" requirement without Windows containers. Installed from the
 # distro-agnostic release tarball (the packages.microsoft.com apt repo lags new
