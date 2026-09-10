@@ -212,7 +212,7 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
                 correlationId: "mock:operation-1",
                 signalKey: "job-operation:operation-1",
                 provider: "mock",
-                kind: "pvs",
+                kind: "validation",
                 status: "pending",
                 signalStatus: "blocked",
             };
@@ -229,7 +229,7 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
     const result = JSON.parse(await tool.handler(
         {
             provider: "mock",
-            kind: "pvs",
+            kind: "validation",
             operationKey: "validation",
             detectionMode: "hybrid",
             deadlineSeconds: 60,
@@ -241,7 +241,7 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].sessionId, "session-1");
     assert.equal(calls[0].provider, "mock");
-    assert.equal(calls[0].kind, "pvs");
+    assert.equal(calls[0].kind, "validation");
     assert.equal(calls[0].operationKey, "validation");
     assert.equal(calls[0].detectionMode, "hybrid");
     assert.ok(calls[0].deadlineAt.getTime() >= before + 60_000);
@@ -252,7 +252,7 @@ test("start_external_operation uses infrastructure-owned correlation and signal 
         correlationId: "mock:operation-1",
         signalKey: "job-operation:operation-1",
         provider: "mock",
-        kind: "pvs",
+        kind: "validation",
         status: "pending",
         signalStatus: "blocked",
         resumed: false,
@@ -488,7 +488,7 @@ test("get_external_operation is scoped to the durable session", async () => {
                 correlationId: "mock:operation-1",
                 signalKey: "job-operation:operation-1",
                 provider: "mock",
-                kind: "pvs",
+                kind: "validation",
                 status: "succeeded",
                 signalStatus: "delivered",
                 result: { passed: true },
@@ -514,7 +514,7 @@ test("get_external_operation is scoped to the durable session", async () => {
         correlationId: "mock:operation-1",
         signalKey: "job-operation:operation-1",
         provider: "mock",
-        kind: "pvs",
+        kind: "validation",
         status: "succeeded",
         signalStatus: "delivered",
         result: { passed: true },
@@ -541,7 +541,7 @@ test("start_external_operation rejects malformed mock outcomes", async () => {
 
     await assert.rejects(
         tool.handler(
-            { provider: "mock", kind: "pvs", request: { outcome: "failure" } },
+            { provider: "mock", kind: "validation", request: { outcome: "failure" } },
             { durableSessionId: "session-1" },
         ),
         /outcome must be succeeded or failed/,

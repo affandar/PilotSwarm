@@ -552,20 +552,20 @@ test("Azure DevOps approval observer remains pending for required review or poli
 
 const fixProposedConditions = {
     requiredReviewers: false,
-    requiredPolicyDisplayNames: ["PVS/Smart Test Selection (git)"],
+    requiredPolicyDisplayNames: ["Example Validation Policy"],
     codeReviewRecommendation: ["approve", "approve_with_comments"],
 };
 
-function pvsPolicy(status = "approved") {
+function validationPolicy(status = "approved") {
     return {
-        evaluationId: "pvs",
+        evaluationId: "validation-policy",
         status,
         configuration: {
             id: 9,
             isEnabled: true,
             isBlocking: true,
             type: { id: "build", displayName: "Build" },
-            settings: { displayName: "PVS/Smart Test Selection (Git)" },
+            settings: { displayName: "Example Validation Policy" },
         },
     };
 }
@@ -593,12 +593,12 @@ function conditionOperation(conditions = fixProposedConditions, extra = {}) {
 }
 
 test(
-    "Azure DevOps approval gate ignores humans and satisfies on PVS + current code-review approve",
+    "Azure DevOps approval gate ignores humans and satisfies on a named policy + current code-review approve",
     async () => {
         const provider = providerFetch({
             reviewers: [{ id: "human-1", isRequired: true, vote: 0 }],
             policies: [
-                pvsPolicy("approved"),
+                validationPolicy("approved"),
                 {
                     evaluationId: "compliance",
                     status: "queued",
@@ -631,7 +631,7 @@ test(
 
 test("Azure DevOps approval gate accepts a markdown 'Approve with comments' recommendation", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("approved")],
+        policies: [validationPolicy("approved")],
         iterations: iterationFixture,
         threads: codeReviewThread("**`Approve with comments`**"),
     });
@@ -647,7 +647,7 @@ test("Azure DevOps approval gate accepts a markdown 'Approve with comments' reco
 
 test("Azure DevOps approval gate holds when the code-review comment predates the current iteration", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("approved")],
+        policies: [validationPolicy("approved")],
         iterations: iterationFixture,
         threads: codeReviewThread("`Approve`", "2026-09-02T03:00:00Z"),
     });
@@ -662,9 +662,9 @@ test("Azure DevOps approval gate holds when the code-review comment predates the
     assert.ok(result.observation.unmet.includes("code_review_recommendation"));
 });
 
-test("Azure DevOps approval gate holds when the named PVS policy is not approved", async () => {
+test("Azure DevOps approval gate holds when the named validation policy is not approved", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("rejected")],
+        policies: [validationPolicy("rejected")],
         iterations: iterationFixture,
         threads: codeReviewThread("`Approve`"),
     });
@@ -675,13 +675,13 @@ test("Azure DevOps approval gate holds when the named PVS policy is not approved
     const result = await observer.observe({ wait: wait(), operation: conditionOperation() });
 
     assert.equal(result.disposition, "pending");
-    assert.ok(result.observation.unmet.includes("policy:PVS/Smart Test Selection (git)"));
-    assert.deepEqual(result.observation.pendingPolicyEvaluationIds, ["pvs"]);
+    assert.ok(result.observation.unmet.includes("policy:Example Validation Policy"));
+    assert.deepEqual(result.observation.pendingPolicyEvaluationIds, ["validation-policy"]);
 });
 
 test("Azure DevOps approval gate emits a canonical condition row per declared condition", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("rejected")],
+        policies: [validationPolicy("rejected")],
         iterations: iterationFixture,
         threads: codeReviewThread("`Approve`"),
     });
@@ -694,7 +694,7 @@ test("Azure DevOps approval gate emits a canonical condition row per declared co
     assert.equal(result.disposition, "pending");
     const rows = result.observation.conditions;
     assert.equal(rows.length, 2);
-    const policyRow = rows.find((row) => row.key === "policy:PVS/Smart Test Selection (git)");
+    const policyRow = rows.find((row) => row.key === "policy:Example Validation Policy");
     const reviewRow = rows.find((row) => row.key === "code_review_recommendation");
     assert.ok(policyRow, "expected a named-policy condition row");
     assert.equal(policyRow.state, "failed");
@@ -708,7 +708,7 @@ test("Azure DevOps approval gate emits a canonical condition row per declared co
 
 test("Azure DevOps approval gate treats an overridden condition key as satisfied", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("rejected")],
+        policies: [validationPolicy("rejected")],
         iterations: iterationFixture,
         threads: codeReviewThread("`Approve`"),
     });
@@ -717,21 +717,21 @@ test("Azure DevOps approval gate treats an overridden condition key as satisfied
     );
 
     const result = await observer.observe({
-        wait: { ...wait(), conditionOverrides: ["policy:PVS/Smart Test Selection (git)"] },
+        wait: { ...wait(), conditionOverrides: ["policy:Example Validation Policy"] },
         operation: conditionOperation(),
     });
 
     assert.equal(result.disposition, "satisfied");
     assert.equal(result.result.approved, true);
     const policyRow = result.observation.conditions.find(
-        (row) => row.key === "policy:PVS/Smart Test Selection (git)",
+        (row) => row.key === "policy:Example Validation Policy",
     );
     assert.equal(policyRow.state, "satisfied");
 });
 
 test("Azure DevOps approval gate override clears a missing code-review recommendation", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("approved")],
+        policies: [validationPolicy("approved")],
         iterations: iterationFixture,
     });
     const observer = new AzureDevOpsPullRequestApprovalObserver(
@@ -752,7 +752,7 @@ test("Azure DevOps approval gate override clears a missing code-review recommend
 
 test("Azure DevOps approval gate holds when the code-review recommendation is not an approval", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("approved")],
+        policies: [validationPolicy("approved")],
         iterations: iterationFixture,
         threads: codeReviewThread("`Reject`"),
     });
@@ -769,7 +769,7 @@ test("Azure DevOps approval gate holds when the code-review recommendation is no
 
 test("Azure DevOps approval gate holds when the code-review comment is absent", async () => {
     const provider = providerFetch({
-        policies: [pvsPolicy("approved")],
+        policies: [validationPolicy("approved")],
         iterations: iterationFixture,
         threads: [],
     });

@@ -4,19 +4,19 @@ import { assertExternalOperationValidationGatesSatisfied } from "../../dist/job-
 
 const gates = [{
     type: "external_operation",
-    name: "PVS validation",
+    name: "Example validation",
     beforeState: "Validated",
     provider: "mock",
-    kind: "pvs",
+    kind: "validation",
 }];
 
 function operation(overrides = {}) {
     return {
         provider: "mock",
-        kind: "pvs",
+        kind: "validation",
         status: "succeeded",
         waitCompleted: true,
-        evidence: { runId: "pvs-1" },
+        evidence: { runId: "validation-1" },
         ...overrides,
     };
 }
@@ -37,7 +37,7 @@ test("external-operation validation gate rejects missing, pending, failed, unsig
     ]) {
         assert.throws(
             () => assertExternalOperationValidationGatesSatisfied(gates, "Validated", operations),
-            /requires completed external operation evidence: PVS validation/,
+            /requires completed external operation evidence: Example validation/,
         );
     }
 });

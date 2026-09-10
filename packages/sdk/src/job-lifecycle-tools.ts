@@ -187,7 +187,7 @@ export function createJobLifecycleTools(
                     },
                     kind: {
                         type: "string",
-                        description: "Stable lowercase operation kind, such as pvs, build, deployment, or pull_request.",
+                        description: "Stable lowercase operation kind, such as validation, build, deployment, or pull_request.",
                     },
                     operationKey: {
                         type: "string",
@@ -213,7 +213,7 @@ export function createJobLifecycleTools(
                             + "pullRequestId, and expectedSourceCommit. For pull_request_approval, an optional "
                             + "conditions object narrows the gate to a heterogeneous set that must all hold on the "
                             + "current source commit: requiredReviewers (bool), requireAllBlockingPolicies (bool), "
-                            + "requiredPolicyDisplayNames (string[], e.g. [\"PVS/Smart Test Selection (git)\"]), and "
+                            + "requiredPolicyDisplayNames (string[], e.g. [\"Example Validation Policy\"]), and "
                             + "codeReviewRecommendation (string[] of \"approve\"/\"approve with comments\"). When "
                             + "conditions is omitted the gate requires every required reviewer and every blocking policy.",
                         additionalProperties: true,

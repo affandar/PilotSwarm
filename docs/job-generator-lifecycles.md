@@ -1053,10 +1053,10 @@ observed by the matching durable wait, and evidence has been persisted:
 ```json
 {
   "type": "external_operation",
-  "name": "PVS validation",
+  "name": "Example validation",
   "beforeState": "Validated",
   "provider": "mock",
-  "kind": "pvs",
+  "kind": "validation",
   "requireEvidence": true
 }
 ```
@@ -1209,7 +1209,7 @@ During `--full-run`, `--response-wait-seconds` controls how long each Job
 remains at its initial `ask_user` gate before the runner answers it. Jobs are
 timed and answered independently, so one Job does not remain parked merely
 because another has not reached the gate. `--operation-delay-seconds` controls
-the `delayMs` requested from each deterministic mock automated-review, PVS,
+the `delayMs` requested from each deterministic mock automated-review, validation,
 pull-request publication, human-review, and PR-completion operation. Its
 accepted range is 0 through 300 seconds. The previous
 `--human-wait-seconds` and `--system-wait-seconds` names remain accepted as
@@ -1222,7 +1222,7 @@ swaps the two human-facing gates from the deterministic mock to the production
 Azure DevOps observers: the transition into `HumanCodeReviewApproved` is gated
 by a real `pull_request_approval` observation and the transition into
 `Committed` by a real `pull_request_completion` observation. The automated
-review, PVS, and pull-request-publication gates stay deterministic mocks —
+review, validation, and pull-request-publication gates stay deterministic mocks —
 lifecycle-driven publication of a real branch and pull request is out of scope
 for this harness.
 

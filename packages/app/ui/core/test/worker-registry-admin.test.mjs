@@ -294,7 +294,7 @@ test("selected worker details render a chronological durable Job timeline", asyn
                     stateRevision: 4,
                     sessionId: "session-1",
                     summary: null,
-                    details: { operationKind: "pvs", status: "succeeded" },
+                    details: { operationKind: "validation", status: "succeeded" },
                 },
                 {
                     timelineId: "transition:1",
@@ -310,7 +310,7 @@ test("selected worker details render a chronological durable Job timeline", asyn
                     stateName: "Validating",
                     stateRevision: 4,
                     sessionId: "session-1",
-                    summary: "PVS passed with durable run evidence.",
+                    summary: "Validation passed with durable run evidence.",
                     details: { fromState: "Validating", toState: "Validated" },
                 },
             ];
@@ -343,13 +343,13 @@ test("selected worker details render a chronological durable Job timeline", asyn
             timestamp: "2026-08-29 12:00:02Z",
             jobId: "job-1",
             sessionId: "session-1",
-            activity: "External operation completed · pvs · succeeded · Validating r4",
+            activity: "External operation completed · validation · succeeded · Validating r4",
         },
         {
             timestamp: "2026-08-29 12:00:03Z",
             jobId: "job-1",
             sessionId: "session-1",
-            activity: "Validating -> Validated · Validating r4 · PVS passed with durable run evidence.",
+            activity: "Validating -> Validated · Validating r4 · Validation passed with durable run evidence.",
         },
     ]);
     const text = pane.lines.map((line) => {
@@ -359,8 +359,8 @@ test("selected worker details render a chronological durable Job timeline", asyn
     assert.match(text, /TIMELINE \(3\)/);
     assert.match(text, /TIMESTAMP\s+JOB ID\s+SESSION ID\s+ACTIVITY/);
     assert.match(text, /2026-08-29 12:00:01Z\s+job-1\s+session-1\s+State execution started · Validating r4/);
-    assert.match(text, /2026-08-29 12:00:02Z\s+job-1\s+session-1\s+External operation completed · pvs · succeeded · Validating r4/);
-    assert.match(text, /2026-08-29 12:00:03Z\s+job-1\s+session-1\s+Validating -> Validated · Validating r4 · PVS passed with durable run evidence/);
+    assert.match(text, /2026-08-29 12:00:02Z\s+job-1\s+session-1\s+External operation completed · validation · succeeded · Validating r4/);
+    assert.match(text, /2026-08-29 12:00:03Z\s+job-1\s+session-1\s+Validating -> Validated · Validating r4 · Validation passed with durable run evidence/);
 });
 
 test("worker utilization prefers a registry display name without inferring from hostname", async () => {
@@ -468,7 +468,7 @@ test("worker timeline swimlanes separate Job turns from unattributed time", asyn
                 stateName: "Validating",
                 stateRevision: 4,
                 sessionId: "session-2",
-                summary: "PVS passed.",
+                summary: "Validation passed.",
                 details: { fromState: "Validating", toState: "Validated" },
             },
             {

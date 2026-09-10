@@ -3565,7 +3565,6 @@ const WORKER_TIMELINE_JOB_COLORS = Object.freeze([
 
 const WORKER_TIMELINE_OPERATION_LABELS = Object.freeze({
     code_review: "Automated Code Review",
-    pvs: "Private Validation Service",
     pull_request: "Pull Request Publication",
 });
 

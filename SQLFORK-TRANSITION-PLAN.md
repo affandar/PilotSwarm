@@ -164,7 +164,7 @@ The known extraction areas include:
 - SQL-specific Kusto MCP deployment composition, environment values, and scenarios. The
   reusable MCP proxy/authentication host and public-sample Kusto reference adapter remain
   platform code.
-- SQL scenario lifecycles and fixtures such as IncidentFix, StandardFix, Flakebuster, PVS, and
+- SQL scenario lifecycles and fixtures such as IncidentFix, StandardFix, Flakebuster, and
   SQL repository/fleet names.
 - SQL environment composition: concrete images, identities, endpoints, cluster values, and
   plugin registration.
@@ -439,9 +439,10 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   governance-restricted-subscription overrides) move to the **overlay**.
 - [x] Neutralize identified fork-added SQL/org-specific comments and example paths in the SDK
   and git-cache deployment documentation.
-- [ ] Genericize remaining **Tier 2** labels/fixtures in place (`PVS`→`ExampleGate`,
-  `DsMainDev`→placeholder,
-  drop the real ACR name).
+- [x] Genericize PVS operation and policy fixtures and remove the hard-coded Private Validation
+  Service UI label while preserving the generic external-operation and named-policy mechanisms.
+- [ ] Genericize remaining **Tier 2** labels/fixtures in place (`StandardFix` and
+  `DsMainDev`→placeholders, drop the real ACR name).
 - **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
   overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
 
@@ -888,8 +889,9 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 - [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
 - [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
       the fork is a pure-platform repo.
-- [ ] Tier 2 genericized in place (comment/example neutralization complete; labels, fixtures,
-      and concrete deployment values remain; Tier 3 is benign — no action; see §5).
+- [ ] Tier 2 genericized in place (comment/example and PVS neutralization complete;
+      StandardFix, DsMainDev, and concrete deployment values remain; Tier 3 is benign —
+      no action; see §5).
 - [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
   - [ ] (1) AKS git-hydration worker fleet
   - [ ] (2) Job Generator framework + durable lifecycle state machine *(generic runner/module

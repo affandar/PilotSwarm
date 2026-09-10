@@ -30,13 +30,13 @@ test("omitted conditions default to a strict full approval gate", () => {
 
 test("declared conditions default their unset fields to permissive values", () => {
     const conditions = parseAzureDevOpsApprovalConditions({
-        requiredPolicyDisplayNames: ["PVS/Smart Test Selection (git)"],
+        requiredPolicyDisplayNames: ["Example Validation Policy"],
         codeReviewRecommendation: ["Approve", "Approve with comments"],
     });
     assert.equal(conditions.requiredReviewers, false);
     assert.equal(conditions.requireAllBlockingPolicies, false);
     assert.deepEqual(conditions.requiredPolicyDisplayNames, [
-        "PVS/Smart Test Selection (git)",
+        "Example Validation Policy",
     ]);
     assert.deepEqual(conditions.codeReviewRecommendation, [
         "approve",
@@ -77,7 +77,7 @@ test("explicitly empty conditions are rejected", () => {
 
 test("conditions are carried onto the parsed approval target", () => {
     const target = parseAzureDevOpsPullRequestApprovalTarget(baseTarget({
-        requiredPolicyDisplayNames: ["PVS/Smart Test Selection (git)"],
+        requiredPolicyDisplayNames: ["Example Validation Policy"],
         codeReviewRecommendation: ["approve"],
     }));
     assert.equal(target.expectedSourceCommit, sourceCommit);

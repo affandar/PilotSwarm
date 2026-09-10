@@ -84,7 +84,7 @@ const SYSTEM_WAIT_TOOL_SPEC = {
         properties: {
             signal_key: {
                 type: "string",
-                description: "Durable correlation key expected from the external service, such as pvs:<validation-run-id>.",
+                description: "Durable correlation key expected from the external service, such as validation:<run-id>.",
             },
             reason: {
                 type: "string",
