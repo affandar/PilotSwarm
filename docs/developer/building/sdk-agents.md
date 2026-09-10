@@ -228,6 +228,12 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 
 For known named agents, use `spawn_agent(agent_name="...")`.
 
+When the caller needs a tool but should not hard-code an agent name, use
+`spawn_agent(required_tool="tool_name")`. PilotSwarm resolves the unique
+caller-visible creatable owner and binds its complete definition. Combining
+`agent_name` and `required_tool` verifies that the named agent declares the
+tool. Do not pass package-owned tools to ad hoc children with `tool_names`.
+
 Use `task=` only for truly ad hoc custom sub-agents. Do not use `task="sweeper"` or `task="resourcemgr"` for named system agents.
 
 ### Sub-agent models

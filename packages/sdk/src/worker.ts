@@ -28,7 +28,8 @@ import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
-import { DEFAULT_TURN_TIMEOUT_MS } from "./managed-session.js";
+import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
@@ -1178,6 +1179,19 @@ export class PilotSwarmWorker {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
                 try {
                     const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
+                    const collision = findReservedPackageToolName(
+                        tools.map((tool: any) => String(tool?.name || "")),
+                        [
+                            ...ManagedSession.systemToolDefs().map((tool: any) => String(tool.name)),
+                            ...ManagedSession.subAgentToolDefs().map((tool: any) => String(tool.name)),
+                            ...this._frameworkBaseToolNames,
+                            ...this._appDefaultToolNames,
+                        ],
+                        this.toolRegistry.keys(),
+                    );
+                    if (collision) {
+                        throw new Error(`package tool "${collision}" conflicts with a reserved platform or deployment tool`);
+                    }
                     const ownMap = new Map<string, Tool<any>>();
                     for (const tool of tools) {
                         packageTools.set((tool as any).name, tool);

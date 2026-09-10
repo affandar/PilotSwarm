@@ -21,6 +21,7 @@ import {
     epochMetaFileName,
     epochVersionedTarFileName,
     parseEpochSnapshotName,
+    renameDirectoryWithRetry,
 } from "../../dist/session-store.js";
 import { SnapshotConflictError } from "../../dist/snapshot-protocol.js";
 import { epochSnapshotBlobName, snapshotCommitBlobMetadata } from "../../dist/blob-store.js";
@@ -130,6 +131,35 @@ test("hydrateSnapshot(S, 1) restores the epoch-1 content, not the legacy content
     const legacyRes = await store.hydrateSnapshot(S);
     assert.equal(legacyRes.version, 1);
     assert.equal(readNote(stateDir, S), "content-epoch0");
+});
+
+test("directory swaps retry transient Windows rename failures", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-rename-retry-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const source = path.join(root, "source");
+    const destination = path.join(root, "destination");
+    fs.mkdirSync(source);
+    fs.writeFileSync(path.join(source, "ready.txt"), "ready");
+
+    const originalRenameSync = fs.renameSync;
+    let attempts = 0;
+    fs.renameSync = (...args) => {
+        attempts += 1;
+        if (attempts < 3) {
+            const error = new Error("transient lock");
+            error.code = "EPERM";
+            throw error;
+        }
+        return originalRenameSync(...args);
+    };
+    try {
+        await renameDirectoryWithRetry(source, destination);
+    } finally {
+        fs.renameSync = originalRenameSync;
+    }
+
+    assert.equal(attempts, 3);
+    assert.equal(fs.readFileSync(path.join(destination, "ready.txt"), "utf8"), "ready");
 });
 
 test("delete is epoch-scoped; deleteAllEpochs removes everything but is fail-closed", async (t) => {

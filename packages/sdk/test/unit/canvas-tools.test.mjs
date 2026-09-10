@@ -74,7 +74,7 @@ test("sub-agents are NOT filtered out of the canvas declarations", () => {
 test("the HANDLER half is registered on every session and refuses instead of hanging", () => {
     // Per-turn registration is unconditional — a declared tool with no
     // handler is a silent drop in the CLI. The refusal is the guard.
-    assert.match(MS, /drawCanvasTool,\n\s*updateCanvasTool,\n\s*readCanvasTool,\n\s*showCanvasTool,\n\s*canvasKvTool,\n\s*publishCanvasAppTool,\n\s*findCanvasAppTool,\n\s*loadSkillTool,\n\s*\]\.filter/,
+    assert.match(MS, /drawCanvasTool,\r?\n\s*updateCanvasTool,\r?\n\s*readCanvasTool,\r?\n\s*showCanvasTool,\r?\n\s*canvasKvTool,\r?\n\s*publishCanvasAppTool,\r?\n\s*findCanvasAppTool,\r?\n\s*loadSkillTool,\r?\n\s*\]\.filter/,
         "canvas tools (and canvas_kv / the catalog / load_skill) must be unconditionally in systemToolsForTurn");
     assert.ok(!/\(controlBridge as any\)\?\.drawCanvas \? \[drawCanvasTool/.test(MS),
         "the old bridge-conditional registration must be gone");

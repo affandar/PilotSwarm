@@ -1,6 +1,11 @@
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
-import { isSessionLockAcquireTimeoutError, type SessionManager } from "./session-manager.js";
+import {
+    BoundAgentPackageUnavailableError,
+    isSessionLockAcquireTimeoutError,
+    PackageToolBindingError,
+    type SessionManager,
+} from "./session-manager.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
@@ -78,6 +83,11 @@ export interface ResolvedAgentDefinition {
     packageId?: string;
     packageScope?: "shared" | "user";
 }
+
+export type RequiredToolAgentResolution =
+    | { status: "resolved"; agent: ResolvedAgentDefinition; candidates: string[] }
+    | { status: "not_found"; candidates: string[] }
+    | { status: "ambiguous"; candidates: string[] };
 
 /**
  * THE agent-name resolver: FQN parsing, fuzzy matching, package privacy, and
@@ -216,6 +226,44 @@ export async function resolveAgentDefinitionForCaller(opts: {
         packageId: agent.packageId ?? undefined,
         packageScope: agent.packageScope ?? undefined,
     };
+}
+
+/** Resolve one caller-visible, user-creatable agent by a declared tool. */
+export async function resolveAgentDefinitionForRequiredToolForCaller(opts: {
+    requiredTool: string;
+    userAgents?: any[];
+    systemAgents?: any[];
+    getCallerOwnerKey: () => Promise<string | null>;
+}): Promise<RequiredToolAgentResolution> {
+    const requiredTool = String(opts.requiredTool || "").trim();
+    if (!requiredTool) return { status: "not_found", candidates: [] };
+
+    const declaresTool = (agent: any) =>
+        agent?.tools?.includes(requiredTool)
+        || agent?.copies?.some((copy: any) => copy?.tools?.includes(requiredTool));
+    const logicalNames = [...new Set(
+        (opts.userAgents ?? [])
+            .filter(declaresTool)
+            .map((agent: any) => String(agent?.name || "").trim())
+            .filter(Boolean),
+    )].sort((left, right) => left.localeCompare(right));
+
+    const resolved = new Map<string, ResolvedAgentDefinition>();
+    for (const agentName of logicalNames) {
+        const agent = await resolveAgentDefinitionForCaller({
+            agentName,
+            userAgents: opts.userAgents,
+            systemAgents: opts.systemAgents,
+            getCallerOwnerKey: opts.getCallerOwnerKey,
+        });
+        if (!agent || agent.creatable === false || !agent.tools?.includes(requiredTool)) continue;
+        resolved.set(agent.name, agent);
+    }
+
+    const candidates = [...resolved.keys()].sort((left, right) => left.localeCompare(right));
+    if (candidates.length === 0) return { status: "not_found", candidates: [] };
+    if (candidates.length > 1) return { status: "ambiguous", candidates };
+    return { status: "resolved", agent: resolved.get(candidates[0])!, candidates };
 }
 
 // The canvas helpers (filenames, slot normalization, revision derivation)
@@ -914,9 +962,18 @@ export function createSessionManagerProxy(ctx: any) {
      * the orchestration generator keeps the yield sequence byte-identical, so
      * this is not an orchestration version change.
      */
-    resolveAgentConfig(agentName: string) {
-        return ctx.scheduleActivity("resolveAgentConfig", { agentName, callerSessionId: ctx.instanceId });
+    resolveAgentConfig(agentName: string, callerSessionId?: string) {
+        return ctx.scheduleActivity("resolveAgentConfig", {
+            agentName,
+            callerSessionId: callerSessionId ?? ctx.instanceId,
+        });
     },
+        resolveAgentForRequiredTool(requiredTool: string, callerSessionId?: string) {
+            return ctx.scheduleActivity("resolveAgentForRequiredTool", {
+                requiredTool,
+                callerSessionId: callerSessionId ?? ctx.instanceId,
+            });
+        },
         /** Send a message to a session via the PilotSwarmClient SDK. */
         sendToSession(sessionId: string, message: string) {
             return ctx.scheduleActivity("sendToSession", { sessionId, message });
@@ -1639,22 +1696,30 @@ export function registerActivities(
         // previous inline copy had none of that: it could hand another user's
         // private agent to this session and could not address the shared copy
         // of a shadowed name.
+        const getCallerOwnerKeyInline = async () => {
+            const owner = catalog
+                ? await resolveEffectiveSpawnOwner(
+                    (id) => catalog!.getSession(id),
+                    input.sessionId,
+                ).catch(() => null)
+                : null;
+            return owner?.provider && owner?.subject
+                ? `${owner.provider}\u0001${owner.subject}`
+                : null;
+        };
         const resolveAgentConfigInline = (agentName: string) =>
             resolveAgentDefinitionForCaller({
                 agentName,
                 userAgents,
                 systemAgents,
-                getCallerOwnerKey: async () => {
-                    const owner = catalog
-                        ? await resolveEffectiveSpawnOwner(
-                            (id) => catalog!.getSession(id),
-                            input.sessionId,
-                        ).catch(() => null)
-                        : null;
-                    return owner?.provider && owner?.subject
-                        ? `${owner.provider}\u0001${owner.subject}`
-                        : null;
-                },
+                getCallerOwnerKey: getCallerOwnerKeyInline,
+            });
+        const resolveAgentForRequiredToolInline = (requiredTool: string) =>
+            resolveAgentDefinitionForRequiredToolForCaller({
+                requiredTool,
+                userAgents,
+                systemAgents,
+                getCallerOwnerKey: getCallerOwnerKeyInline,
             });
 
         const loadDirectChildSessions = async () => {
@@ -1986,6 +2051,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
                         boundAgentName: agentDef.name,
+                        ...(agentDef.packageId ? { boundAgentPackageId: agentDef.packageId } : {}),
                         promptLayering: { kind: "app-agent" as const },
                         ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
                         agentId: agentDef.id ?? agentName,
@@ -2041,6 +2107,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             spawnAgent: async (args: {
                 agent_name?: string;
+                required_tool?: string;
                 task?: string;
                 model?: string;
                 reasoning_effort?: import("./model-providers.js").ReasoningEffort;
@@ -2051,6 +2118,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 contract?: Record<string, unknown>;
             }) => {
                 try {
+                    const requiredTool = typeof args.required_tool === "string"
+                        ? args.required_tool.trim()
+                        : "";
+                    if (args.required_tool !== undefined && (!requiredTool || requiredTool.length > 128)) {
+                        return `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`;
+                    }
                     const childNestingLevel = (input.nestingLevel ?? 0) + 1;
                     if (childNestingLevel > MAX_NESTING_LEVEL) {
                         return `[SYSTEM: spawn_agent failed — you are already at nesting level ${input.nestingLevel ?? 0} (max ${MAX_NESTING_LEVEL}). ` +
@@ -2078,8 +2151,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     let agentSplashMobile: string | undefined;
                     let bootstrapRequiredTool: string | undefined;
                     let boundAgentName: string | undefined;
+                    let boundAgentPackageId: string | undefined;
                     let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
                     let resolvedAgentName = args.agent_name;
+                    let selectedByRequiredTool = false;
 
                     const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
                         agentTask = useDefinitionDefaults
@@ -2096,6 +2171,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         agentSplashMobile = agentDef.splashMobile;
                         bootstrapRequiredTool = agentDef.initialRequiredTool;
                         boundAgentName = agentDef.name;
+                        boundAgentPackageId = agentDef.packageId;
                         promptLayeringKind = agentDef.promptLayerKind
                             ?? (agentDef.system
                                 ? ((agentDef.namespace || "pilotswarm") === "pilotswarm"
@@ -2104,16 +2180,40 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 : "app-agent");
                     };
 
+                    let agentDef: ResolvedAgentDefinition | null = null;
                     if (resolvedAgentName) {
-                        const agentDef = await resolveAgentConfigInline(resolvedAgentName);
+                        agentDef = await resolveAgentConfigInline(resolvedAgentName);
                         if (!agentDef) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`;
                         }
+                    } else if (requiredTool) {
+                        const resolution = await resolveAgentForRequiredToolInline(requiredTool);
+                        if (resolution.status === "not_found") {
+                            return `[SYSTEM: spawn_agent failed — no caller-visible creatable agent declares required tool "${requiredTool}".]`;
+                        }
+                        if (resolution.status === "ambiguous") {
+                            return `[SYSTEM: spawn_agent failed — required tool "${requiredTool}" is declared by multiple visible agents: ${resolution.candidates.join(", ")}. Retry with agent_name to disambiguate.]`;
+                        }
+                        agentDef = resolution.agent;
+                        resolvedAgentName = agentDef.name;
+                        selectedByRequiredTool = true;
+                    }
+                    if (agentDef) {
                         if (agentDef.system && agentDef.creatable === false) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
                                 `If it is missing, the workers likely need to be restarted.]`;
                         }
-                        applyAgentDef(agentDef, resolvedAgentName !== args.agent_name);
+                        if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
+                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`;
+                        }
+                        if (args.tool_names?.length) {
+                            return `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`;
+                        }
+                        if (args.system_message) {
+                            return `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`;
+                        }
+                        applyAgentDef(agentDef, !selectedByRequiredTool && resolvedAgentName !== args.agent_name);
+                        if (requiredTool) bootstrapRequiredTool = requiredTool;
                     }
 
                     // Spawned children inherit the parent lineage's EFFECTIVE
@@ -2150,7 +2250,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
                     const {
                         boundAgentName: _parentBoundAgentName,
+                        boundAgentPackageId: _parentBoundAgentPackageId,
                         promptLayering: _parentPromptLayering,
+                        agentIdentity: _parentAgentIdentity,
                         isCrawler: _parentIsCrawler,
                         isHarvester: _parentIsHarvester,
                         ...parentConfig
@@ -2162,6 +2264,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                         ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                         ...(boundAgentName ? { boundAgentName } : {}),
+                        ...(boundAgentPackageId ? { boundAgentPackageId } : {}),
+                        ...(!boundAgentName ? {
+                            detachedPackageToolPolicy: args.tool_names?.length ? "reject" : "drop",
+                        } : {}),
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),
@@ -2208,6 +2314,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...childModelCreationOptions(childConfig),
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
+                        boundAgentPackageId: childConfig.boundAgentPackageId,
+                        detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
                         toolNames: childConfig.toolNames,
                         waitThreshold: childConfig.waitThreshold,
@@ -3838,6 +3946,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
             return finalTurnResult;
         } catch (err: any) {
+            if (err instanceof PackageToolBindingError || err instanceof BoundAgentPackageUnavailableError) {
+                const message = err.message || String(err);
+                activityCtx.traceInfo(`[runTurn] deterministic package-tool binding failure: ${message}`);
+                finalTurnResult = { type: "error", message, retryable: false } as TurnResult;
+                return finalTurnResult;
+            }
             if (isSessionLockAcquireTimeoutError(err)) {
                 const message = err.message || String(err);
                 activityCtx.traceInfo(`[runTurn] ${message}`);
@@ -4378,6 +4492,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         });
     });
 
+    runtime.registerActivity("resolveAgentForRequiredTool", async (
+        _activityCtx: any,
+        input: { requiredTool: string; callerSessionId?: string },
+    ): Promise<RequiredToolAgentResolution> => {
+        return resolveAgentDefinitionForRequiredToolForCaller({
+            requiredTool: input.requiredTool,
+            userAgents,
+            systemAgents,
+            getCallerOwnerKey: async () => {
+                const row = input.callerSessionId
+                    ? await catalog?.getSession(input.callerSessionId)
+                    : null;
+                const owner = row?.owner as any;
+                return owner?.provider && owner?.subject
+                    ? `${owner.provider}\u0001${owner.subject}`
+                    : null;
+            },
+        });
+    });
+
     // ── spawnChildSession ─────────────────────────────────────
     // Creates a child session via the PilotSwarmClient SDK.
     // System child agents with a stable agentId use a deterministic UUID.
@@ -4472,6 +4606,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ...childModelCreationOptions(input.config),
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
+                boundAgentPackageId: input.config.boundAgentPackageId,
+                detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,

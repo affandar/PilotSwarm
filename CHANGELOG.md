@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.65 — 2026-09-10
+
+Deterministic capability routing for delegated agents and fail-closed package
+tool ownership.
+
+- Add `required_tool` to `spawn_agent`. PilotSwarm resolves the unique
+  caller-visible creatable agent that declares the tool, binds its complete
+  definition, and treats `agent_name` plus `required_tool` as an ownership
+  assertion rather than detached tool selection.
+- Pin the exact shared or private package copy through child creation and
+  worker rehydration. Ad-hoc children no longer inherit package identity,
+  privileged roles, or package handlers; detached package tools are dropped
+  when inherited and rejected when explicitly requested.
+- Reject package tools that collide with Copilot-native, PilotSwarm control,
+  or deployment tool names. Report deterministic package-binding failures as
+  non-retryable turn errors.
+- Freeze orchestration 1.0.73 and introduce 1.0.74 for the new caller-aware
+  capability-resolution activity. Retry transient Windows directory rename
+  failures during snapshot hydration with a bounded backoff.
+
 ## 0.5.64 — 2026-09-09
 
 Cluster and user feature flighting, bounded native Copilot delegation, and
