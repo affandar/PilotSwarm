@@ -1,6 +1,6 @@
 import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 import { describe, it, expect, vi } from "vitest";
-import { nativeSubagentHooks, resolveNativeSubagents, settleNativeSubagents, guardNativeExternalTools } from "../../src/native-subagents.ts";
+import { nativeSubagentDefinitions, nativeSubagentGuidance, nativeSubagentHooks, resolveNativeSubagents, settleNativeSubagents, guardNativeExternalTools } from "../../src/native-subagents.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,9 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const MODEL = "gpt-5.6-terra";
+const CRITIC = "swarm-rubber-duck";
+const CRITIC_MODEL = "claude-sonnet-5";
+const BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "security-review", "rubber-duck", "rem-agent"];
 const task = { agent_type: "swarm-explore", prompt: "inspect", name: "probe", description: "Inspect workspace" };
 const invoke = (toolArgs, hooks, extra = {}) => nativeSubagentHooks(MODEL, hooks).onPreToolUse(
     { toolName: "task", toolArgs, sessionId: "parent", ...extra }, { sessionId: "parent" });
+const invokeCritic = (toolArgs, hooks, criticModel = CRITIC_MODEL) => nativeSubagentHooks(MODEL, hooks, undefined, criticModel).onPreToolUse(
+    { toolName: "task", toolArgs, sessionId: "parent" }, { sessionId: "parent" });
 
 describe("native delegation policy", () => {
     it("defaults off and rejects unknown deployment values", () => {
@@ -59,6 +64,83 @@ describe("native delegation policy", () => {
     });
 });
 
+describe("native rubber-duck profile", () => {
+    it("offers a discoverable critic with only local reading/search tools", () => {
+        const definitions = nativeSubagentDefinitions(MODEL, CRITIC_MODEL);
+        expect(definitions.map(agent => agent.name)).toEqual(["swarm-explore", "swarm-task", CRITIC]);
+        const critic = definitions.find(agent => agent.name === CRITIC);
+        expect(critic).toMatchObject({ infer: true, model: CRITIC_MODEL, modelPolicy: "required", tools: ["view", "grep", "rg", "glob"] });
+        expect(critic.tools).toEqual(["view", "grep", "rg", "glob"]);
+        for (const field of ["mcpServers", "reasoningEffort", "reasoning_effort", "contextTier", "context_tier"]) {
+            expect(critic).not.toHaveProperty(field);
+        }
+        // Profiles own their arrays: a later caller cannot grant the critic
+        // shell access by modifying an earlier session's declaration.
+        critic.tools.push("bash");
+        expect(nativeSubagentDefinitions("another-parent-model", CRITIC_MODEL).find(agent => agent.name === CRITIC))
+            .toMatchObject({ model: CRITIC_MODEL, tools: ["view", "grep", "rg", "glob"] });
+        expect(definitions.find(agent => agent.name === "swarm-task").tools).toContain("bash");
+        expect(definitions.filter(agent => agent.name !== CRITIC).every(agent => agent.model === MODEL)).toBe(true);
+    });
+    it.each([undefined, null])("omits and refuses the critic without an available permitted model (%s)", async criticModel => {
+        expect(nativeSubagentDefinitions(MODEL, criticModel).map(agent => agent.name)).toEqual(["swarm-explore", "swarm-task"]);
+        const hooks = nativeSubagentHooks(MODEL, undefined, undefined, criticModel);
+        expect((await hooks.onPreToolUse({ toolName: "task", toolArgs: { ...task, agent_type: CRITIC }, sessionId: "parent" },
+            { sessionId: "parent" })).permissionDecision).toBe("deny");
+    });
+    it("guidance identifies the selected critic model without claiming it uses the parent's model", () => {
+        const available = nativeSubagentGuidance(CRITIC_MODEL);
+        expect(available).toContain(CRITIC_MODEL);
+        expect(available).toContain(CRITIC);
+        expect(available).not.toContain("separate context using your model");
+        expect(available).not.toContain("This profile provides separate context using your model");
+        const unavailable = nativeSubagentGuidance(null);
+        expect(unavailable).not.toContain(CRITIC_MODEL);
+        expect(unavailable).not.toContain('task(agent_type="swarm-rubber-duck", mode="sync")');
+    });
+    it.each([undefined, "sync"])("admits a critic synchronously (mode %s)", async mode => {
+        const request = { ...task, agent_type: CRITIC, ...(mode ? { mode } : {}) };
+        const admitted = await invokeCritic(request);
+        expect(admitted.permissionDecision).not.toBe("deny");
+        expect(admitted.modifiedArgs).toEqual({ ...request, mode: "sync", model: CRITIC_MODEL });
+    });
+    it.each([
+        { mode: "background" }, { mode: "async" },
+        { model: MODEL }, { model: "not-permitted" },
+        { reasoning_effort: "high" }, { reasoning_effort: null }, { context_tier: "long_context" },
+        { agent_type: "rubber-duck" }, { agent_type: "rem-agent" },
+    ])("rejects critic overrides and built-in fallbacks %j", async overrides => {
+        expect((await invokeCritic({ ...task, agent_type: CRITIC, ...overrides })).permissionDecision).toBe("deny");
+    });
+    it("accepts only the selected critic override and cannot lend it to other profiles or application rewrites", async () => {
+        expect((await invokeCritic({ ...task, agent_type: CRITIC, model: CRITIC_MODEL })).modifiedArgs.model).toBe(CRITIC_MODEL);
+        for (const agent_type of ["swarm-explore", "swarm-task"]) {
+            expect((await invokeCritic({ ...task, agent_type, model: CRITIC_MODEL })).permissionDecision).toBe("deny");
+            expect((await invokeCritic({ ...task, agent_type })).modifiedArgs.model).toBe(MODEL);
+        }
+        expect((await invokeCritic({ ...task, agent_type: CRITIC }, { onPreToolUse: () => ({
+            modifiedArgs: { ...task, agent_type: CRITIC, model: "unauthorized-provider:model" },
+        }) })).permissionDecision).toBe("deny");
+    });
+    it("blocks the critic when native feature policy is Off and admits it after On", async () => {
+        const policy = await createFeaturePolicy(false);
+        const request = { toolName: "task", toolArgs: { ...task, agent_type: CRITIC }, sessionId: "parent" };
+        const hooks = nativeSubagentHooks(MODEL, undefined,
+            () => policy.cache.resolve("copilot.native_tasks", null, { fallback: false }).enabled, CRITIC_MODEL);
+        try {
+            expect(await hooks.onPreToolUse(request, { sessionId: "parent" })).toMatchObject({
+                permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("disabled by current feature policy"),
+            });
+            await policy.set(true);
+            expect(await hooks.onPreToolUse(request, { sessionId: "parent" })).toMatchObject({
+                modifiedArgs: { agent_type: CRITIC, mode: "sync", model: CRITIC_MODEL },
+            });
+            await policy.set(false);
+            expect((await hooks.onPreToolUse(request, { sessionId: "parent" })).permissionDecision).toBe("deny");
+        } finally { await policy.cache.stop(); }
+    });
+});
+
 class FakeSession {
     handlers = [];
     tasks = [];
@@ -81,6 +163,13 @@ class FakeSession {
 }
 
 describe("native turn boundaries", () => {
+    it.each([
+        [null, null, false], [null, CRITIC_MODEL, true], [CRITIC_MODEL, null, true],
+        [CRITIC_MODEL, CRITIC_MODEL, false], [CRITIC_MODEL, "claude-opus-4.8", true],
+    ])("rebinds critic model changes %s -> %s: %s", (before, after, rebind) => {
+        const managed = new ManagedSession("critic-rebind", new FakeSession(), { model: MODEL, nativeSubagents: "sync", nativeCriticModel: before });
+        expect(managed.requiresModelRebind({ model: MODEL, nativeSubagents: "sync", nativeCriticModel: after })).toBe(rebind);
+    });
     it("projects task milestones without persisting empty registry notifications or live ticks", async () => {
         const sdk = new FakeSession();
         const events = [];
@@ -208,19 +297,22 @@ describe("native turn boundaries", () => {
 describe("worker session assembly", () => {
     it.each([
         [{}, true],
+        [{}, false, false],
         [{ agentIdentity: "agent-tuner" }, false],
         [{ agentIdentity: "regen-distiller" }, false],
         [{ promptLayering: { kind: "pilotswarm-system-agent" } }, false],
-    ])("applies native policy only to eligible sessions %j", async (config, enabled) => {
+    ])("applies native policy only to eligible sessions %j (native enabled: %s)", async (config, enabled, featureEnabled = true) => {
         const home = mkdtempSync(join(tmpdir(), "ps-native-config-"));
         const manager = new SessionManager(undefined, null, {
             nativeSubagents: "sync", customAgents: [{ name: "durable-agent", prompt: "Use complete_agent" }],
         }, join(home, "session-state"));
-        manager.setFeatureFlagCache((await createFeaturePolicy()).cache);
+        manager.setFeatureFlagCache((await createFeaturePolicy(featureEnabled)).cache);
         manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
         const created = [];
         manager.client = {
             createSession: async options => { created.push(options); return new FakeSession(); },
+            start: async () => {},
+            rpc: { models: { list: async () => ({ models: [{ id: MODEL }, { id: CRITIC_MODEL }] }) } },
             stop: async () => {},
         };
         try {
@@ -229,8 +321,14 @@ describe("worker session assembly", () => {
             }, { turnIndex: 0 });
             const options = created[0];
             expect(options.excludedTools.includes("task")).toBe(!enabled);
-            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task"] : ["durable-agent"]);
+            expect(options.customAgents.map(a => a.name)).toEqual(enabled ? ["swarm-explore", "swarm-task", CRITIC] : ["durable-agent"]);
             expect(options.customAgentsLocalOnly === true).toBe(enabled);
+            expect(options.excludedBuiltinAgents).toEqual(enabled ? BUILTIN_AGENTS : undefined);
+            if (enabled) {
+                const critic = options.customAgents.find(agent => agent.name === CRITIC);
+                expect(critic).toMatchObject({ infer: true, model: CRITIC_MODEL, tools: ["view", "grep", "rg", "glob"] });
+                expect(critic.tools).toEqual(["view", "grep", "rg", "glob"]);
+            }
             const transform = options.systemMessage.sections.last_instructions.action;
             expect(typeof transform).toBe("function");
             const rendered = await transform("COPILOT_LAST_INSTRUCTIONS");

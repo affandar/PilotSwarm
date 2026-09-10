@@ -1,4 +1,5 @@
-import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, NATIVE_SUBAGENT_GUIDANCE, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
+import { selectNativeCriticModel } from "./native-critic-model.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { FeatureFlagError } from "./feature-flags.js";
@@ -628,6 +629,61 @@ export class SessionManager {
      * cache would leak one identity's catalog onto another's sessions.
      */
     private modelCatalogCaches = new Map<string, { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> }>();
+    // Cache by actual credential-bound client, never by a bare model/provider
+    // label. Concurrent session starts share a bounded catalog lookup. Failures
+    // temporarily disable only the optional critic, with no stale fallback.
+    private nativeCriticCatalogs = new WeakMap<CopilotClient, {
+        expiresAt: number;
+        models: Promise<Array<{ id: string; policy?: { state?: string } }>>;
+    }>();
+
+    private async _resolveNativeCriticModel(sessionId: string, parentModel: string, client: CopilotClient): Promise<string | null> {
+        const registry = this.workerDefaults.modelProviders;
+        const parent = registry?.getDescriptor(parentModel);
+        // Native children inherit the session's one provider connection. BYOK
+        // endpoints can bind to a specific deployment or parent reasoning mode;
+        // a model-name override cannot safely switch those connections.
+        if ((registry && (!parent || parent.providerType !== "github"))
+            || (!registry && this._resolveProviderConfig(parentModel).provider)) return null;
+        let allowed: Set<string> | null;
+        let permissionTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            allowed = await Promise.race([
+                this._allowedModelProviderIds(sessionId),
+                new Promise<never>((_, reject) => { permissionTimer = setTimeout(() => reject(new Error("Native critic permissions timeout")), 5_000); }),
+            ]);
+        } catch { return null; }
+        finally { if (permissionTimer) clearTimeout(permissionTimer); }
+        if (parent && allowed && !allowed.has(parent.providerId)) return null;
+        let cache = this.nativeCriticCatalogs.get(client);
+        if (!cache || cache.expiresAt <= Date.now()) {
+            const entry = { expiresAt: Date.now() + 5 * 60_000, models: Promise.resolve([] as Array<{ id: string; policy?: { state?: string } }>) };
+            entry.models = (async () => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    return await Promise.race([
+                        // ensureClient is lazy. Use the RPC directly: the SDK's
+                        // listModels() caches forever until disconnect, which
+                        // would defeat our entitlement refresh interval.
+                        (async () => { await client.start(); return (await client.rpc.models.list({})).models; })(),
+                        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Native critic catalog timeout")), 5_000); }),
+                    ]);
+                } catch {
+                    entry.expiresAt = Date.now() + 30_000;
+                    return [];
+                } finally { if (timer) clearTimeout(timer); }
+            })();
+            cache = entry;
+            this.nativeCriticCatalogs.set(client, entry);
+        }
+        return selectNativeCriticModel({
+            parentModel: parent?.modelName ?? parentModel,
+            parentProviderId: parent?.providerId,
+            parentProviderType: parent?.providerType,
+            ...(registry ? { permittedModels: registry.allModels.filter(model => !allowed || allowed.has(model.providerId)) } : {}),
+            availableModels: await cache.models,
+        }) ?? null;
+    }
 
     /**
      * Resolve whether a session's model can be shown images, plus the
@@ -1713,6 +1769,8 @@ export class SessionManager {
             && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
+        config.nativeCriticModel = nativeEnabled
+            ? await this._resolveNativeCriticModel(sessionId, effectiveModel, client) : null;
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
@@ -1809,7 +1867,8 @@ export class SessionManager {
             // state placement (verified against @github/copilot 1.0.36). State location is
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
-            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks, () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
+            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
+                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, config.nativeCriticModel) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -1826,7 +1885,7 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
             ...(nativeEnabled ? {
-                customAgents: nativeSubagentDefinitions(sdkModelName),
+                customAgents: nativeSubagentDefinitions(sdkModelName, config.nativeCriticModel),
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
@@ -2582,7 +2641,7 @@ export class SessionManager {
                     // The SDK ignores sibling `content` when `action` is a
                     // transform callback. Include worker guidance in the actual
                     // rendered section, using the current session policy.
-                    latest.nativeSubagents === "sync" ? NATIVE_SUBAGENT_GUIDANCE : undefined,
+                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance(latest.nativeCriticModel) : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);

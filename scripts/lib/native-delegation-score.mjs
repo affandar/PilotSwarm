@@ -9,7 +9,7 @@ function withoutQuotedExamples(text) {
         .replace(/"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/g, " ")
         // Preserve inline tool/profile names, but not quoted imperative prose.
         // A bare tool example still lacks the required surrounding directive.
-        .replace(/`([^`\n]*)`/g, (_, code) => /^(?:task(?:\s*\([\s\S]*\))?|swarm-(?:explore|task))$/.test(code.trim()) ? code : " ");
+        .replace(/`([^`\n]*)`/g, (_, code) => /^(?:task(?:\s*\([\s\S]*\))?|swarm-(?:explore|task|rubber-duck))$/.test(code.trim()) ? code : " ");
 }
 
 function childAssignmentRequestsNative(args) {
@@ -23,7 +23,7 @@ function childAssignmentRequestsNative(args) {
     for (const instruction of instructions) {
         const clauses = withoutQuotedExamples(instruction).split(/[.!?;\n]+/);
         for (const clause of clauses) {
-            const mentions = clause.matchAll(/\bnative(?:\s+(?:local|sync|synchronous|investigation|research))*\s+(?:tasks?|sub-?agents?|work)\b|\btask\s*\(|\bswarm-(?:explore|task)\b/gi);
+            const mentions = clause.matchAll(/\bnative(?:\s+(?:local|sync|synchronous|investigation|research))*\s+(?:tasks?|sub-?agents?|work)\b|\btask\s*\(|\bswarm-(?:explore|task|rubber-duck)\b/gi);
             for (const mention of mentions) {
                 const before = clause.slice(0, mention.index);
                 const after = clause.slice(mention.index + mention[0].length);
@@ -56,7 +56,7 @@ function childAssignmentRequestsNative(args) {
  * from a first decision (children may be spawned in successive waves). Inspect
  * failures manually; use the end-to-end test for actual nested execution.
  */
-export function scoreDelegation(scenario, decision, { model, knownAgents, catalogLookups = 0, nativeMode = "sync" } = {}) {
+export function scoreDelegation(scenario, decision, { model, criticModel, knownAgents, catalogLookups = 0, nativeMode = "sync" } = {}) {
     const failures = [];
     const rawCalls = decision?.calls;
     if (!Array.isArray(rawCalls)) failures.push("Decision calls must be an array");
@@ -74,8 +74,9 @@ export function scoreDelegation(scenario, decision, { model, knownAgents, catalo
     for (const call of native) {
         const a = call.arguments;
         if (!isRecord(a)) { failures.push("Native arguments must be an object"); continue; }
-        if (!["swarm-explore", "swarm-task"].includes(a.agent_type) || (a.mode !== undefined && a.mode !== "sync")
-            || (a.model !== undefined && a.model !== model) || a.reasoning_effort !== undefined || a.context_tier !== undefined) {
+        const selectedModel = a.agent_type === "swarm-rubber-duck" ? criticModel : model;
+        if (!["swarm-explore", "swarm-task", "swarm-rubber-duck"].includes(a.agent_type) || !selectedModel || (a.mode !== undefined && a.mode !== "sync")
+            || (a.model !== undefined && a.model !== selectedModel) || a.reasoning_effort !== undefined || a.context_tier !== undefined) {
             failures.push("Native invocation violates the admitted profile/mode/model policy");
         }
         if (!nonempty(a.prompt)) failures.push("Native invocation has no prompt");

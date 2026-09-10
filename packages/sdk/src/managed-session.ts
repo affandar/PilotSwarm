@@ -3383,6 +3383,8 @@ export class ManagedSession {
             : currentProviderFingerprint;
         if (config.nativeSubagents !== undefined
             && config.nativeSubagents !== (this.config.nativeSubagents ?? "off")) return true;
+        if (config.nativeCriticModel !== undefined
+            && config.nativeCriticModel !== (this.config.nativeCriticModel ?? null)) return true;
         if (config.featureToolFingerprint !== undefined
             && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(

@@ -18,6 +18,26 @@ function harness(overrides = {}, options = {}) {
 afterEach(() => vi.useRealTimers());
 
 describe("native task observation", () => {
+    it("reports configured and dispatched models, never the requested override", async () => {
+        vi.useFakeTimers();
+        const row = { type: "agent", id: "agent", toolCallId: "call", status: "running", model: "requested-parent" };
+        const h = harness({ list: async () => ({ tasks: [row] }) });
+        h.emit("tool.execution_start", { toolName: "task", toolCallId: "call", arguments: { model: "requested-parent" } });
+        h.emit("subagent.started", { toolCallId: "call", model: "requested-parent" }, "agent");
+        await vi.advanceTimersByTimeAsync(600);
+        expect(h.tick().tasks[0].model).toBeUndefined();
+        h.emit("subagent.configured", { model: "configured-critic" }, "agent");
+        h.emit("session.background_tasks_changed");
+        await vi.advanceTimersByTimeAsync(600);
+        expect(h.tick().tasks[0].model).toBe("configured-critic");
+        h.emit("subagent.completed", { toolCallId: "call", model: "requested-parent", firstDispatchedModel: "actual-critic" }, "agent");
+        h.emit("tool.execution_complete", { toolName: "task", toolCallId: "call", model: "requested-parent", success: true });
+        h.emit("subagent.configured", { model: "late-wrong-model" }, "agent");
+        h.observer.finish();
+        expect(h.tick().tasks[0]).toMatchObject({ model: "actual-critic", status: "completed" });
+        expect(h.summaries().at(-1).model).toBe("actual-critic");
+    });
+
     it("coalesces bursts, refreshes once more after an in-flight change, and bounds progress", async () => {
         vi.useFakeTimers();
         let release;

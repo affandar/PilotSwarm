@@ -10,6 +10,7 @@ import { createNativeCopilotProvider } from "../helpers/native-copilot-provider.
 import { createFeaturePolicy } from "../helpers/feature-policy.mjs";
 
 const MODEL = "gpt-5.6-terra";
+const CRITIC_MODEL = "claude-sonnet-5";
 const parentRequest = body => body.tools?.some(t => t.function?.name === "ps_marker");
 const systemPrompt = body => body.messages.filter(m => m.role === "system").map(m =>
     typeof m.content === "string" ? m.content : m.content.map(part => part.text ?? "").join("\n")).join("\n");
@@ -38,7 +39,7 @@ const assertNativeIsolation = requests => {
 async function harness(respond, run, mode = "sync") {
     const home = mkdtempSync(join(tmpdir(), "ps-native-runtime-"));
     const server = await createNativeCopilotProvider((body, index) => respond(body, index, home));
-    const registry = new ModelProviderRegistry({ providers: [{ id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: [MODEL] }] });
+    const registry = new ModelProviderRegistry({ providers: [{ id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: [MODEL, CRITIC_MODEL] }] });
     const sessionId = randomUUID();
     let leaked = 0;
     let manager;
@@ -65,6 +66,102 @@ async function harness(respond, run, mode = "sync") {
 }
 
 describe("native subagents (real Copilot SDK/CLI, scripted local inference)", () => {
+    it("runs a read-only rubber-duck critique and rejects a fabricated shell mutation", { timeout: 30_000 }, async () => {
+        let childStage = 0;
+        const evidence = `CRITIC_READ_PROOF_${randomUUID()}`;
+        const rejectedResults = [];
+        await harness((body, index, home) => {
+            if (index > 12) throw new Error("Unexpected native critic tool loop");
+            if (parentRequest(body)) return body.messages.at(-1).role === "tool"
+                ? { content: `PARENT: ${body.messages.at(-1).content}` }
+                : { tools: [nativeTask({ agent_type: "swarm-rubber-duck", prompt: "Critique the local critic-fixture.txt file using its actual contents." })] };
+            if (childStage++ === 0) return { tools: [nodeShell(
+                "require('fs').writeFileSync('critic-fixture.txt','MUTATED_BY_CRITIC')", "Attempt forbidden critic shell edit")] };
+            if (childStage === 2) {
+                rejectedResults.push(body.messages.at(-1));
+                return { tools: [{ name: "view", args: { path: join(home, "critic-fixture.txt") } }] };
+            }
+            return { content: `CRITIQUE: ${body.messages.at(-1).content}` };
+        }, async ({ home, server, config, sessionId, createManager, leaks }) => {
+            writeFileSync(join(home, "critic-fixture.txt"), evidence);
+            const manager = createManager();
+            // Transport-only fixture: select an explicit model without real
+            // GitHub credentials. This is not production BYOK critic support;
+            // the unstubbed BYOK denial is verified separately below.
+            manager._resolveNativeCriticModel = async () => CRITIC_MODEL;
+            const managed = await manager.getOrCreate(sessionId, config, { turnIndex: 0 });
+            const events = [];
+            const result = await managed.runTurn("Use the native critic to inspect the local fixture", { onEvent: event => events.push(event) });
+            expect(result.type).toBe("completed");
+            expect(result.content).toContain(`PARENT:`);
+            expect(result.content).toContain("CRITIQUE:");
+            expect(result.content).toContain(evidence);
+            expect(readFileSync(join(home, "critic-fixture.txt"), "utf8")).toBe(evidence);
+            expect(rejectedResults).toHaveLength(1);
+            expect(rejectedResults[0].role).toBe("tool");
+            expect(String(rejectedResults[0].content)).toContain("Tool 'bash' does not exist.");
+            const requests = server.requests.filter(body => !parentRequest(body));
+            expect(requests.length).toBeGreaterThanOrEqual(3);
+            for (const request of requests) {
+                expect(request.model).toBe(CRITIC_MODEL);
+                const names = request.tools.map(tool => tool.function?.name);
+                expect(names).toContain("view");
+                expect(names.every(name => ["view", "grep", "rg", "glob"].includes(name))).toBe(true);
+                for (const name of ["bash", "powershell", "edit", "create", "ps_marker", "spawn_agent", "store_fact", "complete_agent", "task", "write_agent"]) {
+                    expect(names).not.toContain(name);
+                }
+            }
+            expect(events.find(event => event.eventType === "subagent.started")?.data).toMatchObject({
+                agentName: "swarm-rubber-duck", executionMode: "sync", model: CRITIC_MODEL,
+            });
+            expect(events.find(event => event.eventType === "subagent.configured")?.data.model).toBe(CRITIC_MODEL);
+            expect(events.find(event => event.eventType === "subagent.completed")?.data.firstDispatchedModel).toBe(CRITIC_MODEL);
+            expect(events.filter(event => event.eventType === "native.task_updated").at(-1)?.data)
+                .toMatchObject({ model: CRITIC_MODEL, status: "completed" });
+            expect(events.filter(event => event.eventType === "native.tool.execution_complete" && event.data.toolName === "view")
+                .some(event => event.data.success === true && toolOutput(event).includes(evidence))).toBe(true);
+            expect(leaks()).toBe(0);
+            expect((await managed.getCopilotSession().rpc.tasks.list()).tasks.filter(task => task.type === "agent")).toEqual([]);
+        });
+    });
+
+    it("BYOK keeps ordinary native tasks available but denies the complementary-model critic", { timeout: 20_000 }, async () => {
+        await harness(body => body.messages.at(-1).role === "tool"
+            ? { content: "BYOK_CRITIC_UNAVAILABLE" } : { tools: [nativeTask({ agent_type: "swarm-rubber-duck" })] },
+        async ({ config, sessionId, createManager, server }) => {
+            // Use the actual SessionManager provider gate. No selection stub.
+            const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
+            const events = [];
+            expect((await managed.runTurn("Try a complementary critic on BYOK", { onEvent: event => events.push(event) })).content).toBe("BYOK_CRITIC_UNAVAILABLE");
+            expect(server.requests[0].tools.some(tool => tool.function?.name === "task")).toBe(true);
+            expect(server.requests.every(parentRequest)).toBe(true);
+            expect(events.some(event => event.eventType === "subagent.started")).toBe(false);
+            expect(events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "task")?.data.success).toBe(false);
+            const agentNames = (await managed.getCopilotSession().rpc.agent.list()).agents.map(agent => agent.name);
+            expect(agentNames).toContain("swarm-explore");
+            expect(agentNames).toContain("swarm-task");
+            expect(agentNames).not.toContain("swarm-rubber-duck");
+        });
+    });
+
+    it("feature policy OFF prevents native critic execution even when the model fabricates a task call", { timeout: 20_000 }, async () => {
+        await harness(body => body.messages.at(-1).role === "tool"
+            ? { content: "CRITIC_DISABLED" } : { tools: [nativeTask({ agent_type: "swarm-rubber-duck" })] },
+        async ({ policy, config, sessionId, createManager, server }) => {
+            await policy.set(false);
+            const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
+            const events = [];
+            expect((await managed.runTurn("Try the native critic while disabled", { onEvent: event => events.push(event) })).content).toBe("CRITIC_DISABLED");
+            expect(server.requests.every(parentRequest)).toBe(true);
+            expect(events.some(event => event.eventType === "subagent.started")).toBe(false);
+            const denied = events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "task");
+            expect(denied?.data.success).toBe(false);
+            const agentNames = (await managed.getCopilotSession().rpc.agent.list()).agents.map(agent => agent.name);
+            expect(agentNames).not.toContain("swarm-rubber-duck");
+            expect(systemPrompt(server.requests[0])).not.toContain("swarm-rubber-duck");
+        });
+    });
+
     it.each(["cluster", "user"])("applies %s OFF during native work, latches denial across ON, and rebinds warm/cold turns", { timeout: 60_000 }, async scope => {
         let phase = "revoke", parentStage = 0, policy, proofNonce = randomUUID();
         await harness(async (body) => {
@@ -353,6 +450,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 const agentNames = (await managed.getCopilotSession().rpc.agent.list()).agents.map(agent => agent.name);
                 expect(agentNames).not.toContain("swarm-explore");
                 expect(agentNames).not.toContain("swarm-task");
+                expect(agentNames).not.toContain("swarm-rubber-duck");
                 for (const request of server.requests.slice(requestStart)) {
                     expect(parentRequest(request)).toBe(true);
                     const names = request.tools.map(tool => tool.function?.name);
@@ -361,6 +459,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                     expect(systemPrompt(request)).not.toContain("## Native local delegation");
                     expect(systemPrompt(request)).not.toContain("swarm-explore");
                     expect(systemPrompt(request)).not.toContain("swarm-task");
+                    expect(systemPrompt(request)).not.toContain("swarm-rubber-duck");
                 }
             }
             expect(spawned).toHaveLength(3);
@@ -397,6 +496,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             const agentNames = (await managed.getCopilotSession().rpc.agent.list()).agents.map(agent => agent.name);
             expect(agentNames).not.toContain("swarm-explore");
             expect(agentNames).not.toContain("swarm-task");
+            expect(agentNames).not.toContain("swarm-rubber-duck");
             for (const request of server.requests.slice(requestStart)) {
                 expect(parentRequest(request)).toBe(true);
                 expect(request.tools.map(tool => tool.function?.name)).not.toContain("task");

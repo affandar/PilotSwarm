@@ -11,9 +11,10 @@ export function resolveNativeSubagents(value: unknown = process.env.PILOTSWARM_N
 // Scope native workers to CLI tools. In particular, do not inherit the
 // parent's PilotSwarm tools or loaded durable-agent definitions.
 export const NATIVE_SUBAGENT_TOOLS = ["view", "grep", "rg", "glob", "bash", "powershell", "read_bash", "read_powershell", "list_bash", "stop_bash", "stop_powershell"];
+export const NATIVE_CRITIC_TOOLS = ["view", "grep", "rg", "glob"];
 export const NATIVE_BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "security-review", "rubber-duck", "rem-agent"];
 export const NATIVE_EXCLUDED_TOOLS = ["write_agent", "manage_schedule", "run_factory", "factories_manage"];
-const names = new Set(["swarm-explore", "swarm-task"]);
+const names = new Set(["swarm-explore", "swarm-task", "swarm-rubber-duck"]);
 const childTools = new Set(NATIVE_SUBAGENT_TOOLS);
 
 export const NATIVE_SUBAGENT_GUIDANCE = `
@@ -42,7 +43,8 @@ The presence of a producer path alongside an artifact reference does not establi
 shared storage, even when the request explicitly asks you to use a native task.
 Use native task for bounded, synchronously awaited local work that fits this turn and benefits from separate context:
 task(agent_type="swarm-explore", mode="sync") for investigation, or task(agent_type="swarm-task", mode="sync")
-for tests, builds, and verbose commands. Same-worker files and uncommitted changes favor native execution
+for tests, builds, and verbose commands.
+Same-worker files and uncommitted changes favor native execution
 when the user has left the delegation mechanism open. Local files alone do not cancel a durable hint:
 "use subagents in parallel to compare README.md and package.json" favors durable children with source
 access or artifact handoff, even though the files are small. An explicit requirement to execute in this
@@ -57,24 +59,53 @@ Durable children may run on another worker: provide task context and repository 
 do not assume they can read this worker's local paths. Explain briefly if explicit native execution
 cannot satisfy a required lifetime or capability, and use a durable agent to meet that requirement.
 Provide full context and ask for findings/results. Simple lookups are best done directly.
-Native workers have local CLI tools only and use your current model. They return results through task.
+Native workers have local CLI tools only. They return results through task.
 PilotSwarm child contracts, facts, wake-ups, and complete_agent apply ONLY to spawn_agent children.
 Native background mode and write_agent are unavailable.
-Native workers inherit the parent model, reasoning effort, and context tier.
+swarm-explore and swarm-task inherit the parent model, reasoning effort, and context tier.
 Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.
 `;
 
-export function nativeSubagentDefinitions(model: string): CustomAgentConfig[] {
+export function nativeSubagentGuidance(criticModel?: string | null): string {
+    return NATIVE_SUBAGENT_GUIDANCE + (criticModel
+        ? `
+## Native rubber-duck critique
+The native rubber duck is available using ${criticModel}, a complementary model permitted on this Copilot provider.
+Use task(agent_type="swarm-rubber-duck", mode="sync") for a constructive critique of a plan,
+implementation, or tests. Subject to the role, lifetime, and user-intent rules above, proactively
+consider this critic after a non-trivial plan but before editing, at a complex implementation
+checkpoint, after writing tests, or when repeated failures or unexpected results suggest the
+approach needs rethinking. These are judgment calls, not mandatory calls on every turn.
+Skip trivial work and repeated reviews of unchanged material. An explicit request to rubber duck
+a plan or get a local native critique should use this profile when its scope fits.
+Give the critic the user's objective, proposed approach, relevant local paths, and known constraints.
+It has only local file-reading/search tools: no shell, file editing, web, durable tools, or delegation.
+It returns actionable findings; you decide which to address and briefly explain the resulting changes.
+The critic uses a complementary model; the native runtime carries the parent reasoning/context settings.
+Omit model, reasoning_effort, and context_tier arguments; overrides are unavailable.
+`
+        : "\nThe native rubber duck is unavailable: no complementary model could be verified on this session's permitted Copilot provider. Do not call swarm-rubber-duck or substitute the built-in rubber-duck. For an explicit critique request, explain the limitation and use an appropriate durable specialist or review directly. swarm-explore and swarm-task remain available.\n");
+}
+
+export function nativeSubagentDefinitions(model: string, criticModel?: string | null): CustomAgentConfig[] {
     return [
         { name: "swarm-explore", description: "Explore the local workspace and return concise source-backed findings.",
             prompt: "Investigate the delegated question in the local workspace. Return concise findings with file references. Do not edit files. If you need user input or durable tools, report that to the parent. Complete the assigned investigation and return.", },
         { name: "swarm-task", description: "Run local tests, builds, and commands; summarize success and include failure details.",
             prompt: "Perform the delegated commands in the local workspace. Return a concise outcome; include actionable error details on failure. Await your commands; do not detach processes or schedule later work. If you need user input or durable tools, report that to the parent.", },
-    ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS], infer: true }));
+        { name: "swarm-rubber-duck", description: "Constructively critique a non-trivial plan, implementation, or tests. Useful before implementation, at complex checkpoints, after tests, or when an approach repeatedly fails.",
+            prompt: "Review the supplied work against the user's objective and constraints. Read relevant local files to verify assumptions. Identify substantive correctness, design, security, or test-coverage problems and suggest concrete fixes. For each finding give the evidence or file reference, impact, severity, and recommended change. Distinguish confirmed defects from uncertainties. Avoid style nitpicks, speculative issues, and unrelated scope expansion. If there are no substantive findings, say so. Do not modify files, run commands, delegate, or claim to have run tests. Return a concise critique to the parent; the parent decides what to change. If necessary context or tools are missing, explain that limitation.",
+            // The pinned CLI accepts this on create/resume although SDK 1.0.13
+            // omits it from CustomAgentConfig's type. Required prevents its
+            // preferred-model fallback from turning a critic into the parent.
+            tools: NATIVE_CRITIC_TOOLS, modelPolicy: "required" as const },
+    ].filter(agent => agent.name !== "swarm-rubber-duck" || Boolean(criticModel))
+        .map(agent => ({ ...agent, model: agent.name === "swarm-rubber-duck" ? criticModel! : model,
+            tools: [...(agent.tools ?? NATIVE_SUBAGENT_TOOLS)], infer: true }));
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, criticModel?: string | null): SessionHooks {
     return {
         ...hooks,
         onPreToolUse: async (input, invocation) => {
@@ -99,15 +130,20 @@ export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmi
             if (!canAdmit()) return deny("Native tasks are disabled by current feature policy for this turn. Use a durable spawn_agent if needed.");
             if (!args || typeof args !== "object" || Array.isArray(args)) return deny("task arguments must be an object");
             const task = args as Record<string, unknown>;
-            if (!names.has(String(task.agent_type))) return deny("Use the native swarm-explore or swarm-task agent.");
+            if (!names.has(String(task.agent_type))) return deny("Use the native swarm-explore, swarm-task, or swarm-rubber-duck agent.");
+            const isCritic = task.agent_type === "swarm-rubber-duck";
+            if (isCritic && !criticModel) return deny("Native rubber duck is unavailable: no complementary model is permitted and available on this session's Copilot provider.");
+            const selectedModel = isCritic ? criticModel! : model;
             if (task.mode !== undefined && task.mode !== "sync") return deny("Use task(mode=sync). Background native tasks are unavailable on this worker.");
-            if (task.model !== undefined && task.model !== model) return deny("Native workers must use the parent session model; omit the model override.");
+            if (task.model !== undefined && task.model !== selectedModel) return deny(isCritic
+                ? "The native critic must use the permitted complementary model selected by the worker; omit the model override."
+                : "Native workers must use the parent session model; omit the model override.");
             if (task.reasoning_effort !== undefined || task.context_tier !== undefined) {
-                return deny("Native workers inherit parent reasoning/context settings; omit overrides.");
+                return deny("Native reasoning/context settings are managed by the worker; omit overrides.");
             }
             // Pin the admitted parent model rather than allowing runtime-specific
             // specialist defaults or an application hook to change providers.
-            return { ...previous, modifiedArgs: { ...task, mode: "sync", model } };
+            return { ...previous, modifiedArgs: { ...task, mode: "sync", model: selectedModel } };
         },
     };
 }

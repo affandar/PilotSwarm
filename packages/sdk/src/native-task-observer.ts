@@ -95,7 +95,7 @@ export class NativeTaskObserver {
             const args = data.arguments ?? data.args ?? {};
             task = { id: callId, toolCallId: callId,
                 title: text(args.description ?? args.name ?? data.agentDisplayName) ?? "Native task",
-                profile: text(args.agent_type ?? data.agentName), model: text(data.model),
+                profile: text(args.agent_type ?? data.agentName),
                 status: "running", startedAt: iso(event.timestamp), toolCalls: 0 };
             this.tasks.set(callId, task);
         }
@@ -105,7 +105,8 @@ export class NativeTaskObserver {
         const wasTerminal = terminal(task.status);
         if (wasTerminal && !isTaskTool) return;
         if (agentId && lifecycle) { task.agentId = agentId; this.agents.set(agentId, callId); }
-        if (lifecycle && data.model) task.model = text(data.model);
+        if (kind === "subagent.configured" && data.model) task.model = text(data.model);
+        if (kind === "subagent.completed" && data.firstDispatchedModel) task.model = text(data.firstDispatchedModel);
         if (kind === "subagent.started") {
             task.profile = text(data.agentName ?? data.agentType) ?? task.profile;
             this.invalidate();
@@ -241,7 +242,8 @@ export class NativeTaskObserver {
                     task.agentId = row.id;
                     this.agents.set(row.id, task.id);
                     if (row.status === "idle" || row.status === "running") task.status = row.status === "idle" ? "waiting" : "running";
-                    task.model = text(row.resolvedModel ?? row.model) ?? task.model;
+                    // row.model is the requested override, not execution proof.
+                    task.model = text(row.resolvedModel) ?? task.model;
                 }
                 task.result ??= text(row.result, 4_096);
                 if (terminal(task.status)) { this.persistBoundary(task); return; }

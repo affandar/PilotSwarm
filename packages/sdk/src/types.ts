@@ -233,6 +233,8 @@ export interface SerializableSessionConfig {
 export interface ManagedSessionConfig extends SerializableSessionConfig {
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
+    /** Worker-selected native critic model; null means unavailable. Never serialized. */
+    nativeCriticModel?: string | null;
     /** Memory-only owner policy; never serialize or reconfigure cleanup mid-turn. */
     nativeFeatureAllowed?: () => boolean;
     /** Internal feature tool declaration fingerprint; never a durable setting. */
