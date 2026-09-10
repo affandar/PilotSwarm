@@ -1385,11 +1385,12 @@ function baseReducer(state, action) {
                     filterExceptionId: null,
                 ownerFilterAutoAdmitted: null,
                 };
-                const selection = applyVisibleSessionSelection(state, nextSessions);
                 return {
                     ...state,
-                    sessions: selection.sessions,
-                    ui: selection.ui,
+                    // Search filters the list, not the attached chat. Keeping
+                    // the active session stable also prevents a keystroke in
+                    // the search box from moving the list and main pane.
+                    sessions: nextSessions,
                 };
             }
 

@@ -5053,6 +5053,71 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
+function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, listRef = null }) {
+    const [mobileOpen, setMobileOpen] = React.useState(Boolean(query));
+    const inputRef = React.useRef(null);
+    React.useEffect(() => {
+        if (query) setMobileOpen(true);
+    }, [query]);
+    const open = () => {
+        setMobileOpen(true);
+        requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    };
+    const closeOrClear = () => {
+        if (query) onQuery?.("");
+        else setMobileOpen(false);
+    };
+    const resultLabel = query
+        ? `${matchCount} ${matchCount === 1 ? "match" : "matches"}`
+        : "";
+    return React.createElement("div", {
+        className: `ps-session-search${mobileOpen ? " is-open" : ""}`,
+        "data-session-search": "true",
+    },
+    mobile ? React.createElement("button", {
+        type: "button",
+        className: "ps-session-search-trigger",
+        "aria-label": "Search sessions",
+        title: "Search sessions",
+        onClick: open,
+    }, React.createElement(SearchGlyph)) : null,
+    React.createElement("div", { className: "ps-session-search-fields" },
+        React.createElement(SearchGlyph),
+        React.createElement("input", {
+            ref: inputRef,
+            type: "text",
+            inputMode: "search",
+            "aria-label": "Find a session",
+            placeholder: "Find a session…",
+            value: query,
+            onChange: (event) => onQuery?.(event.target.value),
+            onKeyDown: (event) => {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeOrClear();
+                    return;
+                }
+                if (event.key !== "ArrowDown") return;
+                const first = listRef?.current?.querySelector?.(".ps-session-list-button");
+                if (!first) return;
+                event.preventDefault();
+                first.focus({ preventScroll: true });
+            },
+        }),
+        resultLabel ? React.createElement("span", {
+            className: "ps-session-search-count",
+            role: "status",
+            "aria-live": "polite",
+        }, resultLabel) : null,
+        (query || mobile) ? React.createElement("button", {
+            type: "button",
+            className: "ps-session-search-clear",
+            "aria-label": query ? "Clear session search" : "Close session search",
+            title: query ? "Clear" : "Close",
+            onClick: closeOrClear,
+        }, "×") : null));
+}
+
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
     // reserved footer would eat a meaningful slice of a phone screen. The
@@ -5138,6 +5203,32 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
+    const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
+    const searchEnvRef = React.useRef(null);
+    searchEnvRef.current = {
+        query: viewState.filterQuery,
+        setQuery: selection ? selection.onQuery : (value) => controller.setSessionFilterQuery(value),
+    };
+    const setSearchQuery = React.useCallback((value) => {
+        const next = String(value || "");
+        const current = String(searchEnvRef.current?.query || "");
+        const list = sessionListRef.current;
+        if (!current.trim() && next.trim() && list) {
+            searchScrollRef.current = { top: list.scrollTop, left: list.scrollLeft, restore: false };
+        } else if (current.trim() && !next.trim()) {
+            searchScrollRef.current.restore = true;
+        }
+        searchEnvRef.current?.setQuery?.(next);
+    }, []);
+    React.useLayoutEffect(() => {
+        if (viewState.filterQuery || !searchScrollRef.current.restore || !sessionListRef.current) return;
+        sessionListRef.current.scrollTop = searchScrollRef.current.top;
+        sessionListRef.current.scrollLeft = searchScrollRef.current.left;
+        searchScrollRef.current.restore = false;
+    }, [rows, viewState.filterQuery]);
+    const searchMatchCount = viewState.filterQuery
+        ? rows.reduce((count, row) => count + (row.searchMatch ? 1 : 0), 0)
+        : 0;
     const activeSession = viewState.activeSessionId
         ? viewState.sessionsById[viewState.activeSessionId] || null
         : null;
@@ -5845,7 +5936,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             }) : null, actions) : panelActions,
         className: combinedPanelClassName,
     },
-    selection ? React.createElement("input", { className: "ps-modal-input", "aria-label": "Find a session", placeholder: "Find a session…", value: selection.query || "", onChange: e => selection.onQuery?.(e.target.value) }) : null,
     React.createElement("div", {
         ref: sessionListRef,
         onKeyDown: selection ? event => {
@@ -5873,7 +5963,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
         rows.length === 0
             ? React.createElement("div", { className: "ps-empty-state" }, viewState.filterQuery
-                ? `No sessions matched "@@${viewState.filterQuery}".`
+                ? `No sessions matched "${viewState.filterQuery}".`
                 : "No sessions yet.")
             : rows.map((row) => React.createElement(SessionListRow, {
                 key: row.sessionId,
@@ -5887,6 +5977,13 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput ? null : dragHandlers,
             }))),
+    React.createElement(SessionSearchControl, {
+        query: viewState.filterQuery,
+        onQuery: setSearchQuery,
+        matchCount: searchMatchCount,
+        mobile: isMobilePane,
+        listRef: sessionListRef,
+    }),
     (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
             session: activeSession,
@@ -5992,6 +6089,12 @@ function ManageGlyph() {
 function FunnelGlyph() {
     return React.createElement(Glyph, null,
     React.createElement("path", { d: "M21 4H3l7.2 8.5V19l3.6 2v-8.5L21 4z" }));
+}
+
+function SearchGlyph() {
+    return React.createElement(Glyph, null,
+    React.createElement("circle", { cx: "11", cy: "11", r: "7" }),
+    React.createElement("path", { d: "m20 20-4-4" }));
 }
 
 // Summary — a written summary. Was "≣", the same codepoint the Logs tab used.

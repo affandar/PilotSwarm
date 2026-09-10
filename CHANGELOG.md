@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.66 — 2026-09-11
+
+Fast browser-side session search across the workspace and Master of Agents.
+
+- Search the sessions already loaded in the browser by title, topic, summary,
+  owner, agent, group, model, status, or session ID. Rank exact and phrase
+  matches ahead of prefixes, substrings, and bounded typo matches.
+- Support structured filters such as `author:`, `agent:`, `group:`, `model:`,
+  `status:`, `topic:`, `summary:`, and `id:` without issuing a server query.
+- Keep the search control fixed below the desktop list and use a compact,
+  explicit search action on mobile. Reuse the same control in the Master of
+  Agents session picker, preserve collapsed state, and restore list scroll when
+  search is cleared.
+
 ## 0.5.65 — 2026-09-11
 
 Named agents retain their own instructions and tools across delegation and

@@ -6,6 +6,7 @@ export * from "./layout.js";
 export * from "./repo-links.js";
 export * from "./repo-import.js";
 export * from "./session-tree.js";
+export * from "./session-search.js";
 export * from "./state.js";
 export * from "./reducer.js";
 export * from "./portal-links.js";
