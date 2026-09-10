@@ -5,6 +5,23 @@
 > `affandar/PilotSwarm`. Delete it (or move it to the SQL-internal repo) once every
 > capability it holds has landed upstream or moved to the SQL-internal repo.
 
+## Table of contents
+
+- [1. Purpose](#1-purpose)
+- [2. Goals](#2-goals)
+- [3. Current state](#3-current-state-as-of-this-draft)
+- [4. The core problem](#4-the-core-problem)
+- [5. IP classification](#5-ip-classification-what-goes-upstream-vs-internal)
+- [6A. Fork-to-upstream audit](#6a-fork-to-upstream-audit-platform-contributions-in-the-fork)
+- [6B. Reverse-direction audit](#6b-reverse-direction-audit-generic-platform-assets-currently-in-sqlmort)
+- [7. Strategy A: reconcile the existing fork](#7-strategy-a--reconcile-the-existing-fork-default)
+- [8. Strategy B: clean-room reimplementation](#8-strategy-b--clean-room-reimplementation-alternative)
+- [9. Recommendation](#9-recommendation)
+- [10. Execution plan](#10-execution-plan-phased)
+- [11. Rebase protocol](#11-rebase-protocol)
+- [12. Definition of done](#12-definition-of-done)
+- [13. Open decisions](#13-open-decisions)
+
 ## 1. Purpose
 
 This clone (`C:\src\PilotSwarm`) is effectively **PilotSwarm-SQL-staging** — its working
@@ -12,23 +29,28 @@ branch pushes to the private mirror, not to the public upstream. It exists so th
 team can collaborate on in-flight work without publishing internal IP. **A private fork
 is a staging buffer, not a destination.** It must not diverge from upstream for long.
 
+> **`PilotSwarm-SQL-staging` is intentionally short-lived.** It is not a permanent SQL
+> distribution of PilotSwarm, a product repository, or a long-term integration branch. Its
+> only purpose is to temporarily hold mixed work while each capability is routed to public
+> PilotSwarm or `sqlmort`. Its delta must continuously shrink, and the repository must be
+> deleted once nothing remains that exists only in the staging fork.
+
 **The repos involved:**
 
 | Role | Repo | URL |
 | --- | --- | --- |
 | 🌐 Public upstream (platform destination) | `affandar/PilotSwarm` | https://github.com/affandar/PilotSwarm |
-| 🔒 Internal staging fork (SAML SSO-governed, private) | `azure-data/PilotSwarm-SQL-staging` | https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging |
-| 🔒 SQL-internal overlay (short-term IP home) | ADO `Database Systems/SQL-AI-Marketplace` | https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace |
-| 🔒 SQL-internal repo (IP and deployment home) | `azure-data/sqlmort` | https://msft.ghe.com/azure-data/sqlmort |
+| 🔒 Short-lived internal staging fork (temporary; delete after transition) | `azure-data/PilotSwarm-SQL-staging` | https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging |
+| 🔒 SQL-internal composition repo (IP and deployment home) | `azure-data/sqlmort` | https://msft.ghe.com/azure-data/sqlmort |
 
-**Fork vs. overlay — two different artifacts.** The **fork** (`azure-data/PilotSwarm-SQL-staging`)
+**Fork vs. SQL-internal composition — two different artifacts.** The **fork**
+(`azure-data/PilotSwarm-SQL-staging`)
 is a *complete copy of the entire PilotSwarm codebase* carrying all 142 divergence commits —
 platform changes and SQL-specific changes tangled together in the same files. It mirrors
-upstream's full tree and is meant to be temporary. The **overlay** (the `SQL-AI-Marketplace`
-branch) is *not* a copy of PilotSwarm; it holds **only the SQL-specific pieces** — the thin
-slice of proprietary IP that must never go upstream — layered on top of the public platform.
-Reconciliation splits the fork's tangled diff into those two homes: platform → organic PR
-upstream, SQL-specific → the overlay.
+upstream's full tree and is meant to be temporary. **`sqlmort`** is *not* a copy of PilotSwarm;
+it holds **only the SQL-specific pieces** — the thin slice of proprietary IP that must never
+go upstream — composed on top of the public platform. Reconciliation splits the fork's tangled
+diff into those two homes: platform → organic PR upstream, SQL-specific → `sqlmort`.
 
 The end state: **every change in this fork is either (a) landed in public PilotSwarm via
 an organic PR, or (b) moved to the SQL-internal repo.** Once nothing of value lives only in
@@ -39,11 +61,14 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 1. **Contribute platform / public functionality to PilotSwarm proper** (`affandar/PilotSwarm`).
    Generic runtime primitives (SDK, orchestration, UI, job-generator framework, deploy
    scaffolding, docs) belong upstream, not in a private fork.
-2. **Keep SQL-internal concepts / proprietary IP out of the public repo.**
-   - **Short term:** ADO [`SQL-AI-Marketplace`](https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace/branchCompare?baseVersion=GBmain&targetVersion=GBdev%2Fkchung%2Fsql-agent-orchestration-platform-proposal-pilotswarm&_a=files) (existing private overlay).
-   - **Eventually:** a GitHub `sqlmort` repo that supersedes the ADO overlay.
+2. **Keep SQL-internal concepts / proprietary IP in
+   [`azure-data/sqlmort`](https://msft.ghe.com/azure-data/sqlmort), never in the public repo.**
 3. **Retire the fork.** Once (1) and (2) are complete, `PilotSwarm-SQL-staging` has no reason
    to exist and is deleted.
+
+> **Historical destination note:** the ADO `SQL-AI-Marketplace` branch was the original
+> short-term home proposed for SQL composition. It has been superseded by `azure-data/sqlmort`
+> and is not an active destination in this plan.
 
 ## 3. Current state (as of this draft)
 
@@ -98,10 +123,9 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
   so this compare tracks the **shrinking** delta as themes drain upstream. When it reports **0 files
   changed**, the fork-vs-upstream logical diff is empty. (Contrast the frozen `upstream-base` link above,
   which shows the delta since *original* divergence and therefore does **not** shrink as you rebase.)
-- **Browse the SQL-specific overlay:**
-  [`main...dev/kchung/…-pilotswarm`](https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace/branchCompare?baseVersion=GBmain&targetVersion=GBdev%2Fkchung%2Fsql-agent-orchestration-platform-proposal-pilotswarm&_a=files)
-  on the ADO `SQL-AI-Marketplace` repo — the internal overlay holding the SQL-specific pieces
-  (the "move it internal" destination; `sqlmort` eventually).
+- **Browse the SQL-internal composition repo:**
+  [`azure-data/sqlmort`](https://msft.ghe.com/azure-data/sqlmort) — the active "move it
+  internal" destination for SQL-owned IP, deployment values, plugins, and scenarios.
 
 ### Remotes
 
@@ -126,10 +150,10 @@ We diverged from PilotSwarm `main` at `eaabdbf9` (2026-08-08 — the current div
 which advances each rebase). In that window the fork accumulated **two
 kinds of value, tangled into the same commits/files:**
 - **SQL-specific values that cannot live in an OSS repo** — real internal endpoints, AAD scopes,
-  and CI-gate names (the Tier 1 IP in §5) that must stay in an internal overlay.
+  and CI-gate names (the Tier 1 IP in §5) that must stay in `sqlmort`.
 - **Genuine platform enhancements** — scenarios we built here (durable orchestration, the
   job-generator lifecycle, worker/git-hydration, delegated MCP, …) that are real improvements to
-  the platform and belong back **upstream** (§6).
+  the platform and belong back **upstream** (§6A).
 
 The problem is that these are mixed together, not that the fork exists. Left alone it also
 *drifts* — every week upstream moves and the reconciliation cost grows (quantified in the §11
@@ -138,19 +162,19 @@ ledger).
 We are **not freezing the divergence.** Instead we set up a standing protocol:
 - (a) **Constantly rebase** the fork onto upstream so it never drifts — the fork stays a thin,
   current superset of `main` rather than a snapshot that rots (the §11 rebase protocol).
-- (b) **Formalize the SQL-specific values into a separate overlay repo** — the same overlay
-  pattern `waldemort` uses to carry its environment-specific templates on top of a shared
-  platform — so proprietary/SQL config lives in one place instead of tangled through the tree.
+- (b) **Formalize the SQL-specific values in `sqlmort`** — a composition repo carrying
+  environment-specific templates on top of a shared platform — so proprietary/SQL config
+  lives in one place instead of tangled through the tree.
 - (c) **Route generic platform work upstream** as themed PRs, draining the fork's delta over
-  time (§6).
+  time (§6A).
 
-The end state is two repos — a pure-platform core (fork → upstream) and the SQL overlay — kept
+The end state is two repos — a pure-platform core (fork → upstream) and `sqlmort` — kept
 aligned by continuous rebase, not a one-time cutover.
 
 ## 5. IP classification (what goes upstream vs. internal)
 
-This is the routing map: which parts of the divergence are proprietary (→ overlay /
-SQL-internal repo) and which are generic platform work (→ upstream PR). Three tiers.
+This is the routing map: which parts of the divergence are proprietary (→ `sqlmort`) and
+which are generic platform work (→ upstream PR). Three tiers.
 
 ### 🔴 Tier 1 — Domain behavior and composition → **SQL-internal repo (do NOT publish)**
 Classification is based on domain ownership, not only whether a file contains a secret or
@@ -191,7 +215,7 @@ neutral placeholders before upstreaming.
 private constants. Every fork-only surface must be either domain-neutral platform code or moved
 to `sqlmort`.
 
-## 6. Platform contributions (upstream themes)
+## 6A. Fork-to-upstream audit: platform contributions in the fork
 
 The functionality below is generic PilotSwarm runtime (no SQL specificity) and is the
 substance of what this fork contributes back to `affandar/PilotSwarm`. Listed as themes,
@@ -231,6 +255,79 @@ not commits.
     blob/DB managed-identity decoupling, WAF fixes, and governance-restricted-subscription
     deploy overrides.
 
+## 6B. Reverse-direction audit: generic platform assets currently in `sqlmort`
+
+Section 6A addresses **false inclusion**: SQL-owned IP present in the fork that must not reach
+OSS. This peer audit addresses the opposite **false exclusion** problem: generic PilotSwarm
+mechanisms hidden in `sqlmort` that should be available in OSS. On **2026-09-10**, `sqlmort`
+was audited for assets required by the new plugin boundary or suitable as genuine platform
+contributions. No reverse-direction moves had been made when this audit was recorded.
+
+The audit found the following candidates, in recommended execution order:
+
+1. **Make the provider ABI consumable from PilotSwarm (boundary-completion priority).**
+   SQLmort's three JobGenerator plugins each carry a structural copy of the canonical
+   contract:
+   - `plugins/job-generator/ado-wiql-provider/src/contracts.ts`
+   - `plugins/job-generator/icm-provider/src/contracts.ts`
+   - `plugins/job-generator/kusto-provider/src/contracts.ts`
+
+   The authoritative ABI is
+   `packages/job-generator-provider/src/contracts.ts` in PilotSwarm, with API version
+   `pilotswarm.job-generator-provider/v1`. PilotSwarm should publish or otherwise expose a
+   lightweight, stable contracts export that external repositories can consume. SQLmort
+   should then reference that artifact and delete its mirrors. The plugins work today through
+   TypeScript structural compatibility, so this is not an immediate runtime blocker, but it is
+   required to prevent silent ABI drift and complete the ownership seam.
+
+2. **Upstream the generic Python and .NET PilotSwarm clients (platform contribution).**
+   The clients under `Clients/sdk/python/sqlagent_orchestration/` and
+   `Clients/sdk/dotnet/` implement generally useful `/api/v1` operations such as session
+   creation, turns, polling, model listing, caller authentication, and error handling. Move
+   the generic clients and examples to PilotSwarm under neutral package names. Keep
+   SQL-specific repository-to-audience mappings, defaults, and compatibility wrappers in
+   `sqlmort`.
+
+3. **Split generic deployment mechanics from SQL deployment values (platform
+   contribution and deployment-completeness work).** The following SQLmort surfaces mix
+   reusable render/apply mechanics with environment-owned composition:
+   - `deploy/apps/git-cache/apply-cache.ps1`
+   - `deploy/apps/git-worker/apply-worker.ps1`
+   - `deploy/apps/worker/apply-generic-worker.ps1`
+   - `deploy/apps/worker/generic-worker.deployment.yaml`
+
+   Generic dotenv loading, token substitution, manifest validation/application, rollout
+   waiting, and repo-less worker-pool mechanics belong in PilotSwarm when they are not already
+   provided there. SQLmort should retain thin wrappers plus concrete repository URLs,
+   node-pool names, identities, Key Vault references, image values, and environment files.
+   Reconcile this against PilotSwarm's existing base manifests before moving code; do not
+   create a second deployment implementation.
+
+4. **Upstream the generic functional-test harness and neutral smoke clients (optional
+   platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,
+   baseline, and comparison runner. Its engine can move upstream while SQLmort's
+   `playlist.yml` and SQL scenario definitions remain internal. Likewise, neutral examples
+   for model listing, prompt submission, multi-turn sessions, and hello-world health checks
+   can become PilotSwarm examples after removing SQL-branded package names and defaults.
+
+5. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
+   image build, manifest rendering, apply, and rollout mechanics under
+   `deploy/apps/kusto-mcp/` may move to PilotSwarm if they add capabilities not already
+   present. Concrete clusters, services, image destinations, identities, and acceptance
+   scenarios remain in `sqlmort`. The public-sample Kusto adapter already in PilotSwarm
+   remains the platform reference implementation.
+
+The following remain explicitly SQL-owned and are **not** reverse-migration candidates:
+ADO WIQL, IcM, and Kusto connector implementations; provider authentication and response
+normalization; plugin composition images; `deploy/values/*.env` and MCP registrations;
+SQL fleet topology and layered Windows tooling; domain prompts, work-item fixtures,
+acceptance playlists, and runbooks; and private repository-to-audience mappings.
+
+**Recommended sequence:** first expose and consume the canonical provider contract; then
+move the neutral client SDKs; then split deployment mechanics; finally consider the test
+harness, smoke clients, and Kusto MCP wrappers. Each move must leave SQLmort with only a thin
+domain composition layer and must not make PilotSwarm depend on `sqlmort`.
+
 ## 7. Strategy A — Reconcile the existing fork (default)
 
 Route the fork's work to its homes: contribute the generic platform work upstream as organic,
@@ -240,8 +337,8 @@ not a commit.)
 
 1. **Freeze divergence.** No new feature work lands only in the fork; new platform work goes
    through upstream PRs from here on.
-2. **Upstream the platform work as organic, themed PRs** (everything in §6 except Tier 1):
-   - Group by theme (§6): git-hydration/worker, job-generator framework, orchestration
+2. **Upstream the platform work as organic, themed PRs** (everything in §6A except Tier 1):
+   - Group by theme (§6A): git-hydration/worker, job-generator framework, orchestration
      versioning, UI timeline, SDK auth/lifecycle, deploy, etc. Each theme is one reviewable PR.
    - Cut each PR from current `origin/main` (46 commits ahead). Prefer **path-scoped assembly**
      — bring over the theme's final file state and commit it clean — over replaying the
@@ -253,7 +350,7 @@ not a commit.)
    with the remaining SQL-owned scenario and deployment surfaces.
 4. **Resolve DELETE items** (anything experimental we don't want to publish or keep) — none
    identified yet; flag as found.
-5. **Retire.** Once every §6 capability has landed upstream or moved internal — so the fork
+5. **Retire.** Once every §6A capability has landed upstream or moved internal — so the fork
    holds nothing not already in one of those homes — delete `PilotSwarm-SQL-staging`.
 
 **Pros:** reuses the actual working, tested code (least rework); the scan shows the IP surface
@@ -270,7 +367,7 @@ functionality we actually want, and reimplement it directly against current `ori
    orchestration versioning, worker timeline, caller-auth, etc.).
 2. For each, write fresh commits on a branch cut from `origin/main`, using the fork only as a
    design reference. Land as clean, themed PRs.
-3. Put SQL-specific pieces straight into `SQL-AI-Marketplace`/`sqlmort` — never in the fork.
+3. Put SQL-specific pieces straight into `sqlmort` — never in the fork.
 4. Delete the fork once the target capabilities exist upstream + internal.
 
 **Pros:** no messy rebase; clean separation of concerns from the start; no risk of dragging
@@ -401,13 +498,13 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - Keep the fork the **active dev branch** for SQL-orchestration concepts upstream doesn't have
   yet; new work lands here first — expected, not a violation. (No hard "freeze".)
 - **Classify at authoring** — every change knows its eventual home: **generic platform** →
-  upstream (drained later via a theme PR); **SQL-specific** → overlay (or genericize in place).
+  upstream (drained later via a theme PR); **SQL-specific** → `sqlmort` (or genericize in place).
 - **Author upstream-first only when practical** (genuinely generic, no dependency on
   not-yet-upstreamed primitives); everything else is fork-first by necessity.
 - Run a **constant rebase** cadence so the fork stays `origin/main + delta`, however that delta churns.
 - Keep deploying from the fork for now (single deployable, as today).
 
-### Phase 2 — Carve SQL out behind a plugin seam; the overlay becomes the deployment repo (→ 2 repos)
+### Phase 2 — Carve SQL out behind a plugin seam; `sqlmort` becomes the deployment repo (→ 2 repos)
 - [x] Introduce the **provider plugin seam** in the fork: opaque provider IDs, a versioned
   module ABI, a platform-owned runner, normalized controller-to-runner HTTP, credential
   references, generic limits, persistence migration, and provider-neutral API/UI validation.
@@ -430,26 +527,28 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   provider-specific startup guards instead of carrying migration scaffolding.
 - [x] Extract the Kusto JobGenerator evaluator into a SQLmort-owned sibling module using the
   same provider ABI as ADO WIQL and IcM.
+- [ ] Expose the canonical provider ABI as a consumable PilotSwarm package/export, update the
+  three SQLmort providers to consume it, and delete their structural `contracts.ts` mirrors.
 - [ ] Extract the remaining SQL-owned scenario and deployment surfaces. The public-sample
   Kusto MCP reference adapter remains in the platform; SQL-specific values and composition
   move to `sqlmort`.
-- **Make the overlay the deployment/integration repo:** it depends on core (fork now, upstream
+- **Make `sqlmort` the deployment/integration repo:** it depends on core (fork now, upstream
   later), injects the IcM plugin, and owns the compose→build→ship pipeline.
 - **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
   composition + env + infra (core-version pin, IcM injection, ACR/AKS/AFD/PG targeting,
-  governance-restricted-subscription overrides) move to the **overlay**.
+  governance-restricted-subscription overrides) stay in **`sqlmort`**.
 - [x] Neutralize identified fork-added SQL/org-specific comments and example paths in the SDK
   and git-cache deployment documentation.
 - [x] Genericize PVS operation and policy fixtures and remove the hard-coded Private Validation
   Service UI label while preserving the generic external-operation and named-policy mechanisms.
 - [x] Genericize remaining **Tier 2** examples in place: replace `StandardFix` and
   `DsMainDev` with neutral fixtures and remove the concrete ACR name.
-- **Result:** deployment is now **core (fork) + overlay = 2 repos**, orchestrated *from the
-  overlay*; the fork is now a **pure-platform repo** (a precondition for retiring it).
+- **Result:** deployment is now **core (fork) + `sqlmort` = 2 repos**, orchestrated *from
+  `sqlmort`*; the fork is now a **pure-platform repo** (a precondition for retiring it).
 
 > **⚠️ "Pure-platform" describes the *tree*, not the *history*.** After Phase 2 the fork's **working
 > tree** is IP-free — the Tier-1 files (IcM endpoint, AAD scope, CI-gate names) now live in the
-> overlay. But the **commit history still contains the IP**: Phase 2 removes it at the *tip* via
+> `sqlmort`. But the **commit history still contains the IP**: Phase 2 removes it at the *tip* via
 > *new* commits — it does **not** rewrite history, so the older commits that introduced the IP are
 > still reachable in the branch. Consequence: the fork is safe to keep **private**, but must
 > **never** be pushed — branch, tag, or mirror — to any **public** repo. A public branch exposes its
@@ -460,7 +559,7 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 > scan**, not one inferred from a clean tip.
 
 ### Phase 3 — Upstream the platform, theme by theme (slow track, external pace)
-- Slice the fork-vs-upstream logical diff into the ~8+ capability themes of §6.
+- Slice the fork-vs-upstream logical diff into the ~8+ capability themes of §6A.
 - For each theme, in dependency order:
   - Cut a clean PR branch from **current `origin/main`** via **path-scoped assembly** (bring the
     theme's final file state, commit clean) — not a replay of entangled history.
@@ -481,12 +580,12 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   fork-first platform work slows.
 - Delete the fork only when **(a)** the accumulated delta is drained **and (b)** new generic
   platform work has moved **upstream-first**, so nothing fresh keeps landing fork-only.
-- Swap the deploy core **fork → upstream**: because the overlay owns the pipeline, this is just
-  **repinning the overlay's core dependency**, not moving any build logic.
+- Swap the deploy core **fork → upstream**: because `sqlmort` owns the pipeline, this is just
+  **repinning `sqlmort`'s core dependency**, not moving any build logic.
 - Delete `PilotSwarm-SQL-staging`; remove this plan doc.
 
 > **Invariant throughout:** deployment is always **exactly 2 repos** — core (`fork`→`upstream`) +
-> `overlay` — the overlay owns composition, and "done" means the **fork-vs-upstream logical diff
+> `sqlmort` — `sqlmort` owns composition, and "done" means the **fork-vs-upstream logical diff
 > is empty**, not "all commits replayed."
 
 ## 11. Rebase protocol
@@ -507,7 +606,7 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
 **Branch & tag naming.**  Dates in tag names are the **committer date of the referenced commit**
 (`YYYY-MM-DD`), not the day you happened to tag — so each tag is self-describing.
 - **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
-  every rebase; all by-name references (overlay core pin, CI, PR policy) point here.
+  every rebase; all by-name references (`sqlmort` core pin, CI, PR policy) point here.
 - **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
 - **Compare baseline (moving mirror):** branch `oss/main` — a fast-forward-only mirror of
   `origin/main` (the upstream tip the fork was last rebased onto), pushed to `ghe`. It is
@@ -592,7 +691,7 @@ full set is a permanent audit trail and rollback ledger.
 6. **Validate on the candidate — before swapping anything:**
    - build + unit/integration tests green,
    - smoke: bring up worker + portal, run one lifecycle-job E2E,
-   - deploy to **non-prod** (overlay pinned at the candidate) and sanity-check.
+   - deploy to **non-prod** (`sqlmort` pinned at the candidate) and sanity-check.
 7. **Swap in** once green. If the live branch gained new commits during validation, rebase those
    few onto the candidate first. Then capture the SHAs up front and swap **by SHA** — never by the
    ambiguous `rebase/onto-…` name (see the warning below):
@@ -787,7 +886,7 @@ mechanical; ⚪ **low** — docs / scripts only, no code overlap. Parenthetical 
 - `ca03d6a9` 🔴 release v0.5.39 *(session-manager, session-proxy, protocol, worker)*
 
 **2026-08-13**
-- `13f03bd1` 🟡 fix(waf): sync AFD WAF template — DRS exclusions + drsRuleGroupOverrides *(overlay-bound, §10)*
+- `13f03bd1` 🟡 fix(waf): sync AFD WAF template — DRS exclusions + drsRuleGroupOverrides *(`sqlmort`-bound, §10)*
 
 **2026-08-14**
 - `921762ed` 🔴 release v0.5.40 *(session-manager, managed-session, cms-migrations, protocol)*
@@ -888,13 +987,15 @@ small weekly rebases keep each migration/orchestration collision to one commit's
       real Azure DevOps discovery, Job materialization, and terminal `Validated` state.
 - [x] Legacy provider rollout waived because no deployed definitions depend on
       the removed in-process ADO WIQL, IcM, or Kusto environment contracts.
+- [ ] External providers consume a canonical PilotSwarm-owned ABI artifact; SQLmort contains
+      no copied provider-contract definitions.
 - [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
-- [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
+- [ ] `sqlmort` owns the compose→build→ship pipeline; deployment = core + `sqlmort` (2 repos);
       the fork is a pure-platform repo.
 - [x] Tier 2 genericized in place (fork-added comments/examples, PVS, StandardFix,
       DsMainDev, and the concrete ACR reference are neutralized; Tier 3 is benign —
       no action; see §5).
-- [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
+- [ ] All §6A platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
   - [ ] (1) AKS git-hydration worker fleet
   - [ ] (2) Job Generator framework + durable lifecycle state machine *(generic runner/module
         ABI implemented; ADO WIQL and IcM evaluators moved to SQLmort sibling plugins)*
@@ -912,13 +1013,18 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 
 ## 13. Open decisions
 
-1. **Overlay retirement timing** — determine when remaining ADO `SQL-AI-Marketplace`
-   composition can move to `sqlmort`.
-2. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
+1. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
    so this is a *reconcile two implementations* problem, not an add. Decide per subsystem: adopt
    upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork rebase
    hits, so decide early. *(The one known Strategy-B candidate; default stays A per §9.)*
-3. **Deploy-layer split** — enumerate which `deploy/` files are generic (→ core, upstreamed) vs
-   SQL-specific (→ overlay: core-version pin, IcM injection, ACR/AKS/AFD/PG targeting, governance
-   overrides). Must be settled before the overlay can own the pipeline (§10 Phase 2).
-4. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
+2. **Deploy-layer split** — enumerate which `deploy/` files are generic (→ core, upstreamed) vs
+   SQL-specific (→ `sqlmort`: core-version pin, IcM injection, ACR/AKS/AFD/PG targeting, governance
+   overrides). Reconcile SQLmort's apply wrappers and generic-worker manifest against existing
+   PilotSwarm deployment support rather than creating duplicate implementations. Must be settled
+   before `sqlmort` can own the pipeline (§10 Phase 2 and §6B).
+3. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
+4. **Provider contract distribution** — choose a stable package/export shape and versioning
+   policy for external provider authors, then migrate SQLmort off its three structural mirrors.
+5. **Client SDK ownership and naming** — select neutral Python and .NET package names, define
+   compatibility for current SQLmort callers, and isolate SQL-owned audience mappings before
+   upstreaming the generic clients.
