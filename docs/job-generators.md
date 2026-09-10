@@ -255,9 +255,9 @@ Required:
 Concrete source connectors are not implemented in this repository. Domain
 repositories build modules against the public v1 ABI, compose them over the
 platform-owned `pilotswarm-job-generator-provider` runner, and register the
-resulting endpoint with the controller. For example, SQLmort owns its
-`ado_wiql`, `icm`, and `kusto` modules; PilotSwarm does not import those
-connectors.
+resulting endpoint with the controller. PilotSwarm does not import concrete
+connectors; their provider IDs, implementations, and composition remain owned
+by the registering deployment.
 
 Controller-side source configuration is:
 
