@@ -88,8 +88,11 @@ function normalizeLifecycleSessionRepo(lifecycleDefinition) {
 function normalizeJobGeneratorDefinition(definitionParam, createdBy) {
     const definition = objectParam(definitionParam, "definition");
     const sourceType = String(definition.sourceType || "").trim();
-    if (!["ado_wiql", "icm", "kusto"].includes(sourceType)) {
-        throw invalidRequest("definition.sourceType must be ado_wiql, icm, or kusto.");
+    if (!JOB_SOURCE_PROVIDER_ID_RE.test(sourceType)) {
+        throw invalidRequest(
+            "definition.sourceType must start with a lowercase letter and contain only "
+            + "lowercase letters, digits, '.', '_', or '-' (maximum 128 characters).",
+        );
     }
     const sourceConfig = objectParam(definition.sourceConfig ?? {}, "definition.sourceConfig");
     const lifecycleDefinition = normalizeLifecycleSessionRepo(
@@ -173,6 +176,7 @@ const SEED_REPOS = new Set(
 const REPO_ALLOWLIST_TTL_MS = 30 * 1000;
 
 const REPO_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const JOB_SOURCE_PROVIDER_ID_RE = /^[a-z][a-z0-9._-]{0,127}$/;
 
 /**
  * Validate an optional `repo` create-param against a resolved allowlist.

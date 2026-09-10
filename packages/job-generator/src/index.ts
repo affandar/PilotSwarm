@@ -14,7 +14,10 @@ import {
     RemoteLifecycleStateReader,
 } from "pilotswarm-sdk";
 import { JobGeneratorController, PilotSwarmInitialSessionFactory } from "./controller.js";
-import { createEvaluatorsFromEnv } from "./providers.js";
+import {
+    createEvaluatorsFromEnv,
+    effectiveJobGeneratorLeaseSeconds,
+} from "./providers.js";
 import {
     AzureDevOpsPullRequestApprovalObserver,
     AzureDevOpsPullRequestClient,
@@ -48,7 +51,9 @@ export async function runJobGenerator(): Promise<void> {
     const workerId = process.env.JOBGEN_WORKER_ID || `${hostname()}-${process.pid}`;
     const pollIntervalMs = Number(process.env.JOBGEN_POLL_INTERVAL_MS || 15_000);
     const claimLimit = Number(process.env.JOBGEN_CLAIM_LIMIT || 10);
-    const leaseSeconds = Number(process.env.JOBGEN_LEASE_SECONDS || 300);
+    const leaseSeconds = effectiveJobGeneratorLeaseSeconds(
+        Number(process.env.JOBGEN_LEASE_SECONDS || 300),
+    );
     console.info("[job-generator] initializing PostgreSQL catalog");
     const catalog = await PgSessionCatalog.create(catalogUrl, cmsSchema, {
         useManagedIdentity,
@@ -161,7 +166,7 @@ export async function runJobGenerator(): Promise<void> {
     let producerRun: Promise<void> | undefined;
     try {
         if (runOnce) {
-            await controller.runOnce();
+            await controller.runOnce(abort.signal);
             await waitScheduler?.runOnce();
         } else {
             producerRun = waitScheduler?.run(abort.signal);

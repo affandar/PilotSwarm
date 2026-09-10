@@ -999,7 +999,8 @@ export interface FleetDirectiveRow {
     updatedBy: string | null;
 }
 
-export type JobGeneratorSourceType = "ado_wiql" | "icm" | "kusto";
+/** Opaque source-provider identifier resolved by the JobGenerator runtime registry. */
+export type JobGeneratorSourceType = string;
 export type JobGeneratorOperationalState = "enabled" | "paused" | "disabled";
 export type JobLifecycleState = "pending_session" | "active" | "blocked" | "completed" | "cancelled";
 export type JobSessionStatus = "reserved" | "unacked" | "active" | "failed" | "replaced" | "completed";

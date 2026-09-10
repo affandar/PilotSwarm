@@ -143,3 +143,18 @@ test("0088: observed-condition waits persist scheduling leases and delivery boun
     assert.match(migration.sql, /CREATE UNIQUE INDEX IF NOT EXISTS uq_job_waits_signal_key/i);
     assert.match(migration.sql, /CREATE INDEX IF NOT EXISTS ix_job_waits_check_lease/i);
 });
+
+test("0090: JobGenerator source providers use opaque identifiers", () => {
+    const migration = migrations.find((m) => m.version === "0090");
+    assert.ok(migration, "migration 0090 must be registered");
+    assert.equal(migration.name, "job_generator_source_provider_ids");
+    assert.match(
+        migration.sql,
+        /DROP CONSTRAINT IF EXISTS job_generator_definitions_source_type_check/i,
+    );
+    assert.match(
+        migration.sql,
+        /CHECK \(source_type ~ '\^\[a-z\]\[a-z0-9\._-\]\{0,127\}\$'\)/i,
+    );
+    assert.doesNotMatch(migration.sql, /ado_wiql|icm|kusto/i);
+});

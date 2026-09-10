@@ -1910,8 +1910,8 @@ function describeArtifact(filename) {
 
 /**
  * A filename read as a title: drop the extension, drop a trailing date stamp,
- * and turn separators into spaces. `icm-pg-outage-chain-20260805.html` reads as
- * "Icm pg outage chain" — the same move a document viewer makes, because the
+ * and turn separators into spaces. `customer-escalation-20260805.html` reads as
+ * "Customer escalation" — the same move a document viewer makes, because the
  * card is a thing you recognize at a glance, not a path you retype.
  */
 function artifactCardTitle(filename) {
@@ -6097,15 +6097,9 @@ async function listJobWaitsWithCompatibility(transport, jobId) {
     }
 }
 
-const JOB_GENERATOR_SOURCE_TYPE_LABELS = {
-    ado_wiql: "Work item query (Azure DevOps WIQL)",
-    icm: "IcM incident query",
-    kusto: "Kusto query",
-};
-
 function jobGeneratorSourceTypeLabel(sourceType) {
     if (!sourceType) return "Preview source";
-    return JOB_GENERATOR_SOURCE_TYPE_LABELS[sourceType] || sourceType;
+    return sourceType;
 }
 
 function jobGeneratorSourceQueryText(definition) {
@@ -6283,7 +6277,7 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
         description: "Mutable JobGenerator identity and schedule. Owner is assigned from the signed-in user.",
         open: true,
         fields: [
-            { key: "name", label: "Name", kind: "text", placeholder: "IncidentFix", required: true },
+            { key: "name", label: "Name", kind: "text", placeholder: "BacklogProcessor", required: true },
             { key: "cadenceSeconds", label: "Materialization cadence (seconds)", kind: "number", min: 30 },
         ],
     },
@@ -6295,15 +6289,13 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
         fields: [
             {
                 key: "sourceType",
-                label: "Source type",
-                kind: "select",
-                options: [
-                    { value: "ado_wiql", label: "Work item query" },
-                    { value: "icm", label: "IcM" },
-                    { value: "kusto", label: "Kusto" },
-                ],
+                label: "Source provider ID",
+                kind: "text",
+                placeholder: "example-source",
+                required: true,
+                help: "Opaque provider ID registered with the JobGenerator controller.",
             },
-            { key: "expansionAgent", label: "Expansion agent", kind: "text", placeholder: "incidentfix-expand" },
+            { key: "expansionAgent", label: "Expansion agent", kind: "text", placeholder: "example-expand" },
             {
                 key: "sourceConfig",
                 label: "Source configuration (JSON)",
@@ -6318,8 +6310,8 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
         title: "Inherited affinities",
         description: "Placement settings inherited by every Job. User affinity is assigned from the signed-in owner.",
         fields: [
-            { key: "repoAffinity", label: "Repository affinity", kind: "text", placeholder: "DsMainDev" },
-            { key: "gitRef", label: "Git ref", kind: "text", placeholder: "dev/<you>/job-generator" },
+            { key: "repoAffinity", label: "Repository affinity", kind: "text", placeholder: "service-repo" },
+            { key: "gitRef", label: "Git ref", kind: "text", placeholder: "main" },
             {
                 key: "computeAffinity",
                 label: "Compute affinity",
@@ -6384,10 +6376,10 @@ const JOB_GENERATOR_CREATE_SECTIONS = [
 const JOB_GENERATOR_CREATE_DEFAULTS = {
     name: "",
     cadenceSeconds: "300",
-    sourceType: "ado_wiql",
+    sourceType: "",
     expansionAgent: "",
-    sourceConfig: '{\n  "wiql": "SELECT [System.Id] FROM WorkItems",\n  "keyField": "System.Id"\n}',
-    repoAffinity: "DsMainDev",
+    sourceConfig: "{}",
+    repoAffinity: "",
     gitRef: "",
     computeAffinity: "devbox",
     modelAffinity: "",
@@ -14647,7 +14639,7 @@ function ModalLayer({ controller }) {
                 onChange: (event) => controller.setAgentPickerQuery(event.target.value),
                 // The list's own keys must still work from inside the box, but
                 // every OTHER key has to stay here — the modal binds j and k to
-                // move the selection, and without this you cannot type "kusto".
+                // move the selection, and without this you cannot type "provider-id".
                 onKeyDown: (event) => {
                     const passes = ["ArrowUp", "ArrowDown", "Enter", "Escape", "Tab"];
                     if (!passes.includes(event.key)) event.stopPropagation();

@@ -17,7 +17,10 @@ import type {
     ReasoningEffort,
     SessionCatalog,
 } from "pilotswarm-sdk";
-import type { SourceEvaluator } from "./providers.js";
+import {
+    effectiveJobGeneratorLeaseSeconds,
+    type SourceEvaluator,
+} from "./providers.js";
 
 export type JobGeneratorStore = Pick<
     SessionCatalog,
@@ -413,31 +416,34 @@ export class JobGeneratorController {
         this.workerId = options.workerId ?? `job-generator-${randomUUID()}`;
         this.pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 15_000, "pollIntervalMs");
         this.claimLimit = positiveInteger(options.claimLimit ?? 10, "claimLimit");
-        this.leaseSeconds = positiveInteger(options.leaseSeconds ?? 300, "leaseSeconds");
+        this.leaseSeconds = effectiveJobGeneratorLeaseSeconds(
+            options.leaseSeconds ?? 300,
+            "leaseSeconds",
+        );
         this.logger = options.logger ?? console;
     }
 
-    async runOnce(): Promise<number> {
+    async runOnce(signal?: AbortSignal): Promise<number> {
         const generators = await this.store.claimDueJobGenerators(
             this.workerId,
             this.claimLimit,
             this.leaseSeconds,
         );
         this.logger.info(`[job-generator] poll claimed=${generators.length}`);
-        for (const generator of generators) {
+        await Promise.all(generators.map(async (generator) => {
             try {
-                await this.processGenerator(generator);
+                await this.processGenerator(generator, signal);
             } catch (error) {
                 this.logger.error(`[job-generator] ${generator.generatorId} failed`, error);
             }
-        }
+        }));
         return generators.length;
     }
 
     async run(signal?: AbortSignal): Promise<void> {
         while (!signal?.aborted) {
             try {
-                await this.runOnce();
+                await this.runOnce(signal);
             } catch (error) {
                 this.logger.error("[job-generator] polling failed", error);
             }
@@ -446,7 +452,10 @@ export class JobGeneratorController {
         }
     }
 
-    private async processGenerator(generator: JobGeneratorRow): Promise<void> {
+    private async processGenerator(
+        generator: JobGeneratorRow,
+        signal?: AbortSignal,
+    ): Promise<void> {
         const { cycle, definition } = await this.store.beginJobGeneratorCycle(
             generator.generatorId,
             this.workerId,
@@ -463,6 +472,7 @@ export class JobGeneratorController {
                 generator,
                 definition,
                 watermark: cycle.watermarkBefore,
+                signal,
             });
             discoveredCount = evaluation.discoveries.length;
             const maxItems = Number(definition.guardrails.maxItemsPerCycle ?? 0);

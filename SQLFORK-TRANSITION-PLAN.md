@@ -19,7 +19,7 @@ is a staging buffer, not a destination.** It must not diverge from upstream for 
 | 🌐 Public upstream (platform destination) | `affandar/PilotSwarm` | https://github.com/affandar/PilotSwarm |
 | 🔒 Internal staging fork (SAML SSO-governed, private) | `azure-data/PilotSwarm-SQL-staging` | https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging |
 | 🔒 SQL-internal overlay (short-term IP home) | ADO `Database Systems/SQL-AI-Marketplace` | https://msdata.visualstudio.com/Database%20Systems/_git/SQL-AI-Marketplace |
-| 🔒 SQL-internal repo (eventual IP home) | `sqlmort` *(not yet created)* | _TBD — supersedes the ADO overlay_ |
+| 🔒 SQL-internal repo (IP and deployment home) | `azure-data/sqlmort` | https://msft.ghe.com/azure-data/sqlmort |
 
 **Fork vs. overlay — two different artifacts.** The **fork** (`azure-data/PilotSwarm-SQL-staging`)
 is a *complete copy of the entire PilotSwarm codebase* carrying all 142 divergence commits —
@@ -152,36 +152,43 @@ aligned by continuous rebase, not a one-time cutover.
 This is the routing map: which parts of the divergence are proprietary (→ overlay /
 SQL-internal repo) and which are generic platform work (→ upstream PR). Three tiers.
 
-### 🔴 Tier 1 — Real internal coupling → **SQL-internal repo (do NOT publish)**
-Only **2 files** carry a hard internal coupling (live internal endpoint + AAD app scope):
-- `packages/job-generator/src/providers.ts` — `IcmEvaluator`,
-  `ICM_MCP_ENDPOINT = "https://icm-mcp-prod.azure-api.net/v1/"`,
-  `ICM_MCP_SCOPE = "api://icmmcpapi-prod/.default"`
-- `packages/job-generator/test/providers.test.mjs` — tests asserting the above
+### 🔴 Tier 1 — Domain behavior and composition → **SQL-internal repo (do NOT publish)**
+Classification is based on domain ownership, not only whether a file contains a secret or
+private endpoint. SQL-owned provider logic, operational policy, scenario definitions, prompts,
+examples, tests, and deployment composition belong in `sqlmort`, even when their individual
+values are not confidential.
 
-The generic `ado_wiql` and `kusto` evaluators in the same file are **public** — carve IcM
-out behind the plugin-loader seam; ship the rest upstream.
+The known extraction areas include:
+- IcM and Kusto JobGenerator provider implementations, authentication details, response
+  normalization, tests, and operational documentation.
+- Kusto-specific MCP adapters, executables, images, and deployment composition. The reusable
+  MCP proxy/authentication host remains platform code.
+- SQL scenario lifecycles and fixtures such as IncidentFix, StandardFix, Flakebuster, PVS, and
+  SQL repository/fleet names.
+- SQL environment composition: concrete images, identities, endpoints, cluster values, and
+  plugin registration.
 
-### 🟡 Tier 2 — Internal names/terminology, no secrets → **genericize in place**
-- **`PVS` / "Private Validation Service" / "PVS/Smart Test Selection (git)"** (~40 hits) —
-  internal SQL CI-gate names, used only as demo/test fixtures. The gate *mechanism* is
-  generic; only the labels are internal.
-- **`DsMainDev`** (~8 hits) — internal repo name used as an example `repoAffinity` placeholder.
-- **`pssqlwus2acr.azurecr.io`** (1 hit) — a real dev ACR name in a build-arg comment.
+### 🟡 Tier 2 — Generic extension seams → **platform repo**
+The platform owns contracts and mechanisms that do not enumerate or interpret SQL providers:
+- Opaque JobGenerator provider IDs, a versioned module ABI, a generic provider runner, and the
+  normalized out-of-process controller-to-runner protocol.
+- Generic provider registration, credential references, response validation, guardrails, and
+  lifecycle materialization. The runner owns HTTP, authentication, health, deadlines,
+  cancellation, and shutdown; provider modules own only source-specific connector behavior.
+- Generic MCP proxy/authentication primitives and plugin loading.
+- Provider-neutral APIs and UI driven by registered descriptors rather than hard-coded source
+  allowlists.
 
-Decision: **genericize in place** to keep it public — `PVS`→`ExampleGate`,
-`DsMainDev`→`<your-repo>`, drop the real ACR name. (No routing to the overlay needed; these are
-labels/fixtures, not IP.)
+### 🟢 Tier 3 — Generic fixtures and public integrations → **platform repo**
+Generic ADO PR observers, sample providers, tests, and documentation may remain only when they
+use public interfaces and domain-neutral examples. Concrete JobGenerator source connectors,
+including ADO WIQL modules used by SQL workflows, remain external sibling implementations in
+the owning domain repository. Internal names and environment values must be replaced with
+neutral placeholders before upstreaming.
 
-### 🟢 Tier 3 — Benign, stays public (verified, no action)
-- All `kusto.windows.net` → public `help.kusto.windows.net` sample cluster
-- Generic `api://` (`AzureADTokenExchange`, `api://<app-id>`/fake-GUID placeholders)
-- `secret`/`pat` hits → env-var reads + `"test-pat"` fixtures (no real secrets)
-- `dev.azure.com` / `.visualstudio.com` → generic host-parsing + `example`/`Contoso`/`<org>`
-  placeholders; `package-lock.json` hits are the public `1es-public` npm feed
-
-**Bottom line:** of 241 files, **exactly 2** contain true proprietary IP. The fork is
-overwhelmingly generic platform work that belongs upstream.
+**Bottom line:** the routing unit is an owned capability, not a count of files containing
+private constants. Every fork-only surface must be either domain-neutral platform code or moved
+to `sqlmort`.
 
 ## 6. Platform contributions (upstream themes)
 
@@ -195,8 +202,8 @@ not commits.
    (Linux/Windows) fleets with truthful readiness.
 2. **Job Generator framework + durable lifecycle state machine** — the generic job-generator
    (registration, hierarchy, lifecycle API resources, continuous materialization, durable
-   state execution, canonical cross-source state references, E2E harness). *The IcM source
-   evaluator is the one piece carved out to the SQL-internal repo.*
+   state execution, canonical cross-source state references, E2E harness). *Domain source
+   providers are registered externally and owned by their domain repositories.*
 3. **Durable orchestration primitives** — keyed system waits, observed-condition waits,
    external-operation gates, durable response persistence, versioned orchestration snapshots,
    and bootstrap-turn folding.
@@ -209,8 +216,9 @@ not commits.
 6. **Portal / observability UI** — durable job-transition timelines, worker-utilization
    visualization, live swimlane spans, queued bands, per-condition PR-gate rows, tree keyboard
    navigation, repo picker, and "load older" history hydration.
-7. **Generic Azure DevOps integration** — observe ADO PR approval/completion, heterogeneous
-   approval conditions on the PR gate, and an ADO provider mode for lifecycle jobs.
+7. **Generic Azure DevOps integration** — observe ADO PR approval/completion and heterogeneous
+   approval conditions on the PR gate; concrete ADO discovery connectors use the external
+   provider ABI and remain in their owning domain repository.
 8. **Worker platform hardening** — `beforeRunTurn` hook, platform-owned working directory +
    config/skill discovery, repo-less session pool routing, worker-registry host/build
    provenance, owner-affinity scheduling, and owner-managed logical cleanup.
@@ -225,7 +233,7 @@ not commits.
 ## 7. Strategy A — Reconcile the existing fork (default)
 
 Route the fork's work to its homes: contribute the generic platform work upstream as organic,
-themed PRs, and move the one piece of real IP to the SQL-internal repo. When nothing of value
+themed PRs, and move SQL-owned capabilities to the SQL-internal repo. When nothing of value
 lives only in the fork, delete it. (Not a commit-by-commit burndown — the unit is a capability,
 not a commit.)
 
@@ -239,9 +247,9 @@ not a commit.)
      entangled per-commit history; reserve commit-by-commit replay for the few themes whose
      history is already tight. Stack dependent PRs (foundation → features → UI/deploy).
    - Scrub Tier 2 terms as each PR is prepared.
-3. **Extract Tier 1 (IcM) to the SQL-internal repo.** Carve `IcmEvaluator` out of
-   `providers.ts` into the overlay (`SQL-AI-Marketplace` now, `sqlmort` later) behind a
-   generic evaluator-plugin seam upstream. Remove it from the fork branch.
+3. **Extract Tier 1 providers to `sqlmort`.** The first slice moves `IcmEvaluator` out of
+   `providers.ts` behind an opaque, normalized remote-provider contract. Continue with Kusto
+   and the remaining SQL-owned scenario/deployment surfaces.
 4. **Resolve DELETE items** (anything experimental we don't want to publish or keep) — none
    identified yet; flag as found.
 5. **Retire.** Once every §6 capability has landed upstream or moved internal — so the fork
@@ -270,8 +278,8 @@ implementation effort; risk of behavioral drift from what already works.
 
 ## 9. Recommendation
 
-Given the scan result — **only 2 files carry real IP and the rest is clean generic
-platform work** — **Strategy A (reconcile) is the default.** Reserve **Strategy B** for any
+Given the capability-routing requirement, **Strategy A (reconcile) is the default.** Reserve
+**Strategy B** for any
 capability whose commits are too entangled with SQL-specific concerns to cleanly split; those
 few, reimplement clean rather than untangle.
 
@@ -399,10 +407,26 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
 - Keep deploying from the fork for now (single deployable, as today).
 
 ### Phase 2 — Carve SQL out behind a plugin seam; the overlay becomes the deployment repo (→ 2 repos)
-- Introduce the **plugin seam** in the fork (generic evaluator-plugin loader — the `PluginSpec`
-  mechanism). This can land in the fork **now**, ahead of upstreaming it — no upstream dependency.
-- Move the **2 Tier-1 files** (`IcmEvaluator` + its test) out of `providers.ts` into the
-  **`SQL-AI-Marketplace` overlay** as a plugin.
+- [x] Introduce the **provider plugin seam** in the fork: opaque provider IDs, a versioned
+  module ABI, a platform-owned runner, normalized controller-to-runner HTTP, credential
+  references, generic limits, persistence migration, and provider-neutral API/UI validation.
+- [x] Extract ADO WIQL from JobGenerator core into a SQLmort-owned sibling module beside IcM.
+  The domain module owns Azure DevOps query/authentication behavior while PilotSwarm's generic
+  runner owns HTTP, authentication, health, deadlines, cancellation, validation, and process
+  lifecycle.
+- [x] Move `IcmEvaluator`, its MCP dependency, tests, endpoint/scope configuration, and
+  operational documentation out of the platform implementation into **`sqlmort`**. The
+  SQL-owned module contains only IcM connector behavior; its image composes that module over
+  the platform runner. Kubernetes resources, controller registration, and coordinated rollout
+  tooling were implemented on 2026-09-10.
+- [x] Validate the cross-repository provider boundary with SQLmort's `ado_wiql` sibling plugin
+  and the deterministic mock-delivery lifecycle. On 2026-09-10 generator
+  `fcadf52f-eae6-42e7-beab-54b361330425` loaded the external module through PilotSwarm's
+  generic runner, discovered work item `5565721`, created one Job, and reached `Validated`
+  after both durable mock waits.
+- [ ] Commit and deploy the combined changes, then verify an existing `sourceType: "icm"`
+  definition end-to-end against the sqlmort provider.
+- [ ] Extract the remaining SQL-owned providers and scenario surfaces, beginning with Kusto.
 - **Make the overlay the deployment/integration repo:** it depends on core (fork now, upstream
   later), injects the IcM plugin, and owns the compose→build→ship pipeline.
 - **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
@@ -844,13 +868,23 @@ small weekly rebases keep each migration/orchestration collision to one commit's
       gate enforces "source change ⇒ test in same commit" going forward (see §10 Phase 0).
 - [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
-- [ ] Plugin seam in place; Tier 1 (IcM) extracted to the overlay as a plugin.
+- [x] Provider module ABI and platform-owned runner implemented; ADO WIQL and IcM concrete
+      implementations, tests, configuration, and image composition moved to `sqlmort`
+      *(working-tree implementation complete 2026-09-10; not yet
+      committed or deployed)*.
+- [x] Cross-repository loading and execution validated locally through SQLmort's `ado_wiql`
+      plugin and the mock-delivery state machine, including authenticated provider dispatch,
+      real Azure DevOps discovery, Job materialization, and terminal `Validated` state.
+- [ ] Combined PilotSwarm + sqlmort rollout validated against an existing
+      `sourceType: "icm"` definition.
+- [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
 - [ ] Overlay owns the compose→build→ship pipeline; deployment = core + overlay (2 repos);
       the fork is a pure-platform repo.
 - [ ] Tier 2 genericized in place (Tier 3 is benign — no action; see §5).
 - [ ] All §6 platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
   - [ ] (1) AKS git-hydration worker fleet
-  - [ ] (2) Job Generator framework + durable lifecycle state machine *(IcM evaluator carved out)*
+  - [ ] (2) Job Generator framework + durable lifecycle state machine *(generic runner/module
+        ABI implemented; ADO WIQL and IcM evaluators moved to SQLmort sibling plugins)*
   - [ ] (3) Durable orchestration primitives *(reconcile vs. upstream `orchestration_1_0_68/69`)*
   - [ ] (4) Delegated MCP + caller-auth *(incl. the `PluginSpec` seam)*
   - [ ] (5) In-cluster MCP auth proxy
@@ -865,7 +899,8 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 
 ## 13. Open decisions
 
-1. **sqlmort timing** — use ADO `SQL-AI-Marketplace` now; cut over to `sqlmort` when ready.
+1. **Overlay retirement timing** — determine when remaining ADO `SQL-AI-Marketplace`
+   composition can move to `sqlmort`.
 2. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
    so this is a *reconcile two implementations* problem, not an add. Decide per subsystem: adopt
    upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork rebase

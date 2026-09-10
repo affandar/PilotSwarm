@@ -234,33 +234,33 @@ test("repeated reconciliation creates one Job and one initial session", async ()
     assert.deepEqual(store.cycles.map((cycle) => cycle.createdCount), [1, 0]);
 });
 
-test("IcM discoveries materialize incident-keyed Jobs and empty results stay healthy", async () => {
+test("registered provider discoveries materialize stable-keyed Jobs and empty results stay healthy", async () => {
     const store = new FakeStore();
-    store.sourceType = "icm";
-    store.sourceConfig = { incidentIds: [123456789] };
+    store.sourceType = "external-items";
+    store.sourceConfig = { filter: "active" };
     let evaluation = 0;
     const controller = new JobGeneratorController({
         store,
-        evaluators: new Map([["icm", {
-            type: "icm",
+        evaluators: new Map([["external-items", {
+            type: "external-items",
             async evaluate() {
                 evaluation += 1;
                 return {
                     discoveries: evaluation === 1
-                        ? [{ key: "123456789", payload: { id: 123456789 } }]
+                        ? [{ key: "item-123", payload: { id: "item-123" } }]
                         : [],
                 };
             },
         }]]),
         induceSessions: false,
-        workerId: "icm-worker",
+        workerId: "external-provider-worker",
         logger: { info() {}, warn() {}, error() {} },
     });
 
     await controller.runOnce();
     await controller.runOnce();
 
-    assert.deepEqual([...store.jobs.keys()], ["123456789"]);
+    assert.deepEqual([...store.jobs.keys()], ["item-123"]);
     assert.deepEqual(store.cycles.map((cycle) => ({
         status: cycle.status,
         discoveredCount: cycle.discoveredCount,
@@ -603,6 +603,82 @@ test("continuous mode retries after a transient claim failure", async () => {
     assert.equal(attempts, 2);
     assert.equal(errors.length, 1);
     assert.match(String(errors[0][0]), /polling failed/);
+});
+
+test("continuous mode cancels an in-flight provider evaluation on shutdown", async () => {
+    const store = new FakeStore();
+    const abort = new AbortController();
+    let evaluationSignal;
+    let markStarted;
+    const started = new Promise((resolve) => {
+        markStarted = resolve;
+    });
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", {
+            type: "ado_wiql",
+            async evaluate(context) {
+                evaluationSignal = context.signal;
+                markStarted();
+                return await new Promise((_resolve, reject) => {
+                    context.signal.addEventListener(
+                        "abort",
+                        () => reject(new Error("controller stopping")),
+                        { once: true },
+                    );
+                });
+            },
+        }]]),
+        induceSessions: false,
+        pollIntervalMs: 1,
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    const run = controller.run(abort.signal);
+    await started;
+    abort.abort();
+    await run;
+
+    assert.equal(evaluationSignal, abort.signal);
+    assert.equal(store.cycles.at(-1).status, "failed");
+    assert.match(store.cycles.at(-1).error, /controller stopping/);
+});
+
+test("a claimed batch starts together so later generators retain their leases", async () => {
+    const store = new FakeStore();
+    store.claimDueJobGenerators = async () => [
+        { ...generator(), generatorId: "generator-1", name: "first" },
+        { ...generator(), generatorId: "generator-2", name: "second" },
+    ];
+    let startedCount = 0;
+    let markAllStarted;
+    const allStarted = new Promise((resolve) => {
+        markAllStarted = resolve;
+    });
+    let releaseEvaluations;
+    const evaluationsReleased = new Promise((resolve) => {
+        releaseEvaluations = resolve;
+    });
+    const controller = new JobGeneratorController({
+        store,
+        evaluators: new Map([["ado_wiql", {
+            type: "ado_wiql",
+            async evaluate() {
+                startedCount += 1;
+                if (startedCount === 2) markAllStarted();
+                await evaluationsReleased;
+                return { discoveries: [] };
+            },
+        }]]),
+        induceSessions: false,
+        logger: { info() {}, warn() {}, error() {} },
+    });
+
+    const run = controller.runOnce();
+    await allStarted;
+    assert.equal(startedCount, 2);
+    releaseEvaluations();
+    assert.equal(await run, 2);
 });
 
 test("controller rejects invalid continuous-loop settings", () => {

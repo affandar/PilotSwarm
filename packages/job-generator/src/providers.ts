@@ -4,68 +4,10 @@ import type {
     JobGeneratorRow,
     JobGeneratorSourceType,
 } from "pilotswarm-sdk";
-import { DefaultAzureCredential, type TokenCredential } from "@azure/identity";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
-const AZURE_DEVOPS_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default";
-const ICM_MCP_ENDPOINT = "https://icm-mcp-prod.azure-api.net/v1/";
-const ICM_MCP_SCOPE = "api://icmmcpapi-prod/.default";
-const ICM_MAX_PAGES = 100;
-const ICM_SESSION_CLOSE_TIMEOUT_MS = 10_000;
-const execFileAsync = promisify(execFile);
-
-interface AdoProjectDefaults {
-    organization: string;
-    project: string;
-}
-
-type AdoDefaultsResolver = () => Promise<AdoProjectDefaults>;
-
-let cachedAdoDefaults: Promise<AdoProjectDefaults> | undefined;
-
-function organizationName(value: string): string {
-    try {
-        const url = new URL(value);
-        if (url.hostname.toLowerCase() === "dev.azure.com") {
-            return decodeURIComponent(url.pathname.split("/").filter(Boolean)[0] || "");
-        }
-        if (url.hostname.toLowerCase().endsWith(".visualstudio.com")) {
-            return url.hostname.split(".")[0];
-        }
-    } catch {
-        // A plain organization name is already in the desired form.
-    }
-    return value.trim();
-}
-
-async function resolveAdoDefaultsFromCli(): Promise<AdoProjectDefaults> {
-    cachedAdoDefaults ??= (async () => {
-        const { stdout } = process.platform === "win32"
-            ? await execFileAsync(
-                process.env.ComSpec || "cmd.exe",
-                ["/d", "/s", "/c", "az devops configure -l"],
-                { windowsHide: true },
-            )
-            : await execFileAsync("az", ["devops", "configure", "-l"]);
-        const values = new Map<string, string>();
-        for (const line of stdout.split(/\r?\n/)) {
-            const match = /^\s*([a-z_]+)\s*=\s*(.*?)\s*$/i.exec(line);
-            if (match) values.set(match[1].toLowerCase(), match[2]);
-        }
-        const organization = organizationName(values.get("organization") || "");
-        const project = values.get("project")?.trim() || "";
-        if (!organization || !project) {
-            throw new Error(
-                "Azure DevOps defaults are incomplete; configure both organization and project",
-            );
-        }
-        return { organization, project };
-    })();
-    return cachedAdoDefaults;
-}
+const SOURCE_PROVIDER_ID_RE = /^[a-z][a-z0-9._-]{0,127}$/;
+const MIN_JOB_GENERATOR_LEASE_SECONDS = 30;
+const MAX_JOB_GENERATOR_LEASE_SECONDS = 3600;
 
 export interface EvaluationResult {
     discoveries: JobDiscovery[];
@@ -76,6 +18,7 @@ export interface EvaluationContext {
     generator: JobGeneratorRow;
     definition: JobGeneratorDefinitionRow;
     watermark: unknown;
+    signal?: AbortSignal;
 }
 
 export interface SourceEvaluator {
@@ -85,23 +28,30 @@ export interface SourceEvaluator {
 
 export type FetchLike = typeof fetch;
 
+export function effectiveJobGeneratorLeaseSeconds(
+    value: number,
+    label = "JOBGEN_LEASE_SECONDS",
+): number {
+    if (!Number.isInteger(value) || value <= 0) {
+        throw new Error(`${label} must be a positive integer`);
+    }
+    return Math.max(
+        MIN_JOB_GENERATOR_LEASE_SECONDS,
+        Math.min(value, MAX_JOB_GENERATOR_LEASE_SECONDS),
+    );
+}
+
 interface HttpEvaluatorOptions {
     endpoint?: string;
     token?: string;
     fetch?: FetchLike;
+    requestTimeoutMs?: number;
 }
 
-interface AdoWiqlEvaluatorOptions extends HttpEvaluatorOptions {
-    direct?: boolean;
-    credential?: TokenCredential;
-    defaultsResolver?: AdoDefaultsResolver;
-}
-
-interface IcmEvaluatorOptions extends HttpEvaluatorOptions {
-    direct?: boolean;
-    credential?: TokenCredential;
-    maxPages?: number;
-    sessionCloseTimeoutMs?: number;
+export interface RemoteSourceProviderDefinition {
+    id: JobGeneratorSourceType;
+    endpoint: string;
+    tokenEnv?: string;
 }
 
 abstract class HttpSourceEvaluator implements SourceEvaluator {
@@ -109,32 +59,72 @@ abstract class HttpSourceEvaluator implements SourceEvaluator {
     protected readonly endpoint?: string;
     protected readonly token?: string;
     protected readonly fetchImpl: FetchLike;
+    private readonly requestTimeoutMs: number;
 
     constructor(options: HttpEvaluatorOptions) {
         this.endpoint = options.endpoint?.trim() || undefined;
         this.token = options.token?.trim() || undefined;
         this.fetchImpl = options.fetch ?? fetch;
+        this.requestTimeoutMs = options.requestTimeoutMs ?? 90_000;
+        if (!Number.isInteger(this.requestTimeoutMs) || this.requestTimeoutMs <= 0) {
+            throw new Error("source provider request timeout must be a positive integer");
+        }
     }
 
     async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
         if (!this.endpoint) throw new Error(`${this.constructor.name} endpoint is required`);
-        const response = await this.fetchImpl(this.endpoint, {
-            method: "POST",
-            headers: {
-                "content-type": "application/json",
-                ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-            },
-            body: JSON.stringify({
-                generatorId: context.generator.generatorId,
-                definitionId: context.definition.definitionId,
-                config: context.definition.sourceConfig,
-                watermark: context.watermark,
-            }),
+        return await this.withRequestTimeout(context, async (signal) => {
+            const response = await this.fetchImpl(this.endpoint!, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+                },
+                body: JSON.stringify(this.requestBody(context)),
+                signal,
+            });
+            if (!response.ok) {
+                throw new Error(`${this.type} evaluator request failed: HTTP ${response.status} ${await response.text()}`);
+            }
+            return this.parse(await response.json(), context.definition.sourceConfig);
         });
-        if (!response.ok) {
-            throw new Error(`${this.type} evaluator request failed: HTTP ${response.status} ${await response.text()}`);
+    }
+
+    private async withRequestTimeout<T>(
+        context: EvaluationContext,
+        operation: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T> {
+        const timeoutController = new AbortController();
+        const timeout = setTimeout(
+            () => timeoutController.abort(),
+            this.requestTimeoutMs,
+        );
+        timeout.unref();
+        const signal = context.signal
+            ? AbortSignal.any([context.signal, timeoutController.signal])
+            : timeoutController.signal;
+        try {
+            return await operation(signal);
+        } catch (error) {
+            if (timeoutController.signal.aborted && !context.signal?.aborted) {
+                throw new Error(
+                    `${this.type} evaluator request timed out after ${this.requestTimeoutMs}ms`,
+                    { cause: error },
+                );
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
         }
-        return this.parse(await response.json(), context.definition.sourceConfig);
+    }
+
+    protected requestBody(context: EvaluationContext): Record<string, unknown> {
+        return {
+            generatorId: context.generator.generatorId,
+            definitionId: context.definition.definitionId,
+            config: context.definition.sourceConfig,
+            watermark: context.watermark,
+        };
     }
 
     protected abstract parse(body: unknown, config: Record<string, unknown>): EvaluationResult;
@@ -159,40 +149,92 @@ function arrayFrom(body: Record<string, unknown>, names: string[]): unknown[] {
     return [];
 }
 
-export function parseAdoWiqlResponse(body: unknown): EvaluationResult {
-    const root = record(body);
-    const rows = arrayFrom(root, ["workItems", "value", "items"]);
-    return {
-        discoveries: rows.map((value) => {
-            const item = record(value);
-            const fields = record(item.fields);
-            return {
-                key: stableKey(item.id ?? item.key ?? fields["System.Id"], "ADO WIQL"),
-                payload: item,
-            };
-        }),
-        watermark: root.watermark,
-    };
+export function normalizeSourceProviderId(value: unknown): JobGeneratorSourceType {
+    const id = String(value ?? "").trim();
+    if (!SOURCE_PROVIDER_ID_RE.test(id)) {
+        throw new Error(
+            "source provider id must start with a lowercase letter and contain only "
+            + "lowercase letters, digits, '.', '_', or '-' (maximum 128 characters)",
+        );
+    }
+    return id;
 }
 
-export function parseIcmResponse(body: unknown): EvaluationResult {
-    const root = record(body);
-    if (root.success === false) {
-        throw new Error(`IcM search failed: ${String(root.error ?? root.message ?? "unknown error")}`);
+function normalizeRemoteProviderEndpoint(value: unknown, providerId: string): string {
+    const endpoint = String(value ?? "").trim();
+    let url: URL;
+    try {
+        url = new URL(endpoint);
+    } catch {
+        throw new Error(`remote source provider '${providerId}' endpoint must be an absolute URL`);
     }
-    const rows = arrayFrom(root, ["incidents", "value", "items"]);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+        throw new Error(
+            `remote source provider '${providerId}' endpoint must use http/https without embedded credentials`,
+        );
+    }
+    return url.toString();
+}
+
+export function parseRemoteSourceProviderDefinitions(
+    raw: string | undefined,
+): RemoteSourceProviderDefinition[] {
+    if (!raw?.trim()) return [];
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (error) {
+        throw new Error(
+            `JOBGEN_SOURCE_PROVIDERS_JSON must be valid JSON: ${error instanceof Error ? error.message : error}`,
+        );
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error("JOBGEN_SOURCE_PROVIDERS_JSON must be a JSON array");
+    }
+    const seen = new Set<string>();
+    return parsed.map((value, index) => {
+        const definition = record(value);
+        const id = normalizeSourceProviderId(definition.id);
+        if (seen.has(id)) {
+            throw new Error(`JOBGEN_SOURCE_PROVIDERS_JSON contains duplicate provider id '${id}'`);
+        }
+        seen.add(id);
+        const tokenEnv = definition.tokenEnv == null
+            ? undefined
+            : String(definition.tokenEnv).trim();
+        if (tokenEnv !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv)) {
+            throw new Error(
+                `JOBGEN_SOURCE_PROVIDERS_JSON[${index}].tokenEnv must be an environment variable name`,
+            );
+        }
+        return {
+            id,
+            endpoint: normalizeRemoteProviderEndpoint(definition.endpoint, id),
+            ...(tokenEnv ? { tokenEnv } : {}),
+        };
+    });
+}
+
+function parseNormalizedProviderResponse(body: unknown, providerId: string): EvaluationResult {
+    const root = record(body);
+    if (!Array.isArray(root.discoveries)) {
+        throw new Error(`remote source provider '${providerId}' response must contain discoveries[]`);
+    }
     return {
-        discoveries: rows.map((value) => {
-            const item = record(value);
+        discoveries: root.discoveries.map((value) => {
+            const discovery = record(value);
+            const payload = discovery.payload;
+            if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+                throw new Error(
+                    `remote source provider '${providerId}' discovery payload must be an object`,
+                );
+            }
             return {
-                key: stableKey(
-                    item.incidentId ?? item.IncidentId ?? item.incident_id ?? item.id ?? item.key,
-                    "IcM",
-                ),
-                payload: item,
+                key: stableKey(discovery.key, `remote source provider '${providerId}'`),
+                payload: payload as Record<string, unknown>,
             };
         }),
-        watermark: root.watermark,
+        ...(Object.hasOwn(root, "watermark") ? { watermark: root.watermark } : {}),
     };
 }
 
@@ -231,301 +273,28 @@ export function parseKustoResponse(body: unknown, keyColumn = "key"): Evaluation
     };
 }
 
-export class AdoWiqlEvaluator extends HttpSourceEvaluator {
-    readonly type = "ado_wiql" as const;
-    private readonly direct: boolean;
-    private readonly credential?: TokenCredential;
-    private readonly defaultsResolver: AdoDefaultsResolver;
+export class RemoteSourceEvaluator extends HttpSourceEvaluator {
+    readonly type: JobGeneratorSourceType;
 
-    constructor(options: AdoWiqlEvaluatorOptions) {
+    constructor(type: JobGeneratorSourceType, options: HttpEvaluatorOptions) {
         super(options);
-        this.direct = options.direct ?? !this.endpoint;
-        this.credential = options.credential;
-        this.defaultsResolver = options.defaultsResolver ?? resolveAdoDefaultsFromCli;
+        this.type = normalizeSourceProviderId(type);
     }
 
-    override async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
-        if (!this.direct) return super.evaluate(context);
-        const wiql = typeof context.definition.sourceConfig.wiql === "string"
-            ? context.definition.sourceConfig.wiql.trim()
-            : "";
-        if (!wiql) throw new Error("ADO WIQL definition requires sourceConfig.wiql");
-        let organization = typeof context.definition.sourceConfig.organization === "string"
-            ? context.definition.sourceConfig.organization.trim()
-            : "";
-        let project = typeof context.definition.sourceConfig.project === "string"
-            ? context.definition.sourceConfig.project.trim()
-            : "";
-        if (!this.endpoint && (!organization || !project)) {
-            const defaults = await this.defaultsResolver();
-            organization ||= defaults.organization;
-            project ||= defaults.project;
-        }
-        const endpoint = this.endpoint || (
-            organization && project
-                ? `https://dev.azure.com/${encodeURIComponent(organizationName(organization))}/${encodeURIComponent(project)}/_apis/wit/wiql?api-version=7.1`
-                : ""
+    protected override requestBody(context: EvaluationContext): Record<string, unknown> {
+        const maxItemsPerCycle = Number(
+            context.definition.guardrails?.maxItemsPerCycle ?? 0,
         );
-        if (!endpoint) {
-            throw new Error(
-                "ADO WIQL requires sourceConfig organization/project or configured az devops defaults",
-            );
-        }
-        const headers: Record<string, string> = { "content-type": "application/json" };
-        const credentialToken = this.token
-            ? undefined
-            : await this.credential?.getToken(AZURE_DEVOPS_SCOPE);
-        const token = this.token ?? credentialToken?.token;
-        if (token) headers.authorization = "Bearer ".concat(token);
-        const response = await this.fetchImpl(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ query: wiql }),
-        });
-        if (!response.ok) {
-            throw new Error(`ado_wiql evaluator request failed: HTTP ${response.status} ${await response.text()}`);
-        }
-        return parseAdoWiqlResponse(await response.json());
-    }
-
-    protected parse(body: unknown): EvaluationResult {
-        return parseAdoWiqlResponse(body);
-    }
-}
-
-function mcpToolBody(result: Record<string, unknown>): Record<string, unknown> {
-    if (result.isError === true) {
-        const message = Array.isArray(result.content)
-            ? result.content
-                .map((value) => record(value).text)
-                .filter((value): value is string => typeof value === "string")
-                .join("\n")
-            : "";
-        throw new Error(`IcM MCP search_incidents failed: ${message || "tool error"}`);
-    }
-    const structured = record(result.structuredContent);
-    if (Object.keys(structured).length > 0) return structured;
-    if (Array.isArray(result.content)) {
-        for (const value of result.content) {
-            const block = record(value);
-            if (block.type !== "text" || typeof block.text !== "string") continue;
-            try {
-                const parsed = record(JSON.parse(block.text));
-                if (Object.keys(parsed).length > 0) return parsed;
-            } catch {
-                // Continue looking for a structured JSON content block.
-            }
-        }
-    }
-    throw new Error("IcM MCP search_incidents returned no structured response");
-}
-
-function icmSearchRequest(config: Record<string, unknown>): Record<string, unknown> {
-    const nested = record(config.incidentAdvancedSearchRequest);
-    const request = Object.keys(nested).length > 0 ? nested : config;
-    if (Object.keys(request).length === 0) {
-        throw new Error("IcM definition requires sourceConfig search filters");
-    }
-    return { ...request };
-}
-
-async function withTimeout<T>(
-    operation: Promise<T>,
-    timeoutMs: number,
-    label: string,
-    onTimeout?: () => void,
-): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-        return await Promise.race([
-            operation,
-            new Promise<T>((_resolve, reject) => {
-                timer = setTimeout(() => {
-                    onTimeout?.();
-                    reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-                }, timeoutMs);
-            }),
-        ]);
-    } finally {
-        if (timer) clearTimeout(timer);
-    }
-}
-
-export class IcmEvaluator extends HttpSourceEvaluator {
-    readonly type = "icm" as const;
-    private readonly direct: boolean;
-    private readonly credential?: TokenCredential;
-    private readonly mcpEndpoint: string;
-    private readonly maxPages: number;
-    private readonly sessionCloseTimeoutMs: number;
-
-    constructor(options: IcmEvaluatorOptions = {}) {
-        super(options);
-        this.direct = options.direct ?? !this.endpoint;
-        this.credential = options.credential
-            ?? (this.direct && !this.token ? new DefaultAzureCredential() : undefined);
-        this.mcpEndpoint = this.endpoint ?? ICM_MCP_ENDPOINT;
-        this.maxPages = options.maxPages ?? ICM_MAX_PAGES;
-        this.sessionCloseTimeoutMs = options.sessionCloseTimeoutMs
-            ?? ICM_SESSION_CLOSE_TIMEOUT_MS;
-        if (!Number.isInteger(this.maxPages) || this.maxPages <= 0) {
-            throw new Error("IcM maxPages must be a positive integer");
-        }
-        if (!Number.isInteger(this.sessionCloseTimeoutMs) || this.sessionCloseTimeoutMs <= 0) {
-            throw new Error("IcM sessionCloseTimeoutMs must be a positive integer");
-        }
-    }
-
-    override async evaluate(context: EvaluationContext): Promise<EvaluationResult> {
-        if (!this.direct) return super.evaluate(context);
-        const baseRequest = icmSearchRequest(context.definition.sourceConfig);
-        const credentialToken = this.token
-            ? undefined
-            : await this.credential?.getToken(ICM_MCP_SCOPE);
-        const token = this.token ?? credentialToken?.token;
-        if (!token) throw new Error("IcM MCP authentication did not return an access token");
-
-        const headers: Record<string, string> = {
-            accept: "application/json, text/event-stream",
-            authorization: "Bearer ".concat(token),
-            "content-type": "application/json",
+        return {
+            ...super.requestBody(context),
+            limits: Number.isFinite(maxItemsPerCycle) && maxItemsPerCycle > 0
+                ? { maxItemsPerCycle }
+                : {},
         };
-        let result: EvaluationResult | undefined;
-        let evaluationError: unknown;
-        const transport = new StreamableHTTPClientTransport(new URL(this.mcpEndpoint), {
-            requestInit: { headers },
-            fetch: this.fetchImpl,
-        });
-        const client = new McpClient({
-            name: "PilotSwarm-JobGenerator",
-            version: "0.1.0",
-        });
-        try {
-            await client.connect(transport);
-            const discoveries: JobDiscovery[] = [];
-            const seenTokens = new Set<string>();
-            const configuredMaxItems = Number(
-                context.definition.guardrails.maxItemsPerCycle ?? 0,
-            );
-            const maxItems = Number.isFinite(configuredMaxItems) && configuredMaxItems > 0
-                ? configuredMaxItems
-                : undefined;
-            let nextPageToken = typeof baseRequest.nextPageToken === "string"
-                ? baseRequest.nextPageToken
-                : undefined;
-            if (nextPageToken) seenTokens.add(nextPageToken);
-            let pageCount = 0;
-            do {
-                pageCount += 1;
-                if (pageCount > this.maxPages) {
-                    throw new Error(`IcM search exceeded the ${this.maxPages}-page limit`);
-                }
-                const configuredTop = Number(baseRequest.top);
-                const requestedTop = Number.isInteger(configuredTop) && configuredTop > 0
-                    ? configuredTop
-                    : undefined;
-                const boundedTop = maxItems === undefined
-                    ? requestedTop
-                    : Math.min(
-                        requestedTop ?? maxItems + 1,
-                        maxItems - discoveries.length + 1,
-                    );
-                const request = {
-                    ...baseRequest,
-                    ...(boundedTop ? { top: boundedTop } : {}),
-                    ...(nextPageToken ? { nextPageToken } : {}),
-                };
-                const response = await client.callTool({
-                    name: "search_incidents",
-                    arguments: {
-                        incidentAdvancedSearchRequest: request,
-                    },
-                });
-                const page = mcpToolBody(response as Record<string, unknown>);
-                discoveries.push(...parseIcmResponse(page).discoveries);
-                if (maxItems !== undefined && discoveries.length > maxItems) {
-                    throw new Error(
-                        `IcM query returned more than maxItemsPerCycle=${maxItems}`,
-                    );
-                }
-                const tokenValue = typeof page.nextPageToken === "string" && page.nextPageToken.trim()
-                    ? page.nextPageToken.trim()
-                    : undefined;
-                if (!tokenValue) {
-                    nextPageToken = undefined;
-                    break;
-                }
-                if (seenTokens.has(tokenValue)) {
-                    throw new Error("IcM MCP returned a repeated pagination token");
-                }
-                seenTokens.add(tokenValue);
-                nextPageToken = tokenValue;
-                if (maxItems !== undefined && discoveries.length >= maxItems) {
-                    throw new Error(
-                        `IcM query returned more than maxItemsPerCycle=${maxItems}`,
-                    );
-                }
-            } while (nextPageToken);
-            result = { discoveries };
-        } catch (error) {
-            evaluationError = error;
-        }
-
-        let closeError: unknown;
-        const cleanupErrors: unknown[] = [];
-        const sessionId = transport.sessionId;
-        if (sessionId) {
-            const closeController = new AbortController();
-            try {
-                const closeOperation = (async () => {
-                    const response = await this.fetchImpl(this.mcpEndpoint, {
-                        method: "DELETE",
-                        headers: {
-                            ...headers,
-                            "mcp-session-id": sessionId,
-                            ...(transport.protocolVersion
-                                ? { "mcp-protocol-version": transport.protocolVersion }
-                                : {}),
-                        },
-                        signal: closeController.signal,
-                    });
-                    await response.body?.cancel();
-                    if (!response.ok && response.status !== 405) {
-                        throw new Error(`IcM MCP session close failed: HTTP ${response.status}`);
-                    }
-                })();
-                await withTimeout(
-                    closeOperation,
-                    this.sessionCloseTimeoutMs,
-                    "IcM MCP session close",
-                    () => closeController.abort(),
-                );
-            } catch (error) {
-                cleanupErrors.push(error);
-            }
-        }
-        try {
-            await client.close();
-        } catch (error) {
-            cleanupErrors.push(error);
-        }
-        if (cleanupErrors.length === 1) closeError = cleanupErrors[0];
-        if (cleanupErrors.length > 1) {
-            closeError = new AggregateError(cleanupErrors, "IcM MCP session cleanup failed");
-        }
-        if (evaluationError && closeError) {
-            throw new AggregateError(
-                [evaluationError, closeError],
-                "IcM evaluation and MCP session cleanup both failed",
-            );
-        }
-        if (evaluationError) throw evaluationError;
-        if (closeError) throw closeError;
-        return result!;
     }
 
     protected parse(body: unknown): EvaluationResult {
-        return parseIcmResponse(body);
+        return parseNormalizedProviderResponse(body, this.type);
     }
 }
 
@@ -544,41 +313,81 @@ export function createEvaluatorsFromEnv(
     fetchImpl?: FetchLike,
 ): Map<JobGeneratorSourceType, SourceEvaluator> {
     const evaluators = new Map<JobGeneratorSourceType, SourceEvaluator>();
-    const adoEndpoint = env.JOBGEN_ADO_WIQL_ENDPOINT?.trim() || undefined;
-    const adoDirect = adoEndpoint
-        ? ["1", "true", "yes", "on"].includes(
-            (env.JOBGEN_ADO_WIQL_DIRECT || "").trim().toLowerCase(),
-        )
-        : true;
-    evaluators.set("ado_wiql", new AdoWiqlEvaluator({
-        endpoint: adoEndpoint,
-        token: env.JOBGEN_ADO_WIQL_TOKEN,
-        direct: adoDirect,
-        credential: adoDirect && !env.JOBGEN_ADO_WIQL_TOKEN?.trim()
-            ? new DefaultAzureCredential()
-            : undefined,
-        fetch: fetchImpl,
-    }));
-    const icmEndpoint = env.JOBGEN_ICM_ENDPOINT?.trim() || undefined;
-    const icmDirect = icmEndpoint
-        ? ["1", "true", "yes", "on"].includes(
-            (env.JOBGEN_ICM_DIRECT || "").trim().toLowerCase(),
-        )
-        : true;
-    evaluators.set("icm", new IcmEvaluator({
-        endpoint: icmEndpoint,
-        token: env.JOBGEN_ICM_TOKEN,
-        direct: icmDirect,
-        credential: icmDirect && !env.JOBGEN_ICM_TOKEN?.trim()
-            ? new DefaultAzureCredential()
-            : undefined,
-        fetch: fetchImpl,
-    }));
+    const leaseSeconds = effectiveJobGeneratorLeaseSeconds(
+        Number(env.JOBGEN_LEASE_SECONDS || 300),
+    );
+    const defaultRequestTimeoutMs = Math.min(
+        90_000,
+        Math.max(1, Math.floor(leaseSeconds * 1000 * 0.8)),
+    );
+    const requestTimeoutMs = Number(
+        env.JOBGEN_SOURCE_PROVIDER_TIMEOUT_MS || defaultRequestTimeoutMs,
+    );
+    if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs <= 0) {
+        throw new Error("JOBGEN_SOURCE_PROVIDER_TIMEOUT_MS must be a positive integer");
+    }
+    if (requestTimeoutMs >= leaseSeconds * 1000) {
+        throw new Error(
+            "JOBGEN_SOURCE_PROVIDER_TIMEOUT_MS must be shorter than JOBGEN_LEASE_SECONDS",
+        );
+    }
+    const register = (evaluator: SourceEvaluator) => {
+        if (evaluators.has(evaluator.type)) {
+            throw new Error(`duplicate source provider registration for '${evaluator.type}'`);
+        }
+        evaluators.set(evaluator.type, evaluator);
+    };
     if (env.JOBGEN_KUSTO_ENDPOINT?.trim()) {
-        evaluators.set("kusto", new KustoEvaluator({
+        register(new KustoEvaluator({
             endpoint: env.JOBGEN_KUSTO_ENDPOINT,
             token: env.JOBGEN_KUSTO_TOKEN,
             fetch: fetchImpl,
+            requestTimeoutMs,
+        }));
+    }
+    const remoteDefinitions = parseRemoteSourceProviderDefinitions(
+        env.JOBGEN_SOURCE_PROVIDERS_JSON,
+    );
+    const hasLegacyAdoWiqlConfiguration = [
+        env.JOBGEN_ADO_WIQL_ENDPOINT,
+        env.JOBGEN_ADO_WIQL_TOKEN,
+        env.JOBGEN_ADO_WIQL_DIRECT,
+    ].some((value) => value?.trim());
+    if (
+        hasLegacyAdoWiqlConfiguration
+        && !remoteDefinitions.some((definition) => definition.id === "ado_wiql")
+    ) {
+        throw new Error(
+            "JOBGEN_ADO_WIQL_* settings are no longer supported by JobGenerator core; "
+            + "register provider 'ado_wiql' through JOBGEN_SOURCE_PROVIDERS_JSON",
+        );
+    }
+    const hasLegacyIcmConfiguration = [
+        env.JOBGEN_ICM_ENDPOINT,
+        env.JOBGEN_ICM_TOKEN,
+        env.JOBGEN_ICM_DIRECT,
+    ].some((value) => value?.trim());
+    if (
+        hasLegacyIcmConfiguration
+        && !remoteDefinitions.some((definition) => definition.id === "icm")
+    ) {
+        throw new Error(
+            "JOBGEN_ICM_* settings are no longer supported; register provider 'icm' "
+            + "through JOBGEN_SOURCE_PROVIDERS_JSON",
+        );
+    }
+    for (const definition of remoteDefinitions) {
+        const token = definition.tokenEnv ? env[definition.tokenEnv]?.trim() : undefined;
+        if (definition.tokenEnv && !token) {
+            throw new Error(
+                `remote source provider '${definition.id}' requires token env ${definition.tokenEnv}`,
+            );
+        }
+        register(new RemoteSourceEvaluator(definition.id, {
+            endpoint: definition.endpoint,
+            token,
+            fetch: fetchImpl,
+            requestTimeoutMs,
         }));
     }
     return evaluators;

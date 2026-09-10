@@ -28,8 +28,8 @@ test("controller materialization and durable Job lifecycle transitions", {
                 owner: { provider: "test", subject: "owner-a" },
                 cadenceSeconds: 60,
                 definition: {
-                    sourceType: "kusto",
-                    sourceConfig: { query: "SourceRecords | take 10" },
+                    sourceType: "test-source",
+                    sourceConfig: { filter: "active" },
                 },
             }),
             catalog.createJobGenerator({
@@ -37,8 +37,8 @@ test("controller materialization and durable Job lifecycle transitions", {
                 owner: { provider: "test", subject: "owner-b" },
                 cadenceSeconds: 60,
                 definition: {
-                    sourceType: "kusto",
-                    sourceConfig: { query: "SourceRecords | take 10" },
+                    sourceType: "test-source",
+                    sourceConfig: { filter: "active" },
                 },
             }),
         ]);
@@ -46,8 +46,8 @@ test("controller materialization and durable Job lifecycle transitions", {
         let evaluationCount = 0;
         const controller = new JobGeneratorController({
             store: catalog,
-            evaluators: new Map([["kusto", {
-                type: "kusto",
+            evaluators: new Map([["test-source", {
+                type: "test-source",
                 async evaluate({ generator }) {
                     evaluationCount += 1;
                     if (evaluationCount === registrations.length) abort.abort();
@@ -80,8 +80,8 @@ test("controller materialization and durable Job lifecycle transitions", {
             owner: { provider: "test", subject: "lifecycle-owner" },
             cadenceSeconds: 60,
             definition: {
-                sourceType: "kusto",
-                sourceConfig: { query: "SourceRecords | take 1" },
+                sourceType: "test-source",
+                sourceConfig: { filter: "active" },
                 lifecycleDefinition: {
                     lifecycle: {
                         name: "Example",

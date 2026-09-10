@@ -1,0 +1,29 @@
+{
+  "name": "pilotswarm-job-generator-provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "pilotswarm-job-generator-provider": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

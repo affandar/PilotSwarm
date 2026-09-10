@@ -460,6 +460,11 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "job_wait_condition_overrides",
             sql: migration_0057_job_wait_condition_overrides(schema),
         },
+        {
+            version: "0090",
+            name: "job_generator_source_provider_ids",
+            sql: migration_0090_job_generator_source_provider_ids(schema),
+        },
     ];
 }
 
@@ -15000,7 +15005,8 @@ CREATE TABLE IF NOT EXISTS ${s}.job_generator_definitions (
     definition_id       TEXT PRIMARY KEY,
     generator_id        TEXT NOT NULL REFERENCES ${s}.job_generators(generator_id) ON DELETE CASCADE,
     version             INTEGER NOT NULL CHECK (version > 0),
-    source_type         TEXT NOT NULL CHECK (source_type IN ('ado_wiql', 'icm', 'kusto')),
+    source_type         TEXT NOT NULL
+                        CHECK (source_type ~ '^[a-z][a-z0-9._-]{0,127}$'),
     source_config       JSONB NOT NULL DEFAULT '{}'::jsonb
                         CHECK (jsonb_typeof(source_config) = 'object'),
     lifecycle_definition JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -15580,5 +15586,19 @@ function migration_0057_job_wait_condition_overrides(schema: string): string {
     return `
 ALTER TABLE ${s}.job_waits
     ADD COLUMN IF NOT EXISTS condition_overrides JSONB NOT NULL DEFAULT '[]'::jsonb;
+`;
+}
+
+// ─── Migration 0090: opaque JobGenerator source-provider IDs ─────────────
+
+function migration_0090_job_generator_source_provider_ids(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.job_generator_definitions
+    DROP CONSTRAINT IF EXISTS job_generator_definitions_source_type_check;
+
+ALTER TABLE ${s}.job_generator_definitions
+    ADD CONSTRAINT job_generator_definitions_source_type_check
+    CHECK (source_type ~ '^[a-z][a-z0-9._-]{0,127}$');
 `;
 }

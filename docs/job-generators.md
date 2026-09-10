@@ -43,10 +43,9 @@ and stamps the authenticated principal.
   "name": "HelloWorld",
   "cadenceSeconds": 300,
   "definition": {
-    "sourceType": "kusto",
+    "sourceType": "example-source",
     "sourceConfig": {
-      "query": "SourceRecords | take 100",
-      "keyColumn": "RecordId"
+      "filter": "active"
     },
     "lifecycleDefinition": {
       "expansionAgent": "helloworld-expand",
@@ -190,14 +189,13 @@ Use `PgSessionCatalog` after `initialize()`:
 
 ```ts
 const { generator, definition } = await catalog.createJobGenerator({
-  name: "active-incidents",
+  name: "active-items",
   owner: { provider: "entra", subject: "<object-id>" },
   cadenceSeconds: 300,
   definition: {
-    sourceType: "icm",
+    sourceType: "example-source",
     sourceConfig: {
-      incidentIds: [123456789],
-      top: 10,
+      filter: "active",
     },
     lifecycleDefinition: {
       initialPrompt: "Investigate {job.key}:\n{job.payload}",
@@ -209,21 +207,44 @@ const { generator, definition } = await catalog.createJobGenerator({
 });
 ```
 
-The native IcM provider passes `sourceConfig` to the IcM MCP
-`search_incidents` tool as its `incidentAdvancedSearchRequest`. This supports
-explicit `incidentIds` and narrow filters such as `owningTeamId`, `states`,
-`severity`, `assignedTo`, `tags`, and created-date ranges. The provider follows
-`nextPageToken` internally and uses each returned incident `id` as its stable
-Job key. An empty result is a successful cycle with zero discoveries.
+Source providers are modules loaded by the platform-owned
+`pilotswarm-job-generator-provider` runner. Domain modules implement the
+versioned `SourceProvider` ABI and contain connector logic only; the runner
+owns HTTP, bearer authentication, health, deadlines, cancellation, response
+validation, and process lifecycle.
 
-Compatibility HTTP adapters POST
-`{generatorId, definitionId, config, watermark}` and expect provider results
-containing stable keys:
+The controller communicates with each runner through a normalized HTTP
+contract and POSTs the provider-specific configuration plus platform-owned
+limits:
 
-- ADO WIQL: `workItems`, `value`, or `items`; key is `id`/`key`.
-- IcM: `incidents`, `value`, or `items`; key is `incidentId`/`IncidentId`.
-- Kusto: standard `Tables[0].Columns/Rows`, or `items`; set
-  `sourceConfig.keyColumn` when the key column is not `key`.
+```json
+{
+  "generatorId": "generator-id",
+  "definitionId": "definition-id",
+  "config": {},
+  "watermark": null,
+  "limits": {
+    "maxItemsPerCycle": 100
+  }
+}
+```
+
+`limits.maxItemsPerCycle` comes from the definition's top-level guardrails, so
+providers can stop pagination before returning an oversized response. The
+controller independently enforces the same limit. The provider response is:
+
+```json
+{
+  "discoveries": [
+    { "key": "stable-provider-key", "payload": {} }
+  ],
+  "watermark": {}
+}
+```
+
+Provider IDs are opaque lowercase identifiers registered by the controller
+deployment. Existing definitions retain their stored `sourceType`; no data
+rewrite is required when an implementation moves out of the core repository.
 
 ## Configuration
 
@@ -231,28 +252,38 @@ Required:
 
 - `DATABASE_URL` — PilotSwarm Postgres store.
 
-The native `ado_wiql` and `icm` providers require no controller endpoint
-configuration. ADO definitions supply `sourceConfig.wiql`; optional
-`sourceConfig.organization` and `sourceConfig.project` values select a
-different scope, otherwise the controller reads the devbox defaults configured
-by `az devops configure`.
+Concrete source connectors are not implemented in this repository. Domain
+repositories build modules against the public v1 ABI, compose them over the
+platform-owned `pilotswarm-job-generator-provider` runner, and register the
+resulting endpoint with the controller. For example, SQLmort owns both its
+`ado_wiql` and `icm` modules; PilotSwarm does not import either connector.
 
-IcM definitions supply a narrow `sourceConfig` accepted by
-`search_incidents`. The controller connects to
-`https://icm-mcp-prod.azure-api.net/v1/`, authenticates through
-`DefaultAzureCredential` using `api://icmmcpapi-prod/.default`, initializes an
-MCP session, drains all result pages, and closes the session. Developer
-credentials are silent-only inside the controller; they never start an
-interactive authentication popup.
+Controller-side source configuration is:
 
-Configure endpoints only for adapter-backed provider types used by active
-definitions:
+- `JOBGEN_KUSTO_ENDPOINT`, optional `JOBGEN_KUSTO_TOKEN` — retained built-in
+  compatibility adapter.
+- `JOBGEN_SOURCE_PROVIDERS_JSON` — JSON array of remote provider registrations:
+  `{"id":"example-source","endpoint":"http://provider/evaluate","tokenEnv":"OPTIONAL_TOKEN_ENV"}`.
+  `tokenEnv` names an environment variable; credentials are never embedded in
+  the registration JSON.
 
-- `JOBGEN_KUSTO_ENDPOINT`, optional `JOBGEN_KUSTO_TOKEN`
+Legacy `JOBGEN_ICM_ENDPOINT`, `JOBGEN_ICM_TOKEN`, and `JOBGEN_ICM_DIRECT`
+settings no longer register an evaluator. If any remain during migration, the
+controller fails startup unless provider ID `icm` is present in
+`JOBGEN_SOURCE_PROVIDERS_JSON`.
+The same migration guard applies to `JOBGEN_ADO_WIQL_ENDPOINT`,
+`JOBGEN_ADO_WIQL_TOKEN`, and `JOBGEN_ADO_WIQL_DIRECT`: these settings now
+configure the provider-runner deployment, not JobGenerator core, and the
+controller requires an explicit remote registration for provider ID
+`ado_wiql`.
 
 Optional loop settings are `JOBGEN_POLL_INTERVAL_MS` (15000),
 `JOBGEN_CLAIM_LIMIT` (10), `JOBGEN_LEASE_SECONDS` (300), and
-`JOBGEN_WORKER_ID`. Session induction is enabled by default. Set
+`JOBGEN_WORKER_ID`. `JOBGEN_SOURCE_PROVIDER_TIMEOUT_MS` bounds each remote
+provider request and must be shorter than the generator lease; its default is
+the smaller of 90000 milliseconds and 80 percent of the configured lease.
+Controller shutdown cancels an in-flight provider request. Session induction is
+enabled by default. Set
 `JOBGEN_INDUCE_SESSIONS=false` when the controller should materialize Jobs
 without reserving or starting PilotSwarm sessions. `JOBGEN_RUN_ONCE=true`
 processes currently due generators once and exits.
@@ -287,16 +318,6 @@ An unbound affinity or mismatched target is rejected before any Azure DevOps
 request. Repositories that require fresh approval after every source update
 must configure their Azure DevOps branch policies to reset votes on source push;
 the observer intentionally follows Azure DevOps's reported current policy state.
-`JOBGEN_ADO_WIQL_ENDPOINT` remains an optional
-compatibility override for a fixed endpoint or normalized adapter; set
-`JOBGEN_ADO_WIQL_DIRECT=true` when the override accepts the native REST shape.
-`JOBGEN_ICM_ENDPOINT` likewise remains an optional normalized-adapter
-override; set `JOBGEN_ICM_DIRECT=true` when that endpoint is an IcM-compatible
-MCP Streamable HTTP endpoint. `JOBGEN_ICM_TOKEN` may supply a static bearer
-token for either mode.
-Without a static token, the native provider uses `DefaultAzureCredential`,
-allowing a signed-in devbox session or workload identity to refresh access
-tokens continuously. PilotSwarm managed-identity variables are honored.
 Missing provider configuration fails that cycle explicitly without advancing
 its watermark.
 

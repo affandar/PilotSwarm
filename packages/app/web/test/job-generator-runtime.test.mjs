@@ -141,8 +141,8 @@ test("JobGenerator registration stamps the authenticated owner", async () => {
         name: "HelloWorld",
         cadenceSeconds: 300,
         definition: {
-            sourceType: "kusto",
-            sourceConfig: { query: "SampleRecords | take 10" },
+            sourceType: "external-items",
+            sourceConfig: { filter: "active" },
             lifecycleDefinition: { states: {} },
             affinities: { repo: "sample-repo" },
             validationGates: [],
@@ -163,7 +163,7 @@ test("JobGenerator registration rejects caller-selected user affinity", async ()
             name: "Spoofed",
             cadenceSeconds: 300,
             definition: {
-                sourceType: "kusto",
+                sourceType: "external-items",
                 sourceConfig: {},
                 affinities: { repo: "sample-repo", user: "bob" },
             },
@@ -181,7 +181,7 @@ test("legacy null user affinity is ignored instead of persisted", async () => {
         name: "Legacy",
         cadenceSeconds: 300,
         definition: {
-            sourceType: "kusto",
+            sourceType: "external-items",
             sourceConfig: {},
             affinities: { repo: "sample-repo", user: null },
         },
@@ -197,22 +197,22 @@ test("JobGenerator repository affinity uses the canonical routing name", async (
         name: "Canonical Repo",
         cadenceSeconds: 300,
         definition: {
-            sourceType: "kusto",
+            sourceType: "external-items",
             sourceConfig: {},
-            affinities: { repo: " DsMainDev " },
+            affinities: { repo: " Example-Service " },
             lifecycleDefinition: {
                 session: { repo: " PilotSwarm " },
-                lifecycle: { session: { repo: " SQL-AI-Marketplace " } },
+                lifecycle: { session: { repo: " Shared-Tools " } },
             },
         },
     }, alice);
 
     const definition = calls.find((call) => call.method === "createJobGenerator").input.definition;
-    assert.equal(definition.affinities.repo, "dsmaindev");
+    assert.equal(definition.affinities.repo, "example-service");
     assert.equal(definition.lifecycleDefinition.session.repo, "pilotswarm");
     assert.equal(
         definition.lifecycleDefinition.lifecycle.session.repo,
-        "sql-ai-marketplace",
+        "shared-tools",
     );
 });
 
@@ -223,9 +223,9 @@ test("JobGenerator registration rejects malformed repository affinity", async ()
             name: "Bad Repo",
             cadenceSeconds: 300,
             definition: {
-                sourceType: "kusto",
+                sourceType: "external-items",
                 sourceConfig: {},
-                affinities: { repo: "../DsMainDev" },
+                affinities: { repo: "../private-repo" },
             },
         }, alice),
         (error) => error.code === "INVALID_REQUEST" && error.message.includes("DNS-safe"),
@@ -308,7 +308,7 @@ test("publishing a definition is owner-gated and stamps the authenticated princi
     const definition = await runtime.call("publishJobGeneratorDefinition", {
         generatorId: "g-alice",
         definition: {
-            sourceType: "kusto",
+            sourceType: "external-items",
             sourceConfig: { query: "SampleRecords | take 10" },
             lifecycleDefinition: { states: {} },
             affinities: {},
@@ -324,7 +324,7 @@ test("publishing a definition is owner-gated and stamps the authenticated princi
         runtime.call("publishJobGeneratorDefinition", {
             generatorId: "g-bob",
             definition: {
-                sourceType: "kusto",
+                sourceType: "external-items",
                 sourceConfig: {},
             },
         }, alice),
@@ -337,11 +337,26 @@ test("JobGenerator registration rejects malformed definition contracts", async (
     await assert.rejects(
         runtime.call("createJobGenerator", {
             name: "Bad",
-            cadenceSeconds: 5,
-            definition: { sourceType: "shell", sourceConfig: {} },
+            cadenceSeconds: 300,
+            definition: { sourceType: "../shell", sourceConfig: {} },
         }, alice),
         (error) => error.code === "INVALID_REQUEST",
     );
+});
+
+test("JobGenerator registration accepts an opaque source provider id", async () => {
+    const { runtime, calls } = createRuntime();
+    await runtime.call("createJobGenerator", {
+        name: "External source",
+        cadenceSeconds: 300,
+        definition: {
+            sourceType: "vendor.items-v1",
+            sourceConfig: { filter: "active" },
+        },
+    }, alice);
+
+    const create = calls.find((call) => call.method === "createJobGenerator");
+    assert.equal(create.input.definition.sourceType, "vendor.items-v1");
 });
 
 test("owners can delete JobGenerators idempotently while cross-owner callers see not found", async () => {
