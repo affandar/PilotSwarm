@@ -1396,6 +1396,65 @@ function ChatCallLine({ line }) {
         React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
 }
 
+function ChatActivityRun({ calls }) {
+    const latest = calls[calls.length - 1] || {};
+    const active = latest.status === "Called" || latest.status === "Started";
+    const failed = calls.some((call) => call.status === "Failed");
+    const [open, setOpen] = React.useState(active);
+    const viewportRef = React.useRef(null);
+    const followRef = React.useRef(true);
+    const categories = new Set(calls.map((call) => call.category || "Tool"));
+    const countLabel = categories.size === 1 && categories.has("Tool")
+        ? `${calls.length} tool ${calls.length === 1 ? "call" : "calls"}`
+        : categories.size === 1 && categories.has("Agent")
+            ? `${calls.length} agent ${calls.length === 1 ? "activity" : "activities"}`
+            : `${calls.length} activities`;
+    const latestName = String(latest.text || latest.category || "activity").split(" — ")[0];
+    const status = active ? "Working" : failed ? "Failed" : "Done";
+    const updateKey = `${latest.callKey || ""}:${latest.status || ""}:${String(latest.body || "").length}`;
+
+    React.useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        if (open && viewport && followRef.current) viewport.scrollTop = viewport.scrollHeight;
+    }, [open, calls.length, updateKey]);
+
+    return React.createElement("details", {
+        className: "ps-native-tasks ps-activity-run",
+        open,
+        onToggle: (event) => setOpen(event.currentTarget.open),
+    },
+    React.createElement("summary", { className: "ps-native-tasks-header ps-activity-run-summary" },
+        React.createElement("span", { className: "ps-native-tasks-title" },
+            React.createElement("span", { className: "ps-native-task-branch", "aria-hidden": true }, "⌘"),
+            countLabel),
+        React.createElement("span", { className: "ps-activity-run-latest", title: latest.text || "" }, `latest: ${latestName}`),
+        React.createElement("span", { className: `ps-activity-run-status${failed ? " is-failed" : ""}` }, status),
+        React.createElement("span", { className: "ps-activity-run-chevron", "aria-hidden": true }, "›")),
+    React.createElement("div", {
+        ref: viewportRef,
+        className: "ps-activity-run-viewport",
+        role: "region",
+        "aria-label": `${countLabel} activity log`,
+        tabIndex: 0,
+        onScroll: (event) => {
+            event.stopPropagation();
+            followRef.current = getScrollDistanceToBottom(event.currentTarget) <= 24;
+        },
+        onWheel: (event) => {
+            event.stopPropagation();
+            if (event.deltaY < 0) followRef.current = false;
+        },
+        onTouchStart: (event) => {
+            event.stopPropagation();
+            followRef.current = false;
+        },
+        onTouchMove: (event) => event.stopPropagation(),
+        onTouchEnd: (event) => event.stopPropagation(),
+    }, calls.map((call) => React.createElement(ChatCallLine, { key: call.callKey, line: call }))),
+    React.createElement("div", { className: "ps-activity-run-footer" },
+        `Showing ${calls.length} ${calls.length === 1 ? "entry" : "entries"} · Scroll for earlier activity`));
+}
+
 /**
  * A canvas action is a button press inside the drawn page, not something the
  * viewer typed. Printing the raw `[canvas-action] {…}` JSON as a chat message
@@ -3301,9 +3360,16 @@ function parseStructuredChatBlocks(lines = []) {
             continue;
         }
         if (currentLine?.kind === "chatCall" || currentLine?.callPreview !== undefined) {
-            blocks.push({ type: "chatCall", line: currentLine.callPreview !== undefined
-                ? { ...currentLine, text: currentLine.callPreview, category: "Agent" } : currentLine });
-            index += 1;
+            const calls = [];
+            while (index < lines.length) {
+                const line = lines[index];
+                if (line?.kind !== "chatCall" && line?.callPreview === undefined) break;
+                calls.push(line.callPreview !== undefined
+                    ? { ...line, text: line.callPreview, category: "Agent" }
+                    : line);
+                index += 1;
+            }
+            blocks.push({ type: "chatCallGroup", groupKey: calls[0]?.callKey, calls });
             continue;
         }
 
@@ -3738,8 +3804,8 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
                         waiting: resolveColor(theme, "yellow"), completed: resolveColor(theme, "green"),
                         failed: resolveColor(theme, "red"), cancelled: resolveColor(theme, "gray"), interrupted: resolveColor(theme, "yellow") } });
             }
-            if (block.type === "chatCall") {
-                return React.createElement(ChatCallLine, { key: block.line.callKey, line: block.line });
+            if (block.type === "chatCallGroup") {
+                return React.createElement(ChatActivityRun, { key: block.groupKey, calls: block.calls });
             }
             if (block.type === "assistantPreview") {
                 return React.createElement(AssistantPreviewCard, {
@@ -5619,8 +5685,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // shortcut handler decides "am I editable?" from the event target, the
         // rest of what the user typed ran as commands (d = complete,
         // D = delete). Scrolling on every refresh has a milder failure but the
-        // same shape: the list yanks back to the active row while the user is
-        // deliberately scrolled away browsing older sessions.
+        // same shape. Selection must never alter the list's scroll position;
+        // only the user's own scroll gestures move it.
         if (revealedRowKeyRef.current === activeRowRevealKey) return;
         revealedRowKeyRef.current = activeRowRevealKey;
 
@@ -5637,11 +5703,6 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         if (viewState.focused && focused !== activeButton && !isTypingTarget) {
             activeButton.focus({ preventScroll: true });
         }
-        // Selection can change from outside this pane (deep links, newly
-        // created sessions, MoA focus and other navigation surfaces). Center
-        // the row once for that selection so its surrounding sessions remain
-        // visible, without re-centering on routine status/catalog refreshes.
-        activeButton.scrollIntoView({ block: "center" });
     }, [activeRowRevealKey, viewState.activeSessionId, viewState.focused, viewState.modalOpen, viewState.sessionsFlat]);
 
     const panelActions = React.createElement(React.Fragment, null,

@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.63** — Faster MoA switching, saved tab order, stable chat scrolling, and compact mobile controls.
+> **Latest release: v0.5.64** — Feature flighting, native Copilot tasks, and clearer live task activity.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 

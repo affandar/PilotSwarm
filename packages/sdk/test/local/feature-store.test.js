@@ -45,7 +45,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         await expect(store.changes(alice)).rejects.toMatchObject({ status: 403 });
         await store.mutate(alice, "user", input());
         let mine = (await store.read(alice, "user")).flags[0];
-        expect(mine).toMatchObject({ effective: false, userOverrideIgnored: true, user: { enabled: true } });
+        expect(mine).toMatchObject({ effective: true, userOverrideIgnored: false, user: { enabled: true } });
         await store.mutate(admin, "cluster", input("2", { enabled: false, allowUserOverride: true }));
         expect((await store.read(alice, "user")).flags[0].effective).toBe(true);
         expect((await store.read(bob, "user")).flags[0].effective).toBe(false);
@@ -121,7 +121,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         await a.pollRevisionsAndRefresh(); expect(allowed(a)).toBe(false);
         await store.mutate(alice, "user", input("4")); await a.pollRevisionsAndRefresh(); expect(allowed(a)).toBe(true);
         await store.mutate(admin, "cluster", { featureKey: key, expectedRevision: "5", requestId: randomUUID() }, true);
-        await Promise.all([a.pollRevisionsAndRefresh(), b.pollRevisionsAndRefresh()]); expect(allowed(a)).toBe(false); expect(allowed(b)).toBe(false);
+        await Promise.all([a.pollRevisionsAndRefresh(), b.pollRevisionsAndRefresh()]); expect(allowed(a)).toBe(true); expect(allowed(b)).toBe(true);
         await Promise.all([a.stop(), b.stop()]);
     });
     it("adopts an email placeholder preference at first sign-in and refreshes owner caches", async () => {

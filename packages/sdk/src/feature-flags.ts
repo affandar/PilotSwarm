@@ -4,7 +4,7 @@ export const FEATURE_FLAGS = {
         displayName: "Native Copilot tasks",
         description: "Allow Copilot to delegate local work to native tasks on the same worker.",
         defaultEnabled: false,
-        defaultAllowUserOverride: false,
+        defaultAllowUserOverride: true,
         requiredCapability: "copilot.native_tasks",
     },
 } as const;

@@ -13,14 +13,8 @@ It includes:
 
 - Parent model/profile restrictions, background denial, child tool isolation,
   application-hook composition, stop/cancellation, and cleanup failures.
-- Rubber duck selects an opposite-family model from the owner's permitted catalog
-  on the same Copilot provider. Tests cover denied/unknown catalogs, credential
-  isolation, timed refresh and failure recovery, BYOK exclusion, and warm-session
-  changes when the critic appears, disappears, or changes model.
-- The real CLI critic reads a random file marker, rejects a fabricated shell
-  mutation, and reports its actual dispatched model. Required-model tests prove
-  that an unavailable critic fails instead of falling back to the parent model.
-  Native feature Off removes the critic along with other native profiles.
+- `swarm-rubber-duck` stays unregistered and absent from prompt guidance while
+  `swarm-explore` and `swarm-task` remain available when the feature is On.
 - Native task writes visible to a second native task and the calling session,
   with random on-disk data and independent shell verification. Separate session
   working directories are tested separately.
@@ -37,16 +31,7 @@ It includes:
   multiple durable turns cannot pass the filesystem smoke verifier.
 
 The scripted inference tests exercise actual tools and the Copilot runtime but
-do not measure an LLM's routing judgment. That is a separate opt-in evaluation:
-
-For a manual rubber-duck check with native tasks enabled on a Copilot provider,
-ask: "Use a native rubber duck to critique this plan and check the relevant local
-files. Return confirmed issues; do not edit." Inspect the inline native task's
-profile and resolved model. GPT parents should get a permitted Claude critic;
-Claude parents should get a permitted GPT critic. If none is available, the parent
-should explain that limitation. Automatic critique is discretionary: the prompt
-encourages it around substantive plans, complex checkpoints, test reviews, and
-repeated failures, and discourages it for trivial or unchanged work.
+do not measure an LLM's routing judgment. That is a separate opt-in evaluation.
 
 For the durable filesystem boundary, run the real-model tests from `packages/sdk`:
 

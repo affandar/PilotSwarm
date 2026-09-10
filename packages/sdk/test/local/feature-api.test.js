@@ -66,7 +66,7 @@ describe("feature flags through HTTP router, authenticated runtime and real stor
         await expect(runtime.call("setClusterFeatureFlag", { ...forged, allowUserOverride: true }, {
             principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },
         })).rejects.toMatchObject({ status: 403 });
-        expect((await clients.alice.call("getMyFeatureFlags")).flags[0]).toMatchObject({ effective: false, user: { userId: aliceId, enabled: true }, userOverrideIgnored: true });
+        expect((await clients.alice.call("getMyFeatureFlags")).flags[0]).toMatchObject({ effective: true, user: { userId: aliceId, enabled: true }, userOverrideIgnored: false });
         expect((await clients.bob.call("getMyFeatureFlags")).flags[0].user).toBeNull();
         await runtime.call("setMyFeatureFlag", { ...forged, expectedRevision: "2", requestId: randomUUID(), enabled: false }, {
             principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },

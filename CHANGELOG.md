@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.64 — 2026-09-09
+
+Cluster and user feature flighting, bounded native Copilot delegation, and
+clearer live session activity.
+
+- Add code-defined feature flags with cluster and user settings across the SDK,
+  management API, web API, MCP, Resource Manager, Agent Smith, and admin UI.
+  Workers refresh policy revisions without rebuilding agent packages; running
+  sessions apply changes at safe turn boundaries.
+- Ship `copilot.native_tasks` disabled by default. When policy enables it,
+  eligible Copilot sessions may delegate synchronous local work to
+  `swarm-explore` and `swarm-task` on the same worker. Durable agents remain the
+  route for long-lived or wide fan-out work. The proposed
+  `swarm-rubber-duck` profile remains disabled.
+- Show abridged native-task lifecycle entries inline in chat while preserving
+  detailed child activity outside the parent answer. Keep warning cards in
+  transcript order as a session continues.
+- Render escaped newline sequences correctly in Question cards and keep chat
+  content isolated to its owning session during rapid navigation.
+
 ## 0.5.63 — 2026-09-07
 
 Faster Master of Agents navigation, stable reading positions, and compact

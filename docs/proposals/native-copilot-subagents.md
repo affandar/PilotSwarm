@@ -10,17 +10,15 @@ context on the same worker. The parent awaits the result inside its existing
 PilotSwarm turn. No slash command is needed. Copilot decides when delegation
 helps, or the user can explicitly request it.
 
-The spike supplies three custom profiles to the native harness:
+The spike supplies two custom profiles to the native harness:
 
 | Profile | Intended use |
 | --- | --- |
 | `swarm-explore` | Workspace investigation; return findings with file references |
 | `swarm-task` | Local tests, builds, and commands; return concise results |
-| `swarm-rubber-duck` | Constructive critique of plans, implementations, and tests; local file/search tools only |
 
 These are native Copilot agents, not PilotSwarm child sessions. They have
-explicit CLI tool lists. The critic has only `view`, `grep`, `rg`, and `glob`;
-the other profiles also have shell tools. They cannot call PilotSwarm external
+explicit CLI tool lists. They cannot call PilotSwarm external
 tools, inherit deployment agent definitions, use MCP servers, or recursively
 invoke `task`. The built-in wildcard agents are excluded because earlier
 experiments showed they could inherit the parent's external tools.
@@ -31,36 +29,10 @@ Shell access has the worker's existing OS permissions; these profiles are not a
 filesystem or process security sandbox. `swarm-explore`'s no-edit instruction is
 a behavioral instruction, not an OS-enforced read-only boundary.
 
-`swarm-explore` and `swarm-task` use the parent's admitted model/provider and
-inherit its reasoning/context settings. `swarm-rubber-duck` uses an opposite-family
-model (GPT → Claude, Claude → GPT) from the intersection of the owner's permitted
-catalog and the actual credential-bound Copilot catalog. Selection stays within
-the parent's exact GitHub provider instance; native children cannot switch the
-session's provider connection. Balanced models are preferred, with deterministic
-version ordering. In the pinned runtime, the critic still carries the parent's
-reasoning/context settings, as confirmed by the real CLI probe.
-Caller-supplied model changes outside the selected profile model, reasoning overrides,
-and context-tier overrides are rejected.
-
-The critic is omitted when the parent is BYOK, its family is unsupported, no
-complementary model is available, or catalog verification fails. There is no
-fallback to the parent's model: the critic declaration requires the selected model.
-If that model later fails at dispatch, the runtime can fail the parent turn rather
-than returning a soft critique failure. Catalog discovery is cached for five
-minutes per credential-bound client (30 seconds after a failure); the owner/provider
-permission check still applies on session preparation. A changed or removed critic
-selection recreates the warm SDK handle on the next turn. This is worker-local
-configuration and adds no database schema or durable orchestration changes.
-
-When native tasks are enabled, parent guidance encourages a rubber-duck critique
-after a non-trivial plan before implementation, at complex implementation
-checkpoints, after writing tests, or after repeated failures/unexpected results.
-The model decides whether a critique is useful; no timer, tool-count threshold,
-or automatic orchestration event forces one. Trivial work and unchanged material
-should not generate repeated critiques. Users can request a critique in natural
-language. The same named-agent preference and durable-delegation rules still apply.
-Our profile implements its own permitted-catalog selection; the portal does not
-implement a `/rubber-duck` slash command.
+Both profiles use the parent's admitted model/provider and inherit its
+reasoning/context settings. Caller-supplied model, reasoning, and context-tier
+overrides are rejected. A separate `swarm-rubber-duck` profile is deferred and
+is neither registered nor mentioned in native delegation guidance.
 
 `spawn_agent` remains the mechanism for independent durable work, timers,
 wake-ups, later messages, and child contracts. `/tasks` and `/fleet` UI support,

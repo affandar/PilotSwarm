@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { scoreDelegation } from "../lib/native-delegation-score.mjs";
 
-const options = { model: "gpt-5.6-terra", criticModel: "claude-sonnet-5", knownAgents: ["deepwiki", "generic-crawler"] };
+const options = { model: "gpt-5.6-terra", knownAgents: ["deepwiki", "generic-crawler"] };
 const call = (name, args) => ({ name, arguments: args });
 const decision = (name, args) => ({ calls: [call(name, args)] });
 const nativeArgs = { agent_type: "swarm-explore", mode: "sync", prompt: "Read the worker and return findings." };
@@ -18,7 +18,6 @@ for (const [name, args] of [
     ["direct imperative", { task: "Use a native task to inspect the repository." }],
     ["inline CLI call", { task: "Call `task(agent_type=\"swarm-explore\")` to inspect the source." }],
     ["native profile", { task: "Delegate source reads to the swarm-explore profile." }],
-    ["native critic profile", { task: "Use the swarm-rubber-duck profile to critique the local implementation." }],
     ["subject directive", { task: "You MUST delegate local checks to native `task` calls (swarm-task)." }],
     ["via execution", { task: "Audit the service via native local tasks." }],
     ["contract purpose", { task: "Investigate the source.", contract: { purpose: "Inspect the source using native tasks." } }],
@@ -77,6 +76,7 @@ test("every nested child must preserve the native assignment", () => {
 
 for (const [name, patch] of [
     ["unsupported profile", { agent_type: "explore" }],
+    ["deferred critic profile", { agent_type: "swarm-rubber-duck" }],
     ["built-in critic", { agent_type: "rubber-duck" }],
     ["built-in rem agent", { agent_type: "rem-agent" }],
     ["absent profile", { agent_type: undefined }],
@@ -98,24 +98,10 @@ for (const [name, patch] of [
 
 test("admitted native profiles and inherited mode/model pass, and every call is validated", () => {
     for (const args of [nativeArgs, { ...nativeArgs, agent_type: "swarm-task" },
-        { ...nativeArgs, agent_type: "swarm-rubber-duck" },
         { ...nativeArgs, mode: undefined }, { ...nativeArgs, model: options.model }]) {
         expectScore({ expected: ["native"] }, decision("task", args), true);
     }
     expectScore({ expected: ["native"] }, { calls: [call("task", nativeArgs), call("task", { ...nativeArgs, mode: "background" })] }, false);
-});
-
-test("native critic requires an available selected model and cannot borrow the parent or another provider", () => {
-    const criticArgs = { ...nativeArgs, agent_type: "swarm-rubber-duck" };
-    expectScore({ expected: ["native"] }, decision("task", criticArgs), false, { criticModel: undefined });
-    expectScore({ expected: ["native"] }, decision("task", criticArgs), false, { criticModel: null });
-    expectScore({ expected: ["native"] }, decision("task", { ...criticArgs, model: options.criticModel }), true);
-    for (const model of [options.model, "another-provider:claude-sonnet-5"]) {
-        expectScore({ expected: ["native"] }, decision("task", { ...criticArgs, model }), false);
-    }
-    for (const agent_type of ["swarm-explore", "swarm-task"]) {
-        expectScore({ expected: ["native"] }, decision("task", { ...nativeArgs, agent_type, model: options.criticModel }), false);
-    }
 });
 
 for (const [name, args] of [
@@ -151,7 +137,6 @@ test("mixed routes cannot masquerade as either requested topology", () => {
 
 test("off mode rejects native calls even when native is an accepted route", () => {
     expectScore({ expected: ["native"] }, decision("task", nativeArgs), false, { nativeMode: "off" });
-    expectScore({ expected: ["native"] }, decision("task", { ...nativeArgs, agent_type: "swarm-rubber-duck" }), false, { nativeMode: "off" });
     expectScore({ expected: ["mixed"] }, { calls: [call("spawn_agent", { task: "Research" }), call("task", nativeArgs)] }, false, { nativeMode: "off" });
     for (const [scenario, chosen] of [
         [{ expected: ["durable"] }, decision("spawn_agent", { task: "Research" })],

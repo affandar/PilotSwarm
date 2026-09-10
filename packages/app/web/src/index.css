@@ -1746,6 +1746,31 @@ body.is-resizing-pane-y iframe {
 .ps-chat-call-payload { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .92em; }
 .ps-chat-call .ps-system-notice-body { max-height: min(360px, 45dvh); overflow: auto; padding: 10px; border-left: 2px solid var(--ps-border-strong); }
 
+/* Consecutive tool and durable-agent activity shares the native-task card
+   grammar. The transcript remains chronological: ordinary assistant prose
+   closes one run, and later activity starts a new card below that prose. */
+.ps-activity-run { margin: 8px 0 12px; }
+.ps-activity-run > summary { list-style: none; cursor: pointer; }
+.ps-activity-run > summary::-webkit-details-marker { display: none; }
+.ps-activity-run-summary { flex-wrap: nowrap; min-width: 0; }
+.ps-activity-run-latest { flex: 1 1 auto; min-width: 0; color: var(--ps-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-activity-run-status { flex: none; color: var(--ps-success); font-size: var(--ps-font-size-dense); }
+.ps-activity-run-status.is-failed { color: var(--ps-warning); }
+.ps-activity-run-chevron { flex: none; color: var(--ps-muted); transition: transform 120ms ease; }
+.ps-activity-run[open] .ps-activity-run-chevron { transform: rotate(90deg); }
+.ps-activity-run-viewport { max-height: min(320px, 38dvh); overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--ps-border); border-bottom: 1px solid var(--ps-border); background: color-mix(in srgb, var(--ps-background) 70%, transparent); }
+.ps-activity-run-viewport:focus-visible { outline: 1px solid var(--ps-selection-background); outline-offset: -1px; }
+.ps-activity-run .ps-chat-call { margin: 0; border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); border-radius: 0; }
+.ps-activity-run .ps-chat-call:first-child { border-top: 0; }
+.ps-activity-run .ps-chat-call-summary { padding-inline: 12px; }
+.ps-activity-run-footer { padding: 7px 12px 8px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
+@media (max-width: 620px) {
+  .ps-activity-run-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; gap: 5px 8px; }
+  .ps-activity-run-latest { grid-column: 1 / 2; grid-row: 2; }
+  .ps-activity-run-status { grid-column: 2; grid-row: 1; }
+  .ps-activity-run-chevron { grid-column: 3; grid-row: 1; }
+}
+
 .ps-system-notice-body .ps-md-paragraph,
 .ps-system-notice-body .ps-md-list,
 .ps-system-notice-body .ps-md-quote {
