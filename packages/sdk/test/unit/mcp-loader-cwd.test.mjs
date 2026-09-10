@@ -24,20 +24,20 @@ test("stdio servers anchor to the owning plugin dir (packaged MCP servers)", () 
 // VS Code's .vscode/mcp.json is JSONC: real repos carry `//` comments (often to
 // disable a server) and trailing commas. The loader must parse these WITHOUT
 // corrupting the `//` inside server URLs — a strict JSON.parse rejected the whole
-// file on the first comment and loaded zero servers (the marketplace regression).
+// file on the first comment and loaded zero servers (the original regression).
 const JSONC_MCP = `{
     // repo servers for delegated MCP
     "servers": {
-        "bluebird-mcp-sql": {
+        "analytics": {
             "type": "http",
-            "url": "https://mcp.bluebird-ai.net"
+            "url": "https://analytics.example.com"
         },
-        // "DRI-mcp": {
+        // "disabled-server": {
         //     "type": "http",
-        //     "url": "https://sql-dri-copilot-prod.azurewebsites.net/mcp"
+        //     "url": "https://disabled.example.com/mcp"
         // },
-        "SqlOps": {
-            "url": "https://sqlops-mcp.azurewebsites.net",
+        "operations": {
+            "url": "https://operations.example.com",
             "type": "http"
         },
     }
@@ -50,12 +50,12 @@ test("loadRepoMcpConfig parses JSONC (comments + trailing comma) without breakin
 
     const servers = loadRepoMcpConfig(dir);
     // The two live servers load; the commented-out one does not.
-    assert.deepEqual(Object.keys(servers).sort(), ["SqlOps", "bluebird-mcp-sql"]);
-    assert.equal(servers["DRI-mcp"], undefined, "commented-out server must not load");
+    assert.deepEqual(Object.keys(servers).sort(), ["analytics", "operations"]);
+    assert.equal(servers["disabled-server"], undefined, "commented-out server must not load");
     // The `//` inside URLs survives — the string-aware parser did not treat it
     // as a comment.
-    assert.equal(servers["bluebird-mcp-sql"].url, "https://mcp.bluebird-ai.net");
-    assert.equal(servers["SqlOps"].url, "https://sqlops-mcp.azurewebsites.net");
+    assert.equal(servers["analytics"].url, "https://analytics.example.com");
+    assert.equal(servers["operations"].url, "https://operations.example.com");
 });
 
 test("loadMcpConfig also tolerates JSONC in .mcp.json", () => {
