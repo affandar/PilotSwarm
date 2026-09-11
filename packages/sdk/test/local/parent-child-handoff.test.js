@@ -353,11 +353,13 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
         });
     });
     it.each(['named', 'custom'])('does not inherit the parent contract when the %s child has none', { timeout: 25_000 }, async kind => {
-        await harness({ parentConfig: { childContract: { goal: 'PARENT_CONTRACT_ONLY', wakeOn: 'completion' } },
+        await harness({ parentConfig: { childContract: { goal: 'PARENT_CONTRACT_ONLY', wakeOn: 'completion' },
+            namedAgentToolAdditions: ['deployment_tool'] },
             callTools: kind === 'named' ? ['handoff_load'] : [] }, async h => {
             expect(await h.invoke(path, { ...(kind === 'named' ? { agent_name: 'analyst' } : {}), task: 'Independent child assignment' }))
                 .toContain('spawned successfully');
             expect(h.children[0].config.childContract).toBeUndefined();
+            expect(h.children[0].config.namedAgentToolAdditions).toBeUndefined();
             expect(h.children[0].row.childContract).toBeUndefined();
             expect(JSON.stringify(h.children[0].config)).not.toContain('PARENT_CONTRACT_ONLY');
             expect(h.children[0].result, JSON.stringify(h.children[0].result)).toMatchObject({ type: 'completed' });
@@ -368,6 +370,19 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             await h.invoke(path, { agent_name: 'analyst', task: 'STARTUP_ENFORCEMENT' });
             expect(h.children[0].turnOptions.requiredTool).toBe('handoff_load'); expect(h.children[0].result.type).toBe('error');
             expect(h.children[0].result.message).toContain('handoff_load'); expect(h.calls.map(c => c.name)).toEqual(['handoff_search']);
+        });
+    });
+});
+
+describe('create_agent_session root tool provenance', () => {
+    it.each(['published', 'static'])('marks the %s definition tools separately from caller additions', { timeout: 25_000 }, async source => {
+        const agent = source === 'published' ? shared : { ...shared, packageId: undefined, packageScope: undefined };
+        await harness({ agents: [agent], parentControl: bridge => bridge.createAgentSession({ agent_name: 'analyst', model: MODEL }) }, async h => {
+            expect(await h.invoke('inline', {})).toContain('created top-level session');
+            expect(h.children[0].config.parentSessionId).toBeUndefined();
+            expect(h.children[0].config.namedAgentToolAdditions).toEqual([]);
+            expect(h.children[0].config.toolNames).toEqual(agent.tools);
+            expect(h.children[0].result).toMatchObject({ type: 'completed' });
         });
     });
 });

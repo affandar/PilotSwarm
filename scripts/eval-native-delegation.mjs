@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "../packages/sdk/dist/session-manager.js";
 import { NATIVE_SUBAGENT_GUIDANCE } from "../packages/sdk/dist/native-subagents.js";
-import { scoreDelegation } from "./lib/native-delegation-score.mjs";
+import { DELEGATION_SETUP_TOOLS, isDelegationDecision, scoreDelegation } from "./lib/native-delegation-score.mjs";
 import { delegationCatalogDefinitions } from "./lib/native-delegation-catalog.mjs";
 import { createAgentDiscoveryTool, listAgentDefinitionsForCaller } from "../packages/sdk/dist/agent-discovery.js";
 import { FeatureFlagCache } from "../packages/sdk/dist/feature-flag-cache.js";
@@ -65,10 +65,8 @@ manager.setFactStore({
 });
 // Use the worker's real visibility/selection helper with synthetic static and
 // published definitions. Parent model choices remain live; child effects do not.
-const isPreparation = (name, args) => ["ps_list_agents", "store_fact", "read_facts", "view", "rg", "glob", "grep"].includes(name)
+const isPreparation = (name, args) => [...DELEGATION_SETUP_TOOLS, "view", "rg", "glob", "grep"].includes(name)
     || name === "bash" && String(args?.command || "").split(/\s*&&\s*/).every(part => /^(pwd|git (remote -v|status --short|rev-parse (HEAD|--show-toplevel)|branch --show-current))$/.test(part.trim()));
-const isDecision = (calls, scenario) => calls.some(t => ["spawn_agent", "task", "ask_user"].includes(t.name))
-    || scenario.expected.includes("direct") && calls.length > 0;
 const results = [];
 const startedAt = new Date().toISOString();
 const sourceHashes = Object.fromEntries([
@@ -103,7 +101,7 @@ try {
             hooks: { onPreToolUse: input => {
                 if (input.toolName === "ps_list_agents") catalogLookups++;
                 const calls = [{ name: input.toolName, arguments: input.toolArgs }];
-                if (isDecision(calls, scenario)) capture?.({ content: "", calls });
+                if (isDelegationDecision(calls, scenario)) capture?.({ content: "", calls });
                 else if (++preparationCount < 12 && isPreparation(input.toolName, input.toolArgs)) return undefined;
                 else if (preparationCount >= 12) capture?.({ content: "Preparation limit reached before delegation", calls });
                 return { permissionDecision: "deny", permissionDecisionReason: "Evaluation capture: execution disabled" };
@@ -135,7 +133,7 @@ try {
                 capture = resolve;
                 timer = setTimeout(() => reject(new Error("No decision within 90 seconds")), 90_000);
                 stop = sdk.on(event => {
-                    if (event.type === "assistant.message" && (isDecision(event.data.toolRequests || [], scenario) || event.data.phase === "final_answer" && !event.data.toolRequests?.length)) {
+                    if (event.type === "assistant.message" && (isDelegationDecision(event.data.toolRequests || [], scenario) || event.data.phase === "final_answer" && !event.data.toolRequests?.length)) {
                         resolve({ content: event.data.content || "", calls: (event.data.toolRequests || []).map(t => ({ name: t.name, arguments: t.arguments })) });
                     } else if (event.type === "session.error") reject(new Error(event.data.message));
                 });

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { scoreDelegation } from "../lib/native-delegation-score.mjs";
+import { isDelegationDecision, scoreDelegation } from "../lib/native-delegation-score.mjs";
 
 const options = { model: "gpt-5.6-terra", knownAgents: ["deepwiki", "generic-crawler"] };
 const call = (name, args) => ({ name, arguments: args });
@@ -121,6 +121,21 @@ for (const [name, args] of [
     ["camel case removed selector", { agent_name: "deepwiki", requiredTool: "deepwiki_query" }],
 ]) test(`durable arguments reject ${name}`, () => {
     expectScore({ expected: ["durable"] }, decision("spawn_agent", args), false);
+});
+
+test("catalog preparation cannot make an explicit no-delegation evaluation pass early", () => {
+    const scenario = { expected: ["direct"] };
+    const preparation = [call("ps_list_agents", {}), call("list_agents", {}), call("list_available_models", {}), call("read_facts", {}), call("store_fact", {})];
+    for (const calls of preparation.map(item => [item]).concat([preparation])) {
+        assert.equal(isDelegationDecision(calls, scenario), false);
+        assert.equal(expectScore(scenario, { calls }, false).route, "preparation");
+    }
+    const delegated = [call("spawn_agent", { agent_name: "deepwiki", task: "Inspect the project." })];
+    assert.equal(isDelegationDecision(delegated, scenario), true);
+    expectScore(scenario, { calls: delegated }, false);
+    const direct = [call("view", { path: "package.json" })];
+    assert.equal(isDelegationDecision(direct, scenario), true);
+    expectScore(scenario, { calls: direct }, true);
 });
 
 test("named children accept a concrete assignment while retaining the named definition", () => {

@@ -1,20 +1,23 @@
 /** Runtime and orchestration cleanup protocol; no live model or database. */
 import { describe, it, expect, vi } from 'vitest';
-const transport = vi.hoisted(() => ({ active: null, commands: [] }));
+const transport = vi.hoisted(() => ({ active: null, commands: [], getSessionInfo: null }));
 vi.mock('../../src/client.js', () => ({ PilotSwarmClient: class {
     systemSessions = new Set();
     async start() {} async stop() {}
     async listSessions() { return [...transport.active.rows.values()]; }
-    async _getSessionInfo(id) { return transport.active.rows.get(id); }
+    async _getSessionInfo(id, options) { return transport.getSessionInfo
+        ? transport.getSessionInfo(id, options) : transport.active.rows.get(id); }
     _getDuroxideClient() { return { enqueueEvent: async (id, queue, body) => {
         transport.commands.push({ id, queue, command: JSON.parse(body) });
     } }; }
 } }));
 import { handoffHarness } from '../helpers/parent-child-handoff.mjs';
-import { beginGracefulShutdown, finalizePendingShutdown, handleSubAgentAction, parseChildUpdate, refreshTrackedSubAgents } from '../../src/orchestration/agents.ts';
+import { beginGracefulShutdown, finalizePendingShutdown, getChildResultFromStatus, handleSubAgentAction, parseChildUpdate, refreshTrackedSubAgents } from '../../src/orchestration/agents.ts';
 import { beginGracefulShutdown as frozenShutdown } from '../../src/orchestration_1_0_76/agents.ts';
 import { bufferChildUpdate, buildPendingChildDigestSystemPrompt, buildContinueInput } from '../../src/orchestration/lifecycle.ts';
 import { createInitialState, deriveOptions } from '../../src/orchestration/state.ts';
+import { handleTurnResult } from '../../src/orchestration/turn.ts';
+import { registerActivities } from '../../src/session-proxy.ts';
 
 function fixture(overrides = {}, effects = {}) {
     const input = { sessionId: 'child', parentSessionId: 'parent', config: {}, iteration: 5, ...overrides };
@@ -23,7 +26,7 @@ function fixture(overrides = {}, effects = {}) {
     const effect = (kind, args) => ({ kind, ...args });
     const runtime = {
         input, options, state: createInitialState(input, options),
-        versions: { currentVersion: '1.0.77', latestVersion: '1.0.77' },
+        versions: { currentVersion: '1.0.78', latestVersion: '1.0.78' },
         ctx: { traceInfo() {}, setCustomStatus() {},
             getValue: key => values.get(key) ?? null, setValue: (key, value) => values.set(key, value),
             clearValue: key => values.delete(key), utcNow: () => effect('now'),
@@ -137,6 +140,15 @@ for (const [tool, command, status] of [
         expect(f.destroyed).toEqual(['child']);
         expect(f.runtime.state.orchestrationResult).toBe(command === 'done' ? 'done' : command === 'delete' ? 'deleted' : 'cancelled');
     });
+
+    it('forwards the child turn result before processing a queued cleanup command', () => {
+        const f = fixture();
+        f.drive(handleTurnResult(f.runtime, { type: 'completed', content: 'NEW CHILD ANSWER' }, 'Finish the child task'));
+        f.drive(beginGracefulShutdown(f.runtime, command, { type: 'cmd', cmd: command, id: 'queued-cleanup', requestedBy: 'parent' }));
+        expect(f.sent).toHaveLength(1);
+        expect(parseChildUpdate(f.sent[0].prompt)).toMatchObject({ updateType: 'completed', content: 'NEW CHILD ANSWER' });
+        expect(f.events.flatMap(e => e.entries)).toContainEqual(expect.objectContaining({ eventType: 'session.child_cleanup_completed' }));
+    });
 });
 
 it.each([
@@ -189,29 +201,79 @@ it('does not reclassify an external shutdown when a parent command arrives durin
 });
 
 describe.each([
-    ['completed', 'done', 'AUDIT RESULT'],
-    ['cancelled', 'cancelled', 'AUDIT RESULT'],
-    ['completed', 'deleted', 'AUDIT RESULT'],
-    ['failed', 'failed', 'AUDIT RESULT'],
-    ['completed', undefined, 'AUDIT RESULT'],
-    ['completed', 'NEW ANSWER', 'NEW ANSWER'],
-    ['idle', 'done', 'done'],
-])('child status result %s / %s', (status, result, expected) => {
+    ['completed', 'done', 'orchestration', 'AUDIT RESULT'],
+    ['cancelled', 'cancelled', 'orchestration', 'AUDIT RESULT'],
+    ['completed', 'deleted', 'orchestration', 'AUDIT RESULT'],
+    ['failed', 'failed', 'orchestration', 'AUDIT RESULT'],
+    ['completed', undefined, undefined, 'AUDIT RESULT'],
+    ['completed', 'NEW ANSWER', 'response', 'NEW ANSWER'],
+    ['idle', 'done', 'response', 'done'],
+    ['completed', 'done', undefined, 'done'],
+])('child status result %s / %s / %s', (status, result, resultSource, expected) => {
     const tracked = { sessionId: 'child', orchId: 'session-child', task: 'audit', status: 'completed', result: 'AUDIT RESULT' };
 
     it.each([true, false])('preserves answers during discovery (preserve terminal task status: %s)', preserveTerminalTaskStatus => {
         const f = fixture({ sessionId: 'parent', parentSessionId: undefined, subAgents: [tracked] }, {
-            children: [{ ...tracked, status, result }],
+            children: [{ ...tracked, status, result, resultSource }],
         });
         f.drive(refreshTrackedSubAgents(f.runtime, { preserveTerminalTaskStatus }));
         expect(f.runtime.state.subAgents[0].result).toBe(expected);
     });
 
     it('shows the answer in an explicit check_agents report', () => {
-        const f = fixture({ sessionId: 'parent', parentSessionId: undefined, subAgents: [tracked] }, { status: { status, result } });
+        const f = fixture({ sessionId: 'parent', parentSessionId: undefined, subAgents: [tracked] }, { status: { status, result, resultSource } });
         f.drive(handleSubAgentAction(f.runtime, { type: 'check_agents' }));
         expect(f.runtime.state.pendingPrompt).toContain(`Output: ${expected}`);
         expect(f.runtime.state.pendingPrompt).toContain(`Status: ${status}`);
+    });
+});
+
+// Exercise the real status assembler and registered activity handlers. Only
+// their store reads are replaced; answer text must never stand in for source.
+describe.each(['done', 'failed', 'cancelled', 'deleted'])('literal child answer %s', answer => {
+    it.each(['customStatus', 'latestResponse', 'outcomeSummary', 'outcomeResult'])('survives %s through activity serialization and discovery', async source => {
+        const { PilotSwarmClient } = await vi.importActual('../../src/client.js');
+        const row = { sessionId: 'child', parentSessionId: 'parent', state: 'completed', isSystem: false };
+        const response = { type: 'completed', content: answer };
+        const sdk = {
+            _catalog: { getSession: async () => row },
+            duroxideClient: { getStatus: async () => ({ status: 'Completed', output: 'done', customStatus: {
+                status: 'completed',
+                ...(source === 'customStatus' ? { turnResult: response } : {}),
+                ...(source === 'latestResponse' ? { responseVersion: 1 } : {}),
+            } }) },
+            _getLatestResponse: async () => response,
+        };
+        const outcome = source === 'outcomeSummary' ? { summary: answer }
+            : source === 'outcomeResult' ? { resultJson: { current: { summary: answer } } } : null;
+        const handlers = new Map();
+        registerActivities({ registerActivity: (name, handler) => handlers.set(name, handler) }, {}, null, undefined,
+            { getChildOutcome: async () => outcome }, undefined, 'in-memory://status');
+        transport.active = { rows: new Map([['child', row]]) };
+        transport.getSessionInfo = (id, options) => PilotSwarmClient.prototype._getSessionInfo.call(sdk, id, options);
+        try {
+            const ctx = { traceInfo() {} };
+            const legacyInfo = await transport.getSessionInfo('child');
+            expect(legacyInfo).not.toHaveProperty('resultSource');
+            const legacyStatus = JSON.parse(await handlers.get('getSessionStatus')(ctx, { sessionId: 'child' }));
+            expect(legacyStatus).not.toHaveProperty('resultSource');
+            const status = JSON.parse(await handlers.get('getSessionStatusV2')(ctx, { sessionId: 'child' }));
+            const fromOutcome = source.startsWith('outcome');
+            expect(status.resultSource).toBe(fromOutcome ? 'orchestration' : 'response');
+            expect(getChildResultFromStatus(status, 'OLD ANSWER')).toBe(fromOutcome ? 'OLD ANSWER' : answer);
+            const legacyChildren = JSON.parse(await handlers.get('listChildSessions')(ctx, { parentSessionId: 'parent' }));
+            expect(legacyChildren[0]).not.toHaveProperty('resultSource');
+            const children = JSON.parse(await handlers.get('listChildSessionsV2')(ctx, { parentSessionId: 'parent' }));
+            expect(children[0]).toMatchObject({ result: answer, resultSource: fromOutcome ? 'child_outcome' : 'response' });
+            const parent = fixture({ sessionId: 'parent', parentSessionId: undefined, subAgents: [
+                { sessionId: 'child', orchId: 'session-child', task: 'Return the exact status token', status: 'running', result: 'OLD ANSWER' },
+            ] }, { children });
+            parent.drive(refreshTrackedSubAgents(parent.runtime));
+            expect(parent.runtime.state.subAgents[0].result).toBe(answer);
+        } finally {
+            transport.active = null;
+            transport.getSessionInfo = null;
+        }
     });
 });
 

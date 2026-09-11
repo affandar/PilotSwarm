@@ -21,11 +21,16 @@
 - Preserve each child's explicit contract across SDK creation and restore its
   parent/depth from the catalog when another API client sends the first message.
   Grandchildren do not inherit their parent's own child contract.
+- Preserve root application-tool additions across named-definition refresh and
+  persist explicit logical depth across clients. Restore the saved agent ID at
+  first start so named startup requirements apply on every portal/worker.
 - Record parent-requested child completion, cancellation and deletion as cleanup
   audit events instead of waking the parent model with its own acknowledgement.
   Preserve child answers during status polling and keep explicit waits working.
+  Track result provenance so literal answers such as `done` or `failed` are
+  preserved while orchestration exit output cannot replace a child answer.
   Genuine child updates and externally requested termination still notify parents.
-- Freeze orchestrations 1.0.74 through 1.0.76; active 1.0.77 keeps capability-tagged
+- Freeze orchestrations 1.0.74 through 1.0.77; active 1.0.78 keeps capability-tagged
   handoffs and removes the spawn capability selector. Legacy activity handlers
   remain for frozen histories.
   Upgrade with a drain-first replacement of incompatible workers; see the

@@ -29,13 +29,14 @@ export function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-/** Preserve child answers when a status probe only has orchestration exit output. */
+/** Status probes can fall back to an orchestration exit marker, not a child answer. */
 export function getChildResultFromStatus(
-    child: { result?: unknown; resultSource?: string },
+    child: { status?: string; result?: unknown },
     previous?: string,
 ): string | undefined {
     if (typeof child.result !== "string" || !child.result) return previous;
-    if (child.resultSource === "orchestration") return previous;
+    if (isSubAgentTerminalStatus(child.status)
+        && ["done", "cancelled", "deleted", "failed"].includes(child.result)) return previous;
     return child.result;
 }
 
@@ -294,7 +295,6 @@ export function* refreshTrackedSubAgents(
             isSystem?: boolean;
             agentId?: string;
             result?: string;
-            resultSource?: string;
             error?: string;
         }>;
 
@@ -768,7 +768,6 @@ export function* handleSubAgentAction(
                 boundAgentName: _parentBoundAgentName,
                 boundAgentPackageId: _parentBoundAgentPackageId,
                 boundAgentSource: _parentBoundAgentSource,
-                namedAgentToolAdditions: _parentNamedAgentToolAdditions,
                 childContract: _parentChildContract,
                 detachedPackageToolPolicy: _parentDetachedPackageToolPolicy,
                 promptLayering: _parentPromptLayering,

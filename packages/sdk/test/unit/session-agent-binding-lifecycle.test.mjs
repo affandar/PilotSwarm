@@ -10,6 +10,8 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, agentOwnerKey, packageAgentKey } from "../../dist/session-manager.js";
+import { resolveTopLevelAgentConfig } from "../../dist/orchestration/runtime.js";
+import { PilotSwarmClient } from "../../dist/client.js";
 
 const ALICE = { provider: "test", subject: "alice" };
 const BOB = { provider: "test", subject: "bob" };
@@ -454,4 +456,111 @@ test("deployment source pin preserves explicit ordinary-tool overrides for direc
     const warm = await h.manager.getOrCreate("direct", config, { turnIndex: 1 });
     assert.equal(warm, first);
     assert.equal(handler(warm, "deployment_catalog"), undefined);
+});
+
+function resolveRootAgent(input, definition) {
+    const runtime = {
+        input, options: {},
+        state: { iteration: 0, config: { ...input.config }, affinityKey: "root-affinity" },
+        manager: { resolveAgentConfig: () => ({ name: "resolveAgentConfig" }) }, ctx: { traceInfo() {} },
+    };
+    const resolving = resolveTopLevelAgentConfig(runtime);
+    assert.deepEqual(resolving.next().value, { name: "resolveAgentConfig" });
+    assert.equal(resolving.next(definition).done, true);
+    assert.equal(runtime.state.pendingRequiredTool, definition.initialRequiredTool);
+    return runtime.state.config;
+}
+
+for (const source of ["published", "static"]) {
+    test(`${source} root preserves persisted caller additions while refreshing the actual named definition`, async t => {
+        const h = fixture(t);
+        const publish = (version) => {
+            const name = version === 1 ? "catalog" : "search_catalog";
+            const definition = {
+                name: "analyst", prompt: `ROOT_VERSION_${version}`, tools: [name, ...(version === 1 ? ["ordinary_tool"] : [])],
+                initialRequiredTool: name,
+                ...(source === "published" ? { packageId: "shared-package", packageScope: "shared" } : {}),
+            };
+            // Both handlers stay registered: removal from the agent declaration
+            // alone must remove the old capability from the root session.
+            const exported = [tool("catalog"), tool("search_catalog")];
+            h.publish({
+                shared: source === "published" ? copy("shared-package", definition.prompt, { tools: definition.tools }) : null,
+                sharedTools: source === "published" ? exported : [], privateCopy: null, privateTools: [],
+                extraStatic: [tool("ordinary_tool"), ...(source === "static" ? exported : [])],
+            });
+            if (source === "static") h.defaults.agentPromptLookup.analyst = {
+                prompt: definition.prompt, kind: "app-agent", toolNames: definition.tools,
+            };
+            return definition;
+        };
+        const definition = publish(1);
+        const records = new Map();
+        const starts = [];
+        const catalog = {
+            createSession: async (id, row) => records.set(id, { sessionId: id, state: "pending", ...row }),
+            getSession: async id => records.get(id) ?? null,
+            getSessionCreationConfig: async id => records.get(id)?.creationConfig ?? null,
+            updateSession: async () => {},
+        };
+        const creator = new PilotSwarmClient({});
+        creator._catalog = catalog;
+        await creator.createSession({ sessionId: "root", agentId: "analyst",
+            toolNames: ["ordinary_tool"] });
+        assert.equal(records.get("root").agentId, "analyst");
+        assert.deepEqual(records.get("root").creationConfig.namedAgentToolAdditions, ["ordinary_tool"]);
+        const sender = new PilotSwarmClient({});
+        sender._catalog = catalog;
+        sender.duroxideClient = {
+            startOrchestrationVersioned: async (_id, _name, input) => starts.push(input), enqueueEvent: async () => {},
+        };
+        await (await sender.resumeSession("root")).send("Begin");
+        assert.equal(starts[0].agentId, "analyst");
+        const config = resolveRootAgent(starts[0], definition);
+        let session = await h.manager.getOrCreate("root", config, { turnIndex: 0 });
+        assert.ok(handler(session, "catalog"));
+        assert.ok(handler(session, "ordinary_tool"));
+        publish(2);
+        session = await h.manager.getOrCreate("root", config, { turnIndex: 1 });
+        assert.equal(handler(session, "catalog"), undefined);
+        assert.ok(handler(session, "search_catalog"));
+        assert.ok(handler(session, "ordinary_tool"));
+        assert.match(await prompt(h.calls.at(-1).config), /ROOT_VERSION_2/);
+        await h.manager.dropWarmSession("root");
+        session = await h.manager.getOrCreate("root", JSON.parse(JSON.stringify(config)), { turnIndex: 2 });
+        assert.equal(handler(session, "catalog"), undefined);
+        assert.ok(handler(session, "search_catalog"));
+        assert.ok(handler(session, "ordinary_tool"));
+    });
+}
+
+test("legacy published roots retain ordinary caller tools but cannot retain removed package tools", async t => {
+    const h = fixture(t);
+    h.publish({ extraStatic: [tool("ordinary_tool")] });
+    const { detachedPackageToolPolicy: _childPolicy, ...rootBinding } = named;
+    const config = { ...rootBinding, toolNames: ["catalog", "ordinary_tool"] };
+    await h.manager.getOrCreate("root", config, { turnIndex: 0 });
+    h.publish({ shared: copy("shared-package", "UPDATED", { tools: ["search_catalog"] }),
+        sharedTools: [tool("catalog"), tool("search_catalog")], extraStatic: [tool("ordinary_tool")] });
+    const next = await h.manager.getOrCreate("root", config, { turnIndex: 1 });
+    assert.equal(handler(next, "catalog"), undefined);
+    assert.ok(handler(next, "search_catalog"));
+    assert.ok(handler(next, "ordinary_tool"));
+});
+
+test("protected named children ignore caller-addition provenance and removed package tools never become additions", async t => {
+    const h = fixture(t);
+    h.publish({ extraStatic: [tool("ordinary_tool")] });
+    const first = await h.manager.getOrCreate("child", {
+        ...named, namedAgentToolAdditions: ["ordinary_tool"],
+    }, { turnIndex: 0 });
+    assert.equal(handler(first, "ordinary_tool"), undefined);
+    const { detachedPackageToolPolicy: _childPolicy, ...rootBinding } = named;
+    const config = { ...rootBinding, namedAgentToolAdditions: ["catalog", "ordinary_tool"] };
+    await h.manager.getOrCreate("root", config, { turnIndex: 0 });
+    h.publish({ shared: copy("shared-package", "NO TOOLS", { tools: [] }),
+        sharedTools: [tool("catalog")], extraStatic: [tool("ordinary_tool")] });
+    const next = await h.manager.getOrCreate("root", config, { turnIndex: 1 });
+    assert.equal(handler(next, "catalog"), undefined);
+    assert.ok(handler(next, "ordinary_tool"));
 });

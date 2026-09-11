@@ -1467,16 +1467,23 @@ export class SessionManager {
                 ...(boundAgentCopy.descriptor ? { descriptor: { ...boundAgentCopy.descriptor } } : {}),
             };
             if (boundAgentCopy?.toolNames && effectiveSerializableConfig.boundAgentName
-                && (effectiveSerializableConfig.boundAgentPackageId || effectiveSerializableConfig.detachedPackageToolPolicy)) {
-                // Protected named children follow their current definition after
-                // republish. Defaults remain additive; stale spawn-time toolNames
-                // cannot keep removed tools or hide newly declared capabilities.
+                && (effectiveSerializableConfig.boundAgentPackageId || effectiveSerializableConfig.detachedPackageToolPolicy
+                    || effectiveSerializableConfig.namedAgentToolAdditions !== undefined)) {
+                // Named definitions refresh as a unit. Roots may add ordinary
+                // application tools; protected children receive only defaults and
+                // their definition. Legacy package roots have no provenance, so
+                // retain their ordinary names but never stale package capabilities.
+                const additions = effectiveSerializableConfig.detachedPackageToolPolicy
+                    ? []
+                    : (effectiveSerializableConfig.namedAgentToolAdditions ?? effectiveSerializableConfig.toolNames ?? [])
+                        .filter(name => this.staticToolNames?.has(name) || !this.packageToolNames.has(name));
                 effectiveSerializableConfig = {
                     ...effectiveSerializableConfig,
                     toolNames: [...new Set([
                         ...(this.workerDefaults.frameworkBaseToolNames ?? []),
                         ...(this.workerDefaults.appDefaultToolNames ?? []),
                         ...boundAgentCopy.toolNames,
+                        ...additions,
                     ])],
                 };
             }

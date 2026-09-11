@@ -117,10 +117,9 @@ export function createAgentDiscoveryTool(opts: {
             type: "object" as const,
             properties: {
                 systemOnly: { type: "boolean", description: "Inspect worker-managed definitions only. These are not spawn targets. Default false." },
-                creatableOnly: { type: "boolean", description: "Return spawnable definitions only; this is already the default." },
             },
         },
-        handler: async (args: { systemOnly?: boolean; creatableOnly?: boolean }, invocation: any) => {
+        handler: async (args: { systemOnly?: boolean }, invocation: any) => {
             const agents = await listAgentDefinitionsForCaller({
                 userAgents: opts.getUserAgents(),
                 systemAgents: opts.getSystemAgents(),

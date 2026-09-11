@@ -60,7 +60,7 @@ async function withStore(body) {
 }
 
 function* routedHandoff(ctx) {
-    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2");
+    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
     const session = createSessionProxy(ctx, "child", `affinity-${ctx.instanceId}`, {}, "agent-handoff-v2");
     const results = yield ctx.all([
         manager.resolveAgentConfig("analyst"),
@@ -68,6 +68,8 @@ function* routedHandoff(ctx) {
         manager.spawnChildSession("parent", { boundAgentName: "analyst", boundAgentPackageId: "pkg" }, "work"),
         session.runTurn("work"),
         session.runTurn("new epoch", true, 0, { epochStart: true }),
+        manager.getSessionStatus("child"),
+        manager.listChildSessions("parent"),
     ]);
     return results;
 }
@@ -93,7 +95,7 @@ describe("agent handoff capability routing", () => {
             const result = await client.waitForOrchestration("protected", 10_000);
             expect(result.status).toBe("Completed");
             const protectedEvents = events.filter(e => e.name !== "legacyProbe");
-            expect(protectedEvents).toHaveLength(5);
+            expect(protectedEvents).toHaveLength(7);
             expect(protectedEvents.every(e => e.worker === "upgraded" && e.tag === AGENT_HANDOFF_CAPABILITY)).toBe(true);
         });
     });
@@ -105,7 +107,7 @@ describe("agent handoff capability routing", () => {
             await Promise.all(Array.from({ length: 8 }, (_, i) => client.startOrchestration(`mixed-${i}`, "handoff", {})));
             const results = await Promise.all(Array.from({ length: 8 }, (_, i) => client.waitForOrchestration(`mixed-${i}`, 20_000)));
             expect(results.every(r => r.status === "Completed")).toBe(true);
-            expect(events).toHaveLength(40);
+            expect(events).toHaveLength(56);
             expect(events.every(e => e.worker === "upgraded" && e.tag === AGENT_HANDOFF_CAPABILITY)).toBe(true);
         });
     });

@@ -542,7 +542,7 @@ describe("parent cleanup round trip", () => {
             inputOverrides: {
                 isSystem: false, cronSchedule: undefined, activeTimerState: undefined,
                 subAgents: [cleanup.tracked],
-                sessionStatuses: { "child-session-1": { status: action === "complete_agent" ? "completed" : "cancelled", result: action === "complete_agent" ? "done" : "cancelled" } },
+                sessionStatuses: { "child-session-1": { status: action === "complete_agent" ? "completed" : "cancelled", result: action === "complete_agent" ? "done" : "cancelled", resultSource: "orchestration" } },
             },
         });
         const result = await harness.runUntilBlockedOrContinueAsNew();
@@ -1218,7 +1218,7 @@ describe("wait_for_agents resolution on child completion", () => {
                 waitingForAgentIds: ["agent-1"],
                 activeTimerState: { remainingMs: 0, originalDurationMs: 30_000, reason: "waiting for cleanup", type: "agent-poll", agentIds: ["agent-1"] },
                 subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "running", result: "AUDIT RESULT" }],
-                sessionStatuses: { "child-session-1": { status: "completed", result: "done" } },
+                sessionStatuses: { "child-session-1": { status: "completed", result: "done", resultSource: "orchestration" } },
             },
         });
         const result = await harness.runUntilRunTurn();

@@ -171,6 +171,7 @@ test('actual tool uses durable caller identity, reads fresh definitions and neve
         getSystemAgents: () => [system],
         getCallerOwnerKey: async sessionId => { callers.push(sessionId); return sessionId === 'alice-durable' ? ownerKey(alice) : null; },
     });
+    assert.deepEqual(Object.keys(tool.parameters.properties), ['systemOnly'], 'do not advertise an option that cannot change the result');
     const initial = JSON.parse(await tool.handler({ owner: bob, sessionId: 'bob' }, { sessionId: 'sdk-id', durableSessionId: 'alice-durable' }));
     assert.deepEqual(callers, ['alice-durable']);
     assert.equal(initial.total, 2);

@@ -203,6 +203,8 @@ export interface SerializableSessionConfig {
     boundAgentPackageId?: string;
     /** Explicitly selected deployment definition; absent retains legacy owner-shadowing behavior. */
     boundAgentSource?: "deployment";
+    /** Internal: explicit root-session tool additions; package-owned capabilities still follow the current definition. */
+    namedAgentToolAdditions?: string[];
     /** Internal: how an unbound delegated child handles package-owned tool names. */
     detachedPackageToolPolicy?: "drop" | "reject";
     /** Internal: selects how framework, app, and agent prompts compose for this session. */
@@ -408,6 +410,8 @@ export interface PilotSwarmSessionInfo {
     /** Number of fires completed for cron_at schedules. */
     cronFiresCompleted?: number;
     result?: string;
+    /** Internal opt-in status metadata; absent preserves the legacy response shape. */
+    resultSource?: "response" | "orchestration";
     error?: string;
     iterations: number;
     /** If this is a sub-agent session, the parent session's ID. */

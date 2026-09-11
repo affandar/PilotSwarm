@@ -1,4 +1,4 @@
-import { routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -949,7 +949,11 @@ export function bootstrapTurnOptions(requiredTool?: string) {
 // The orchestration's view of the SessionManager singleton.
 // Operations that don't require session affinity.
 
-export function createSessionManagerProxy(ctx: any, routingContract?: ActivityRoutingContract) {
+export function createSessionManagerProxy(
+    ctx: any,
+    routingContract?: ActivityRoutingContract,
+    options?: { childResultProvenance?: boolean },
+) {
     return {
         listModels() {
             return ctx.scheduleActivity("listModels", {});
@@ -996,6 +1000,9 @@ export function createSessionManagerProxy(ctx: any, routingContract?: ActivityRo
         },
         /** Get the status of a session via the PilotSwarmClient SDK. */
         getSessionStatus(sessionId: string) {
+            if (options?.childResultProvenance) {
+                return routeHandoffActivity(ctx.scheduleActivity(HANDOFF_ACTIVITY_NAMES.getSessionStatus, { sessionId }), routingContract);
+            }
             return ctx.scheduleActivity("getSessionStatus", { sessionId });
         },
         /** Get orchestration runtime stats for a session. */
@@ -1008,6 +1015,9 @@ export function createSessionManagerProxy(ctx: any, routingContract?: ActivityRo
         },
         /** List direct child sessions of a session. */
         listChildSessions(parentSessionId: string) {
+            if (options?.childResultProvenance) {
+                return routeHandoffActivity(ctx.scheduleActivity(HANDOFF_ACTIVITY_NAMES.listChildSessions, { parentSessionId }), routingContract);
+            }
             return ctx.scheduleActivity("listChildSessions", { parentSessionId });
         },
         /** @deprecated Send a child_updates event to a parent orchestration. Use sendToSession instead. */
@@ -2048,6 +2058,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         boundAgentName: !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name,
                         ...(agentDef.packageId ? { boundAgentPackageId: agentDef.packageId } : {}),
                         ...(!agentDef.packageId ? { boundAgentSource: "deployment" as const } : {}),
+                        namedAgentToolAdditions: [],
                         promptLayering: { kind: "app-agent" as const },
                         ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
                         agentId: agentDef.id ?? agentDef.name,
@@ -2226,6 +2237,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         boundAgentName: _parentBoundAgentName,
                         boundAgentPackageId: _parentBoundAgentPackageId,
                         boundAgentSource: _parentBoundAgentSource,
+                        namedAgentToolAdditions: _parentNamedAgentToolAdditions,
                         childContract: _parentChildContract,
                         detachedPackageToolPolicy: _parentDetachedPackageToolPolicy,
                         promptLayering: _parentPromptLayering,
@@ -2295,7 +2307,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         boundAgentSource: childConfig.boundAgentSource,
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
-                        childContract: childConfig.childContract,
                         toolNames: childConfig.toolNames,
                         waitThreshold: childConfig.waitThreshold,
                         agentId,
@@ -4578,7 +4589,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 boundAgentSource: input.config.boundAgentSource,
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
-                childContract: input.config.childContract,
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
                 agentId: input.agentId,
@@ -4722,9 +4732,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     // ── getSessionStatus ────────────────────────────────────
     // Gets the status of a session via the PilotSwarmClient SDK.
-    runtime.registerActivity("getSessionStatus", async (
+    const getSessionStatus = async (
         activityCtx: any,
         input: { sessionId: string },
+        includeResultSource = false,
     ): Promise<string> => {
         activityCtx.traceInfo(`[getSessionStatus] session=${input.sessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
@@ -4732,19 +4743,22 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
-            const info = await sdkClient._getSessionInfo(input.sessionId);
+            const info = await sdkClient._getSessionInfo(input.sessionId, includeResultSource ? { includeResultSource: true } : undefined);
             return JSON.stringify({
                 sessionId: info.sessionId,
                 status: info.status,
                 title: info.title,
                 iterations: info.iterations,
                 result: info.result,
+                ...(includeResultSource && info.resultSource ? { resultSource: info.resultSource } : {}),
                 error: info.error,
             });
         } finally {
             await sdkClient.stop();
         }
-    });
+    };
+    registerHandoffActivity(runtime, "getSessionStatus", getSessionStatus,
+        (ctx: any, input: { sessionId: string }) => getSessionStatus(ctx, input, true));
 
     // ── getOrchestrationStats ───────────────────────────────
     // Gets duroxide orchestration runtime stats for a session.
@@ -4794,9 +4808,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
     // ── listChildSessions ───────────────────────────────────
     // Lists direct child sessions of a parent with merged live status.
-    runtime.registerActivity("listChildSessions", async (
+    const listChildSessions = async (
         activityCtx: any,
         input: { parentSessionId: string },
+        includeResultSource = false,
     ): Promise<string> => {
         activityCtx.traceInfo(`[listChildSessions] parent=${input.parentSessionId}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
@@ -4807,7 +4822,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             const sessions = await sdkClient.listSessions();
             const directChildren = sessions.filter(s => s.parentSessionId === input.parentSessionId);
             const enriched = await Promise.all(directChildren.map(async (child) => {
-                const info = await sdkClient._getSessionInfo(child.sessionId);
+                const info = await sdkClient._getSessionInfo(child.sessionId, includeResultSource ? { includeResultSource: true } : undefined);
                 const outcome = catalog ? await catalog.getChildOutcome(child.sessionId).catch(() => null) : null;
                 const outcomeResult = normalizeJsonObject(outcome?.resultJson?.current);
                 const contractCurrent = normalizeJsonObject(outcome?.contractJson?.current);
@@ -4821,6 +4836,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
+                    ...(includeResultSource ? {
+                        resultSource: outcome?.summary != null || typeof outcomeResult?.summary === "string"
+                            ? "child_outcome" : info.resultSource,
+                    } : {}),
                     contract: contractCurrent ?? undefined,
                     contractStatus: outcome?.contractJson ? "contracted" : undefined,
                     verdict: outcome?.verdict ?? undefined,
@@ -4832,7 +4851,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         } finally {
             await sdkClient.stop();
         }
-    });
+    };
+    registerHandoffActivity(runtime, "listChildSessions", listChildSessions,
+        (ctx: any, input: { parentSessionId: string }) => listChildSessions(ctx, input, true));
 
     // ── notifyParent ────────────────────────────────────────
     // Sends a child_updates event to the parent orchestration so it can

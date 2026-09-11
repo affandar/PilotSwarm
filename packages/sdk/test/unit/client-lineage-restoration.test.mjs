@@ -117,6 +117,48 @@ test("active sessions do not rewalk ancestry on every message", async () => {
     assert.deepEqual(h.reads, ["grandchild"]);
 });
 
+test("first start restores durable agent identity for named roots and children, with explicit local precedence", async () => {
+    for (const sessionId of ["root", "child"]) {
+        for (const localAgent of [undefined, "explicit-local"]) {
+            const h = fixture([{ ...ROOT, agentId: "durable-root" },
+                { ...CHILD, agentId: "durable-child", isSystem: true }]);
+            if (localAgent) h.client.sessionAgentIds.set(sessionId, localAgent);
+            await h.send(sessionId);
+            const input = h.starts[0].input;
+            assert.equal(input.agentId, localAgent ?? `durable-${sessionId}`);
+            assert.equal(input.isSystem, sessionId === "child" ? true : undefined);
+            assert.equal(input.parentSessionId, sessionId === "child" ? "root" : undefined);
+            h.rows.get(sessionId).agentId = "later-metadata";
+            await h.send(sessionId, "Continue");
+            assert.equal(h.starts.length, 1, "active orchestration identity remains unchanged");
+        }
+    }
+});
+
+test("a legacy generic row does not acquire named identity from its prompt binding", async () => {
+    const h = fixture([ROOT]);
+    await h.send("root");
+    assert.equal(Object.hasOwn(h.starts[0].input, "agentId"), false);
+    assert.equal(h.starts[0].input.config.boundAgentName, "analyst");
+});
+
+test("createSessionForAgent persists identity before metadata updates and another client can perform its first send", async () => {
+    const h = fixture([]);
+    h.client.config.allowedAgentNames = ["analyst"];
+    h.client._catalog.getSessionCreationConfig = async id => h.rows.get(id)?.creationConfig ?? null;
+    const created = await h.client.createSessionForAgent("analyst");
+    // The fixture records metadata updates separately: identity must already
+    // exist in the atomic create record, before the title/splash update.
+    assert.equal(h.rows.get(created.sessionId).agentId, "analyst");
+    const replica = new PilotSwarmClient({});
+    replica._catalog = h.client._catalog;
+    replica.duroxideClient = h.client.duroxideClient;
+    await (await replica.resumeSession(created.sessionId)).send("Begin", { bootstrap: true, requiredTool: "catalog" });
+    assert.equal(h.starts[0].input.agentId, "analyst");
+    assert.equal(h.starts[0].input.config.boundAgentName, "analyst");
+    assert.deepEqual(h.messages[0].message, { prompt: "Begin", bootstrap: true, requiredTool: "catalog" });
+});
+
 test("transient catalog failures do not cache partial lineage; a later send can reconstruct it", async () => {
     const h = fixture([ROOT, CHILD, GRANDCHILD]);
     const get = h.client._catalog.getSession;
@@ -130,4 +172,84 @@ test("transient catalog failures do not cache partial lineage; a later send can 
     h.client._catalog.getSession = get;
     await h.send("grandchild");
     assert.equal(h.starts[0].input.nestingLevel, 2);
+});
+
+test("partial pre-start resumes replace only explicit root tool additions", async () => {
+    for (const binding of [{ boundAgentName: "analyst" }, { agentId: "analyst" }]) {
+        for (const overrides of [{ toolNames: ["replacement"] }, { model: "provider:model" }]) {
+            const h = fixture([]);
+            h.client._catalog.getSessionCreationConfig = async id => h.rows.get(id)?.creationConfig ?? null;
+            await h.client.createSession({ sessionId: "root", ...binding, toolNames: ["original"] });
+            const replica = new PilotSwarmClient({});
+            replica._catalog = h.client._catalog;
+            replica.duroxideClient = h.client.duroxideClient;
+            await replica.resumeSession("root", overrides);
+            await replica._ensureOrchestrationAndSend("root", "Begin");
+            assert.deepEqual(h.starts[0].input.config.namedAgentToolAdditions,
+                overrides.toolNames ?? ["original"]);
+        }
+    }
+});
+
+test("definition-derived root tools and children do not become caller additions", async () => {
+    const h = fixture([ROOT]);
+    await h.client.createSession({ sessionId: "verification", boundAgentName: "analyst",
+        toolNames: ["catalog"], namedAgentToolAdditions: [] });
+    assert.deepEqual(h.rows.get("verification").creationConfig.namedAgentToolAdditions, []);
+    await h.client.createSession({ sessionId: "child", parentSessionId: "root", boundAgentName: "analyst",
+        toolNames: ["catalog"], namedAgentToolAdditions: ["parent_tool"] });
+    assert.equal(Object.hasOwn(h.rows.get("child").creationConfig, "namedAgentToolAdditions"), false);
+});
+
+for (const splitClient of [false, true]) {
+    for (const explicit of [0, 1, 4]) {
+        test(`${splitClient ? "split" : "same"}-client first send preserves explicit logical depth ${explicit} independently of physical ancestry`, async () => {
+            const h = fixture([ROOT, { ...CHILD, isSystem: true }]);
+            h.client._catalog.getSessionCreationConfig = async id => h.rows.get(id)?.creationConfig ?? null;
+            await h.client.createSession({ sessionId: "grandchild", parentSessionId: "child", nestingLevel: explicit });
+            assert.equal(h.rows.get("grandchild").creationConfig.bootstrapNestingLevel, explicit);
+            const sender = splitClient ? new PilotSwarmClient({}) : h.client;
+            sender._catalog = h.client._catalog;
+            sender.duroxideClient = h.client.duroxideClient;
+            await sender._ensureOrchestrationAndSend("grandchild", "Begin");
+            assert.equal(h.starts[0].input.nestingLevel, explicit);
+            assert.equal(h.starts[0].input.parentSessionId, "child");
+            assert.equal(Object.hasOwn(h.starts[0].input.config, "bootstrapNestingLevel"), false,
+                "creation metadata must not leak into the runtime configuration");
+            assert.deepEqual(h.reads, ["grandchild", "child", "root"], "stored depth cannot skip ancestry validation");
+        });
+    }
+}
+
+for (const malformed of [null, "1", true, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    test(`malformed stored bootstrap depth ${JSON.stringify(malformed)} fails before startup`, async () => {
+        const h = fixture([ROOT, CHILD]);
+        h.client._catalog.getSessionCreationConfig = async () => ({ bootstrapNestingLevel: malformed });
+        await assert.rejects(h.send("child"), error => error.code === "SESSION_LINEAGE_INVALID"
+            && /stored bootstrap nesting level/.test(error.message));
+        assert.equal(h.starts.length, 0);
+        assert.equal(h.messages.length, 0);
+        assert.equal(h.updates.length, 0);
+        assert.equal(h.client.nestingLevels.has("child"), false);
+    });
+}
+
+test("a persisted logical depth cannot bypass a missing ancestor or cycle", async () => {
+    for (const records of [[CHILD], [{ ...CHILD, parentSessionId: "child" }]]) {
+        const h = fixture(records);
+        h.client._catalog.getSessionCreationConfig = async () => ({ bootstrapNestingLevel: 0 });
+        await assert.rejects(h.send("child"), { code: "SESSION_LINEAGE_INVALID" });
+        assert.equal(h.starts.length, 0);
+    }
+});
+
+test("an unreadable creation record cannot silently substitute structural depth", async () => {
+    const h = fixture([ROOT, CHILD]);
+    h.client._catalog.getSessionCreationConfig = async () => { throw new Error("creation record unavailable"); };
+    await assert.rejects(h.send("child"), /creation record unavailable/);
+    assert.equal(h.starts.length, 0);
+    assert.equal(h.client.nestingLevels.has("child"), false);
+    h.client._catalog.getSessionCreationConfig = async () => ({ bootstrapNestingLevel: 4 });
+    await h.send("child");
+    assert.equal(h.starts[0].input.nestingLevel, 4);
 });

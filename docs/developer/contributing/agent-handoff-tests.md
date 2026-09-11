@@ -57,25 +57,25 @@ omitted, null or empty `tools` add no specialist tools. Explicit `tool_names` or
   override rejection, defaults, model propagation, mobile metadata and parent
   persona isolation, and explicit/omitted child contracts. No language-model
   judgment is needed to select a case.
-- **`session-agent-binding-lifecycle.test.mjs`: 32 scenarios.** Exercises warm
+- **`session-agent-binding-lifecycle.test.mjs`.** Exercises warm
   reuse, hydration, copy pins, deletion/re-enable, role visibility, handler
   refresh, declarations and permission/schema changes, MCP replacement and
   cleanup. Tests use SDK handle doubles to observe lifecycle transitions.
-- **`agent-binding-refresh-runtime.test.js`: 3 scenarios.** Real SDK/CLI requests
+- **`agent-binding-refresh-runtime.test.js`.** Real SDK/CLI requests
   and handler execution across republish, handle reuse/resume, removal and
   re-enable. A queued startup requirement remains the original contract. If
   its tool disappears, the child fails before inference; if retained, the child
   invokes it even when the new definition names another startup tool.
-- **`agent-handoff-routing.test.js`: 4 scenarios.** Actual Duroxide/PostgreSQL
+- **`agent-handoff-routing.test.js`.** Actual Duroxide/PostgreSQL
   queues verify capability routing under competing old workers, pending work
   when no capable worker exists, session-affinity takeover after lease expiry,
   and frozen replay without duplicate spawning. No model calls.
-- **`bound-agent-backfill.test.js`: 5 scenarios.** Two independent clients share
+- **`bound-agent-backfill.test.js`.** Two independent clients share
   real PostgreSQL. Creation on A and first message on B must preserve named
   bindings, custom instructions and tool settings. The child case reads the
   durable first-turn history to verify the deployment pin, child contract,
   parent and nesting depth survived transport. Uses the live GitHub provider.
-- **`client-lineage-restoration.test.mjs`: 15 scenarios.** First-start transport
+- **`client-lineage-restoration.test.mjs`.** First-start transport
   checks cover children, grandchildren, roots, explicit depth, missing ancestors,
   cycles and bounded traversal. Invalid lineage must fail before enqueue;
   already-active sessions do not repeat the traversal on each message.
@@ -88,13 +88,18 @@ omitted, null or empty `tools` add no specialist tools. Explicit `tool_names` or
   duplicate named spawns, parent/child messaging, keep-alive, model inheritance,
   and session metadata. Live sub-agent tests also exercise model-selected
   delegation and the complete durable worker path.
+- **`child-cleanup.test.js` and `child-update-batching.test.js`.** Parent-requested
+  completion, cancellation and deletion do not wake the parent with its own
+  acknowledgement. Cover explicit waits, shutdown, external termination, mixed
+  genuine updates and cleanup, result provenance, and the complete parent/child
+  generator round trip. The focused handoff command includes both suites.
 - **`copilot-provider-compatibility.test.js`.** Actual SDK/CLI with synthetic
   OpenAI, Azure, OpenAI proxy, Anthropic and Anthropic WIF endpoints, including
   streaming, tools and resume. This validates protocol handling, not current
   availability or credentials of those external providers.
 
 The frozen-source and serialized-descriptor unit checks separately ensure that
-the new 1.0.76 behavior does not rewrite older orchestration histories.
+the active handoff behavior does not rewrite older orchestration histories.
 
 ## Deployment boundary
 

@@ -11,6 +11,8 @@ export const HANDOFF_ACTIVITY_NAMES = {
     resolveAgentConfig: "resolveAgentConfigV2",
     resolveAgentForRequiredTool: "resolveAgentForRequiredToolV2",
     spawnChildSession: "spawnChildSessionV2",
+    getSessionStatus: "getSessionStatusV2",
+    listChildSessions: "listChildSessionsV2",
 } as const;
 
 export function routedActivityName(name: keyof typeof HANDOFF_ACTIVITY_NAMES, contract?: ActivityRoutingContract): string {
@@ -26,7 +28,7 @@ export function routeHandoffActivity(task: any, contract?: ActivityRoutingContra
 }
 
 /** Retain legacy handlers for already-scheduled work while registering the new contract. */
-export function registerHandoffActivity(runtime: any, name: keyof typeof HANDOFF_ACTIVITY_NAMES, handler: any): void {
+export function registerHandoffActivity(runtime: any, name: keyof typeof HANDOFF_ACTIVITY_NAMES, handler: any, versionedHandler = handler): void {
     runtime.registerActivity(name, handler);
-    runtime.registerActivity(HANDOFF_ACTIVITY_NAMES[name], handler);
+    runtime.registerActivity(HANDOFF_ACTIVITY_NAMES[name], versionedHandler);
 }

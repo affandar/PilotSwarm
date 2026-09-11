@@ -48,8 +48,9 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74, 1.0.75 and 1.0.76 separately and activates 1.0.77", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.77");
+test("registry retains 1.0.74 through 1.0.77 separately and activates 1.0.78", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.78");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.77").handler.name, "durableSessionOrchestration_1_0_77");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.76").handler.name, "durableSessionOrchestration_1_0_76");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.74").handler.name, "durableSessionOrchestration_1_0_74");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.75").handler.name, "durableSessionOrchestration_1_0_75");
@@ -68,11 +69,29 @@ test("legacy proxy descriptors retain their serialized names, inputs and affinit
     assert.deepEqual(wire(manager.spawnChildSession("parent", {}, "work", 1, false)), {
         type: "activity", name: "spawnChildSession", input: '{"parentSessionId":"parent","config":{},"task":"work","nestingLevel":1,"isSystem":false}',
     });
+    for (const historical of [manager, createSessionManagerProxy(ctx, "agent-handoff-v2")]) {
+        assert.deepEqual(wire(historical.getSessionStatus("child")), {
+            type: "activity", name: "getSessionStatus", input: '{"sessionId":"child"}',
+        });
+        assert.deepEqual(wire(historical.listChildSessions("parent")), {
+            type: "activity", name: "listChildSessions", input: '{"parentSessionId":"parent"}',
+        });
+    }
     assert.deepEqual(wire(proxy.runTurn("work", false, 2)), {
         type: "activity", name: "runTurn", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"turnIndex":2}', sessionId: "affinity",
     });
     assert.deepEqual(wire(proxy.runTurn("work", true, 0, { epochStart: true, requiredTool: "initialize" })), {
         type: "activity", name: "runTurn2", input: '{"sessionId":"child","prompt":"work","config":{"model":"test"},"bootstrap":true,"turnIndex":0,"requiredTool":"initialize","epochStart":true}', sessionId: "affinity",
+    });
+});
+
+test("1.0.78 status activities opt into result provenance and capability routing", () => {
+    const manager = createSessionManagerProxy(context(), "agent-handoff-v2", { childResultProvenance: true });
+    assert.deepEqual(wire(manager.getSessionStatus("child")), {
+        type: "activity", name: "getSessionStatusV2", input: '{"sessionId":"child"}', tag: AGENT_HANDOFF_CAPABILITY,
+    });
+    assert.deepEqual(wire(manager.listChildSessions("parent")), {
+        type: "activity", name: "listChildSessionsV2", input: '{"parentSessionId":"parent"}', tag: AGENT_HANDOFF_CAPABILITY,
     });
 });
 
@@ -108,6 +127,24 @@ const cleanupFreezeHashes = {
 for (const [name, hash] of Object.entries(cleanupFreezeHashes)) {
     test(`frozen 1.0.76 ${name} remains unchanged`, () => {
         const bytes = readFileSync(new URL(`../../src/orchestration_1_0_76/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
+// Frozen from checkpoint bf46d953 before adding explicit result provenance.
+const provenanceFreezeHashes = {
+    "state.ts": "6f696822458e8ae1aa9fdf5a6850c911ed9eb1875f252876c9f5f1e0987afdc7",
+    "lifecycle.ts": "498dfe9c73253058929cfdd5d14185ca16347920ddba42c26c16dd9548a12d42",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+    "agents.ts": "46eaca87704dbf87e4f90c32c22be2cae1770311821ca83a8b9b4d323c598c4d",
+    "runtime.ts": "a7fdab4a3c6d7bef1c5ba986aae528505d0215b8071551f01708899a38805bce",
+    "index.ts": "10e9141124dbf14858f2aca9f395a9e7a80c006250fd604fcfeea4d7088f460a",
+    "turn.ts": "ff1aea267ac079d9734876572a0ee8cd25999321d545574e8007038262dfe3a8",
+    "queue.ts": "529218aed1877208a144e5cad6acece5b3c4711af5dcc72065231698649c4c3b"
+};
+for (const [name, hash] of Object.entries(provenanceFreezeHashes)) {
+    test(`frozen 1.0.77 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_77/${name}`, import.meta.url));
         assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
     });
 }

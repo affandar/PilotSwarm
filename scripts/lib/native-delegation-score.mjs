@@ -1,5 +1,12 @@
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const nonempty = value => typeof value === "string" && value.trim().length > 0;
+export const DELEGATION_SETUP_TOOLS = ["ps_list_agents", "list_agents", "list_available_models", "store_fact", "read_facts"];
+
+/** Catalog and fact preparation is not evidence of a delegation decision. */
+export function isDelegationDecision(calls, scenario) {
+    return calls.some(call => ["spawn_agent", "task", "ask_user"].includes(call.name))
+        || scenario.expected.includes("direct") && calls.some(call => !DELEGATION_SETUP_TOOLS.includes(call.name));
+}
 
 function withoutQuotedExamples(text) {
     return text
@@ -68,7 +75,8 @@ export function scoreDelegation(scenario, decision, { model, knownAgents, catalo
     const durable = calls.filter(c => c.name === "spawn_agent");
     const native = calls.filter(c => c.name === "task");
     const route = durable.length && native.length ? "mixed" : durable.length ? "durable" : native.length ? "native"
-        : calls.some(c => c.name === "ask_user") || !calls.length ? "clarify" : "direct";
+        : calls.some(c => c.name === "ask_user") || !calls.length ? "clarify"
+        : calls.every(c => DELEGATION_SETUP_TOOLS.includes(c.name)) ? "preparation" : "direct";
     if (!scenario.expected.includes(route)) failures.push(`Expected ${scenario.expected.join(" or ")}; saw ${route}`);
     if (nativeMode === "off" && native.length) failures.push("Native invocation is unavailable when native subagents are off");
     for (const call of native) {

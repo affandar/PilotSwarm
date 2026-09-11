@@ -18,7 +18,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.77";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -117,11 +117,6 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         return;
     }
     if (agentDef) {
-        // New clients distinguish caller additions from definition-derived tools.
-        // For older pending roots, preserve names outside the selected definition;
-        // SessionManager filters package-owned additions against the live registry.
-        state.config.namedAgentToolAdditions ??= (state.config.toolNames ?? [])
-            .filter(name => !(agentDef.tools ?? []).includes(name));
         state.config.boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
         state.config.boundAgentPackageId = agentDef.packageId;
         state.config.boundAgentSource = agentDef.packageId ? undefined : "deployment";
@@ -167,7 +162,7 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
+    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2");
     const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
