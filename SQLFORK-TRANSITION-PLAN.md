@@ -280,13 +280,18 @@ The audit found the following candidates, in recommended execution order:
    TypeScript structural compatibility, so this is not an immediate runtime blocker, but it is
    required to prevent silent ABI drift and complete the ownership seam.
 
-2. **Upstream the generic Python and .NET PilotSwarm clients (platform contribution).**
-   The clients under `Clients/sdk/python/sqlagent_orchestration/` and
-   `Clients/sdk/dotnet/` implement generally useful `/api/v1` operations such as session
-   creation, turns, polling, model listing, caller authentication, and error handling. Move
-   the generic clients and examples to PilotSwarm under neutral package names. Keep
-   SQL-specific repository-to-audience mappings, defaults, and compatibility wrappers in
-   `sqlmort`.
+2. **Upstream the generic TypeScript PilotSwarm compatibility layer and .NET client
+   (platform contribution).** SQLmort TypeScript callers now use the published
+   `pilotswarm-sdk` directly. Platform-neutral gaps are staged under
+   `Clients/sdk/typescript/src/upstream-candidates/`, including authentication bootstrap,
+   typed model responses, advanced session creation, delegated authentication, session-event
+   handling, and JobGenerator APIs. Move these capabilities upstream using the existing
+   PilotSwarm TypeScript SDK idioms, then remove the SQLmort compatibility implementations.
+
+   Keep SQL-specific repository-to-audience mappings, service audiences, token policy, and
+   other domain behavior under `Clients/sdk/typescript/src/sql-domain/`. Evaluate the existing
+   .NET client independently for generic upstream contributions. The former SQLmort Python SDK
+   has been removed and is no longer an upstream source.
 
 3. **Upstream the generic functional-test harness and neutral smoke clients (optional
    platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,
