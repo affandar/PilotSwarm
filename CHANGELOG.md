@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.65 — 2026-09-11
+
+Named agents retain their own instructions and tools across delegation and
+restart. Parent-requested child cleanup no longer triggers a redundant model turn.
 
 - Keep a delegated named agent's prompt, tool handlers, declarations, MCP grants,
   identity and mobile splash on its selected shared, private or deployment copy.
@@ -12,6 +15,9 @@
   Preserve the named definition's startup requirement and accept `task` as its assignment. Named
   children use their own extra tools and instructions plus platform defaults;
   reject caller tool/system overrides, including empty values.
+- Keep unnamed children from inheriting package identity, privileged roles or
+  package handlers. Drop inherited detached package tools and reject explicit
+  requests for them.
 - Admit `ps_list_agents` through the base tool defaults and list only selectable
   caller-visible definitions, with exact shared/namespace references and role
   metadata. Keep selected static namespaces bound through child startup and
@@ -30,31 +36,14 @@
   Track result provenance so literal answers such as `done` or `failed` are
   preserved while orchestration exit output cannot replace a child answer.
   Genuine child updates and externally requested termination still notify parents.
-- Freeze orchestrations 1.0.74 through 1.0.77; active 1.0.78 keeps capability-tagged
+- Freeze orchestrations 1.0.73 through 1.0.77; active 1.0.78 keeps capability-tagged
   handoffs and removes the spawn capability selector. Legacy activity handlers
   remain for frozen histories.
   Upgrade with a drain-first replacement of incompatible workers; see the
   [upgrade guide](docs/developer/building/agent-handoff-upgrade.md).
 
-## 0.5.65 — 2026-09-10
-
-Deterministic capability routing for delegated agents and fail-closed package
-tool ownership.
-
-- Add `required_tool` to `spawn_agent`. PilotSwarm resolves the unique
-  caller-visible creatable agent that declares the tool, binds its complete
-  definition, and treats `agent_name` plus `required_tool` as an ownership
-  assertion rather than detached tool selection.
-- Pin the exact shared or private package copy through child creation and
-  worker rehydration. Ad-hoc children no longer inherit package identity,
-  privileged roles, or package handlers; detached package tools are dropped
-  when inherited and rejected when explicitly requested.
-- Reject package tools that collide with Copilot-native, PilotSwarm control,
-  or deployment tool names. Report deterministic package-binding failures as
-  non-retryable turn errors.
-- Freeze orchestration 1.0.73 and introduce 1.0.74 for the new caller-aware
-  capability-resolution activity. Retry transient Windows directory rename
-  failures during snapshot hydration with a bounded backoff.
+- Retry transient Windows directory rename failures during snapshot hydration
+  with a bounded backoff.
 
 ## 0.5.64 — 2026-09-09
 

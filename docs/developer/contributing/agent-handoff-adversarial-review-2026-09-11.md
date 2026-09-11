@@ -50,4 +50,30 @@ and CLI 1.0.83. Runtime PostgreSQL is Docker localhost. HorizonDB uses unique
 test schemas; the global stale-schema sweep is disabled and individual test
 cleanup remains enabled. No deployment is part of this review.
 
-Full provider gate: pending.
+The first full provider pass at `963312a9` completed with these SDK results:
+
+| Provider | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| PostgreSQL | 1,958 | 1 | 17 |
+| HorizonDB | 1,971 | 1 | 4 |
+
+The same assertion failed in both passes: an unstarted legacy row expected one
+worker-backfill event. Startup now restores its saved agent identity before the
+worker runs, so zero events is correct. Both named-agent replies passed. The
+test now distinguishes this normal startup from an already-started historical
+input that still needs worker backfill. It verifies actual durable activity
+inputs, two replies, and exactly one backfill announcement for that latter case.
+
+All 149 live HorizonDB store tests passed. Both providers also passed the
+concurrent missing-state recovery test, all 118 parent-child handoff cases and
+the 15 native-task runtime cases. The standard skips include the opt-in live
+Terra filesystem-choice probes and unavailable Blob fixtures; the PostgreSQL
+pass additionally skips HorizonDB-only cases.
+
+The corrected six-case legacy fixture passes on both PostgreSQL and HorizonDB
+(six passed, zero failed or skipped per provider). The new history assertions
+select the exact activity name before decoding Duroxide's diagnostic input and
+verify the namespace-qualified deployment binding. They preserve the two-turn,
+exactly-one-announcement assertion for already-started legacy input.
+
+Clean full release gate: pending.

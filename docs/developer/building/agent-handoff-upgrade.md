@@ -7,7 +7,8 @@ required. Existing sessions and their data remain intact.
 
 ## Why worker order matters
 
-The 1.0.74 orchestration and all its generator helpers are frozen. Its existing
+The 1.0.73 orchestration shipped in v0.5.64 remains registered as frozen history.
+The 1.0.74 orchestration and all its generator helpers are frozen too. Its existing
 activity descriptors remain unchanged, including untagged activities already in
 the queue. Repaired workers keep the legacy activity registrations so they can
 finish these histories using corrected runtime handlers. The locally checkpointed
