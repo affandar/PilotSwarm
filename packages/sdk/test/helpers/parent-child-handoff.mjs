@@ -100,7 +100,9 @@ export async function handoffHarness(transport, options, run) {
     const proxyManager = new Proxy(manager, { get(target, key) {
         if (key === 'getOrCreate') return async (id, ...args) => {
             if (id === parentId) return { abort() {}, runTurn: async (_prompt, turn) => ({ type: 'completed',
-                content: await turn.controlToolBridge.spawnAgent(inlineArgs), events: [] }) };
+                content: options.parentControl
+                    ? await options.parentControl(turn.controlToolBridge, inlineArgs)
+                    : await turn.controlToolBridge.spawnAgent(inlineArgs), events: [] }) };
             const managed = await target.getOrCreate(id, ...args);
             const copilot = managed.getCopilotSession();
             const register = copilot.registerTools.bind(copilot);

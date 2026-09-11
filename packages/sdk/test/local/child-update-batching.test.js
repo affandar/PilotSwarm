@@ -1144,6 +1144,37 @@ describe("wait_for_agents resolution on child completion", () => {
         vi.resetModules();
     });
 
+    it("resolves an explicit barrier by polling after cleanup sends no child work prompt", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                cronSchedule: undefined,
+                waitingForAgentIds: ["agent-1"],
+                activeTimerState: { remainingMs: 0, originalDurationMs: 30_000, reason: "waiting for cleanup", type: "agent-poll", agentIds: ["agent-1"] },
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "running", result: "AUDIT RESULT" }],
+                sessionStatuses: { "child-session-1": { status: "completed", result: "done" } },
+            },
+        });
+        const result = await harness.runUntilRunTurn();
+        expect(result.runTurnCall.prompt).toContain("Sub-agent completed");
+        expect(result.runTurnCall.prompt).toContain("AUDIT RESULT");
+        expect(result.runTurnCall.prompt).not.toContain("Result: done");
+    });
+
+    it("finishes parent shutdown by polling when descendants send no cleanup prompt", async () => {
+        const harness = createHarness({
+            messages: [{ atMs: 0, payload: { type: "cmd", cmd: "done", id: "close-parent" } }],
+            inputOverrides: {
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle" }],
+                getSessionStatus: (_id, state) => ({ status: state.nowMs >= 5000 ? "completed" : "running" }),
+            },
+        });
+        const result = await harness.runUntilDone();
+        expect(result.value).toBe("done");
+        expect(mockSession.runTurn).not.toHaveBeenCalled();
+        expect(result.state.sentCommands[0].command).toMatchObject({ cmd: "done", requestedBy: "parent-session" });
+        expect(JSON.parse(result.values.get(commandResponseKey("close-parent"))).result.ok).toBe(true);
+    });
+
     it("resolves the wait when a completed child update races the child's auto-resumed wait timer", async () => {
         // Regression: the child answers (CHILD_UPDATE type=completed) and then
         // auto-resumes the remainder of the wait timer the parent's message

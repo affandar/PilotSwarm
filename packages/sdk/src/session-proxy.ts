@@ -2690,7 +2690,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
                         "messages",
-                        JSON.stringify({ type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } }),
+                        JSON.stringify({ type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: input.sessionId }),
                     );
                     return `[SYSTEM: Graceful completion requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final completion.]`;
@@ -2728,7 +2728,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
                         "messages",
-                        JSON.stringify({ type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" } }),
+                        JSON.stringify({ type: "cmd", cmd: "cancel", id: cmdId, args: { reason: args.reason ?? "Cancelled by parent" }, requestedBy: input.sessionId }),
                     );
                     return `[SYSTEM: Graceful cancellation requested for sub-agent ${child.orchId}. ` +
                         `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
@@ -2748,7 +2748,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     await sdkClient._getDuroxideClient().enqueueEvent(
                         child.orchId,
                         "messages",
-                        JSON.stringify({ type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" } }),
+                        JSON.stringify({ type: "cmd", cmd: "delete", id: cmdId, args: { reason: args.reason ?? "Deleted by parent" }, requestedBy: input.sessionId }),
                     );
                     return `[SYSTEM: Graceful deletion requested for sub-agent ${child.orchId}. ` +
                         `It will cancel its descendants first and then delete itself.${args.reason ? ` Reason: ${args.reason}` : ""}]`;

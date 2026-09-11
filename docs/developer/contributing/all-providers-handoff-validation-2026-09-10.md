@@ -9,8 +9,9 @@ two full runs used an unexpectedly linked Duroxide 0.1.27 installation and do
 ## Source and environment
 
 - Worktree: `pilotswarm.worktrees/agent-handoff-hardening`, branch
-  `codex/agent-handoff-hardening`, based on `37e9ec99`, with the uncommitted
-  named-agent discovery/selection and parent/child handoff changes.
+  `codex/agent-handoff-hardening`, based on `37e9ec99`, with the named-agent
+  discovery/selection and parent/child handoff changes later checkpointed as
+  `4c2ce252` before the cleanup fix.
 - Node 24.20.0; Copilot SDK 1.0.13; Copilot CLI 1.0.83.
 - `packages/sdk/package.json` and the lockfile require Duroxide 0.1.29. Runtime
   resolution from the SDK instead reached the other checkout's 0.1.27 package
@@ -173,5 +174,6 @@ Local evidence is in `/tmp/pilotswarm-all-providers-handoff-1446e372/`:
   `owned-cleanup-after-second.log`, `owned-cleanup-after-runtime029.log`:
   exact-namespace cleanup verification.
 
-The temporary provider overlay contains credentials and must not be committed
-or reproduced in this report. Remove it after the final run and owned cleanup.
+Both temporary provider overlays were removed after the interrupted run and
+owned cleanup. A subsequent provider gate needs a fresh private overlay; its
+credentials must not be committed or reproduced in this report.

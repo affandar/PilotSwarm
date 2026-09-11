@@ -653,6 +653,8 @@ export interface OrchestrationInput {
         deadlineAtMs: number;
         targetAgentIds: string[];
         commandId?: string;
+        /** Runtime-stamped parent that requested cleanup; never inferred from the reason. */
+        requestedBy?: string;
     };
 
     // ─── Sub-agent state ─────────────────────────────────────

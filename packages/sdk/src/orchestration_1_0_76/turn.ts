@@ -9,7 +9,6 @@ import { planHoldRelease } from "../wait-affinity.js";
 import {
     buildShutdownWaitReason,
     failPendingShutdown,
-    getChildResultFromStatus,
     getStillRunningAgentIds,
     handleSubAgentAction,
     isSubAgentTerminalStatus,
@@ -1579,7 +1578,9 @@ export function* processTimer(
                         } else if (parsed.status === "input_required") {
                             agent.status = "input_required";
                         }
-                        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 2000);
+                        if (parsed.result) {
+                            agent.result = parsed.result.slice(0, 2000);
+                        }
                     } catch {}
                 }
 

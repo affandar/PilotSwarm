@@ -821,6 +821,23 @@ describe("inline control tool execution", () => {
         expect(onEvent.mock.calls.some(([event]) => event?.eventType === "session.error")).toBe(true);
     });
 
+    it.each([
+        "Please produce the requested report.",
+        "Internal orchestration wake-up. A child has a new result requiring action.",
+    ])("still reports a real empty-response query error: %s", async prompt => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.assistantContent = null;
+        fakeSession.scriptedEvents = [{
+            type: "session.error",
+            data: { message: "No response was returned. Send your message again to retry.", errorType: "query" },
+        }];
+        const managed = new ManagedSession("empty-query-error", fakeSession, {});
+        const result = await managed.runTurn(prompt);
+        expect(result.type).toBe("error");
+        expect(result.message).toContain("No response was returned");
+        expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
+    });
+
     it("does not capture empty assistant messages at wait_for_agents boundaries", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [

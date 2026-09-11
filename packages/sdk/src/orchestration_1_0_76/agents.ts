@@ -29,17 +29,6 @@ export function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-/** Status probes can fall back to an orchestration exit marker, not a child answer. */
-export function getChildResultFromStatus(
-    child: { status?: string; result?: unknown },
-    previous?: string,
-): string | undefined {
-    if (typeof child.result !== "string" || !child.result) return previous;
-    if (isSubAgentTerminalStatus(child.status)
-        && ["done", "cancelled", "deleted", "failed"].includes(child.result)) return previous;
-    return child.result;
-}
-
 /**
  * A status that satisfies a parent's wait: the child either finished
  * (terminal) or will never speak again on its own — idle after answering, or
@@ -272,7 +261,9 @@ export function* applyChildUpdate(
             // parent must be told so it can answer or re-task.
             agent.status = "input_required";
         }
-        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 2000);
+        if (parsed.result && parsed.result !== "done") {
+            agent.result = parsed.result.slice(0, 2000);
+        }
     } catch {}
 
     return true;
@@ -310,7 +301,7 @@ export function* refreshTrackedSubAgents(
                         sessionId: child.sessionId,
                         task: existing?.task ?? child.title ?? "(spawned sub-agent)",
                         status: localStatus,
-                        result: getChildResultFromStatus(child, existing?.result),
+                        result: child.result ?? existing?.result,
                         agentId: child.agentId ?? existing?.agentId,
                         contract,
                     } satisfies SubAgentEntry;
@@ -327,7 +318,7 @@ export function* refreshTrackedSubAgents(
                     sessionId: child.sessionId,
                     task: existing?.task ?? child.title ?? "(spawned sub-agent)",
                     status: normalizedStatus,
-                    result: getChildResultFromStatus(child, existing?.result),
+                    result: child.result ?? existing?.result,
                     agentId: child.agentId ?? existing?.agentId,
                     contract,
                 } satisfies SubAgentEntry;
@@ -343,35 +334,14 @@ export function* notifyParentOfTerminalState(
     runtime: DurableSessionRuntime,
     updateType: "completed" | "cancelled",
     reason: string,
-    commandId?: string,
-    requestedBy?: string,
 ): Generator<any, void, any> {
     if (!runtime.options.parentSessionId) return;
     try {
-        // Acknowledge the parent's own cleanup without delivering another
-        // CHILD_UPDATE prompt. That prompt replaced real child results in a
-        // digest and woke an already-finished parent for no new work. Keep the
-        // lifecycle in CMS and an audit event; check_agents/wait_for_agents and
-        // graceful-shutdown polling still observe the actual terminal state.
-        // Only runtime-stamped provenance matching the direct parent qualifies.
-        // A user-supplied reason such as "Completed by parent" is not evidence.
-        if (commandId && requestedBy === runtime.options.parentSessionId) {
-            yield runtime.manager.recordSessionEvent(runtime.options.parentSessionId, [{
-                eventType: "session.child_cleanup_completed",
-                data: {
-                    childSessionId: runtime.input.sessionId,
-                    commandId,
-                    requestedBy,
-                    status: updateType,
-                },
-            }]);
-            return;
-        }
         const verdict = updateType === "completed" ? "success" : "cancelled";
         yield runtime.manager.sendToSession(runtime.options.parentSessionId,
             `[CHILD_UPDATE from=${runtime.input.sessionId} type=${updateType} iter=${runtime.state.iteration} verdict=${verdict}]\n${reason}`);
     } catch (err: any) {
-        runtime.ctx.traceInfo(`[orch] parent notification on ${updateType} failed: ${err.message} (non-fatal)`);
+        runtime.ctx.traceInfo(`[orch] sendToSession(parent) on ${updateType} failed: ${err.message} (non-fatal)`);
     }
 }
 
@@ -379,7 +349,6 @@ export function* completeSession(
     runtime: DurableSessionRuntime,
     reason: string,
     commandId?: string,
-    requestedBy?: string,
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
@@ -388,7 +357,7 @@ export function* completeSession(
 
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "completed", null, null);
     publishStatus(runtime, "completed");
-    yield* notifyParentOfTerminalState(runtime, "completed", reason, commandId, requestedBy);
+    yield* notifyParentOfTerminalState(runtime, "completed", reason);
 
     try {
         yield runtime.session.destroy();
@@ -411,7 +380,6 @@ export function* cancelSession(
     reason: string,
     commandId?: string,
     deleteAfterCancel = false,
-    requestedBy?: string,
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
@@ -424,7 +392,7 @@ export function* cancelSession(
         publishStatus(runtime, "cancelled");
     }
 
-    yield* notifyParentOfTerminalState(runtime, "cancelled", reason, commandId, requestedBy);
+    yield* notifyParentOfTerminalState(runtime, "cancelled", reason);
 
     try {
         yield runtime.session.destroy();
@@ -519,10 +487,10 @@ export function* finalizePendingShutdown(runtime: DurableSessionRuntime): Genera
     yield* cancelInFlightDistiller(runtime);
     const shutdown = runtime.state.pendingShutdown;
     if (shutdown.mode === "done") {
-        yield* completeSession(runtime, shutdown.reason, shutdown.commandId, shutdown.requestedBy);
+        yield* completeSession(runtime, shutdown.reason, shutdown.commandId);
         return;
     }
-    yield* cancelSession(runtime, shutdown.reason, shutdown.commandId, shutdown.mode === "delete", shutdown.requestedBy);
+    yield* cancelSession(runtime, shutdown.reason, shutdown.commandId, shutdown.mode === "delete");
 }
 
 export function* maybeResolveAgentWaitCompletion(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
@@ -579,18 +547,14 @@ export function* beginGracefulShutdown(
     yield* refreshTrackedSubAgents(runtime, { preserveTerminalTaskStatus: false });
 
     const shutdownReason = String(cmdMsg.args?.reason || defaultShutdownReason(mode));
-    const requestedBy = typeof cmdMsg.requestedBy === "string"
-        && cmdMsg.requestedBy === runtime.options.parentSessionId
-        && typeof cmdMsg.id === "string" && cmdMsg.id.trim()
-        ? cmdMsg.requestedBy : undefined;
     const targetAgents = state.subAgents.filter((agent) => !isSubAgentTerminalStatus(agent.status));
 
     if (targetAgents.length === 0) {
         if (mode === "done") {
-            yield* completeSession(runtime, shutdownReason, cmdMsg.id, requestedBy);
+            yield* completeSession(runtime, shutdownReason, cmdMsg.id);
             return;
         }
-        yield* cancelSession(runtime, shutdownReason, cmdMsg.id, mode === "delete", requestedBy);
+        yield* cancelSession(runtime, shutdownReason, cmdMsg.id, mode === "delete");
         return;
     }
 
@@ -604,7 +568,7 @@ export function* beginGracefulShutdown(
         try {
             const childCmdId = `${cmdMsg.cmd}-cascade-${state.iteration}-${child.sessionId.slice(0, 8)}`;
             yield runtime.manager.sendCommandToSession(child.sessionId,
-                { type: "cmd", cmd: childCmd, id: childCmdId, args: { reason: childReason }, requestedBy: runtime.input.sessionId });
+                { type: "cmd", cmd: childCmd, id: childCmdId, args: { reason: childReason } });
         } catch (err: any) {
             runtime.ctx.traceInfo(`[orch] ${cmdMsg.cmd}: failed to signal child ${child.sessionId}: ${err.message} (non-fatal)`);
         }
@@ -618,7 +582,6 @@ export function* beginGracefulShutdown(
         deadlineAtMs: startedAtMs + SHUTDOWN_TIMEOUT_MS,
         targetAgentIds: targetAgents.map((agent) => agent.orchId),
         commandId: cmdMsg.id,
-        ...(requestedBy ? { requestedBy } : {}),
     };
     state.waitingForAgentIds = [...state.pendingShutdown.targetAgentIds];
     clearPendingChildDigest(runtime);
@@ -905,14 +868,14 @@ export function* handleSubAgentAction(
                     const parsed = JSON.parse(rawStatus);
                     if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
                         agent.status = parsed.status === "failed" ? "failed" : "completed";
-                        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 1000);
+                        if (parsed.result) agent.result = parsed.result.slice(0, 1000);
                     }
                     statusLines.push(
                         `  - Agent ${agent.orchId}\n` +
                         `    Task: "${agent.task.slice(0, 120)}"\n` +
                         `    Status: ${parsed.status}\n` +
                         `    Iterations: ${parsed.iterations ?? 0}\n` +
-                        `    Output: ${getChildResultFromStatus(parsed, agent.result) ?? "(no output yet)"}`
+                        `    Output: ${parsed.result ?? "(no output yet)"}`
                     );
                 } catch (err: any) {
                     statusLines.push(
@@ -1022,7 +985,7 @@ export function* handleSubAgentAction(
             try {
                 const cmdId = `done-${state.iteration}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: runtime.input.sessionId });
+                    { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: complete_agent failed: ${err.message}]`);
@@ -1054,7 +1017,7 @@ export function* handleSubAgentAction(
             try {
                 const cmdId = `cancel-${state.iteration}-${agentEntry.sessionId.slice(0, 8)}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: cancelReason }, requestedBy: runtime.input.sessionId });
+                    { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: cancelReason } });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: cancel_agent failed: ${err.message}]`);
@@ -1093,7 +1056,7 @@ export function* handleSubAgentAction(
 
                 const cmdId = `delete-${state.iteration}-${agentEntry.sessionId.slice(0, 8)}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "delete", id: cmdId, args: { reason: deleteReason }, requestedBy: runtime.input.sessionId });
+                    { type: "cmd", cmd: "delete", id: cmdId, args: { reason: deleteReason } });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: delete_agent failed: ${err.message}]`);

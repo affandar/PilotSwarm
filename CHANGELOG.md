@@ -21,7 +21,11 @@
 - Preserve each child's explicit contract across SDK creation and restore its
   parent/depth from the catalog when another API client sends the first message.
   Grandchildren do not inherit their parent's own child contract.
-- Freeze orchestrations 1.0.74 and 1.0.75; active 1.0.76 keeps capability-tagged
+- Record parent-requested child completion, cancellation and deletion as cleanup
+  audit events instead of waking the parent model with its own acknowledgement.
+  Preserve child answers during status polling and keep explicit waits working.
+  Genuine child updates and externally requested termination still notify parents.
+- Freeze orchestrations 1.0.74 through 1.0.76; active 1.0.77 keeps capability-tagged
   handoffs and removes the spawn capability selector. Legacy activity handlers
   remain for frozen histories.
   Upgrade with a drain-first replacement of incompatible workers; see the
