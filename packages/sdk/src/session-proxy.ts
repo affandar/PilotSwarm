@@ -173,7 +173,8 @@ export async function resolveAgentDefinitionForCaller(opts: {
         owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
     const visibleToCaller = async (agent: any): Promise<boolean> => {
         const agentOwnerKey = ownerKeyOf(agent?.packageOwner);
-        if (agent?.packageScope !== "user" || !agentOwnerKey) return true;
+        if (agent?.packageScope !== "user") return true;
+        if (!agentOwnerKey) return false;
         const key = await callerOwnerKeyOnce();
         return key !== null && key === agentOwnerKey;
     };
@@ -237,7 +238,7 @@ export async function resolveAgentDefinitionForCaller(opts: {
     };
 }
 
-/** Resolve one caller-visible, user-creatable agent by a declared tool. */
+/** Legacy activity compatibility for frozen orchestrations. Not a spawn_agent selector. */
 export async function resolveAgentDefinitionForRequiredToolForCaller(opts: {
     requiredTool: string;
     userAgents?: any[];
@@ -1715,13 +1716,6 @@ export function registerActivities(
                 systemAgents,
                 getCallerOwnerKey: getCallerOwnerKeyInline,
             });
-        const resolveAgentForRequiredToolInline = (requiredTool: string) =>
-            resolveAgentDefinitionForRequiredToolForCaller({
-                requiredTool,
-                userAgents,
-                systemAgents,
-                getCallerOwnerKey: getCallerOwnerKeyInline,
-            });
 
         const loadDirectChildSessions = async () => {
             const sdkClient = await getInlineClient();
@@ -2051,7 +2045,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         nestingLevel: 0,
                         ...(normalizedModel ? { model: normalizedModel } : {}),
                         ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
-                        boundAgentName: agentDef.name,
+                        boundAgentName: !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name,
                         ...(agentDef.packageId ? { boundAgentPackageId: agentDef.packageId } : {}),
                         ...(!agentDef.packageId ? { boundAgentSource: "deployment" as const } : {}),
                         promptLayering: { kind: "app-agent" as const },
@@ -2109,7 +2103,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
 
             spawnAgent: async (args: {
                 agent_name?: string;
-                required_tool?: string;
                 task?: string;
                 model?: string;
                 reasoning_effort?: import("./model-providers.js").ReasoningEffort;
@@ -2120,11 +2113,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 contract?: Record<string, unknown>;
             }) => {
                 try {
-                    const requiredTool = typeof args.required_tool === "string"
-                        ? args.required_tool.trim()
-                        : "";
-                    if (args.required_tool !== undefined && (!requiredTool || requiredTool.length > 128)) {
-                        return `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`;
+                    if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
+                        return `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`;
                     }
                     const childNestingLevel = (input.nestingLevel ?? 0) + 1;
                     if (childNestingLevel > MAX_NESTING_LEVEL) {
@@ -2168,7 +2158,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         agentSplash = agentDef.splash;
                         agentSplashMobile = agentDef.splashMobile;
                         bootstrapRequiredTool = agentDef.initialRequiredTool;
-                        boundAgentName = agentDef.name;
+                        boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
                         boundAgentPackageId = agentDef.packageId;
                         promptLayeringKind = agentDef.promptLayerKind
                             ?? (agentDef.system
@@ -2184,32 +2174,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         if (!agentDef) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`;
                         }
-                    } else if (requiredTool) {
-                        const resolution = await resolveAgentForRequiredToolInline(requiredTool);
-                        if (resolution.status === "not_found") {
-                            return `[SYSTEM: spawn_agent failed — no caller-visible creatable agent declares required tool "${requiredTool}".]`;
-                        }
-                        if (resolution.status === "ambiguous") {
-                            return `[SYSTEM: spawn_agent failed — required tool "${requiredTool}" is declared by multiple visible agents: ${resolution.candidates.join(", ")}. Retry with agent_name to disambiguate.]`;
-                        }
-                        agentDef = resolution.agent;
-                        resolvedAgentName = agentDef.name;
                     }
                     if (agentDef) {
                         if (agentDef.system && agentDef.creatable === false) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" is a worker-managed system agent and cannot be spawned from a session. ` +
                                 `If it is missing, the workers likely need to be restarted.]`;
                         }
-                        if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
-                            return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`;
-                        }
                         if (args.tool_names !== undefined) {
-                            return `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`;
+                            return `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name, or remove tool_names.]`;
                         }
                         if (args.system_message !== undefined) {
                             return `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`;
                         }
-                        // Capability selection cannot replace package startup.
+                        // The named definition owns its startup requirement.
                         applyAgentDef(agentDef);
                     }
 

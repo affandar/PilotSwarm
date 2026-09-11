@@ -15,6 +15,7 @@
 
 import { describe, it } from "vitest";
 import { handleSubAgentAction } from "../../src/orchestration/agents.ts";
+import { handleSubAgentAction as handleFrozenSubAgentAction } from "../../src/orchestration_1_0_75/agents.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 // Pump the generator, answering each yielded manager-activity marker via
@@ -148,7 +149,7 @@ describe("sub-agent isSystem contract", () => {
         assertEqual(captured.requiredTool, "package_catalog");
     });
 
-    it("binds the complete owning agent definition when required_tool is supplied", () => {
+    it("binds a named agent's complete definition without inventing a startup requirement", () => {
         const { runtime, captured, responders } = makeRuntime({
             isSystem: false,
             agentDef: {
@@ -160,59 +161,50 @@ describe("sub-agent isSystem contract", () => {
                 packageScope: "shared",
             },
         });
-        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", requiredTool: "package_catalog" });
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", agentName: "catalog-analyst", task: "Inspect one shard." });
         pump(gen, responders, () => captured.isSystem !== undefined);
-        assertEqual(captured.requiredTool, undefined, "capability selection must not invent a startup requirement");
+        assertEqual(captured.requiredTool, undefined);
         assertEqual(captured.config.boundAgentName, "catalog-analyst");
         assertEqual(captured.config.toolNames.join(","), "package_catalog,package_history");
         assertEqual(captured.config.boundAgentPackageId, "pkg-catalog");
     });
 
-    it("agent_name plus required_tool asserts ownership instead of rerouting", () => {
+    it.each([
+        { requiredTool: "package_catalog" },
+        { requiredTool: "package_catalog", agentName: "catalog-analyst" },
+        { requiredTool: "package_catalog", task: "Inspect one shard" },
+        { requiredTool: null, task: "Inspect one shard" },
+        { requiredTool: "", task: "Inspect one shard" },
+        { requiredTool: undefined, task: "Inspect one shard" },
+        { required_tool: "package_catalog", task: "Inspect one shard" },
+    ])("rejects stale selector action %j without scheduling a resolver or child", (args) => {
+        const { runtime, captured, responders } = makeRuntime({ isSystem: false });
+        runtime.manager.resolveAgentConfig = () => { throw new Error("must reject before name resolution"); };
+        runtime.manager.resolveAgentForRequiredTool = () => { throw new Error("must not select by tool"); };
+        const gen = handleSubAgentAction(runtime, { type: "spawn_agent", ...args });
+        pump(gen, responders, () => Boolean(runtime.state.pendingPrompt));
+        assertEqual(captured.isSystem, undefined);
+        assertEqual(runtime.state.pendingPrompt.includes("required_tool is no longer supported by spawn_agent"), true);
+        assertEqual(runtime.state.pendingPrompt.includes("ps_list_agents"), true);
+        assertEqual(runtime.state.pendingPrompt.includes("agent_name"), true);
+    });
+
+    it("preserves capability resolution and package startup for frozen 1.0.75 history replay", () => {
         const { runtime, captured, responders } = makeRuntime({
             isSystem: false,
             agentDef: {
-                name: "plain-helper",
-                id: "plain-helper",
-                initialPrompt: "Help.",
-                tools: ["plain_tool"],
+                name: "catalog-analyst",
+                id: "catalog-analyst",
+                initialPrompt: "Inspect the catalog.",
+                tools: ["package_catalog", "package_init"],
+                initialRequiredTool: "package_init",
+                packageId: "pkg-catalog",
+                packageScope: "shared",
             },
         });
-        const gen = handleSubAgentAction(runtime, {
-            type: "spawn_agent",
-            agentName: "plain-helper",
-            requiredTool: "package_catalog",
-        });
+        const gen = handleFrozenSubAgentAction(runtime, { type: "spawn_agent", requiredTool: "package_catalog" });
         pump(gen, responders, () => captured.isSystem !== undefined);
-        assertEqual(captured.isSystem, undefined, "mismatched ownership must fail before child creation");
-        assertEqual(typeof runtime.state.pendingPrompt, "string");
-    });
-
-    it("fails closed when no visible agent owns required_tool", () => {
-        const { runtime, captured, responders } = makeRuntime({ isSystem: false });
-        const gen = handleSubAgentAction(runtime, {
-            type: "spawn_agent",
-            task: "Inspect one shard",
-            requiredTool: "missing_tool",
-        });
-        pump(gen, responders, () => Boolean(runtime.state.pendingPrompt));
-        assertEqual(captured.isSystem, undefined);
-        assertEqual(runtime.state.pendingPrompt.includes("no caller-visible creatable agent"), true);
-    });
-
-    it("fails closed when required_tool ownership is ambiguous", () => {
-        const { runtime, captured, responders } = makeRuntime({ isSystem: false });
-        responders.resolveAgentForRequiredTool = () => ({
-            status: "ambiguous",
-            candidates: ["alpha", "beta"],
-        });
-        const gen = handleSubAgentAction(runtime, {
-            type: "spawn_agent",
-            task: "Inspect one shard",
-            requiredTool: "shared_tool",
-        });
-        pump(gen, responders, () => Boolean(runtime.state.pendingPrompt));
-        assertEqual(captured.isSystem, undefined);
-        assertEqual(runtime.state.pendingPrompt.includes("alpha, beta"), true);
+        assertEqual(captured.config.boundAgentName, "catalog-analyst");
+        assertEqual(captured.requiredTool, "package_init");
     });
 });

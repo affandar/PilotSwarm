@@ -62,7 +62,9 @@ describe("system agent cron contracts", () => {
         assertIncludes(defaultAgent, "Every finite delegation", "default agent should require material-change wakes for finite work");
         assertIncludes(defaultAgent, "ordinary final reply leaves it alive and idle", "default agent should distinguish a task reply from terminal lifecycle completion");
         assertIncludes(defaultAgent, "Do not create a `wait` or `cron` schedule whose only purpose is calling `check_agents`", "default agent should forbid timer-only child polling");
-        assertIncludes(defaultAgent, "version: 1.21.1", "default agent should version capability selection and named-task guidance");
+        assertIncludes(defaultAgent, "call `ps_list_agents` before choosing a generic child or native task", "default agent should discover suitable named agents before fallback delegation");
+        assertIncludes(defaultAgent, "static deployment agents and enabled published agents available to this user", "named discovery should cover both caller-visible agent sources");
+        assertIncludes(defaultAgent, "spawn_agent(agent_name=<exact name from the catalog>, task=<assignment>)", "default agent should select a named child explicitly with its assignment");
         assert(!defaultAgent.includes("Continue your poll/summarize loop"), "default agent should not require a polling loop for child coordination");
         assert(!defaultAgent.includes("Preferred**: Poll with `wait` + `check_agents`"), "default agent should not prefer wait-based child polling");
 

@@ -20,8 +20,7 @@ production store.
 | Child request | Instructions and tools | First required call |
 | --- | --- | --- |
 | `agent_name` | Selected definition, framework/app defaults, assignment and child context; no inherited parent persona or specialist tools | Definition's `initialRequiredTool`, if any |
-| `required_tool` | Unique visible creatable owning agent's complete definition | Definition's startup requirement, which may differ from `required_tool` |
-| Both selectors | Named agent must declare the requested capability | Definition's startup requirement |
+| Obsolete `required_tool` (alone or with name/task) | Rejected with discovery guidance; no child spawned | None |
 | Unnamed `task` | Ordinary inherited/default tools; inherited package handlers dropped | No invented startup requirement |
 | Unnamed with `tool_names` | Requested ordinary tools plus defaults; explicitly detached package tools rejected | No invented startup requirement |
 
@@ -31,14 +30,30 @@ omitted, null or empty `tools` add no specialist tools. Explicit `tool_names` or
 
 ## Test layers
 
-- **`parent-child-handoff.test.js`: 86 scenarios.** Runs both production spawn
+- **`agent-discovery.test.mjs`.** Static and published role metadata, personal
+  shadows and explicit shared references, namespace collisions, private visibility,
+  missing/failed owner resolution, metadata redaction, one-snapshot refresh and
+  live tool invocation identity. Handoff integration also feeds actual discovery
+  results into both production spawn paths, including remove/re-enable refresh.
+- **`native-delegation-*.test.mjs` and the Terra choice evaluation.**
+  The setup checks require the real feature cache and verify native profiles
+  are present or absent as requested before inference. The scorer accepts named task assignments and rejects removed selectors and
+  prompt/tool overrides. The live evaluator uses the production discovery helper
+  over static/shared/personal fixtures, then asks the real model to choose.
+  It checks role fit with distractors, private scope, shared aliases, missing-role
+  fallback and explicit user intent with native tasks both on and off. These are
+  model choices, unlike the injected parent choices in the handoff matrix.
+  See [delegation testing](../../models/native-delegation-testing.md) for commands.
+
+- **`parent-child-handoff.test.js`.** Runs both production spawn
   paths: the live orchestration generator and the inline control bridge. Starts
   the resulting child through the actual SessionManager, ManagedSession and
   Copilot SDK/CLI against a scripted localhost inference endpoint. Checks the
   actual provider prompt, tool declarations, handler results and startup gate.
   Only parent action selection and durable client persistence/enqueue are
   injected. Includes shared/private/deployment copies, aliases without IDs,
-  ownerless and ancestor ownership, missing/ambiguous/forbidden agents, empty
+  ownerless and ancestor ownership, missing/forbidden agents, exact static
+  namespace bindings through child inference, empty
   override rejection, defaults, model propagation, mobile metadata and parent
   persona isolation, and explicit/omitted child contracts. No language-model
   judgment is needed to select a case.
@@ -79,7 +94,7 @@ omitted, null or empty `tools` add no specialist tools. Explicit `tool_names` or
   availability or credentials of those external providers.
 
 The frozen-source and serialized-descriptor unit checks separately ensure that
-the new 1.0.75 behavior does not rewrite older orchestration histories.
+the new 1.0.76 behavior does not rewrite older orchestration histories.
 
 ## Deployment boundary
 

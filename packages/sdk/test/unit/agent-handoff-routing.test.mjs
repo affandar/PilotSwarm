@@ -30,9 +30,28 @@ for (const [name, hash] of Object.entries(frozenHashes)) {
     });
 }
 
-test("registry retains 1.0.74 separately and activates 1.0.75", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.75");
+// The last selector-capable version must preserve its historical scheduling.
+const selectorFreezeHashes = {
+    "state.ts": "6f696822458e8ae1aa9fdf5a6850c911ed9eb1875f252876c9f5f1e0987afdc7",
+    "lifecycle.ts": "498dfe9c73253058929cfdd5d14185ca16347920ddba42c26c16dd9548a12d42",
+    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
+    "agents.ts": "e563f1a251f9fc487dc38446c7ebb857844f9eae72dfb08611a80e9a7434395c",
+    "runtime.ts": "140a23c4d8bd688afbe6a7da3238f83f5bed7b42c9a959aa5af07ffc08edf7a2",
+    "index.ts": "f8eb4413b1cbbee437bd8b867555e9ad7f1f60a02fadf4e17bf8143c1367e2eb",
+    "turn.ts": "17f997507c7b94c4e4524a12a63dfa60c573be21125b6ad9cb35b46fab749c01",
+    "queue.ts": "529218aed1877208a144e5cad6acece5b3c4711af5dcc72065231698649c4c3b"
+};
+for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
+    test(`frozen 1.0.75 ${name} remains unchanged`, () => {
+        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_75/${name}`, import.meta.url));
+        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
+    });
+}
+
+test("registry retains 1.0.74 and 1.0.75 separately and activates 1.0.76", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.76");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.74").handler.name, "durableSessionOrchestration_1_0_74");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.75").handler.name, "durableSessionOrchestration_1_0_75");
 });
 
 test("legacy proxy descriptors retain their serialized names, inputs and affinity, without tags", () => {

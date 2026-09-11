@@ -22,10 +22,12 @@ Why it matters:
 Contract:
 
 - if an agent is already known by name, spawn it with `spawn_agent(agent_name="...")`
-- if delegation requires a capability but should not hard-code an agent name, use `spawn_agent(required_tool="...")`; PilotSwarm binds the unique caller-visible creatable agent that declares it
-- combining `agent_name` and `required_tool` asserts that the named agent owns the tool; it does not attach the tool to a different agent
+- before generic or native delegation, inspect `ps_list_agents` when an adequate current catalog is not in context; it lists caller-visible static and enabled published agents
+- prefer the specialist whose description, declared tools, skills and source access fit the job; pass the returned `agent_name` unchanged, including an explicit shared reference when needed
+- `required_tool` is not a supported spawn argument; stale requests fail with discovery guidance rather than silently creating a generic child
 - `task=` supplies the assignment for either named or custom children; a named agent uses its `initialPrompt` when no task is supplied
-- `required_tool` selects or validates capability availability; it does not force a tool invocation or replace the selected agent's `initialRequiredTool`
+- the selected agent's own `initialRequiredTool` remains its startup requirement; the caller does not choose a startup tool
+- a selected static namespace is preserved in its binding across workers and refresh, so same-name definitions cannot exchange prompts, tools or MCP grants
 - named children always load their own declared tools (including an empty list) plus platform defaults; they do not inherit the parent's package tools or custom persona and cannot override the definition with `tool_names` or `system_message`
 - each child's explicit `contract` crosses SDK creation and durable startup; a grandchild does not inherit its parent's own child contract
 - parent links and nesting depth survive creation and first message on different API clients; invalid/cyclic ancestry fails before starting the child
@@ -35,7 +37,7 @@ Contract:
 Why it matters:
 
 - named agents carry canonical metadata
-- capability routing preserves shared/private package visibility and exact package-copy identity across workers
+- discovery and spawning use the same shared/private visibility and package-copy selection rules across workers
 - system-agent titles and IDs depend on that named-agent path
 - generic `task=` spawns can lose `agentId`, `title`, and expected behavior
 

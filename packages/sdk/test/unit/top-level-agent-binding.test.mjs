@@ -77,3 +77,16 @@ test("unbound top-level lookup retains ordinary private-shadow selection and leg
     assert.equal(selected.prompt, "PRIVATE");
     assert.equal(runtime.state.config.boundAgentPackageId, "pkg-alice");
 });
+
+
+test("top-level deployment binding retains a namespace-qualified static definition", async () => {
+    const operations = { ...deployment, namespace: "operations", prompt: "OPERATIONS", tools: ["ops_tool"], initialRequiredTool: "ops_tool" };
+    const security = { ...deployment, namespace: "security", prompt: "SECURITY", tools: ["security_tool"], initialRequiredTool: "security_tool" };
+    const { runtime, selected, scheduled } = await resolve({ boundAgentName: "security:analyst", boundAgentSource: "deployment" }, [operations, security]);
+    assert.equal(scheduled.agentName, "security:analyst");
+    assert.equal(selected.prompt, "SECURITY");
+    assert.equal(runtime.state.config.boundAgentName, "security:analyst");
+    assert.equal(runtime.state.config.boundAgentSource, "deployment");
+    assert.deepEqual(runtime.state.config.toolNames, ["security_tool"]);
+    assert.equal(runtime.state.pendingRequiredTool, "security_tool");
+});

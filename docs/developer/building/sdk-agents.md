@@ -228,12 +228,14 @@ The worker supplies the actual agent definitions and tool handlers. The client o
 
 For known named agents, use `spawn_agent(agent_name="...")`.
 
-When the caller needs a tool but should not hard-code an agent name, use
-`spawn_agent(required_tool="tool_name")`. PilotSwarm resolves the unique
-caller-visible creatable owner and binds its complete definition. Combining
-`agent_name` and `required_tool` verifies that the named agent declares the
-tool. This selects a capability; it does not require that tool to run at startup.
-The named agent's existing `initialRequiredTool` remains its startup requirement.
+When the right agent name is not already known, use `ps_list_agents` to inspect
+static deployment and enabled published definitions visible to this session.
+Match the job to a role's description, declared tools, skills and source access,
+then pass the exact returned `agent_name`. Prefer a suitable specialist over a
+generic child or native task; if none fits, choose the appropriate generic path.
+`required_tool` is no longer a supported argument to `spawn_agent`. A stale call
+returns an error with discovery guidance. The named agent's existing
+`initialRequiredTool` remains its startup requirement.
 Do not pass package-owned tools to ad hoc children with `tool_names`.
 
 Use `task=` to give either a named or custom child its assignment. Named children

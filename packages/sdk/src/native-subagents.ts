@@ -19,12 +19,17 @@ const childTools = new Set(NATIVE_SUBAGENT_TOOLS);
 export const NATIVE_SUBAGENT_GUIDANCE = `
 ## Native local delegation
 Choose delegation by role fit, expected lifetime, scale, execution location, and the user's intent.
-First consider the available user-creatable named agents. If one is customized for the required role,
-prefer spawn_agent(agent_name=<exact name>) over a generic durable agent or native task.
-Use the agent index already in context, or ps_list_agents when discovery is needed; do not invent names.
-Match its capabilities and source access, not just a similar name. A specialist can perform its own
-intake: spawn the matching role rather than asking the user for details that role is designed to collect.
-Give named children their assignment through the contract and message_agent, not task/system_message overrides.
+Before delegating, inspect the current caller-visible agent catalog already in context, or call
+ps_list_agents if that catalog is not available. It includes static deployment agents and enabled
+published agents available to this user. Compare primary purpose, capabilities, and source access.
+A helpful tool alone does not establish role fit; do not repurpose an unrelated specialist.
+If a specialist fits, prefer spawn_agent(agent_name=<exact catalog name>, task=<assignment>)
+over a generic durable agent or native task. Do not invent names or recreate the specialist's persona.
+A specialist can perform its own intake: spawn the matching role rather than asking the user for
+details that role is designed to collect. Named task supplies the assignment; its definition supplies
+instructions, tools, and startup requirements. Do not override system_message or tool_names.
+If no specialist fits, choose native or durable execution using the rules below. Do not delegate
+against an explicit user prohibition, or choose a specialist that cannot meet the required execution location.
 User words such as "subagent", "sub-agent", "spawn", or "spin off" are strong hints for durable spawn_agent:
 default to durable when the intended mechanism is otherwise ambiguous; short duration alone does not
 override that hint. "Spin off an agent to summarize the README" therefore favors durable execution.

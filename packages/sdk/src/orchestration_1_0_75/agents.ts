@@ -642,9 +642,12 @@ export function* handleSubAgentAction(
             let boundAgentPackageId: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
             let resolvedAgentName = result.agentName;
-            if (Object.hasOwn(result, "requiredTool") || Object.hasOwn(result, "required_tool")) {
+            const requiredTool = typeof result.requiredTool === "string"
+                ? result.requiredTool.trim()
+                : "";
+            if (result.requiredTool !== undefined && (!requiredTool || requiredTool.length > 128)) {
                 queueFollowup(runtime,
-                    `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`);
+                    `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`);
                 return true;
             }
             const applyAgentDef = (agentDef: any) => {
@@ -658,7 +661,7 @@ export function* handleSubAgentAction(
                 agentId = agentDef.id ?? agentDef.name;
                 agentSplash = agentDef.splash;
                 bootstrapRequiredTool = agentDef.initialRequiredTool;
-                boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
+                boundAgentName = agentDef.name;
                 boundAgentPackageId = agentDef.packageId;
                 promptLayeringKind = agentDef.promptLayerKind
                     ?? (agentDef.system
@@ -676,6 +679,21 @@ export function* handleSubAgentAction(
                     queueFollowup(runtime, `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`);
                     return true;
                 }
+            } else if (requiredTool) {
+                ctx.traceInfo(`[orch] resolving agent config for required tool: ${requiredTool}`);
+                const resolution = yield runtime.manager.resolveAgentForRequiredTool(requiredTool, runtime.input.sessionId);
+                if (!resolution || resolution.status === "not_found") {
+                    queueFollowup(runtime,
+                        `[SYSTEM: spawn_agent failed — no caller-visible creatable agent declares required tool "${requiredTool}".]`);
+                    return true;
+                }
+                if (resolution.status === "ambiguous") {
+                    queueFollowup(runtime,
+                        `[SYSTEM: spawn_agent failed — required tool "${requiredTool}" is declared by multiple visible agents: ${resolution.candidates.join(", ")}. Retry with agent_name to disambiguate.]`);
+                    return true;
+                }
+                agentDef = resolution.agent;
+                resolvedAgentName = agentDef.name;
             }
             if (agentDef) {
                 if (agentDef.system && agentDef.creatable === false) {
@@ -685,9 +703,14 @@ export function* handleSubAgentAction(
                     );
                     return true;
                 }
+                if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
+                    queueFollowup(runtime,
+                        `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`);
+                    return true;
+                }
                 if (result.toolNames !== undefined) {
                     queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name, or remove tool_names.]`);
+                        `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`);
                     return true;
                 }
                 if (result.systemMessage !== undefined) {
@@ -695,7 +718,8 @@ export function* handleSubAgentAction(
                         `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`);
                     return true;
                 }
-                // The named definition owns its startup requirement.
+                // requiredTool selects/validates capability only. Startup is
+                // always the package's initialRequiredTool, even when different.
                 applyAgentDef(agentDef);
             }
 

@@ -10,7 +10,8 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
-import { PgSessionCatalog } from "./cms.js";
+import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
+import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
@@ -31,7 +32,6 @@ import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
-import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -856,65 +856,17 @@ export class PilotSwarmWorker {
             this.registerTools(rmTools);
         }
 
-        // ps_list_agents tool — exposes user-creatable agents by default.
-        // NOTE: prefixed with `ps_` to avoid collision with the Copilot SDK's
-        // built-in `list_agents` tool (introduced in @github/copilot 1.0.32),
-        // which lists live background-agent task instances rather than blueprints.
-        const listAgentsTool = defineTool("ps_list_agents", {
-            description:
-                "List all available agent BLUEPRINTS (definitions loaded from .agent.md files). " +
-                "By default this returns only user-creatable named agents. " +
-                "Worker-managed system agents are hidden from the default list because they are NOT valid spawn_agent targets. " +
-                "Pass systemOnly=true only when you need to inspect system-agent definitions for diagnostics. " +
-                "Use this to discover what agents CAN be spawned. To check status of sub-agents you ALREADY spawned, use check_agents instead. " +
-                "IMPORTANT: Do NOT call this unless you actually need to spawn an agent and don't know its name. " +
-                "Seeing an agent in this list does NOT mean you should spawn it.",
-            parameters: {
-                type: "object" as const,
-                properties: {
-                    systemOnly: {
-                        type: "boolean",
-                        description: "If true, only return system agents. Default: false",
-                    },
-                    creatableOnly: {
-                        type: "boolean",
-                        description: "If true, only return user-creatable (non-system) agents. This matches the default behavior.",
-                    },
-                },
-            },
-            handler: async (args: { systemOnly?: boolean; creatableOnly?: boolean }) => {
-                const allAgents = [
-                    ...this._loadedAgents.map(a => ({
-                        name: a.name,
-                        namespace: (a as any).namespace || "custom",
-                        qualifiedName: `${(a as any).namespace || "custom"}:${a.name}`,
-                        description: a.description || null,
-                        tools: a.tools || [],
-                        skills: a.skills || [],
-                        system: false,
-                        creatable: true,
-                        id: null,
-                        parent: null,
-                    })),
-                    ...this._loadedSystemAgents.map(a => ({
-                        name: a.name,
-                        namespace: a.namespace || "pilotswarm",
-                        qualifiedName: `${a.namespace || "pilotswarm"}:${a.name}`,
-                        description: a.description || null,
-                        tools: a.tools || [],
-                        system: true,
-                        creatable: false,
-                        id: a.id || null,
-                        parent: a.parent || null,
-                    })),
-                ];
-                let filtered = allAgents.filter(a => !a.system);
-                if (args.systemOnly) {
-                    filtered = allAgents.filter(a => a.system);
-                } else if (args.creatableOnly) {
-                    filtered = allAgents.filter(a => !a.system);
-                }
-                return JSON.stringify({ agents: filtered, total: filtered.length }, null, 2);
+        // ps_ avoids the Copilot CLI's native list_agents task-status tool.
+        // Listing uses the same owner and copy resolution as spawn_agent.
+        const listAgentsTool = createAgentDiscoveryTool({
+            // Same identities/owners/order as the raw spawn definitions,
+            // with MCP references already reduced to their admitted grants.
+            getUserAgents: () => this._loadedAgents,
+            getSystemAgents: () => this._loadedSystemAgents,
+            getCallerOwnerKey: async (sessionId) => {
+                if (!this._catalog || !sessionId) return null;
+                const owner = await resolveEffectiveSpawnOwner((id) => this._catalog!.getSession(id), sessionId);
+                return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
             },
         });
         this.registerTools([listAgentsTool]);
@@ -1452,7 +1404,7 @@ export class PilotSwarmWorker {
             const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
             const mcpKey = (agent as any).packageId
                 ? packageAgentKey((agent as any).packageId, agent.name)
-                : agent.name;
+                : agent.namespace ? `${agent.namespace}:${agent.name}` : agent.name;
             return {
                 ...rest,
                 // The agent's OWN prompt (skills already composed in), never
@@ -1463,8 +1415,8 @@ export class PilotSwarmWorker {
                     appDefault: this._appDefaultPrompt,
                     activeAgentPrompt: agent.prompt,
                 }) ?? agent.prompt,
-                // mcpKey is the qualified key for a package agent, the bare
-                // name for a deployment/inline one — the only keys registered.
+                // MCP uses the exact same copy as the authored prompt, even
+                // when two static namespaces declare the same agent name.
                 ...(this._agentMcpServers[mcpKey]
                     ? { mcpServers: this._agentMcpServers[mcpKey] }
                     : {}),
@@ -1612,19 +1564,11 @@ export class PilotSwarmWorker {
             );
         }
 
-        // Per-agent maps. Agents merge by name with later definitions
-        // overriding earlier ones (same contract as prompt resolution), so
-        // ALWAYS assign: a later definition with no MCP declarations must
-        // clear a shadowed definition's grants, never inherit them.
-        //
-        // A PACKAGE agent registers ONLY under a package-qualified key, never
-        // the bare name. With scope shadowing two copies share the bare name,
-        // and a bare-name entry is last-write-wins — a session resolving one
-        // copy could read the other's grants (or a user package could strip a
-        // deployment agent's grants fleet-wide). The bare name is therefore
-        // reserved for deployment/inline agents, which have no packageId; the
-        // session-manager reads the qualified key for package copies and the
-        // bare key only for non-package agents.
+        // Published agents use package-qualified keys. Static definitions use
+        // namespace-qualified keys; the bare alias retains the first static
+        // definition, matching the prompt lookup's deployment default. Never
+        // let a same-name package or another namespace replace these grants.
+        const assignedStaticKeys = new Set<string>();
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             const resolved: Record<string, any> = {};
             if (agent.inheritDefaultMcpServers === true) {
@@ -1636,13 +1580,18 @@ export class PilotSwarmWorker {
                 packageId: (agent as any).packageId ?? null,
                 packageScope: (agent as any).packageScope ?? null,
             });
-            const key = (agent as any).packageId
-                ? packageAgentKey((agent as any).packageId, agent.name)
-                : agent.name;
-            if (Object.keys(resolved).length > 0) {
-                this._agentMcpServers[key] = resolved;
-            } else {
-                delete this._agentMcpServers[key];
+            const packageId = (agent as any).packageId;
+            const keys = packageId
+                ? [packageAgentKey(packageId, agent.name)]
+                : [...new Set([agent.name, ...(agent.namespace ? [`${agent.namespace}:${agent.name}`] : [])])];
+            for (const key of keys) {
+                if (!packageId && assignedStaticKeys.has(key)) continue;
+                if (!packageId) assignedStaticKeys.add(key);
+                if (Object.keys(resolved).length > 0) {
+                    this._agentMcpServers[key] = resolved;
+                } else {
+                    delete this._agentMcpServers[key];
+                }
             }
         }
     }
@@ -1800,6 +1749,17 @@ export class PilotSwarmWorker {
                 ...copyOf(winner),
                 ...(agents.length > 1 ? { copies: agents.map(copyOf) } : {}),
             };
+            // Persisted static bindings use this exact namespace key. The
+            // alias carries the composed prompt, declarations and descriptor
+            // of that copy, never the bare-name winner from another namespace.
+            const assignedAliases = new Set<string>();
+            for (const agent of agents) {
+                if (agent.packageId || !agent.namespace) continue;
+                const key = `${agent.namespace}:${agent.name}`;
+                if (assignedAliases.has(key)) continue;
+                assignedAliases.add(key);
+                this._agentPromptLookup[key] = copyOf(agent);
+            }
             if (agents.length > 1) {
                 console.warn(
                     `[PilotSwarmWorker] agent name "${name}" is served by ${agents.length} loaded copies `

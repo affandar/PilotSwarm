@@ -1,7 +1,7 @@
 /** Capability routing for the complete named-agent handoff contract.
  *
  * Old orchestration callers omit this contract and retain their exact activity
- * names, inputs and descriptors. Only orchestration 1.0.75 opts into it.
+ * names, inputs and descriptors. Orchestrations 1.0.75 and later opt into it.
  */
 export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
 export type ActivityRoutingContract = "agent-handoff-v2";

@@ -6,16 +6,24 @@
   identity and mobile splash on its selected shared, private or deployment copy.
   Refresh the binding at turn boundaries, resuming the Copilot handle when its
   instructions or tool declarations change; fail closed when the copy disappears.
-- Keep `spawn_agent.required_tool` as a capability selector. Preserve the named
-  definition's startup requirement and accept `task` as its assignment. Named
+- Remove `required_tool` from `spawn_agent`; discover caller-visible static and
+  published roles through `ps_list_agents` and select an exact `agent_name`.
+  Align base/native prompts and selection evaluation to prefer matching specialists.
+  Preserve the named definition's startup requirement and accept `task` as its assignment. Named
   children use their own extra tools and instructions plus platform defaults;
   reject caller tool/system overrides, including empty values.
+- Admit `ps_list_agents` through the base tool defaults and list only selectable
+  caller-visible definitions, with exact shared/namespace references and role
+  metadata. Keep selected static namespaces bound through child startup and
+  refresh, including their own prompt, declarations and MCP grants.
 - Reserve the complete native and platform tool namespace when loading packages,
   including tools attached only to privileged sessions.
 - Preserve each child's explicit contract across SDK creation and restore its
   parent/depth from the catalog when another API client sends the first message.
   Grandchildren do not inherit their parent's own child contract.
-- Freeze orchestration 1.0.74 and introduce capability-tagged handoffs in 1.0.75.
+- Freeze orchestrations 1.0.74 and 1.0.75; active 1.0.76 keeps capability-tagged
+  handoffs and removes the spawn capability selector. Legacy activity handlers
+  remain for frozen histories.
   Upgrade with a drain-first replacement of incompatible workers; see the
   [upgrade guide](docs/developer/building/agent-handoff-upgrade.md).
 

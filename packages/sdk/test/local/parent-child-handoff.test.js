@@ -42,21 +42,28 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
                 expect(spec.description).not.toContain('Do not also set task');
                 expect(spec.parameters.properties.task.description).toContain('whether named or custom');
                 expect(spec.parameters.properties.agent_name.description).not.toContain('Do not also set task');
+                expect(spec.parameters.properties).not.toHaveProperty('required_tool');
+                expect(spec.parameters.properties).not.toHaveProperty('requiredTool');
             }
             expect(h.calls).toEqual([{ name: 'handoff_load', owner: 'pkg-shared' }, { name: 'handoff_search', owner: 'pkg-shared' }]);
         });
     });
-    it.each(['handoff_load', 'handoff_search'])('required capability %s preserves definition startup', { timeout: 25_000 }, async required => {
-        await harness({}, async h => {
-            expect(await h.invoke(path, { required_tool: required, task: 'CAPABILITY_ASSIGNMENT' })).toContain('spawned successfully');
+    it.each([
+        { label: 'published', agent: shared, packageId: 'pkg-shared', owner: 'pkg-shared' },
+        { label: 'deployment', agent: { ...shared, packageId: undefined, packageScope: undefined }, packageId: undefined, owner: 'deployment' },
+    ])('explicit $label agent preserves definition startup and tool ownership', { timeout: 25_000 }, async f => {
+        await harness({ agents: [f.agent] }, async h => {
+            expect(await h.invoke(path, { agent_name: 'analyst', task: 'NAMED_ASSIGNMENT' })).toContain('spawned successfully');
+            expect(h.children[0].config.boundAgentPackageId).toBe(f.packageId);
             expect(h.children[0].turnOptions.requiredTool).toBe('handoff_load');
-            expect(h.children[0].result.type).toBe('completed'); expect(h.children[0].prompt).toBe('CAPABILITY_ASSIGNMENT');
+            expect(h.children[0].result.type).toBe('completed'); expect(h.children[0].prompt).toBe('NAMED_ASSIGNMENT');
             expect(h.calls.map(c => c.name)).toEqual(['handoff_load', 'handoff_search']);
+            expect(h.calls.every(c => c.owner === f.owner)).toBe(true);
         });
     });
-    it('capability selection does not invent a startup obligation', { timeout: 25_000 }, async () => {
+    it('naming an agent does not invent a startup obligation from its tools', { timeout: 25_000 }, async () => {
         await harness({ agents: [{ ...shared, initialRequiredTool: undefined }], callTools: [] }, async h => {
-            await h.invoke(path, { required_tool: 'handoff_search', task: 'Plan the search; do not run it yet' });
+            await h.invoke(path, { agent_name: 'analyst', task: 'Plan the search; do not run it yet' });
             expect(h.children[0].turnOptions.requiredTool).toBeUndefined();
             expect(h.children[0].result.type).toBe('completed'); expect(h.calls).toEqual([]);
         });
@@ -91,6 +98,109 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             expect(h.calls.every(c => c.owner === f.pkg)).toBe(true); expect(h.children[0].result.type).toBe('completed');
         });
     });
+    it.each([
+        { label: 'owned published copy', owner: ALICE, target: 'analyst', scope: 'user', pkg: 'pkg-alice', marker: 'PRIVATE_ANALYST_INSTRUCTIONS' },
+        { label: 'explicit shared published copy', owner: ALICE, target: '__shared:analyst', scope: 'cluster', pkg: 'pkg-shared', marker: 'SHARED_ANALYST_INSTRUCTIONS' },
+        { label: 'public copy for another owner', owner: BOB, target: 'analyst', scope: 'cluster', pkg: 'pkg-shared', marker: 'SHARED_ANALYST_INSTRUCTIONS' },
+        { label: 'public copy without an owner', owner: null, target: 'analyst', scope: 'cluster', pkg: 'pkg-shared', marker: 'SHARED_ANALYST_INSTRUCTIONS' },
+        { label: 'private copy through an owned ancestor', owner: null, ancestor: { owner: ALICE }, target: 'analyst', scope: 'user', pkg: 'pkg-alice', marker: 'PRIVATE_ANALYST_INSTRUCTIONS' },
+    ])('discovers then spawns the exact $label through the production discovery handler', { timeout: 25_000 }, async f => {
+        const agents = [
+            { ...shared, description: 'Audit shared source records', skills: ['shared-audit'] },
+            { ...privateCopy, description: 'Audit my private source records', skills: ['private-audit'] },
+            { ...privateCopy, name: 'foreign-secret', packageId: 'pkg-foreign', packageOwner: { provider: 'fixture', subject: 'someone-else' },
+                description: 'FOREIGN_DESCRIPTION_MUST_NOT_LEAK', tools: ['foreign_secret_tool'] },
+        ];
+        await harness({ owner: f.owner, ancestor: f.ancestor, agents,
+            systemAgents: [{ name: 'managed-daemon', id: 'managed-daemon', system: true, prompt: 'SYSTEM_ONLY', tools: ['managed_only'] }] }, async h => {
+            const listing = await h.discover();
+            expect(listing.total).toBe(listing.agents.length);
+            expect(JSON.stringify(listing)).not.toMatch(/foreign-secret|FOREIGN_DESCRIPTION|foreign_secret_tool|managed-daemon/);
+            const chosen = listing.agents.find(agent => agent.agent_name === f.target);
+            expect(chosen).toMatchObject({ name: 'analyst', agent_name: f.target, scope: f.scope, source: 'published', creatable: true,
+                tools: ['handoff_load', 'handoff_search'], initialRequiredTool: 'handoff_load',
+                skills: f.scope === 'user' ? ['private-audit'] : ['shared-audit'] });
+            expect(await h.invoke(path, { agent_name: chosen.agent_name, task: 'DISCOVERED_ASSIGNMENT' })).toContain('spawned successfully');
+            expect(h.children[0].config.boundAgentPackageId).toBe(f.pkg);
+            expect(h.children[0].prompt).toBe('DISCOVERED_ASSIGNMENT');
+            expect(h.children[0].turnOptions.requiredTool).toBe(chosen.initialRequiredTool);
+            expect(h.children[0].result.type).toBe('completed');
+            expect(systemPrompt(h.server.requests[0])).toContain(f.marker);
+            expect(h.calls.every(call => call.owner === f.pkg)).toBe(true);
+        });
+    });
+    it.each([
+        { namespace: 'security', reference: 'security:reviewer', source: 'published', pkg: 'pkg-security', marker: 'SECURITY_REVIEWER', other: 'OPERATIONS_REVIEWER' },
+        { namespace: 'operations', reference: 'reviewer', source: 'static', pkg: undefined, marker: 'OPERATIONS_REVIEWER', other: 'SECURITY_REVIEWER' },
+    ])('discovers and spawns the namespaced $source role without borrowing another definition', { timeout: 25_000 }, async f => {
+        const deployment = { ...shared, name: 'reviewer', id: 'deployment-reviewer', namespace: 'operations',
+            packageId: undefined, packageScope: undefined, prompt: 'OPERATIONS_REVIEWER', description: 'Review operations readiness',
+            tools: ['operations_load', 'operations_search'], initialRequiredTool: 'operations_load' };
+        const published = { ...shared, name: 'reviewer', id: 'published-reviewer', namespace: 'security',
+            packageId: 'pkg-security', prompt: 'SECURITY_REVIEWER', description: 'Review security evidence' };
+        await harness({ agents: [deployment, published], callTools: f.source === 'static' ? deployment.tools : published.tools }, async h => {
+            const listing = await h.discover();
+            expect(listing.agents).toHaveLength(2);
+            expect(listing.agents.map(agent => agent.source).sort()).toEqual(['published', 'static']);
+            const chosen = listing.agents.find(agent => agent.namespace === f.namespace);
+            expect(chosen).toMatchObject({ agent_name: f.reference, source: f.source });
+            await h.invoke(path, { agent_name: chosen.agent_name, task: 'NAMESPACED_ASSIGNMENT' });
+            expect(h.children[0].config.boundAgentPackageId).toBe(f.pkg);
+            if (f.source === 'static') expect(h.children[0].config.boundAgentName).toBe('operations:reviewer');
+            expect(h.children[0].result.type).toBe('completed');
+            expect(systemPrompt(h.server.requests[0])).toContain(f.marker);
+            expect(systemPrompt(h.server.requests[0])).not.toContain(f.other);
+            expect(h.calls.every(call => call.owner === (f.pkg ?? 'deployment'))).toBe(true);
+        });
+    });
+    it('discovery refresh removes a disabled package, rejects its stale reference, and accepts it after re-enable', { timeout: 25_000 }, async () => {
+        const agents = [shared];
+        await harness({ agents }, async h => {
+            const original = (await h.discover()).agents[0];
+            expect(original.agent_name).toBe('analyst');
+            agents.splice(0);
+            expect((await h.discover()).agents).toEqual([]);
+            expect(await h.invoke(path, { agent_name: original.agent_name, task: 'STALE_DISCOVERY_ASSIGNMENT' })).toContain('not found');
+            expect(h.children).toHaveLength(0); expect(h.server.requests).toHaveLength(0);
+            agents.push(shared);
+            const restored = (await h.discover()).agents[0];
+            expect(await h.invoke(path, { agent_name: restored.agent_name, task: 'REENABLED_ASSIGNMENT' })).toContain('spawned successfully');
+            expect(h.children[0].result.type).toBe('completed');
+            expect(h.children[0].config.boundAgentPackageId).toBe('pkg-shared');
+            expect(h.children[0].turnOptions.requiredTool).toBe('handoff_load');
+        });
+    });
+    it('keeps the selected namespace when two static definitions share a canonical name', { timeout: 25_000 }, async () => {
+        const first = { ...shared, name: 'reviewer', namespace: 'operations', packageId: undefined, packageScope: undefined,
+            prompt: 'STATIC_OPERATIONS_REVIEWER' };
+        const second = { ...first, namespace: 'security', prompt: 'STATIC_SECURITY_REVIEWER' };
+        await harness({ agents: [first, second] }, async h => {
+            const selected = (await h.discover()).agents.find(agent => agent.namespace === 'security');
+            expect(selected.agent_name).toBe('security:reviewer');
+            expect(await h.invoke(path, { agent_name: selected.agent_name, task: 'NAMESPACE_ASSIGNMENT' })).toContain('spawned successfully');
+            expect(h.children[0].config.boundAgentName).toBe('security:reviewer');
+            expect(h.children[0].result.type).toBe('completed');
+            expect(systemPrompt(h.server.requests[0])).toContain('STATIC_SECURITY_REVIEWER');
+            expect(systemPrompt(h.server.requests[0])).not.toContain('STATIC_OPERATIONS_REVIEWER');
+        });
+    });
+    it('spawns an exact discovered ID alias when a public namespace is hidden behind another public role and a private shadow', { timeout: 25_000 }, async () => {
+        const operations = { ...shared, name: 'reviewer', id: 'operations-reviewer', namespace: 'operations', packageId: 'pkg-operations', prompt: 'PUBLIC_OPERATIONS' };
+        const security = { ...shared, name: 'reviewer', id: 'security-reviewer', namespace: 'security', packageId: 'pkg-security', prompt: 'PUBLIC_SECURITY' };
+        const mine = { ...privateCopy, name: 'reviewer', id: 'personal-reviewer', namespace: 'security', prompt: 'PRIVATE_SECURITY' };
+        await harness({ agents: [operations, security, mine] }, async h => {
+            const listing = await h.discover();
+            expect(listing.agents).toHaveLength(3);
+            const chosen = listing.agents.find(agent => agent.namespace === 'security' && agent.scope === 'cluster');
+            expect(chosen.agent_name).toBe('security-reviewer');
+            expect(await h.invoke(path, { agent_name: chosen.agent_name, task: 'PUBLIC_SECURITY_ASSIGNMENT' })).toContain('spawned successfully');
+            expect(h.children[0].config).toMatchObject({ agentId: 'security-reviewer', boundAgentName: 'reviewer', boundAgentPackageId: 'pkg-security' });
+            expect(h.children[0].result.type).toBe('completed');
+            expect(systemPrompt(h.server.requests[0])).toContain('PUBLIC_SECURITY');
+            expect(systemPrompt(h.server.requests[0])).not.toMatch(/PUBLIC_OPERATIONS|PRIVATE_SECURITY/);
+            expect(h.calls.every(call => call.owner === 'pkg-security')).toBe(true);
+        });
+    });
     it.each([{ tool_names: undefined }, { tool_names: [] }, { tool_names: ['deployment_tool'] }])('unnamed tools=$tool_names drops specialist binding but preserves defaults', { timeout: 25_000 }, async ({ tool_names }) => {
         await harness({ callTools: ['framework_tool', 'app_tool'], parentConfig: { boundAgentSource: 'deployment', boundAgentPackageId: undefined } }, async h => {
             await h.invoke(path, { task: 'GENERIC_ASSIGNMENT', ...(tool_names !== undefined ? { tool_names } : {}) });
@@ -122,9 +232,6 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
     });
     it.each([
         { label: 'unknown name', args: { agent_name: 'missing' }, contains: 'not found' },
-        { label: 'missing capability', args: { required_tool: 'missing' }, contains: 'no caller-visible' },
-        { label: 'mismatched capability', args: { agent_name: 'analyst', required_tool: 'missing' }, contains: 'does not declare' },
-        { label: 'empty capability', args: { required_tool: ' ' }, contains: 'non-empty' },
         { label: 'prompt override', args: { agent_name: 'analyst', system_message: 'replace named policy' }, contains: 'system_message cannot override' },
         { label: 'unqualified model', args: { agent_name: 'analyst', model: 'gpt-5.6-sol' }, contains: 'not allowed' },
     ])('rejects $label before creation', async f => {
@@ -132,20 +239,41 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             expect(await h.invoke(path, f.args)).toContain(f.contains); expect(h.children).toHaveLength(0); expect(h.server.requests).toHaveLength(0);
         });
     });
-    it('rejects ambiguous capabilities without exposing private candidates', async () => {
-        await harness({ owner: BOB, agents: [shared, { ...shared, name: 'other', packageId: 'pkg-other' }, { ...privateCopy, name: 'secret-analyst' }] }, async h => {
-            const reply = await h.invoke(path, { required_tool: 'handoff_search' });
-            expect(reply).toContain('multiple visible agents'); expect(reply).toContain('other'); expect(reply).not.toContain('secret-analyst');
-            expect(h.children).toHaveLength(0);
+    it.each([
+        { required_tool: 'handoff_search' },
+        { agent_name: 'analyst', required_tool: 'handoff_search' },
+        { task: 'Do the search', required_tool: 'handoff_search' },
+        { agent_name: 'analyst', task: 'Do the search', required_tool: 'handoff_search' },
+        { agent_name: 'analyst', required_tool: '' },
+        { agent_name: 'analyst', required_tool: null },
+        { agent_name: 'analyst', required_tool: undefined },
+        { agent_name: 'analyst', requiredTool: 'handoff_search' },
+    ])('rejects a stale spawn selector before creating or scheduling a child: %j', async args => {
+        await harness({}, async h => {
+            const reply = await h.invoke(path, args);
+            expect(reply).toContain('required_tool is no longer supported');
+            expect(reply).toContain('ps_list_agents'); expect(reply).toContain('agent_name');
+            expect(h.children).toHaveLength(0); expect(h.server.requests).toHaveLength(0);
+            expect(h.rows.size).toBe(1); expect(h.calls).toEqual([]);
         });
     });
-    it.each([{ agent_name: 'analyst' }, { required_tool: 'handoff_search' }])('refuses foreign-only private definitions: %j', async args => {
+    it('honors an explicit name among agents with overlapping capabilities without leaking foreign definitions', { timeout: 25_000 }, async () => {
+        await harness({ owner: BOB, agents: [shared, { ...shared, name: 'other', packageId: 'pkg-other' }, { ...privateCopy, name: 'secret-analyst' }] }, async h => {
+            const reply = await h.invoke(path, { agent_name: 'other', task: 'Explicitly chosen specialist assignment' });
+            expect(reply).toContain('spawned successfully'); expect(reply).not.toContain('secret-analyst');
+            expect(h.children[0].config).toMatchObject({ boundAgentName: 'other', boundAgentPackageId: 'pkg-other' });
+            expect(h.calls.every(c => c.owner === 'pkg-other')).toBe(true);
+            expect(h.children[0].result.type).toBe('completed');
+            expect(systemPrompt(h.server.requests[0])).not.toContain('PRIVATE_ANALYST_INSTRUCTIONS');
+        });
+    });
+    it.each([{ agent_name: 'analyst' }, { agent_name: '__shared:analyst' }])('refuses foreign-only private definitions: %j', async args => {
         await harness({ owner: BOB, agents: [privateCopy] }, async h => {
             const reply = await h.invoke(path, args); expect(reply).toContain('failed'); expect(reply).not.toContain('PRIVATE_ANALYST_INSTRUCTIONS');
             expect(h.children).toHaveLength(0); expect(h.server.requests).toHaveLength(0);
         });
     });
-    it.each([{ agent_name: 'analyst' }, { required_tool: 'handoff_search' }])('fails closed for rootless private-only target %j', async args => {
+    it.each([{ agent_name: 'analyst' }, { agent_name: '__shared:analyst' }])('fails closed for rootless private-only target %j', async args => {
         await harness({ owner: null, agents: [privateCopy] }, async h => {
             const reply = await h.invoke(path, args);
             expect(reply).toContain('failed'); expect(reply).not.toContain('PRIVATE_ANALYST_INSTRUCTIONS');
@@ -158,7 +286,7 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
         { owner: null, expected: undefined, agents: [shared], label: 'unowned lineage' },
     ])('inherits $label ownership without making child a system agent', { timeout: 25_000 }, async f => {
         await harness(f, async h => {
-            await h.invoke(path, { required_tool: 'handoff_search', task: 'LINEAGE_ASSIGNMENT' });
+            await h.invoke(path, { agent_name: 'analyst', task: 'LINEAGE_ASSIGNMENT' });
             expect(h.children[0].config.owner).toEqual(f.expected); expect(h.children[0].row.isSystem).toBe(false);
             expect(h.children[0].result.type).toBe('completed');
         });
@@ -194,17 +322,17 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             expect(h.calls).toEqual([{ name: 'handoff_load', owner: 'deployment' }, { name: 'handoff_search', owner: 'deployment' }]);
         });
     });
-    it('validates a capability on an explicitly named deployment agent', { timeout: 25_000 }, async () => {
+    it('passes the assignment to a named deployment agent without changing its startup requirement', { timeout: 25_000 }, async () => {
         await harness({ agents: [{ ...shared, packageId: undefined, packageScope: undefined }] }, async h => {
-            await h.invoke(path, { agent_name: 'analyst', required_tool: 'handoff_search', task: 'NAMED_CAPABILITY_ASSIGNMENT' });
+            await h.invoke(path, { agent_name: 'analyst', task: 'NAMED_DEPLOYMENT_ASSIGNMENT' });
             expect(h.children[0].turnOptions.requiredTool).toBe('handoff_load');
             expect(h.children[0].config.boundAgentPackageId).toBeUndefined();
-            expect(h.children[0].prompt).toBe('NAMED_CAPABILITY_ASSIGNMENT');
+            expect(h.children[0].prompt).toBe('NAMED_DEPLOYMENT_ASSIGNMENT');
             expect(h.calls.every(c => c.owner === 'deployment')).toBe(true);
             expect(h.children[0].result.type).toBe('completed');
         });
     });
-    it.each([{ agent_name: 'managed-daemon' }, { required_tool: 'managed_only' }])('refuses worker-managed system target %j', async args => {
+    it.each([{ agent_name: 'managed-daemon' }, { agent_name: '__shared:managed-daemon' }])('refuses worker-managed system target %j', async args => {
         await harness({ agents: [], systemAgents: [{ name: 'managed-daemon', id: 'managed-daemon', system: true,
             prompt: 'SECRET_MANAGED_INSTRUCTIONS', tools: ['managed_only'], creatable: false }] }, async h => {
             expect(await h.invoke(path, args)).toContain('failed');
@@ -235,9 +363,9 @@ for (const path of ['generator', 'inline']) describe(`parent -> child handoff ($
             expect(h.children[0].result, JSON.stringify(h.children[0].result)).toMatchObject({ type: 'completed' });
         });
     });
-    it('enforces named startup when inference only invokes the selected capability', { timeout: 25_000 }, async () => {
+    it('enforces definition startup even when inference invokes another declared tool', { timeout: 25_000 }, async () => {
         await harness({ callTools: ['handoff_search'] }, async h => {
-            await h.invoke(path, { required_tool: 'handoff_search', task: 'STARTUP_ENFORCEMENT' });
+            await h.invoke(path, { agent_name: 'analyst', task: 'STARTUP_ENFORCEMENT' });
             expect(h.children[0].turnOptions.requiredTool).toBe('handoff_load'); expect(h.children[0].result.type).toBe('error');
             expect(h.children[0].result.message).toContain('handoff_load'); expect(h.calls.map(c => c.name)).toEqual(['handoff_search']);
         });

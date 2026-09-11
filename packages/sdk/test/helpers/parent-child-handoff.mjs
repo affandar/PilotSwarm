@@ -8,6 +8,8 @@ import { ModelProviderRegistry } from '../../src/model-providers.ts';
 import { registerActivities, createSessionManagerProxy } from '../../src/session-proxy.ts';
 import { HANDOFF_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY } from '../../src/activity-routing.ts';
 import { handleSubAgentAction } from '../../src/orchestration/agents.ts';
+import { createAgentDiscoveryTool } from '../../src/agent-discovery.ts';
+import { resolveEffectiveSpawnOwner } from '../../src/cms.ts';
 import { createNativeCopilotProvider } from './native-copilot-provider.mjs';
 
 export const ALICE = { provider: 'fixture', subject: 'alice', email: 'alice@example.test', displayName: null };
@@ -48,6 +50,9 @@ export async function handoffHarness(transport, options, run) {
             packageScope: agent.packageScope, packageOwner: agent.packageOwner };
         if (!lookup[agent.name]) lookup[agent.name] = { ...copy, copies: [copy] };
         else lookup[agent.name].copies.push(copy);
+        // Worker preserves namespace identity for static definitions that share
+        // a canonical name. Published definitions already carry package pins.
+        if (!agent.packageId && agent.namespace) lookup[`${agent.namespace}:${agent.name}`] = { ...copy };
     }
     const manager = new SessionManager(undefined, null, { modelProviders: registry, nativeSubagents: 'off', turnTimeoutMs: 10_000,
         frameworkBasePrompt: 'FRAMEWORK_DEFAULT_INSTRUCTIONS', appDefaultPrompt: 'APP_DEFAULT_INSTRUCTIONS',
@@ -56,15 +61,19 @@ export async function handoffHarness(transport, options, run) {
     const makeTool = (name, owner) => ({ name, description: `${name} owned by ${owner}`, parameters: { type: 'object', properties: {} },
         handler: async () => { calls.push({ name, owner }); return `${owner}:${name}:EXECUTED`; } });
     const flat = new Map(['framework_tool', 'app_tool', 'deployment_tool'].map(name => [name, makeTool(name, 'deployment')]));
+    const staticTools = new Map(flat);
     const byPackage = new Map([['pkg-parent', new Map([['parent_only', makeTool('parent_only', 'pkg-parent')]])]]);
     flat.set('parent_only', byPackage.get('pkg-parent').get('parent_only'));
     const staticNames = new Set(['framework_tool', 'app_tool', 'deployment_tool']);
     for (const agent of definitions) {
         const tools = new Map((agent.tools ?? []).map(name => [name, makeTool(name, agent.packageId ?? 'deployment')]));
         if (agent.packageId) byPackage.set(agent.packageId, tools);
-        else for (const name of tools.keys()) staticNames.add(name);
+        else for (const [name, tool] of tools) { staticNames.add(name); staticTools.set(name, tool); }
         for (const [name, tool] of tools) flat.set(name, tool);
     }
+    // Match PilotSwarmWorker._pushMergedToolRegistry: deployment registrations
+    // win flat-name collisions after package tools are merged.
+    for (const [name, tool] of staticTools) flat.set(name, tool);
     manager.setToolRegistry(flat, { byPackage, staticNames });
     manager.setFactStore({ readFacts: async () => ({ facts: [], count: 0 }), storeFact: async () => ({}), deleteFact: async () => ({}) });
     const catalog = {
@@ -75,6 +84,18 @@ export async function handoffHarness(transport, options, run) {
         getSessionEventsBefore: async () => [], getUserRole: async () => ({ role: 'user', seenAt: new Date() }),
     };
     manager.setSessionCatalog(catalog);
+    const discoveryTool = createAgentDiscoveryTool({
+        getUserAgents: () => definitions,
+        getSystemAgents: () => options.systemAgents ?? [],
+        getCallerOwnerKey: async sessionId => {
+            if (!sessionId) return null;
+            const owner = await resolveEffectiveSpawnOwner(id => catalog.getSession(id), sessionId);
+            return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
+        },
+    });
+    const discover = async (args = {}) => JSON.parse(await discoveryTool.handler(args, {
+        sessionId: parentId, durableSessionId: parentId,
+    }));
     let inlineArgs;
     const proxyManager = new Proxy(manager, { get(target, key) {
         if (key === 'getOrCreate') return async (id, ...args) => {
@@ -136,6 +157,6 @@ export async function handoffHarness(transport, options, run) {
         for (const execute of queued.splice(0)) await execute();
         return reply;
     };
-    try { await run({ invoke, children, rows, events, calls, registeredTools, server, manager, parentId, parentConfig }); }
+    try { await run({ invoke, discover, children, rows, events, calls, registeredTools, server, manager, parentId, parentConfig }); }
     finally { transport.active = null; await manager.shutdown(); await server.close(); rmSync(home, { recursive: true, force: true }); }
 }

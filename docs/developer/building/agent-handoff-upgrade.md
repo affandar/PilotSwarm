@@ -1,6 +1,6 @@
 # Upgrading the named-agent handoff contract
 
-The repair activates durable-session orchestration **1.0.75**. It needs a
+The repair activates durable-session orchestration **1.0.76**. It needs a
 **drain-first worker replacement**, not an ordinary overlapping rollout with
 pre-repair workers. No PilotSwarm table migration or session-history rewrite is
 required. Existing sessions and their data remain intact.
@@ -10,15 +10,18 @@ required. Existing sessions and their data remain intact.
 The 1.0.74 orchestration and all its generator helpers are frozen. Its existing
 activity descriptors remain unchanged, including untagged activities already in
 the queue. Repaired workers keep the legacy activity registrations so they can
-finish these histories using corrected runtime handlers.
+finish these histories using corrected runtime handlers. The locally checkpointed
+1.0.75 is frozen too; its legacy capability-selector activity remains registered
+for replay. Active 1.0.76 removes that selector from spawning. Tool schemas and
+live handlers reject stale `required_tool` calls with instructions to discover
+a named agent. Definition-level startup requirements remain supported.
 
-New 1.0.75 handoffs schedule these separate activities with the routing tag
+New 1.0.76 handoffs schedule these separate activities with the routing tag
 `pilotswarm.agent-handoff.v2`:
 
 | Previous activity | New activity |
 | --- | --- |
 | `resolveAgentConfig` | `resolveAgentConfigV2` |
-| `resolveAgentForRequiredTool` | `resolveAgentForRequiredToolV2` |
 | `spawnChildSession` | `spawnChildSessionV2` |
 | `runTurn` | `runTurnV3` |
 | `runTurn2` | `runTurnEpochV3` |
@@ -41,7 +44,7 @@ and independently launched SDK runtimes, not only the worker Deployment.
    Retain the current image, deployment configuration, and normal backup policy.
 2. Pause new session admission and worker autoscaling for the cutover. Keep the
    portal on the prior image until workers have been replaced; it must not start
-   1.0.75 histories while old dispatchers are still polling.
+   1.0.76 histories while old dispatchers are still polling.
 3. Drain all old workers using their existing graceful shutdown path. Check
    in-flight activity completion and durable snapshot commits, and verify the
    old processes have exited. Stop their orchestration pollers as well as their
@@ -52,15 +55,15 @@ and independently launched SDK runtimes, not only the worker Deployment.
    session *idle-retention* setting. Graceful runtime shutdown does not guarantee
    an immediate unlock. Inspect lease expiry read-only when necessary; do not
    delete session rows, clear history, or force-update ownership timestamps.
-5. Start repaired workers. Verify that they register 1.0.74 and 1.0.75 plus both
+5. Start repaired workers. Verify that they register frozen 1.0.74 and 1.0.75, active 1.0.76, and both
    old/new activity handlers, advertise readiness, and resume queued sessions.
    Existing histories keep replaying their frozen code; their normal
-   continue-as-new boundary targets 1.0.75.
+   continue-as-new boundary targets 1.0.76.
 6. Upgrade the portal/session-creating processes, restore admission and normal
    worker replicas/autoscaling, and verify a named spawn, an unnamed spawn,
-   capability-based selection, and a resumed pre-cutover session.
+   static/published named-agent discovery, and a resumed pre-cutover session.
 
-New 1.0.75 starts and continue-as-new targets are fixed in code. There is no
+New 1.0.76 starts and continue-as-new targets are fixed in code. There is no
 process-local environment flag that changes scheduling decisions during replay.
 The worker activation step is the cutover; it must be performed consistently.
 
@@ -83,8 +86,8 @@ queued startup obligation, not an immutable package version or its handlers.
 ## Rollback
 
 Before any repaired worker or client runs, reverting the prepared image is an
-ordinary deployment rollback. **After 1.0.75 histories exist, retain workers that
-understand 1.0.75 and its activity tag.** Rolling every worker back to 0.5.64 is not
+ordinary deployment rollback. **After 1.0.76 histories exist, retain workers that
+understand 1.0.76 and its activity tag.** Rolling every worker back to 0.5.64 is not
 safe: old code cannot service the new contract. A rollback then requires a
 forward-compatible repair retaining the versioned handlers; the portal can be
 rolled back separately only if it remains API-compatible. Do not downgrade or

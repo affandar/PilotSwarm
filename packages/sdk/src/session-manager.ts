@@ -136,7 +136,7 @@ export class PackageToolBindingError extends Error {
     readonly code = "PACKAGE_TOOL_REQUIRES_BOUND_AGENT";
 
     constructor(readonly toolName: string) {
-        super(`Package tool "${toolName}" requires its owning named-agent definition. Use spawn_agent with required_tool or agent_name.`);
+        super(`Package tool "${toolName}" requires its owning named-agent definition. Use ps_list_agents to find its named agent, then call spawn_agent with the exact agent_name and your assignment in task.`);
         this.name = "PackageToolBindingError";
     }
 }

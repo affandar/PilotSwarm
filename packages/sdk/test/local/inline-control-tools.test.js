@@ -306,27 +306,45 @@ describe("inline control tool execution", () => {
         expect(result.content).toBe("Spawned titled child.");
     });
 
-    it("advertises and forwards required_tool for generic capability routing", async () => {
+    it.each(["inline", "fallback"])("does not expose the removed spawn selector in %s mode", async (mode) => {
         const fakeSession = new FakeCopilotSession();
-        fakeSession.scriptedToolCalls = [
-            { name: "spawn_agent", args: { task: "inspect one shard", required_tool: "package_catalog" } },
-        ];
-        fakeSession.assistantContent = "Spawned capability owner.";
-        const controlToolBridge = {
-            spawnAgent: vi.fn(async () => "[SYSTEM: spawned]"),
-        };
-        const managed = new ManagedSession("inline-required-tool", fakeSession, {});
-
-        await managed.runTurn("delegate by capability", { controlToolBridge });
-
+        const spawnAgent = vi.fn();
+        const managed = new ManagedSession("removed-selector-schema", fakeSession, {});
+        await managed.runTurn("register tools", mode === "inline" ? { controlToolBridge: { spawnAgent } } : {});
         const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
-        expect(spawnTool?.parameters?.properties?.required_tool?.type).toBe("string");
-        expect(spawnTool?.description).toContain("pass required_tool");
-        expect(controlToolBridge.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
-            task: "inspect one shard",
-            required_tool: "package_catalog",
-        }));
+        const staticTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent");
+        for (const tool of [spawnTool, staticTool]) {
+            expect(tool.parameters.properties).not.toHaveProperty("required_tool");
+            expect(tool.description).not.toContain("required_tool");
+            expect(tool.description).toContain("ps_list_agents");
+            expect(tool.description).toContain("static and published");
+        }
+        expect(spawnAgent).not.toHaveBeenCalled();
     });
+
+    for (const mode of ["inline", "fallback"]) {
+        it.each([
+            { required_tool: "package_catalog" },
+            { agent_name: "catalog-analyst", required_tool: "package_catalog" },
+            { task: "Inspect one shard", required_tool: "package_catalog" },
+            { task: "Inspect one shard", required_tool: null },
+            { task: "Inspect one shard", required_tool: "" },
+            { task: "Inspect one shard", requiredTool: "package_catalog" },
+        ])(`rejects a stale selector before %s spawning in ${mode} mode`, async (args) => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args }];
+            const spawnAgent = vi.fn();
+            const managed = new ManagedSession("removed-selector-rejection", fakeSession, {});
+            const result = await managed.runTurn("Delegate", mode === "inline" ? { controlToolBridge: { spawnAgent } } : {});
+            expect(result.type).toBe("completed");
+            expect(result.queuedActions ?? []).toHaveLength(0);
+            const completion = result.events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "spawn_agent");
+            expect(completion.data.result).toContain("required_tool is no longer supported by spawn_agent");
+            expect(completion.data.result).toContain("ps_list_agents");
+            expect(completion.data.result).toContain("agent_name");
+            expect(spawnAgent).not.toHaveBeenCalled();
+        });
+    }
 
     it("advertises and forwards child contracts and results", async () => {
         const fakeSession = new FakeCopilotSession();

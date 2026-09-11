@@ -18,7 +18,7 @@ import {
     type DurableSessionRuntime,
 } from "./state.js";
 
-export const CURRENT_ORCHESTRATION_VERSION = DURABLE_SESSION_LATEST_VERSION;
+export const CURRENT_ORCHESTRATION_VERSION = "1.0.75";
 
 /** Wraps `ctx.traceInfo` so every line is tagged with the running orchestration version. */
 function installVersionedTracing(ctx: any, sourceVersion: string): void {
@@ -117,7 +117,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         return;
     }
     if (agentDef) {
-        state.config.boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
+        state.config.boundAgentName = agentDef.name;
         state.config.boundAgentPackageId = agentDef.packageId;
         state.config.boundAgentSource = agentDef.packageId ? undefined : "deployment";
         const mergedToolNames = Array.from(new Set([
