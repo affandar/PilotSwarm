@@ -22,6 +22,7 @@ test("deploy help documents the external env overlay", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /--env-overlay <path>/);
   assert.match(result.stdout, /--instance <name>/);
+  assert.match(result.stdout, /push,render,manifests/);
 });
 
 test("deploy accepts equals-form env overlay before help", () => {

@@ -156,7 +156,7 @@
     },
     "pipeline": {
       "type": "array",
-      "items": { "type": "string", "enum": ["build", "push", "bicep", "seed-secrets", "manifests", "rollout"] },
+      "items": { "type": "string", "enum": ["build", "push", "bicep", "seed-secrets", "render", "manifests", "rollout"] },
       "description": "Override the default pipeline for this service. Defaults to deploy-manifest.defaults.pipelineByKind[kind]."
     }
   },

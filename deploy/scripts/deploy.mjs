@@ -116,7 +116,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | git-cache | git-repo-worker | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | git-cache | git-repo-worker | mcp-proxy | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --help",
     );
@@ -136,7 +136,7 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | git-cache | git-repo-worker | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | git-cache | git-repo-worker | mcp-proxy | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
       "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
@@ -145,7 +145,7 @@ function printHelp() {
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
-      "  --steps <list>      Comma-separated subset of: build,bicep,seed-secrets,push,manifests,rollout",
+      "  --steps <list>      Comma-separated subset of: build,bicep,seed-secrets,push,render,manifests,rollout",
       "                      (or just 'noop' for env-load + preflight only).",
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
@@ -178,6 +178,27 @@ function printHelp() {
 }
 
 // ───────────────────────── Stage runner ─────────────────────────
+
+async function renderServiceManifests(ctx) {
+  const imageInfo = SERVICE_IMAGE_INFO[ctx.service];
+  if (imageInfo && ctx.env.ACR_LOGIN_SERVER) {
+    ctx.env.IMAGE = `${ctx.env.ACR_LOGIN_SERVER}/${imageInfo.dockerImageRepo}:${ctx.imageTag}`;
+  }
+  await configureServiceEnv({
+    service: ctx.service,
+    env: ctx.env,
+    phase: "manifests",
+    imageTag: ctx.imageTag,
+    imageTagExplicit: ctx.imageTagExplicit,
+    envOverlays: ctx.envOverlays,
+  });
+  return stageManifests({
+    service: ctx.service,
+    envName: ctx.envName,
+    env: ctx.env,
+    stagingDir: ctx.stagingDir,
+  });
+}
 
 async function runStage(name, ctx) {
   switch (name) {
@@ -239,29 +260,13 @@ async function runStage(name, ctx) {
         env: ctx.env,
       });
       return;
+    case "render": {
+      const stagedServiceRoot = await renderServiceManifests(ctx);
+      log("ok", `Rendered manifests without publishing: ${stagedServiceRoot}`);
+      return;
+    }
     case "manifests": {
-      // Compose the IMAGE env var (the only image-related key consumed by
-      // the overlay `.env`/replacements chain). Derived from build/push
-      // contract: the rendered overlay must point at the tag we pushed
-      // (or `--image-tag` on a manifests-only run).
-      const imageInfo = SERVICE_IMAGE_INFO[ctx.service];
-      if (imageInfo && ctx.env.ACR_LOGIN_SERVER) {
-        ctx.env.IMAGE = `${ctx.env.ACR_LOGIN_SERVER}/${imageInfo.dockerImageRepo}:${ctx.imageTag}`;
-      }
-      await configureServiceEnv({
-        service: ctx.service,
-        env: ctx.env,
-        phase: "manifests",
-        imageTag: ctx.imageTag,
-        imageTagExplicit: ctx.imageTagExplicit,
-        envOverlays: ctx.envOverlays,
-      });
-      const stagedServiceRoot = stageManifests({
-        service: ctx.service,
-        envName: ctx.envName,
-        env: ctx.env,
-        stagingDir: ctx.stagingDir,
-      });
+      const stagedServiceRoot = await renderServiceManifests(ctx);
       await publishManifests({
         service: ctx.service,
         envName: ctx.envName,

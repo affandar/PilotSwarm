@@ -2,6 +2,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildWwwAuthenticate, parseWwwAuthenticate } from "pilotswarm-sdk";
+import { buildSyntheticRestApp, type SyntheticRestConfig } from "../src/examples/synthetic-rest-api.js";
 import { buildKustoApp } from "../src/kusto/app.js";
 import { KUSTO_AUDIENCE, KUSTO_SCOPE, type KustoConfig } from "../src/kusto/config.js";
 import { APP_TOKEN, USER_TOKEN } from "./tokens.js";
@@ -53,6 +54,7 @@ describe("HTTP surface", () => {
     it("GET /healthz is public and returns ok", async () => {
         const res = await fetch(`${base}/healthz`);
         expect(res.status).toBe(200);
+        expect(res.headers.get("x-request-id")).toBeNull();
         expect(await res.json()).toMatchObject({ status: "ok" });
     });
 
@@ -108,6 +110,36 @@ describe("HTTP surface", () => {
         // response differently, but auth succeeded — that's what we assert here.
         expect([401, 403]).not.toContain(res.status);
     });
+
+    it("emits a safe structured request record with pod and correlation ID", async () => {
+        await close(server);
+        const requestLogger = vi.fn();
+        ({ server, base } = await listen(buildKustoApp({ cfg, requestLogger })));
+
+        const res = await fetch(`${base}/mcp`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json, text/event-stream",
+                Authorization: `Bearer ${USER_TOKEN}`,
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list" }),
+        });
+        await res.text();
+
+        const requestId = res.headers.get("x-request-id");
+        expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(requestLogger).toHaveBeenCalledWith({
+            requestId,
+            pod: expect.any(String),
+            method: "POST",
+            path: "/mcp",
+            status: 200,
+            durationMs: expect.any(Number),
+        });
+        expect(JSON.stringify(requestLogger.mock.calls)).not.toContain(USER_TOKEN);
+        expect(JSON.stringify(requestLogger.mock.calls)).not.toContain("tools/list");
+    });
 });
 
 describe("ALLOW_APP_TOKENS", () => {
@@ -141,6 +173,7 @@ describe("caller bearer is forwarded to Kusto through a tool call", () => {
         );
         ({ server, base } = await listen(buildKustoApp({ cfg, fetchImpl: fetchImpl as unknown as typeof fetch })));
     });
+
     afterEach(async () => {
         await close(server);
     });
@@ -164,5 +197,58 @@ describe("caller bearer is forwarded to Kusto through a tool call", () => {
         expect(fetchImpl).toHaveBeenCalledTimes(1);
         const [, init] = fetchImpl.mock.calls[0] as [unknown, RequestInit];
         expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${USER_TOKEN}`);
+    });
+});
+
+describe("synthetic REST adapter example", () => {
+    const syntheticConfig: SyntheticRestConfig = {
+        apiBaseUrl: "https://widgets.example.test",
+        resourceId: "api://synthetic-widgets",
+        scope: "api://synthetic-widgets/.default",
+    };
+
+    it("maps a typed MCP tool to REST and forwards the request-scoped bearer", async () => {
+        const fetchImpl = vi.fn(async () =>
+            new Response(JSON.stringify({ id: "widget-42", name: "Example" }), { status: 200 }),
+        );
+        const { server, base } = await listen(buildSyntheticRestApp({
+            config: syntheticConfig,
+            fetchImpl: fetchImpl as unknown as typeof fetch,
+        }));
+        try {
+            const response = await fetch(`${base}/mcp`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json, text/event-stream",
+                    Authorization: `Bearer ${USER_TOKEN}`,
+                },
+                body: JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: 3,
+                    method: "tools/call",
+                    params: { name: "get_widget", arguments: { widget_id: "widget-42" } },
+                }),
+            });
+
+            expect(response.status).toBe(200);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+            const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+            expect(url).toBe("https://widgets.example.test/v1/widgets/widget-42");
+            expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${USER_TOKEN}`);
+        } finally {
+            await close(server);
+        }
+    });
+
+    it("rejects a non-HTTPS upstream during app construction", () => {
+        expect(() =>
+            buildSyntheticRestApp({
+                config: {
+                    ...syntheticConfig,
+                    apiBaseUrl: "http://widgets.example.test",
+                },
+            }),
+        ).toThrow(/must use https/);
     });
 });

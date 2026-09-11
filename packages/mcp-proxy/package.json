@@ -5,6 +5,13 @@
     "type": "module",
     "license": "MIT",
     "private": true,
+    "exports": {
+        "./adapter-host": {
+            "types": "./dist/adapter-host.d.ts",
+            "import": "./dist/adapter-host.js"
+        },
+        "./package.json": "./package.json"
+    },
     "engines": {
         "node": ">=24"
     },
@@ -26,7 +33,7 @@
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.28.0",
         "express": "^5.1.0",
-        "pilotswarm-sdk": "0.5.37",
+        "pilotswarm-sdk": "0.5.63",
         "zod": "^4.0.0"
     },
     "devDependencies": {

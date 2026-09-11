@@ -74,7 +74,11 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   ]);
 
   // SERVICE_IMAGE_INFO: only services that build an image.
-  assert.deepEqual(Object.keys(SERVICE_IMAGE_INFO).sort(), ["portal", "worker"]);
+  assert.deepEqual(Object.keys(SERVICE_IMAGE_INFO).sort(), ["mcp-proxy", "portal", "worker"]);
+  assert.equal(
+    SERVICE_IMAGE_INFO["mcp-proxy"].dockerImageRepo,
+    "pilotswarm-mcp-proxy",
+  );
   assert.equal(SERVICE_IMAGE_INFO.worker.dockerImageRepo, "pilotswarm-worker");
   assert.equal(SERVICE_IMAGE_INFO.portal.dockerfile, "deploy/Dockerfile.portal");
 
@@ -83,6 +87,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(SERVICE_TO_MODULES.portal, ["base-infra", "portal"]);
   assert.deepEqual(SERVICE_TO_MODULES["git-cache"], ["git-cache"]);
   assert.deepEqual(SERVICE_TO_MODULES["git-repo-worker"], ["git-repo-worker"]);
+  assert.deepEqual(SERVICE_TO_MODULES["mcp-proxy"], ["mcp-proxy"]);
   assert.deepEqual(SERVICE_TO_MODULES["base-infra"], ["base-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["global-infra"], ["global-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["pls-anchor"], ["base-infra", "pls-anchor"]);

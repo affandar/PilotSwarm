@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { buildProxyApp } from "../proxy/server.js";
+import { buildProxyApp, type ProxyRequestLogEntry } from "../proxy/server.js";
 import { KUSTO_AUDIENCE, KUSTO_SCOPE, type KustoConfig, kustoConfigFromEnv } from "./config.js";
 import { registerKustoTools } from "./adapter.js";
 import type { FetchImpl } from "./client.js";
@@ -11,6 +11,8 @@ export interface BuildKustoAppOptions {
     allowAppTokens?: boolean;
     /** Injectable fetch (for tests). */
     fetchImpl?: FetchImpl;
+    /** Optional structured request sink. Defaults to the generic host logger. */
+    requestLogger?: (entry: ProxyRequestLogEntry) => void;
 }
 
 /**
@@ -34,5 +36,6 @@ export function buildKustoApp(opts: BuildKustoAppOptions = {}): Express {
                 "credential (the proxy holds none). Try: kusto_query { query: 'StormEvents | take 1' }.",
         },
         registerTools: (server) => registerKustoTools(server, cfg, opts.fetchImpl),
+        requestLogger: opts.requestLogger,
     });
 }

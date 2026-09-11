@@ -1,0 +1,50 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: __MCP_PROXY_RESOURCE_NAME__
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/instance: __DEPLOY_INSTANCE__
+    app.kubernetes.io/component: mcp-proxy
+    app.kubernetes.io/part-of: pilotswarm
+    pilotswarm.io/adapter: __DEPLOY_INSTANCE__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: mcp-proxy
+      pilotswarm.io/adapter: __DEPLOY_INSTANCE__
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: worker
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: git-repo-worker
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

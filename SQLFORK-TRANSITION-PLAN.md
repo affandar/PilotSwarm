@@ -292,13 +292,6 @@ The audit found the following candidates, in recommended execution order:
    other domain behavior under `Clients/sdk/typescript/src/sql-domain/`. The former SQLmort
    Python and .NET SDKs have been removed and are no longer upstream sources.
 
-3. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
-   image build, manifest rendering, apply, and rollout mechanics under
-   `deploy/apps/kusto-mcp/` may move to PilotSwarm if they add capabilities not already
-   present. Concrete clusters, services, image destinations, identities, and acceptance
-   scenarios remain in `sqlmort`. The public-sample Kusto adapter already in PilotSwarm
-   remains the platform reference implementation.
-
 The following remain explicitly SQL-owned and are **not** reverse-migration candidates:
 ADO WIQL, IcM, and Kusto connector implementations; provider authentication and response
 normalization; plugin composition images; `deploy/values/*.env` and MCP registrations;
@@ -306,9 +299,8 @@ SQL fleet topology and layered Windows tooling; domain prompts, work-item fixtur
 acceptance playlists, and runbooks; and private repository-to-audience mappings.
 
 **Recommended sequence:** first expose and consume the canonical provider contract; then
-move the neutral client SDKs; then split deployment mechanics; finally consider Kusto MCP
-wrappers. Each move must leave SQLmort with only a thin domain composition layer and must
-not make PilotSwarm depend on `sqlmort`.
+move the neutral client SDKs; then split deployment mechanics. Each move must leave SQLmort
+with only a thin domain composition layer and must not make PilotSwarm depend on `sqlmort`.
 
 ## 7. Strategy A — Reconcile the existing fork (default)
 
@@ -511,9 +503,11 @@ git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
   same provider ABI as ADO WIQL and IcM.
 - [ ] Expose the canonical provider ABI as a consumable PilotSwarm package/export, update the
   three SQLmort providers to consume it, and delete their structural `contracts.ts` mirrors.
-- [ ] Extract the remaining SQL-owned scenario and deployment surfaces. The public-sample
-  Kusto MCP reference adapter remains in the platform; SQL-specific values and composition
-  move to `sqlmort`.
+- [x] Extract the Kusto MCP deployment surface. The reusable adapter host and public-API
+  Kusto reference adapter remain in the platform; SQL-specific endpoint values, fleet
+  registrations, and acceptance scenarios live in `sqlmort`. The platform-managed `sqlwus2`
+  instance passed the delegated-MCP and complete external suites on 2026-09-11, after which
+  the copied sqlmort manifest and ad hoc build/apply wrappers were removed.
 - **Make `sqlmort` the deployment/integration repo:** it depends on core (fork now, upstream
   later), injects the IcM plugin, and owns the compose→build→ship pipeline.
 - **Split the deploy layer:** generic build recipes stay in **core** (to upstream); SQL-specific
@@ -976,6 +970,9 @@ small weekly rebases keep each migration/orchestration collision to one commit's
       the removed in-process ADO WIQL, IcM, or Kusto environment contracts.
 - [ ] External providers consume a canonical PilotSwarm-owned ABI artifact; SQLmort contains
       no copied provider-contract definitions.
+- [x] Generic MCP-over-HTTP deployment is platform-owned while SQL-specific Kusto values,
+      fleet registrations, and acceptance tests are sqlmort-owned; the platform-managed
+      instance passed the complete external suite and the copied deployment was removed.
 - [ ] Remaining Tier 1 providers and scenarios routed to their domain owners.
 - [ ] `sqlmort` owns the compose→build→ship pipeline; deployment = core + `sqlmort` (2 repos);
       the fork is a pure-platform repo.

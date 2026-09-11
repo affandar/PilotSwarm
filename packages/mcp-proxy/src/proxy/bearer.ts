@@ -19,3 +19,15 @@ export function runWithBearer<T>(bearer: string, fn: () => T): T {
 export function currentBearer(): string | undefined {
     return store.getStore();
 }
+
+/**
+ * Read the caller's delegated bearer bound by the auth middleware. Adapters
+ * must fail rather than fall back to a server credential when it is absent.
+ */
+export function requireBearer(): string {
+    const bearer = currentBearer();
+    if (!bearer) {
+        throw new Error("no caller bearer present on the request");
+    }
+    return bearer;
+}

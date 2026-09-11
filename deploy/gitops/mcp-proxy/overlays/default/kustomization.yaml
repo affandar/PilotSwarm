@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: pilotswarm
+resources:
+  - ../../base
+configMapGenerator:
+  - name: __MCP_PROXY_RESOURCE_NAME__-env
+    envs:
+      - .env
+replacements:
+  - source:
+      kind: ConfigMap
+      name: __MCP_PROXY_RESOURCE_NAME__-env
+      fieldPath: data.IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: __MCP_PROXY_RESOURCE_NAME__
+        fieldPaths:
+          - spec.template.spec.containers.[name=mcp-proxy].image

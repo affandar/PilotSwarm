@@ -22,12 +22,18 @@ COPY scripts/postinstall.js ./scripts/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/app/package.json ./packages/app/
 COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY packages/job-generator/package.json ./packages/job-generator/
+COPY packages/job-generator-provider/package.json ./packages/job-generator-provider/
 COPY packages/mcp-proxy/package.json ./packages/mcp-proxy/
 
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV npm_config_registry=${NPM_REGISTRY}
-# Full workspace install (devDeps included — tsc runs in-image).
-RUN npm ci --force
+# Install only the two workspaces compiled into this image. All workspace
+# manifests are still staged so npm can validate the root lockfile without
+# pulling unrelated application development dependencies.
+RUN npm ci --force \
+    --workspace pilotswarm-sdk \
+    --workspace pilotswarm-mcp-proxy
 
 # Sources
 COPY packages/sdk/ ./packages/sdk/
@@ -46,11 +52,15 @@ COPY scripts/postinstall.js ./scripts/
 COPY packages/sdk/package.json ./packages/sdk/
 COPY packages/app/package.json ./packages/app/
 COPY packages/horizon-store/package.json ./packages/horizon-store/
+COPY packages/job-generator/package.json ./packages/job-generator/
+COPY packages/job-generator-provider/package.json ./packages/job-generator-provider/
 COPY packages/mcp-proxy/package.json ./packages/mcp-proxy/
 
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV npm_config_registry=${NPM_REGISTRY}
-RUN npm ci --omit=dev --force
+RUN npm ci --omit=dev --force \
+    --workspace pilotswarm-sdk \
+    --workspace pilotswarm-mcp-proxy
 
 # Compiled JS from the build stage. The proxy imports ONLY the SDK's
 # dependency-free `mcp-auth-discovery` subpath (no barrel), so sdk/dist alone is

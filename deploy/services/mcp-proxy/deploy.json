@@ -1,0 +1,77 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "name": "mcp-proxy",
+  "kind": "app",
+  "_comment": "Generic instance-scoped delegated REST-to-MCP adapter. Runtime API settings arrive through external env overlays; credentials are not accepted.",
+  "instanceRequired": true,
+  "configurationModule": "configure-env.mjs",
+  "image": {
+    "repo": "pilotswarm-mcp-proxy",
+    "dockerfile": "packages/mcp-proxy/deploy/Dockerfile",
+    "buildWorkspaces": [
+      "packages/sdk",
+      "packages/mcp-proxy"
+    ]
+  },
+  "bicep": {
+    "modules": [
+      {
+        "name": "mcp-proxy",
+        "scope": "group"
+      }
+    ]
+  },
+  "gitops": {
+    "source": "mcp-proxy",
+    "overlay": "default",
+    "manifestContainer": "mcp-proxy-__DEPLOY_INSTANCE__-manifests",
+    "placeholders": [
+      {
+        "path": "base/deployment.yaml",
+        "envKeys": [
+          "DEPLOY_INSTANCE",
+          "MCP_PROXY_REPLICAS",
+          "MCP_PROXY_RESOURCE_NAME"
+        ],
+        "required": true
+      },
+      {
+        "path": "base/service.yaml",
+        "envKeys": [
+          "DEPLOY_INSTANCE",
+          "MCP_PROXY_RESOURCE_NAME"
+        ],
+        "required": true
+      },
+      {
+        "path": "base/networkpolicy.yaml",
+        "envKeys": [
+          "DEPLOY_INSTANCE",
+          "MCP_PROXY_RESOURCE_NAME"
+        ],
+        "required": true
+      },
+      {
+        "path": "overlays/default/kustomization.yaml",
+        "envKeys": [
+          "MCP_PROXY_RESOURCE_NAME"
+        ],
+        "required": true
+      }
+    ],
+    "overlayEnvMaps": ["MCP_PROXY_EXTRA_ENV"]
+  },
+  "rollout": {
+    "kind": "Deployment",
+    "name": "__MCP_PROXY_RESOURCE_NAME__",
+    "namespace": "pilotswarm",
+    "fluxConfiguration": "mcp-proxy-__DEPLOY_INSTANCE__",
+    "fluxKustomization": "mcp-proxy-__DEPLOY_INSTANCE__-proxy",
+    "verifyImage": true,
+    "expectedImageEnv": "IMAGE",
+    "prerequisites": [],
+    "timeout": "10m"
+  },
+  "pipeline": ["build", "bicep", "push", "manifests", "rollout"]
+}

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express, { type Express, type Request, type Response } from "express";
@@ -11,6 +13,15 @@ export interface ServerInfo {
     instructions?: string;
 }
 
+export interface ProxyRequestLogEntry {
+    requestId: string;
+    pod: string;
+    method: string;
+    path: string;
+    status: number;
+    durationMs: number;
+}
+
 export interface BuildProxyAppOptions {
     /** Auth policy: advertised resource identity + interactive-token gate. */
     auth: AuthOptions;
@@ -22,6 +33,8 @@ export interface BuildProxyAppOptions {
      * and side-effect free beyond tool registration.
      */
     registerTools: (server: McpServer) => void;
+    /** Optional structured request sink. Defaults to a safe stdout record. */
+    requestLogger?: (entry: ProxyRequestLogEntry) => void;
 }
 
 /**
@@ -38,6 +51,35 @@ export interface BuildProxyAppOptions {
  */
 export function buildProxyApp(opts: BuildProxyAppOptions): Express {
     const app = express();
+    const pod = process.env.HOSTNAME?.trim() || hostname();
+    const requestLogger =
+        opts.requestLogger ??
+        ((entry: ProxyRequestLogEntry) => {
+            console.log(`[pilotswarm-mcp-proxy] request ${JSON.stringify(entry)}`);
+        });
+
+    app.use((req: Request, res: Response, next) => {
+        if (req.path !== "/mcp") {
+            next();
+            return;
+        }
+
+        const requestId = randomUUID();
+        const startedAt = Date.now();
+        res.setHeader("x-request-id", requestId);
+        res.once("finish", () => {
+            requestLogger({
+                requestId,
+                pod,
+                method: req.method,
+                path: req.path,
+                status: res.statusCode,
+                durationMs: Date.now() - startedAt,
+            });
+        });
+        next();
+    });
+
     app.use(express.json({ limit: "4mb" }));
 
     // Public probes — registered before the auth middleware so they never

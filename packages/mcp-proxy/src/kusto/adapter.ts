@@ -1,21 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { currentBearer } from "../proxy/bearer.js";
+import { requireBearer } from "../proxy/bearer.js";
 import type { KustoConfig } from "./config.js";
 import { executeKusto, type FetchImpl, type KustoResult } from "./client.js";
-
-/**
- * Read the caller's delegated bearer bound by the auth middleware. Exported for
- * tests. Throws (rather than falling back to any server credential) when absent
- * — the proxy has nothing of its own to forward.
- */
-export function requireBearer(): string {
-    const bearer = currentBearer();
-    if (!bearer) {
-        throw new Error("no caller bearer present on the request (nothing to forward to Kusto)");
-    }
-    return bearer;
-}
 
 function ok(result: KustoResult) {
     return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };

@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __MCP_PROXY_RESOURCE_NAME__
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/instance: __DEPLOY_INSTANCE__
+    app.kubernetes.io/component: mcp-proxy
+    app.kubernetes.io/part-of: pilotswarm
+    pilotswarm.io/adapter: __DEPLOY_INSTANCE__
+spec:
+  replicas: __MCP_PROXY_REPLICAS__
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: mcp-proxy
+      pilotswarm.io/adapter: __DEPLOY_INSTANCE__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/instance: __DEPLOY_INSTANCE__
+        app.kubernetes.io/component: mcp-proxy
+        app.kubernetes.io/part-of: pilotswarm
+        pilotswarm.io/adapter: __DEPLOY_INSTANCE__
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+      containers:
+        - name: mcp-proxy
+          image: placeholder.invalid/pilotswarm-mcp-proxy:placeholder
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: __MCP_PROXY_RESOURCE_NAME__-env
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
