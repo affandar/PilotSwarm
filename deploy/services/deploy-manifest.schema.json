@@ -21,6 +21,12 @@
       "uniqueItems": true,
       "description": "App-kind service names, deployed after infraOrder."
     },
+    "standaloneServices": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "uniqueItems": true,
+      "description": "Services available for direct deployment but excluded from the all aggregate."
+    },
     "regionShort": {
       "type": "object",
       "additionalProperties": { "type": "string", "pattern": "^[a-z0-9]+$" }

@@ -45,6 +45,7 @@
 // reconciling against a missing-required file aborts the apply.
 
 import { run, log } from "./common.mjs";
+import { loadDeployManifest, resolveEnvTemplate } from "./services-manifest.mjs";
 
 // Sleep helper for retry backoff. Exposed for test injection.
 async function sleep(ms) {
@@ -93,6 +94,17 @@ export async function deleteBlobWithRetry({ account, container, blobName, runFn 
   throw err;
 }
 
+export function manifestContainerName(service, env) {
+  const serviceManifest = loadDeployManifest().services[service];
+  const template = serviceManifest?.gitops?.manifestContainer ?? `${service}-manifests`;
+  return resolveEnvTemplate(
+    template,
+    env,
+    `${service} gitops.manifestContainer`,
+    { SERVICE: service },
+  );
+}
+
 export async function publishManifests({ service, envName, env, stagedServiceRoot }) {
   const account = env.DEPLOYMENT_STORAGE_ACCOUNT_NAME;
   if (!account) {
@@ -110,7 +122,7 @@ export async function publishManifests({ service, envName, env, stagedServiceRoo
   // is enforced by every service's main.bicep (cert-manager-manifests,
   // cert-manager-issuers-manifests, worker-manifests, portal-manifests), so we
   // can compute it locally and stay decoupled from cache state.
-  const container = `${service}-manifests`;
+  const container = manifestContainerName(service, env);
 
   // Enumerate the local source tree (blob keys are POSIX-relative paths).
   const { readdirSync, statSync } = await import("node:fs");

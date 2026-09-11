@@ -19,6 +19,7 @@ import {
   stagingDir,
   validateService,
   validateEnv,
+  validateDeployInstance,
 } from "./lib/common.mjs";
 import { resolveSteps, defaultPipelineFor } from "./lib/stages.mjs";
 import { buildImage } from "./lib/build-image.mjs";
@@ -32,6 +33,7 @@ import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
+import { configureServiceEnv, loadDeployManifest } from "./lib/services-manifest.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -42,7 +44,8 @@ function parseArgs(argv) {
     steps: null,
     region: null,
     imageTag: null,
-    envOverlay: null,
+    envOverlays: [],
+    instance: null,
     clean: false,
     force: false,
     forceModules: [],
@@ -77,20 +80,30 @@ function parseArgs(argv) {
       flags.imageTag = a.slice("--image-tag=".length);
     } else if (a === "--image-tag") {
       flags.imageTag = args[++i];
+    } else if (a.startsWith("--instance=")) {
+      const value = a.slice("--instance=".length);
+      if (!value) throw new Error("--instance requires a name (got empty value)");
+      if (flags.instance !== null) throw new Error("--instance may be specified only once");
+      flags.instance = value;
+    } else if (a === "--instance") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--instance requires a name (e.g. --instance my-repo)");
+      }
+      if (flags.instance !== null) throw new Error("--instance may be specified only once");
+      flags.instance = value;
     // Node reserves --env-file for its own runtime, so the deploy CLI uses
     // --env-overlay for a file that is composed after the script starts.
     } else if (a.startsWith("--env-overlay=")) {
       const value = a.slice("--env-overlay=".length);
       if (!value) throw new Error("--env-overlay requires a path (got empty value)");
-      if (flags.envOverlay !== null) throw new Error("--env-overlay may be specified only once");
-      flags.envOverlay = value;
+      flags.envOverlays.push(value);
     } else if (a === "--env-overlay") {
       const value = args[++i];
       if (!value || value.startsWith("--")) {
         throw new Error("--env-overlay requires a path (e.g. --env-overlay ../composition/worker.env)");
       }
-      if (flags.envOverlay !== null) throw new Error("--env-overlay may be specified only once");
-      flags.envOverlay = value;
+      flags.envOverlays.push(value);
     } else if (a.startsWith("--")) {
       throw new Error(`Unknown flag: ${a}`);
     } else {
@@ -103,9 +116,9 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | git-cache | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
-        "Flags: --steps, --region, --image-tag, --env-overlay, --clean, --force, --help",
+        "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --help",
     );
   }
 
@@ -123,7 +136,7 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | git-cache | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
       "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
@@ -137,9 +150,12 @@ function printHelp() {
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
       "  --image-tag <tag>   Explicit image tag. Default: <env>-<short-sha>[-dirty].",
+      "  --instance <name>    Instance name for services that deploy repeated resources",
+      "                      (for example, one git-cache instance per repository).",
       "  --env-overlay <path> Overlay an external KEY=VALUE file on the local env.",
+      "                      Repeat in precedence order; later files win.",
       "                      Relative paths resolve from the current working directory.",
-      "  --clean             Wipe deploy/.tmp/<service>-<env>/ before running.",
+      "  --clean             Wipe deploy/.tmp/<service>[-<instance>]-<env>/ before running.",
       "  --force             Ignore deploy markers; redeploy every Bicep module even if",
       "                      its template + rendered params are unchanged since last success.",
       "  --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,",
@@ -230,6 +246,13 @@ async function runStage(name, ctx) {
       if (imageInfo && ctx.env.ACR_LOGIN_SERVER) {
         ctx.env.IMAGE = `${ctx.env.ACR_LOGIN_SERVER}/${imageInfo.dockerImageRepo}:${ctx.imageTag}`;
       }
+      await configureServiceEnv({
+        service: ctx.service,
+        env: ctx.env,
+        phase: "manifests",
+        imageTag: ctx.imageTag,
+        imageTagExplicit: ctx.imageTagExplicit,
+      });
       const stagedServiceRoot = stageManifests({
         service: ctx.service,
         envName: ctx.envName,
@@ -295,7 +318,8 @@ async function main() {
     steps,
     region,
     imageTag,
-    envOverlay,
+    envOverlays,
+    instance,
     clean,
     force,
     forceModules,
@@ -304,13 +328,26 @@ async function main() {
   // 1) Validate inputs (accepts the virtual `all` aggregate)
   validateService(service);
   validateEnv(envName);
+  if (instance !== null) validateDeployInstance(instance);
+  const serviceManifest = service === "all"
+    ? null
+    : loadDeployManifest().services[service];
+  if (serviceManifest?.instanceRequired && !instance) {
+    throw new Error(`Service '${service}' requires --instance <name>.`);
+  }
+  if (service === "all" && instance) {
+    throw new Error("--instance cannot be used with the 'all' aggregate.");
+  }
 
   // 2) Load env (FR-004) — single shared map so Bicep outputs cascade across
   // services in `all` mode (e.g. BaseInfra → Worker/Portal).
-  const { env, sources } = loadEnv(envName, { overlayEnvFile: envOverlay });
+  const { env, sources } = loadEnv(envName, { overlayEnvFiles: envOverlays });
   if (region) env.LOCATION = region; // CLI override
+  if (instance) env.DEPLOY_INSTANCE = instance; // explicit CLI input wins over overlays
   log("info", `Loaded env: ${sources.local}`);
-  if (sources.overlay) log("info", `Applied external env overlay: ${sources.overlay}`);
+  for (const overlay of sources.overlays) {
+    log("info", `Applied external env overlay: ${overlay}`);
+  }
 
   // 3a) Load any cached Bicep outputs from previous runs in this env. This lets
   // single-service runs (e.g. `worker mytestenv`) re-use upstream
@@ -327,6 +364,9 @@ async function main() {
   // each successful bicep stage in runStage() so manifests-stage env
   // substitution sees the composed values.
   composeDerivedEnv(env);
+  if (service !== "all") {
+    await configureServiceEnv({ service, env });
+  }
 
   // 4) Preflight CLIs (EC-1)
   assertCli("az", "https://aka.ms/azcli (winget install Microsoft.AzureCLI / brew install azure-cli)");
@@ -494,6 +534,7 @@ async function main() {
   // 6) Resolve image tag (FR-017) — shared across services in `all` mode so
   // worker and portal end up tagged consistently in one bring-up invocation.
   const resolvedTag = resolveImageTag({ envName, explicit: imageTag });
+  const imageTagExplicit = imageTag !== null;
   log("info", `Image tag: ${resolvedTag}`);
 
   // 7) Branch: `all` aggregates over the canonical sequence; otherwise single service.
@@ -501,9 +542,11 @@ async function main() {
     await runAll({
       envName,
       env,
-      envOverlay: sources.overlay,
+      envOverlays: sources.overlays,
+      instance,
       steps,
       imageTag: resolvedTag,
+      imageTagExplicit,
       clean,
       force,
       forceModules,
@@ -514,9 +557,11 @@ async function main() {
       service,
       envName,
       env,
-      envOverlay: sources.overlay,
+      envOverlays: sources.overlays,
+      instance,
       steps,
       imageTag: resolvedTag,
+      imageTagExplicit,
       clean,
       force,
       forceModules,
@@ -533,9 +578,11 @@ async function runOneService({
   service,
   envName,
   env,
-  envOverlay,
+  envOverlays,
+  instance,
   steps,
   imageTag,
+  imageTagExplicit,
   clean,
   force,
   forceModules,
@@ -543,11 +590,11 @@ async function runOneService({
 }) {
   if (clean) {
     const { rmSync } = await import("node:fs");
-    const dir = stagingDir(service, envName);
+    const dir = stagingDir(service, envName, instance);
     rmSync(dir, { recursive: true, force: true });
     log("info", `Cleaned staging dir: ${dir}`);
   }
-  const stage = stagingDir(service, envName);
+  const stage = stagingDir(service, envName, instance);
 
   const resolvedSteps = resolveSteps(steps, service);
   // In `all` mode, intersect requested steps with this service's default
@@ -573,6 +620,7 @@ async function runOneService({
     env,
     region: env.LOCATION,
     imageTag,
+    imageTagExplicit,
     stagingDir: stage,
     moduleListOverride,
     force,
@@ -586,11 +634,12 @@ async function runOneService({
     } catch (e) {
       log("err", `Failed: ${service} ${step}`);
       process.stderr.write(`${e.message}\n`);
-      const overlayArg = envOverlay
-        ? ` --env-overlay ${JSON.stringify(envOverlay)}`
-        : "";
+      const instanceArg = instance ? ` --instance ${JSON.stringify(instance)}` : "";
+      const overlayArg = envOverlays
+        .map((overlay) => ` --env-overlay ${JSON.stringify(overlay)}`)
+        .join("");
       process.stderr.write(
-        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}${overlayArg}\n`,
+        `\nRe-run with: npm run deploy -- ${service} ${envName} --steps ${step}${instanceArg}${overlayArg}\n`,
       );
       process.exit(1);
     }
@@ -605,9 +654,10 @@ async function runOneService({
 async function runAll({
   envName,
   env,
-  envOverlay,
+  envOverlays,
   steps,
   imageTag,
+  imageTagExplicit,
   clean,
   force,
   forceModules,
@@ -633,9 +683,11 @@ async function runAll({
       service: svc,
       envName,
       env,
-      envOverlay,
+      envOverlays,
+      instance: null,
       steps,
       imageTag,
+      imageTagExplicit,
       clean,
       force,
       forceModules,

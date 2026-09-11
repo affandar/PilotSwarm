@@ -9,6 +9,7 @@
 // Subsequent stages (manifests, rollout) see the merged env map in-process.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, isAbsolute } from "node:path";
 import { run, runJson, log, REPO_ROOT } from "./common.mjs";
 import { renderParams } from "./render-params.mjs";
@@ -32,6 +33,15 @@ function moduleBicepPath(moduleName) {
 }
 function moduleParamsTemplate(moduleName) {
   return `deploy/services/${moduleName}/bicep/${moduleName}.params.template.json`;
+}
+
+export function boundedDeploymentName(value, maxLength = 64) {
+  if (value.length <= maxLength) return value;
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 8);
+  const prefix = value
+    .slice(0, maxLength - hash.length - 1)
+    .replace(/-+$/, "");
+  return `${prefix}-${hash}`;
 }
 
 // FR-022 alias map: Bicep camelCase output → UPPER_SNAKE env key.
@@ -98,6 +108,10 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
 async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet }) {
   const scope = MODULE_SCOPE[moduleName];
   if (!scope) throw new Error(`Unknown Bicep scope for module '${moduleName}'`);
+  const moduleIdentity =
+    env.DEPLOY_INSTANCE && moduleName === service
+      ? `${moduleName}-${env.DEPLOY_INSTANCE}`
+      : moduleName;
   const paramsRel = moduleParamsTemplate(moduleName);
   const bicepRel = moduleBicepPath(moduleName);
   const templateAbs = join(REPO_ROOT, paramsRel);
@@ -126,8 +140,14 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // without rebuilding everything via `--force`.
   const effectiveForce =
     force === true ||
-    (forceSet && forceSet.has(moduleName));
-  const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
+    (forceSet && (forceSet.has(moduleName) || forceSet.has(moduleIdentity)));
+  const decision = shouldSkipDeploy({
+    envName,
+    moduleName: moduleIdentity,
+    templateHash,
+    paramsHash,
+    force: effectiveForce,
+  });
   if (decision.skip) {
     log(
       "info",
@@ -144,7 +164,9 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   }
 
   // 2) Run az deployment <scope> create.
-  const deploymentName = `${moduleName}-${envName}-${(region || "global").replace(/[^a-zA-Z0-9-]/g, "")}`;
+  const deploymentName = boundedDeploymentName(
+    `${moduleIdentity}-${envName}-${(region || "global").replace(/[^a-zA-Z0-9-]/g, "")}`,
+  );
   const baseArgs = [
     "deployment",
     scope,
@@ -330,7 +352,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // Persist the success marker so a subsequent invocation can skip this
   // deploy when neither the bicep tree nor the rendered params have
   // changed. Includes the deployment name + region for diagnostics.
-  saveMarker(envName, moduleName, {
+  saveMarker(envName, moduleIdentity, {
     deploymentName,
     region: region || env.LOCATION || "",
     templateHash,

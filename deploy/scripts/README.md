@@ -111,6 +111,11 @@ npm run deploy -- worker foo --steps manifests
 
 # Overlay values owned by another repository or deployment system
 npm run deploy -- worker foo --env-overlay ../org-deployment/worker.env
+
+# Ordered composition: later overlays win
+npm run deploy -- git-cache foo --instance sample-repo \
+  --env-overlay ../org-deployment/sample-repo.env \
+  --env-overlay ../org-deployment/sample-repo.foo.env
 ```
 
 > **Note**: when invoking via `npm run deploy`, separate npm flags from
@@ -123,16 +128,18 @@ npm run deploy -- worker foo --env-overlay ../org-deployment/worker.env
 ```
 npm run deploy -- <service> <env> [flags]
 
-Services:  worker | portal | baseinfra | globalinfra | all
+Services:  worker | portal | git-cache | baseinfra | globalinfra | all
 Envs:      a local env name created with `npm run deploy:new-env`
 
 Flags:
   --steps <list>      build,bicep,push,manifests,rollout (or 'noop')
   --region <name>     Override LOCATION from <env>.env
   --image-tag <tag>   Default: <env>-<short-sha>[-dirty]
+  --instance <name>   Required by instance-scoped services such as git-cache
   --env-overlay <path> Overlay an external KEY=VALUE file on the local env.
+                       Repeat in precedence order; later files win.
                        Relative paths resolve from the current working directory.
-  --clean             Wipe deploy/.tmp/<service>-<env>/ before running
+  --clean             Wipe deploy/.tmp/<service>[-<instance>]-<env>/ before running
   --force             Ignore deploy markers; redeploy every Bicep module even
                       if its template + rendered params are unchanged
   --force-module <m>  Force-redeploy a single named Bicep module (e.g. portal,
@@ -150,10 +157,10 @@ Flags:
 | `noop` | Load env, run preflight (Azure login + subscription match), exit. | all |
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
-| `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
+| `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. The standalone git-cache service also reconciles its instance-specific AKS node pool and workload-identity federation. | per-service module list |
 | `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
-| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
-| `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
+| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>[-<instance>]-<env>/`, then `az storage blob upload-batch` the Kustomize tree to the Flux Storage Bucket. Instance-scoped services publish to an isolated container. | worker, portal, git-cache |
+| `rollout` | Force the service's Flux Kustomization to reconcile, then wait for the declared Deployment or DaemonSet. Image verification is enabled for platform-built app images and disabled for fixed/external images. | worker, portal, git-cache |
 
 The default pipeline (no `--steps`) is the full chain. For `baseinfra`
 and `globalinfra` the chain ends at `bicep` (no app artifacts to roll
@@ -166,17 +173,19 @@ Every deploy targets a personal local env at `deploy/envs/local/<name>/.env`
 **standalone** — `deploy.mjs` reads them directly with no runtime cascade
 onto a shared base file.
 
-Use `--env-overlay <path>` when deployment composition is owned outside the
-PilotSwarm checkout. The external file uses the same flat dotenv syntax and is
-overlaid without being copied into PilotSwarm. Relative paths resolve from the
-current working directory, so automation should prefer an absolute path. The
-flag is named `--env-overlay` because Node.js reserves `--env-file` for its own
-runtime configuration before `deploy.mjs` can parse arguments.
+Use repeatable `--env-overlay <path>` flags when deployment composition is
+owned outside the PilotSwarm checkout. Each external file uses the same flat
+dotenv syntax and is overlaid without being copied into PilotSwarm. Files are
+applied in command-line order, so a base repository file can be followed by a
+stamp-specific override. Relative paths resolve from the current working
+directory, so automation should prefer absolute paths. The flag is named
+`--env-overlay` because Node.js reserves `--env-file` for its own runtime
+configuration before `deploy.mjs` can parse arguments.
 
 Environment precedence, from lowest to highest, is:
 
 1. `deploy/envs/local/<name>/.env`
-2. the optional external `--env-overlay`
+2. external `--env-overlay` files in command-line order
 3. matching process-environment variables
 4. explicit CLI flags such as `--region`
 

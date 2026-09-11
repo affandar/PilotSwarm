@@ -19,7 +19,9 @@
     "buildWorkspaces": ["packages/sdk", "packages/app"]
   },
   "rollout": {
-    "deployment": "pilotswarm-portal",
-    "namespace": "pilotswarm"
+    "kind": "Deployment",
+    "name": "pilotswarm-portal",
+    "namespace": "pilotswarm",
+    "verifyImage": true
   }
 }

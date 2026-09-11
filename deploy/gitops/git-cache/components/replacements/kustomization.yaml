@@ -1,0 +1,137 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_DAEMONSET_NAME
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - metadata.name
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_SERVICE_ACCOUNT_NAME
+    targets:
+      - select:
+          kind: ServiceAccount
+        fieldPaths:
+          - metadata.name
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.serviceAccountName
+      - select:
+          kind: ClusterRoleBinding
+        fieldPaths:
+          - subjects.[kind=ServiceAccount].name
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_NODE_PATCHER_NAME
+    targets:
+      - select:
+          kind: ClusterRole
+        fieldPaths:
+          - metadata.name
+      - select:
+          kind: ClusterRoleBinding
+        fieldPaths:
+          - metadata.name
+          - roleRef.name
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_SECRET_PROVIDER_CLASS_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - metadata.name
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.volumes.[name=ado-pat].csi.volumeAttributes.secretProviderClass
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.REPO_NAME
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - metadata.labels.[pilotswarm.io/git-cache-repo]
+          - spec.selector.matchLabels.[pilotswarm.io/git-cache-repo]
+          - spec.template.metadata.labels.[pilotswarm.io/git-cache-repo]
+          - spec.template.spec.nodeSelector.[pilotswarm.io/git-cache-repo]
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_IMAGE
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.containers.[name=git-cache].image
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.CACHE_MEM_LIMIT
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.containers.[name=git-cache].resources.limits.memory
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.CACHE_HOSTPATH
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.volumes.[name=git-cache].hostPath.path
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: ServiceAccount
+        fieldPaths:
+          - metadata.annotations.[azure.workload.identity/client-id]
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.clientID
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.GIT_CACHE_PAT_KEYVAULT_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.keyvaultName
+
+  - source:
+      kind: ConfigMap
+      name: git-cache-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.tenantId

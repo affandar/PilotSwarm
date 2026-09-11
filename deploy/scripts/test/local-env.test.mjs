@@ -144,6 +144,27 @@ test("loadEnv overlays an external env file before process-env overrides", () =>
       },
     });
 
+    test("loadEnv applies repeated external overlays in order", () => {
+      const dir = mkdtempSync(join(tmpdir(), "ps-overlay-order-"));
+      const first = join(dir, "first.env");
+      const second = join(dir, "second.env");
+      writeFileSync(first, "ORDER=first\nFIRST_ONLY=yes\n");
+      writeFileSync(second, "ORDER=second\nSECOND_ONLY=yes\n");
+      try {
+        const { env, sources } = loadEnv(TEST_NAME, {
+          overlayEnvFiles: [first, second],
+          processEnv: {},
+        });
+        assert.equal(env.ORDER, "second");
+        assert.equal(env.FIRST_ONLY, "yes");
+        assert.equal(env.SECOND_ONLY, "yes");
+        assert.deepEqual(sources.overlays, [resolve(first), resolve(second)]);
+        assert.equal(sources.overlay, resolve(second));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     assert.equal(env.VALUE, "process");
     assert.equal(env.LOCAL_ONLY, "local");
     assert.equal(env.OVERLAY_ONLY, "process");

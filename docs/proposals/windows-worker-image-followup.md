@@ -104,8 +104,9 @@ them; none is needed on the Linux path.
   of the Linux `Dockerfile.worker` COPY manifest). Small build context because
   `node_modules` is built in-image, not shipped in the context.
 - **Windows git-cache + git-repo-worker DaemonSets**
-  (`deploy/gitops/git-cache-windows/`, `deploy/gitops/git-repo-worker-windows/`)
-  — the Windows analogs of the Linux `deploy/gitops/git-cache-linux/` +
+  (`deploy/gitops/git-cache/components/windows/`,
+  `deploy/gitops/git-repo-worker-windows/`) — the Windows analogs of the Linux
+  `deploy/gitops/git-cache/components/linux/` +
   `deploy/gitops/git-repo-worker-linux/` manifests: `nodeSelector kubernetes.io/os:
   windows`, `C:\`-style hostPaths, and a nanoserver (not busybox) init step
   because a Windows pod can't run a Linux init container.

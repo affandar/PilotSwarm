@@ -3,7 +3,7 @@
 // Reads deploy/services/deploy-manifest.json + deploy/services/<svc>/deploy.json
 // and exposes a single structured object the orchestrator consumes. Stdlib-only
 // structural validator (zero deps) — checks shape, enums, references, and the
-// invariant that every name in {infraOrder ∪ services} has a matching
+// invariant that every name in {infraOrder ∪ services ∪ standaloneServices} has a matching
 // deploy.json file.
 //
 // Distinct from the enterprise services.json / service.json files that live alongside
@@ -11,7 +11,8 @@
 // submodule; this loader never touches them.
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { REPO_ROOT } from "./common.mjs";
 
@@ -27,7 +28,8 @@ export function validateRootManifest(obj, path = "deploy-manifest.json") {
     return [`${path}: root must be an object`];
   }
   if (obj.schemaVersion !== 1) errs.push(`${path}: schemaVersion must be 1`);
-  for (const key of ["infraOrder", "services"]) {
+  for (const key of ["infraOrder", "services", "standaloneServices"]) {
+    if (key === "standaloneServices" && obj[key] === undefined) continue;
     if (!Array.isArray(obj[key])) {
       errs.push(`${path}: '${key}' must be an array`);
       continue;
@@ -41,10 +43,14 @@ export function validateRootManifest(obj, path = "deploy-manifest.json") {
       seen.add(v);
     }
   }
-  if (Array.isArray(obj.infraOrder) && Array.isArray(obj.services)) {
-    for (const s of obj.services) {
-      if (obj.infraOrder.includes(s)) {
-        errs.push(`${path}: '${s}' appears in both infraOrder and services`);
+  const groups = ["infraOrder", "services", "standaloneServices"]
+    .filter((key) => Array.isArray(obj[key]));
+  for (let i = 0; i < groups.length; i++) {
+    for (let j = i + 1; j < groups.length; j++) {
+      for (const name of obj[groups[i]]) {
+        if (obj[groups[j]].includes(name)) {
+          errs.push(`${path}: '${name}' appears in both ${groups[i]} and ${groups[j]}`);
+        }
       }
     }
   }
@@ -129,11 +135,33 @@ export function validateServiceManifest(obj, path) {
   if (obj.rollout !== undefined) {
     if (!obj.rollout || typeof obj.rollout !== "object") errs.push(`${path}: 'rollout' must be an object`);
     else {
-      if (typeof obj.rollout.deployment !== "string") {
-        errs.push(`${path}: rollout.deployment must be a string`);
+      if (!["Deployment", "DaemonSet"].includes(obj.rollout.kind)) {
+        errs.push(`${path}: rollout.kind must be 'Deployment' or 'DaemonSet'`);
+      }
+      if (typeof obj.rollout.name !== "string" || obj.rollout.name.length === 0) {
+        errs.push(`${path}: rollout.name must be a non-empty string`);
       }
       if (typeof obj.rollout.namespace !== "string" || obj.rollout.namespace.length === 0) {
         errs.push(`${path}: rollout.namespace must be a non-empty string`);
+      }
+      if (
+        obj.rollout.fluxConfiguration !== undefined &&
+        (typeof obj.rollout.fluxConfiguration !== "string" || obj.rollout.fluxConfiguration.length === 0)
+      ) {
+        errs.push(`${path}: rollout.fluxConfiguration must be a non-empty string`);
+      }
+      if (
+        obj.rollout.verifyImage !== undefined &&
+        typeof obj.rollout.verifyImage !== "boolean"
+      ) {
+        errs.push(`${path}: rollout.verifyImage must be a boolean`);
+      }
+      if (
+        obj.rollout.timeout !== undefined &&
+        (typeof obj.rollout.timeout !== "string" ||
+          !/^[1-9][0-9]*(?:s|m|h)$/.test(obj.rollout.timeout))
+      ) {
+        errs.push(`${path}: rollout.timeout must be a positive duration such as '30m'`);
       }
     }
   }
@@ -148,9 +176,62 @@ export function validateServiceManifest(obj, path) {
       if (!VALID_STEPS.has(s)) errs.push(`${path}: pipeline contains invalid step '${s}'`);
     }
   }
+  if (obj.instanceRequired !== undefined && typeof obj.instanceRequired !== "boolean") {
+    errs.push(`${path}: 'instanceRequired' must be a boolean`);
+  }
+  if (
+    obj.configurationModule !== undefined &&
+    (typeof obj.configurationModule !== "string" || !obj.configurationModule.endsWith(".mjs"))
+  ) {
+    errs.push(`${path}: 'configurationModule' must be an .mjs path`);
+  }
+  if (obj.gitops !== undefined) {
+    if (!obj.gitops || typeof obj.gitops !== "object" || Array.isArray(obj.gitops)) {
+      errs.push(`${path}: 'gitops' must be an object`);
+    } else {
+      for (const key of ["source", "overlay", "manifestContainer"]) {
+        if (
+          obj.gitops[key] !== undefined &&
+          (typeof obj.gitops[key] !== "string" || obj.gitops[key].length === 0)
+        ) {
+          errs.push(`${path}: gitops.${key} must be a non-empty string`);
+        }
+      }
+      if (obj.gitops.placeholders !== undefined) {
+        if (!Array.isArray(obj.gitops.placeholders)) {
+          errs.push(`${path}: gitops.placeholders must be an array`);
+        } else {
+          for (const rule of obj.gitops.placeholders) {
+            if (!rule || typeof rule !== "object") {
+              errs.push(`${path}: gitops.placeholders entries must be objects`);
+              continue;
+            }
+            if (typeof rule.path !== "string" || rule.path.length === 0) {
+              errs.push(`${path}: gitops.placeholders[].path must be a non-empty string`);
+            }
+            if (
+              !Array.isArray(rule.envKeys) ||
+              rule.envKeys.length === 0 ||
+              rule.envKeys.some((key) => typeof key !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(key))
+            ) {
+              errs.push(`${path}: gitops.placeholders[].envKeys must contain env-key strings`);
+            }
+            if (rule.required !== undefined && typeof rule.required !== "boolean") {
+              errs.push(`${path}: gitops.placeholders[].required must be a boolean`);
+            }
+          }
+        }
+      }
+    }
+  }
   // Cross-field rules.
   if (obj.kind === "app") {
-    if (!obj.image) errs.push(`${path}: kind=app requires 'image'`);
+    const pipeline = Array.isArray(obj.pipeline) ? obj.pipeline : null;
+    if (!obj.image && (!pipeline || pipeline.includes("build") || pipeline.includes("push"))) {
+      errs.push(
+        `${path}: kind=app requires 'image' unless an explicit pipeline omits build and push`,
+      );
+    }
   }
   return errs;
 }
@@ -185,6 +266,7 @@ export function loadDeployManifest(opts = {}) {
   const errs = validateRootManifest(root, "deploy-manifest.json");
 
   const allSequence = [...(root.infraOrder ?? []), ...(root.services ?? [])];
+  const registeredServices = [...allSequence, ...(root.standaloneServices ?? [])];
   const services = {};
   // Service name ↔ folder canonicalization: lowercase + strip hyphens. Both
   // service names and folders are now kebab-case (e.g. "cert-manager"), but
@@ -195,7 +277,7 @@ export function loadDeployManifest(opts = {}) {
     ? readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)
     : [];
 
-  for (const name of allSequence) {
+  for (const name of registeredServices) {
     const folder = allFolders.find((f) => canon(f) === canon(name));
     if (!folder) {
       errs.push(`deploy-manifest.json: '${name}' has no matching service folder under deploy/services/`);
@@ -214,19 +296,23 @@ export function loadDeployManifest(opts = {}) {
     }
     // Cross-check kind vs root placement.
     const inInfra = (root.infraOrder ?? []).includes(name);
+    const inServiceSequence = (root.services ?? []).includes(name);
     if (inInfra && svc.kind !== "infra") errs.push(`${rel}: kind must be 'infra' (listed in infraOrder)`);
-    if (!inInfra && svc.kind !== "app") errs.push(`${rel}: kind must be 'app' (listed in services)`);
+    if (inServiceSequence && svc.kind !== "app") errs.push(`${rel}: kind must be 'app' (listed in services)`);
 
     services[name] = svc;
   }
 
   // Catch service folders with a deploy.json that aren't referenced in the root.
-  const sequenceCanonical = new Set(allSequence.map(canon));
+  const sequenceCanonical = new Set(registeredServices.map(canon));
   for (const folder of allFolders) {
     if (sequenceCanonical.has(canon(folder))) continue;
     const svcPath = join(dir, folder, "deploy.json");
     if (existsSync(svcPath)) {
-      errs.push(`${folder}/deploy.json: present but '${folder}' is not in deploy-manifest.json infraOrder/services`);
+      errs.push(
+        `${folder}/deploy.json: present but '${folder}' is not in deploy-manifest.json ` +
+          `infraOrder/services/standaloneServices`,
+      );
     }
   }
 
@@ -255,6 +341,55 @@ export function defaultPipelineForKind(kind, root) {
 export function pipelineForService(svc, root) {
   if (Array.isArray(svc?.pipeline)) return [...svc.pipeline];
   return defaultPipelineForKind(svc.kind, root);
+}
+
+export function resolveEnvTemplate(value, env, label, extra = {}) {
+  const unresolved = [];
+  const values = { ...env, ...extra };
+  const resolved = value.replace(/__([A-Z][A-Z0-9_]*)__/g, (_match, key) => {
+    const replacement = values[key];
+    if (replacement === undefined || replacement === null || replacement === "") {
+      unresolved.push(key);
+      return `__${key}__`;
+    }
+    return String(replacement);
+  });
+  if (unresolved.length > 0) {
+    throw new Error(`${label} has unresolved env tokens: ${unresolved.join(", ")}`);
+  }
+  return resolved;
+}
+
+export async function configureServiceEnv({
+  service,
+  env,
+  phase = "initial",
+  imageTag = null,
+  imageTagExplicit = false,
+}) {
+  const serviceManifest = loadDeployManifest().services[service];
+  const moduleRel = serviceManifest?.configurationModule;
+  if (!moduleRel) return;
+
+  const serviceDir = resolve(SERVICES_DIR, service);
+  const modulePath = resolve(serviceDir, moduleRel);
+  if (!modulePath.startsWith(`${serviceDir}${sep}`) || !existsSync(modulePath)) {
+    throw new Error(
+      `${service}/deploy.json configurationModule must resolve to an existing file ` +
+        `inside ${serviceDir}: ${moduleRel}`,
+    );
+  }
+
+  const module = await import(pathToFileURL(modulePath).href);
+  if (typeof module.configureEnv !== "function") {
+    throw new Error(`${moduleRel} must export configureEnv(env, context).`);
+  }
+  await module.configureEnv(env, {
+    phase,
+    imageTag,
+    imageTagExplicit,
+    service,
+  });
 }
 
 /**

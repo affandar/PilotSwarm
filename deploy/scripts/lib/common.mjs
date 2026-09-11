@@ -78,6 +78,7 @@ export function parseEnvFile(path) {
 // at envname=12).
 export const RESERVED_ENV_NAMES = ["dev", "prod"];
 export const LOCAL_ENV_NAME_RE = /^[a-z][a-z0-9]{0,11}$/;
+export const DEPLOY_INSTANCE_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
 export function validateLocalEnvName(name) {
   if (RESERVED_ENV_NAMES.includes(name)) {
@@ -86,11 +87,22 @@ export function validateLocalEnvName(name) {
         `lowercase, must start with a letter).`,
     );
   }
+
   if (!LOCAL_ENV_NAME_RE.test(name)) {
     throw new Error(
       `Invalid env name: '${name}'.\n` +
         `Must match /^[a-z][a-z0-9]{0,11}$/ — start with a letter, 1–12 lowercase ` +
         `alphanumeric characters, no separators.`,
+    );
+  }
+}
+
+export function validateDeployInstance(name) {
+  if (!DEPLOY_INSTANCE_RE.test(name) || name.includes("--")) {
+    throw new Error(
+      `Invalid deploy instance: '${name}'.\n` +
+        `Must be a lowercase DNS label up to 40 characters: letters, digits, and ` +
+        `single hyphens between alphanumeric characters.`,
     );
   }
 }
@@ -128,7 +140,7 @@ export function applyProcessEnvOverrides(env, processEnv = process.env) {
 // tests). We do NOT merge the entire process environment.
 export function loadEnv(
   envName,
-  { overlayEnvFile = null, processEnv = process.env } = {},
+  { overlayEnvFile = null, overlayEnvFiles = null, processEnv = process.env } = {},
 ) {
   const localEnvFile = envFilePath(envName);
 
@@ -140,20 +152,32 @@ export function loadEnv(
   }
 
   const merged = parseEnvFile(localEnvFile);
-  let resolvedOverlay = null;
-  if (overlayEnvFile !== null) {
-    resolvedOverlay = resolve(overlayEnvFile);
+  const requestedOverlays = overlayEnvFiles == null
+    ? (overlayEnvFile == null ? [] : [overlayEnvFile])
+    : overlayEnvFiles;
+  if (!Array.isArray(requestedOverlays)) {
+    throw new Error("overlayEnvFiles must be an array when specified.");
+  }
+  const resolvedOverlays = [];
+  for (const overlay of requestedOverlays) {
+    const resolvedOverlay = resolve(overlay);
     if (!existsSync(resolvedOverlay) || !statSync(resolvedOverlay).isFile()) {
       throw new Error(`External env file not found or not a file: ${resolvedOverlay}`);
     }
     Object.assign(merged, parseEnvFile(resolvedOverlay));
+    resolvedOverlays.push(resolvedOverlay);
   }
 
   applyProcessEnvOverrides(merged, processEnv);
 
   return {
     env: merged,
-    sources: { base: null, local: localEnvFile, overlay: resolvedOverlay },
+    sources: {
+      base: null,
+      local: localEnvFile,
+      overlay: resolvedOverlays.at(-1) ?? null,
+      overlays: resolvedOverlays,
+    },
   };
 }
 
@@ -392,8 +416,9 @@ export function resolveImageTag({ envName, explicit }) {
 
 // Repo-local staging root. Per FR-019: deterministic, repo-local, gitignored.
 //   <repo>/deploy/.tmp/<service>-<env>/
-export function stagingDir(service, envName) {
-  const dir = join(REPO_ROOT, "deploy", ".tmp", `${service}-${envName}`);
+export function stagingDir(service, envName, instance = null) {
+  const qualifier = instance ? `${service}-${instance}` : service;
+  const dir = join(REPO_ROOT, "deploy", ".tmp", `${qualifier}-${envName}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -413,7 +438,11 @@ function loadServices() {
   if (_services) return _services;
   const manifestPath = join(REPO_ROOT, "deploy", "services", "deploy-manifest.json");
   const root = JSON.parse(readFileSync(manifestPath, "utf8"));
-  _services = [...(root.infraOrder ?? []), ...(root.services ?? [])];
+  _services = [
+    ...(root.infraOrder ?? []),
+    ...(root.services ?? []),
+    ...(root.standaloneServices ?? []),
+  ];
   return _services;
 }
 

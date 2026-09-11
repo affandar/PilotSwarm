@@ -3,14 +3,16 @@ kind: ServiceAccount
 metadata:
   name: pilotswarm-git-cache
   namespace: pilotswarm
+  annotations:
+    azure.workload.identity/client-id: placeholder
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache
 ---
-# The mirror daemon patches its OWN node: it removes the startup
-# `cache-not-ready` taint and adds a `<repo>=ready` label once the mirror is
-# materialized (AKS-GIT-HYDRATION.md section 6, readiness gating). That needs
-# cluster-scoped get/patch on nodes. Scoped to nodes only; no other verbs.
+# The mirror daemon patches its OWN node: it adds a `<repo>=ready` label once
+# the mirror is materialized and best-effort removes the pool's
+# `cache-not-ready` isolation taint (AKS-GIT-HYDRATION.md section 6, readiness
+# gating). That needs cluster-scoped get/patch on nodes. Scoped to nodes only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

@@ -19,9 +19,9 @@ data:
     # -----------------------------------------------------------------------
     # PilotSwarm git-cache: node-local bare-mirror maintainer (DaemonSet).
     # Lifecycle: (1) initial `git clone --mirror` -> node hostPath, heavily
-    # logged + timed; (2) clear the node's cache-not-ready taint + add a
-    # ready label so workers may schedule; (3) loop `git fetch --prune` on a
-    # configurable interval with GC disabled (append-only mirror).
+    # logged + timed; (2) add a ready label and best-effort remove the
+    # pool-managed cache-not-ready taint; (3) loop `git fetch --prune` on a configurable
+    # interval with GC disabled (append-only mirror).
     # Busybox/ash + alpine/git compatible. No bashisms.
     # -----------------------------------------------------------------------
     set -eu
@@ -31,9 +31,9 @@ data:
     CACHE_ROOT="${CACHE_ROOT:-/mnt/git-cache}"
     FETCH_INTERVAL_SECONDS="${FETCH_INTERVAL_SECONDS:-3600}"
     FETCH_JITTER_SECONDS="${FETCH_JITTER_SECONDS:-300}"
-    # Node readiness gating (section 6). The node pool boots pre-tainted with
-    # CACHE_NOT_READY_TAINT_KEY; this daemon removes it once the mirror exists
-    # and stamps READY_LABEL_KEY=ready so worker pods can select the node.
+    # Node readiness gating (section 6). This daemon stamps
+    # READY_LABEL_KEY=ready so worker pods can select the node, and also attempts
+    # to remove CACHE_NOT_READY_TAINT_KEY where the platform permits it.
     CACHE_NOT_READY_TAINT_KEY="${CACHE_NOT_READY_TAINT_KEY:-pilotswarm.io/cache-not-ready}"
     READY_LABEL_KEY="${READY_LABEL_KEY:-pilotswarm.io/git-cache-${REPO_NAME}}"
     NODE_NAME="${NODE_NAME:-unknown-node}"
@@ -62,9 +62,13 @@ data:
     # --- ADO auth (never logged) -------------------------------------------
     # PAT -> HTTP Basic ':<PAT>' injected per-invocation via http.extraHeader,
     # so the secret never lands on argv we echo, on disk, or in git config.
+    ADO_PAT_VALUE="${ADO_PAT:-}"
+    if [ -z "$ADO_PAT_VALUE" ] && [ -n "${ADO_PAT_FILE:-}" ] && [ -r "$ADO_PAT_FILE" ]; then
+      ADO_PAT_VALUE="$(cat "$ADO_PAT_FILE")"
+    fi
     AUTH_B64=""
-    if [ -n "${ADO_PAT:-}" ]; then
-      AUTH_B64="$(printf ':%s' "$ADO_PAT" | base64 | tr -d '\n')"
+    if [ -n "$ADO_PAT_VALUE" ]; then
+      AUTH_B64="$(printf ':%s' "$ADO_PAT_VALUE" | base64 | tr -d '\n')"
       log "ADO PAT present -> authenticating mirror fetches as Basic (redacted)"
     else
       log "WARN no ADO_PAT set -> assuming an unauthenticated/anonymous remote"

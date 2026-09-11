@@ -51,6 +51,9 @@ test("__FOUNDRY_ENDPOINT__ in model_providers.json is substituted from FOUNDRY_E
       PILOTSWARM_LIVE_TURN: "0",
       PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgres://test/cms",
       PILOTSWARM_DB_AAD_USER: "uami",
+      PILOTSWARM_WORKER_TAGS: "generic",
+      WORKER_REPLICAS: "3",
+      CALLER_AUTH_KEYVAULT_NAME: "kvtest",
       LOCATION: "westus3",
       FOUNDRY_ENDPOINT: "https://pstest-aif.cognitiveservices.azure.com/",
     };
@@ -105,6 +108,9 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
       PILOTSWARM_LIVE_TURN: "0",
       PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgres://test/cms",
       PILOTSWARM_DB_AAD_USER: "uami",
+      PILOTSWARM_WORKER_TAGS: "generic",
+      WORKER_REPLICAS: "3",
+      CALLER_AUTH_KEYVAULT_NAME: "kvtest",
       LOCATION: "westus3",
       FOUNDRY_ENDPOINT: "",
     };

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageAccountName": {
+      "value": "${DEPLOYMENT_STORAGE_ACCOUNT_NAME}"
+    },
+    "aksClusterName": {
+      "value": "${AKS_CLUSTER_NAME}"
+    },
+    "baseInfraResourceNamePrefix": {
+      "value": "${RESOURCE_PREFIX}"
+    },
+    "deployInstance": {
+      "value": "${DEPLOY_INSTANCE}"
+    },
+    "nodePoolName": {
+      "value": "${NODE_POOL_NAME}"
+    },
+    "nodeCount": {
+      "value": ${NODE_COUNT}
+    },
+    "nodeVmSize": {
+      "value": "${NODE_VM_SIZE}"
+    },
+    "gitCacheOs": {
+      "value": "${GIT_CACHE_OS}"
+    },
+    "nodeOsDiskSizeGb": {
+      "value": ${NODE_OSDISK_SIZE_GB}
+    },
+    "nodeOsDiskType": {
+      "value": "${NODE_OSDISK_TYPE}"
+    }
+  }
+}

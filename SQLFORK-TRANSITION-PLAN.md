@@ -289,29 +289,21 @@ The audit found the following candidates, in recommended execution order:
    `sqlmort`.
 
 3. **Split generic deployment mechanics from SQL deployment values (platform
-   contribution and deployment-completeness work).** The following SQLmort surfaces mix
-   reusable render/apply mechanics with environment-owned composition:
-   - `deploy/apps/git-cache/apply-cache.ps1`
-   - `deploy/apps/git-worker/apply-worker.ps1`
-   - the former `deploy/apps/worker/apply-generic-worker.ps1`
-   - the former `deploy/apps/worker/generic-worker.deployment.yaml`
+   contribution and deployment-completeness work).** PilotSwarm owns the generic
+   deployment engine: ordered external environment overlays, service-owned
+   validation, Bicep reconciliation, Kustomize rendering, manifest publication,
+   Flux configuration, and rollout verification. SQLmort invokes that engine
+   directly and retains only concrete repository URLs, node-pool composition,
+   identities, Key Vault references, image selections, plugin registration, and
+   environment values.
 
-   Generic dotenv loading, token substitution, manifest validation/application, rollout
-   waiting, and repo-less worker-pool mechanics belong in PilotSwarm when they are not already
-   provided there. SQLmort should retain thin wrappers plus concrete repository URLs,
-   node-pool names, identities, Key Vault references, image values, and environment files.
-   Reconcile this against PilotSwarm's existing base manifests before moving code; do not
-   create a second deployment implementation.
-
-   **Initial slice (2026-09-10):** PilotSwarm's existing Flux-managed `worker`
-   service now explicitly owns the `generic` repo-less pool and accepts a
-   declarative replica count. The generic `deploy.mjs --env-overlay <path>`
-   capability lets any composition repository overlay versioned deployment
-   values without adding a platform-specific wrapper. SQLmort now invokes that
-   OSS CLI directly with its private `deploy/values/generic.env`; all generic-
-   worker PowerShell wrappers and the duplicate direct-`kubectl` manifest were
-   removed, leaving Flux as the sole deployment path. Git-cache and repo-pinned
-   worker DaemonSet migration remains pending.
+   - [x] Repo-less generic worker uses PilotSwarm's native deployment service and
+     Flux path; duplicate SQLmort wrappers and manifests are removed.
+   - [x] Git-cache uses PilotSwarm's instance-scoped deployment service and Flux
+     path; SQLmort retains only its base/stamp overlays.
+   - [ ] Move the repo-pinned `git-repo-worker` DaemonSet from
+     `deploy/apps/git-worker/apply-worker.ps1` to the same platform-owned,
+     instance-scoped deployment model.
 
 4. **Upstream the generic functional-test harness and neutral smoke clients (optional
    platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,
@@ -838,10 +830,15 @@ the whole cutover and every booting worker — old or new — parks in the poll 
      Bucket authoritative and *then* resume: `npm run deploy -- worker sqlwus2 --steps manifests,rollout
      --image-tag <tag>` and the same for `portal` (uploads the new-tag tree + reconciles; readiness wait
      is safe post-release), then `flux resume kustomization worker-worker portal-portal -n flux-system`.
-   - **The git-worker / git-cache DaemonSets are NOT Flux-managed** → `kubectl set image` per
-     DaemonSet: git-repo-worker bumps **both** the `git-repo-worker` container **and** the
-     `wait-for-mirror` initContainer; git-cache bumps its single `git-cache` container. (See the
-     per-DaemonSet loop in `SDLC_ORCHESTRATION_TESTING.md`.)
+   - **The git-worker DaemonSets are not yet Flux-managed** → `kubectl set image`
+     per DaemonSet, bumping **both** the `git-repo-worker` container and the
+     `wait-for-mirror` initContainer.
+   - **Git-cache ownership is per instance.** Suspend
+     `git-cache-<instance>-git-cache-<instance>`, update its DaemonSet directly
+     inside the lock window, then publish the new authoritative image with
+     `deploy.mjs git-cache ... --steps manifests` and resume the Kustomization
+     after release. (See the per-DaemonSet loop in
+     `SDLC_ORCHESTRATION_TESTING.md`.)
    Old pods terminate; new pods boot and **block on `420573475`** — no migrations run.
    > **Do not wait for readiness inside the lock window.** Because new pods block at `initialize()`
    > while you hold the lock, they never become Ready — so `kubectl rollout status` and Flux's own

@@ -2,46 +2,24 @@
 # PilotSwarm git-cache DaemonSet — node-local bare-mirror maintainer.
 # AKS git-hydration data plane, one pod per node (AKS-GIT-HYDRATION.md section 5).
 #
-# THIS FILE IS A URL-FREE GENERIC. It is intentionally NOT directly applyable:
-# the __TOKENS__ below are filled per-repo by the deployment scripts that live
-# outside this repository, because concrete target repository URLs must not be
-# persisted in the platform source. One instantiation per hot repo; a DaemonSet
-# runs one pod on every node matching its nodeSelector, so a 5-node labeled
-# pool => 5 mirrors.
-#
-# Tokens (all substituted by apply.ps1 from a per-repo .env):
-#   __REPO_NAME__               DNS-safe short name (e.g. service-repo)
-#   __REPO_URL__                clone URL (supplied by deployment configuration)
-#   __FETCH_INTERVAL_SECONDS__  steady-state fetch cadence (default 3600)
-#   __FETCH_JITTER_SECONDS__    max added jitter per cycle (default 300)
-#   __CACHE_HOSTPATH__          node-local host dir backing the mirror. Default
-#                               /var/lib/pilotswarm-git-cache (the managed OS
-#                               disk): durable across VM deallocate and
-#                               SKU-agnostic. A pool may override this to /mnt to
-#                               use a large ephemeral temp/resource disk instead.
-#   __CACHE_MAX_UNAVAILABLE__   rolling-update concurrency: the worst-case number
-#                               of nodes doing a COLD `git clone --mirror` from
-#                               ADO at the same time. A warm/no-op roll never
-#                               blocks on ADO (readiness is sentinel-gated before
-#                               the first fetch), so this only throttles fresh-
-#                               node / moved-mirror reseeds. Default 1 (safe for
-#                               big mirrors); small-mirror repos may raise it.
+# Repository identity and tuning are supplied by the overlay-generated
+# git-cache-env ConfigMap and structured Kustomize replacements.
 # -----------------------------------------------------------------------------
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: git-cache-__REPO_NAME__-linux
+  name: git-cache
   namespace: pilotswarm
   labels:
     app.kubernetes.io/name: pilotswarm
     app.kubernetes.io/component: git-cache
-    pilotswarm.io/git-cache-repo: __REPO_NAME__
+    pilotswarm.io/git-cache-repo: placeholder
 spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: pilotswarm
       app.kubernetes.io/component: git-cache
-      pilotswarm.io/git-cache-repo: __REPO_NAME__
+      pilotswarm.io/git-cache-repo: placeholder
   # maxUnavailable bounds how many nodes update at once. The only rollout step
   # that touches ADO is a COLD node's initial mirror clone (a warm roll is a
   # no-op — readiness is sentinel-gated before any fetch), so this is in effect
@@ -55,19 +33,17 @@ spec:
       labels:
         app.kubernetes.io/name: pilotswarm
         app.kubernetes.io/component: git-cache
-        pilotswarm.io/git-cache-repo: __REPO_NAME__
+        pilotswarm.io/git-cache-repo: placeholder
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: pilotswarm-git-cache
       # Only run on this repo's labeled node pool (set at pool provision time).
       nodeSelector:
-        pilotswarm.io/git-cache-repo: __REPO_NAME__
+        pilotswarm.io/git-cache-repo: placeholder
       tolerations:
-        # The node pool boots pre-tainted with cache-not-ready. On AKS this
-        # taint is pool-managed and cannot be removed in-cluster (the
-        # aks-node-validating-webhook blocks it), so it stays as a PERMANENT
-        # hard gate: only cache-aware pods (this daemon + workers that tolerate
-        # it AND require the ready label) ever land here. Readiness is conveyed
-        # by the pilotswarm.io/git-cache-<repo>=ready label the daemon adds.
+        # Cache pools retain this NoSchedule taint as an isolation boundary.
+        # Cache-aware pods tolerate it; repo workers additionally require the
+        # ready label added after the mirror is materialized.
         - key: pilotswarm.io/cache-not-ready
           operator: Equal
           value: "true"
@@ -86,38 +62,24 @@ spec:
           image: alpine/git:2.45.2
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "/scripts/fetch-loop.sh"]
+          envFrom:
+            - configMapRef:
+                name: git-cache-env
           env:
-            - name: REPO_NAME
-              value: "__REPO_NAME__"
-            - name: REPO_URL
-              value: "__REPO_URL__"
-            - name: CACHE_ROOT
-              value: "/mnt/git-cache"
-            - name: FETCH_INTERVAL_SECONDS
-              value: "__FETCH_INTERVAL_SECONDS__"
-            - name: FETCH_JITTER_SECONDS
-              value: "__FETCH_JITTER_SECONDS__"
-            - name: CACHE_NOT_READY_TAINT_KEY
-              value: "pilotswarm.io/cache-not-ready"
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            # ADO PAT for private clones. Optional so the DaemonSet applies
-            # before the secret exists; the script warns and treats the remote
-            # as anonymous if absent. The secret's VALUES live only in the ADO
-            # deployment repo, never here.
-            - name: ADO_PAT
-              valueFrom:
-                secretKeyRef:
-                  name: pilotswarm-git-cache-ado-pat
-                  key: ADO_PAT
-                  optional: true
+            - name: ADO_PAT_FILE
+              value: /mnt/secrets-store/ado-pat
           volumeMounts:
             - name: git-cache
               mountPath: /mnt/git-cache
             - name: scripts
               mountPath: /scripts
+              readOnly: true
+            - name: ado-pat
+              mountPath: /mnt/secrets-store
               readOnly: true
           readinessProbe:
             # READY only once the mirror sentinel exists, so downstream tooling
@@ -137,15 +99,21 @@ spec:
               # scales with the repo's object/delta graph — tiny for a small repo, but
               # multiple GB for a large monorepo (which OOM-killed at 1Gi). Sized
               # per-repo via CACHE_MEM_LIMIT in values/<repo>.env (default 1Gi).
-              memory: "__CACHE_MEM_LIMIT__"
+              memory: "1Gi"
       volumes:
+        - name: ado-pat
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: pilotswarm-git-cache-secrets
         # Node-local mirror store. Survives pod restarts and image redeploys —
         # only a genuinely empty node disk triggers a reseed (section 5). The
-        # host path is __CACHE_HOSTPATH__: the managed OS disk (/var/lib) by
+        # host path defaults to the managed OS disk (/var/lib), but
         # default, or a pool may override to an ephemeral temp disk (/mnt).
         - name: git-cache
           hostPath:
-            path: __CACHE_HOSTPATH__
+            path: /var/lib/pilotswarm-git-cache
             type: DirectoryOrCreate
         - name: scripts
           configMap:

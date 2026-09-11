@@ -62,7 +62,7 @@ test("validateService accepts 'all' as a virtual aggregate", () => {
   // current set so accidental removals are caught.
   assert.deepEqual(
     [...SERVICES].sort(),
-    ["base-infra", "cert-manager", "cert-manager-issuers", "global-infra", "pls-anchor", "portal", "worker"],
+    ["base-infra", "cert-manager", "cert-manager-issuers", "git-cache", "global-infra", "pls-anchor", "portal", "worker"],
   );
 });
 

@@ -18,6 +18,55 @@
       "type": "string",
       "enum": ["infra", "app"]
     },
+    "instanceRequired": {
+      "type": "boolean",
+      "description": "Whether direct deployment requires --instance. Instance-scoped services are excluded from the all aggregate."
+    },
+    "configurationModule": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.mjs$",
+      "description": "Optional service-owned module exporting configureEnv(env, context). Resolved inside the service directory."
+    },
+    "gitops": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GitOps source folder under deploy/gitops. Defaults to the service name; supports __ENV_KEY__ tokens."
+        },
+        "overlay": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Overlay directory selected for this service; supports __ENV_KEY__ tokens."
+        },
+        "manifestContainer": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Manifest storage container name; supports __ENV_KEY__ and __SERVICE__ tokens."
+        },
+        "placeholders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "envKeys"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "envKeys": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+              },
+              "required": { "type": "boolean" }
+            }
+          },
+          "description": "Allow-listed staged files containing __ENV_KEY__ placeholders that cannot be expressed as structured Kustomize replacements."
+        }
+      }
+    },
     "bicep": {
       "type": "object",
       "additionalProperties": false,
@@ -55,12 +104,20 @@
     "rollout": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["deployment"],
+      "required": ["kind", "name", "namespace"],
       "properties": {
-        "deployment":    { "type": "string" },
-        "labelSelector": { "type": "string" }
+        "kind":              { "type": "string", "enum": ["Deployment", "DaemonSet"] },
+        "name":              { "type": "string" },
+        "namespace":         { "type": "string" },
+        "fluxConfiguration": { "type": "string" },
+        "verifyImage":       { "type": "boolean" },
+        "timeout": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*(s|m|h)$",
+          "description": "Timeout for Flux reconciliation and Kubernetes rollout status. Defaults to 10m."
+        }
       },
-      "description": "Present when this service produces a Kubernetes Deployment that the orchestrator should wait on."
+      "description": "Present when this service produces one Kubernetes resource that the orchestrator should wait on. __ENV_KEY__ tokens are resolved from the composed env."
     },
     "pipeline": {
       "type": "array",

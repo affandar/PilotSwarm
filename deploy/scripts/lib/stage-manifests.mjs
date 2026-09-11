@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { REPO_ROOT, log } from "./common.mjs";
 import { substituteOverlayEnv } from "./substitute-env.mjs";
 import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
+import { loadDeployManifest, resolveEnvTemplate } from "./services-manifest.mjs";
 
 // Files inside the staged GitOps tree that contain `__PLACEHOLDER__`-style
 // tokens which need substitution against the env map. Each entry maps a
@@ -53,7 +54,11 @@ const PLACEHOLDER_FILES = {
         // safety: Foundry's `endpoint` output ends in `/`, the catalog
         // appends `/openai/v1` → we collapse `//` to `/` after
         // substitution.
-        { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
+        {
+          placeholder: "__FOUNDRY_ENDPOINT__",
+          envKey: "FOUNDRY_ENDPOINT",
+          trimTrailingSlash: true,
+        },
       ],
     },
   ],
@@ -66,7 +71,11 @@ const PLACEHOLDER_FILES = {
     {
       relPath: "base/model_providers.json",
       tokens: [
-        { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
+        {
+          placeholder: "__FOUNDRY_ENDPOINT__",
+          envKey: "FOUNDRY_ENDPOINT",
+          trimTrailingSlash: true,
+        },
       ],
     },
     // FR-013: Substitute the portal TLS cert name into the tls-akv +
@@ -95,8 +104,16 @@ const PLACEHOLDER_FILES = {
   ],
 };
 
-function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
-  const rules = PLACEHOLDER_FILES[service];
+function applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env }) {
+  const manifestRules = (serviceManifest?.gitops?.placeholders ?? []).map((rule) => ({
+    relPath: rule.path,
+    required: rule.required,
+    tokens: rule.envKeys.map((envKey) => ({
+      placeholder: `__${envKey}__`,
+      envKey,
+    })),
+  }));
+  const rules = [...(PLACEHOLDER_FILES[service] ?? []), ...manifestRules];
   if (!rules || rules.length === 0) return;
   for (const fileRule of rules) {
     const abs = join(stagedServiceRoot, fileRule.relPath);
@@ -108,7 +125,7 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
     let body = readFileSync(abs, "utf8");
     let resolved = 0;
     let unresolved = 0;
-    for (const { placeholder, envKey } of fileRule.tokens) {
+    for (const { placeholder, envKey, trimTrailingSlash = false } of fileRule.tokens) {
       if (!body.includes(placeholder)) continue;
       const raw = env[envKey];
       const value = raw == null ? "" : String(raw);
@@ -116,12 +133,21 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
         unresolved++;
         continue;
       }
-      // Strip trailing slash so `<endpoint>/openai/v1` stays clean.
-      const normalized = value.endsWith("/") ? value.slice(0, -1) : value;
+      const normalized = trimTrailingSlash && value.endsWith("/")
+        ? value.slice(0, -1)
+        : value;
       body = body.split(placeholder).join(normalized);
       resolved++;
     }
     writeFileSync(abs, body);
+    if (fileRule.required && unresolved > 0) {
+      const missing = fileRule.tokens
+        .filter(({ placeholder, envKey }) => body.includes(placeholder) && !env[envKey])
+        .map(({ envKey }) => envKey);
+      throw new Error(
+        `[stage-manifests] ${service}/${fileRule.relPath} requires: ${missing.join(", ")}.`,
+      );
+    }
     log(
       "info",
       `[stage-manifests] ${fileRule.relPath}: substituted ${resolved} placeholder(s)` +
@@ -173,7 +199,14 @@ export function resolveOverlayName({ service, envName, env }) {
 // Stage <service> into <stagingDir>/gitops/<service>/. Returns the absolute
 // path to the staged service tree (which is what publish-manifests uploads).
 export function stageManifests({ service, envName, env, stagingDir }) {
-  const srcRoot = join(REPO_ROOT, "deploy", "gitops", service);
+  const serviceManifest = loadDeployManifest().services[service];
+  const sourceService = resolveEnvTemplate(
+    serviceManifest?.gitops?.source ?? service,
+    env,
+    `${service} gitops.source`,
+    { SERVICE: service },
+  );
+  const srcRoot = join(REPO_ROOT, "deploy", "gitops", sourceService);
   if (!existsSync(srcRoot)) {
     throw new Error(`GitOps tree missing for service '${service}': ${srcRoot}`);
   }
@@ -211,7 +244,14 @@ export function stageManifests({ service, envName, env, stagingDir }) {
 
   // Substitute the per-service overlay .env in place inside the staged
   // tree. See `resolveOverlayName` above for the per-service rule.
-  const overlayName = resolveOverlayName({ service, envName, env });
+  const overlayName = serviceManifest?.gitops?.overlay
+    ? resolveEnvTemplate(
+        serviceManifest.gitops.overlay,
+        env,
+        `${service} gitops.overlay`,
+        { SERVICE: service },
+      )
+    : resolveOverlayName({ service, envName, env });
   const overlaySrc = join(srcRoot, "overlays", overlayName, ".env");
   const overlayDst = join(stagedServiceRoot, "overlays", overlayName, ".env");
   if (!existsSync(overlaySrc)) {
@@ -254,7 +294,7 @@ export function stageManifests({ service, envName, env, stagingDir }) {
 
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).
-  applyPlaceholderRules({ service, stagedServiceRoot, env });
+  applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env });
 
   return stagedServiceRoot;
 }

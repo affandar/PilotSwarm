@@ -1,0 +1,45 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "Generic, instance-scoped node-local git mirror service. Repository identity and tuning arrive through external env overlays.",
+  "name": "git-cache",
+  "kind": "app",
+  "instanceRequired": true,
+  "configurationModule": "configure-env.mjs",
+  "gitops": {
+    "source": "git-cache",
+    "overlay": "__GIT_CACHE_OS__",
+    "manifestContainer": "git-cache-__DEPLOY_INSTANCE__-manifests",
+    "placeholders": [
+      {
+        "path": "base/secret-provider-class.yaml",
+        "envKeys": ["GIT_CACHE_PAT_SECRET_NAME"],
+        "required": true
+      },
+      {
+        "path": "components/linux/daemonset.yaml",
+        "envKeys": ["CACHE_MAX_UNAVAILABLE"],
+        "required": true
+      },
+      {
+        "path": "components/windows/daemonset.yaml",
+        "envKeys": ["CACHE_MAX_UNAVAILABLE"],
+        "required": true
+      }
+    ]
+  },
+  "bicep": {
+    "modules": [
+      { "name": "git-cache", "scope": "group" }
+    ]
+  },
+  "rollout": {
+    "kind": "DaemonSet",
+    "name": "git-cache-__DEPLOY_INSTANCE__-__GIT_CACHE_OS__",
+    "namespace": "pilotswarm",
+    "fluxConfiguration": "git-cache-__DEPLOY_INSTANCE__",
+    "verifyImage": false,
+    "timeout": "30m"
+  },
+  "pipeline": ["bicep", "manifests", "rollout"]
+}
