@@ -64,6 +64,18 @@
             }
           },
           "description": "Allow-listed staged files containing __ENV_KEY__ placeholders that cannot be expressed as structured Kustomize replacements."
+        },
+        "optionalEnvKeys": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "description": "Overlay .env keys that may intentionally render with an empty value."
+        },
+        "overlayEnvMaps": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "description": "Optional semicolon-delimited NAME=value env-map keys appended to the staged overlay .env."
         }
       }
     },
@@ -110,7 +122,30 @@
         "name":              { "type": "string" },
         "namespace":         { "type": "string" },
         "fluxConfiguration": { "type": "string" },
+        "fluxKustomization": {
+          "type": "string",
+          "description": "Optional exact Kubernetes Flux Kustomization resource name. Defaults to <fluxConfiguration>-<fluxConfiguration>."
+        },
         "verifyImage":       { "type": "boolean" },
+        "expectedImageEnv": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Optional env key containing the exact image reference expected in the live workload."
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name", "namespace"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1 },
+              "name": { "type": "string", "minLength": 1 },
+              "namespace": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Kubernetes objects that must already exist before Flux reconciliation begins."
+        },
         "timeout": {
           "type": "string",
           "pattern": "^[1-9][0-9]*(s|m|h)$",

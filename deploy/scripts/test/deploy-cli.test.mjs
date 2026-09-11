@@ -51,6 +51,12 @@ test("git-cache requires an instance", () => {
   assert.match(result.stderr, /requires --instance/);
 });
 
+test("git-repo-worker requires an instance", () => {
+  const result = runDeploy(["git-repo-worker", "tstenv"]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires --instance/);
+});
+
 test("deploy rejects invalid instance names", () => {
   const result = runDeploy(["git-cache", "tstenv", "--instance", "SQL Repo"]);
   assert.equal(result.status, 1);

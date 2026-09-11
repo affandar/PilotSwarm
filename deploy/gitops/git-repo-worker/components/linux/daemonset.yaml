@@ -1,0 +1,172 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: git-repo-worker
+  labels:
+    app.kubernetes.io/name: pilotswarm
+    app.kubernetes.io/component: git-repo-worker
+    pilotswarm.io/git-cache-repo: placeholder
+    kubernetes.io/os: linux
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pilotswarm
+      app.kubernetes.io/component: git-repo-worker
+      pilotswarm.io/git-cache-repo: placeholder
+      kubernetes.io/os: linux
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: __WORKER_MAX_UNAVAILABLE__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pilotswarm
+        app.kubernetes.io/component: git-repo-worker
+        pilotswarm.io/git-cache-repo: placeholder
+        kubernetes.io/os: linux
+        azure.workload.identity/use: "true"
+      annotations:
+        pilotswarm.dev/spc-keys-hash: placeholder
+    spec:
+      serviceAccountName: placeholder
+      nodeSelector:
+        kubernetes.io/os: linux
+        pilotswarm.io/git-cache-repo: placeholder
+      tolerations:
+        - key: pilotswarm.io/cache-not-ready
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        - name: wait-for-mirror
+          image: placeholder
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              echo "[wait-for-mirror] waiting for $GIT_CACHE_READY_FILE ..."
+              t=0
+              until [ -f "$GIT_CACHE_READY_FILE" ]; do
+                sleep 2
+                t=$((t+2))
+                if [ $((t % 30)) -eq 0 ]; then
+                  echo "[wait-for-mirror] still waiting after ${t}s ..."
+                fi
+              done
+              echo "[wait-for-mirror] mirror ready after ${t}s"
+          envFrom:
+            - configMapRef:
+                name: git-repo-worker-env
+          volumeMounts:
+            - name: git-cache
+              mountPath: /mnt/git-cache
+              readOnly: true
+        - name: init-copilot-home
+          image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -lc
+            - |
+              set -eu
+              mkdir -p /home/node/.copilot/session-state /mnt/enlistment
+              chown -R 1000:1000 /home/node/.copilot
+              chown 1000:1000 /mnt/enlistment
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+            - name: enlistment
+              mountPath: /mnt/enlistment
+      containers:
+        - name: git-repo-worker
+          image: placeholder
+          imagePullPolicy: IfNotPresent
+          command: ["node", "packages/sdk/examples/git-repo-worker.js"]
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "info"
+            - name: PS_MODEL_PROVIDERS_PATH
+              value: "/app/config/model_providers.json"
+            - name: PILOTSWARM_WORKER_CONCURRENCY
+              value: "1"
+            - name: PILOTSWARM_WORKER_LOCK_TIMEOUT_MS
+              value: "90000"
+            - name: PILOTSWARM_PG_CONNECTION_TIMEOUT_MS
+              value: "45000"
+            - name: DUROXIDE_PG_POOL_MAX
+              value: "8"
+            - name: DUROXIDE_PG_ACQUIRE_TIMEOUT_MS
+              value: "60000"
+          envFrom:
+            - configMapRef:
+                name: git-repo-worker-env
+            - secretRef:
+                name: git-repo-worker-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "test -f \"$WORKER_READY_FILE\""]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 1000
+          volumeMounts:
+            - name: copilot-home
+              mountPath: /home/node/.copilot
+            - name: enlistment
+              mountPath: /mnt/enlistment
+            - name: model-providers
+              mountPath: /app/config
+              readOnly: true
+            - name: git-cache
+              mountPath: /mnt/git-cache
+              readOnly: true
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: copilot-home
+          emptyDir: {}
+        - name: enlistment
+          hostPath:
+            path: placeholder
+            type: DirectoryOrCreate
+        - name: model-providers
+          configMap:
+            name: git-repo-worker-model-providers
+            items:
+              - key: model_providers.json
+                path: model_providers.json
+        - name: git-cache
+          hostPath:
+            path: placeholder
+            type: DirectoryOrCreate
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: git-repo-worker-secrets
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 90

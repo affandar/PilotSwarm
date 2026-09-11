@@ -45,6 +45,26 @@ export function resolveSteps(stepsArg, service) {
       );
     }
   }
+  const manifest = loadDeployManifest();
+  const serviceManifest = manifest.services[service];
+  const artifactSteps = requested.filter((step) =>
+    ["build", "push"].includes(step),
+  );
+  // Some app services intentionally deploy an image composed by another
+  // repository. Fail here instead of silently running a meaningless build/push
+  // request and leaving an operator unsure which image reached the cluster.
+  if (
+    artifactSteps.length &&
+    serviceManifest?.kind === "app" &&
+    !serviceManifest.image
+  ) {
+    throw new Error(
+      `Service '${service}' uses an externally composed image and does not support ` +
+        `${artifactSteps.join(", ")} step(s).\n` +
+        "Run the owning composition repository's image recipe, set the service's " +
+        "required image environment value, then deploy bicep,manifests,rollout.",
+    );
+  }
   // Order requested steps by canonical pipeline order, dedup.
   return PIPELINE.filter((s) => requested.includes(s));
 }

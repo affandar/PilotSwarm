@@ -288,31 +288,14 @@ The audit found the following candidates, in recommended execution order:
    SQL-specific repository-to-audience mappings, defaults, and compatibility wrappers in
    `sqlmort`.
 
-3. **Split generic deployment mechanics from SQL deployment values (platform
-   contribution and deployment-completeness work).** PilotSwarm owns the generic
-   deployment engine: ordered external environment overlays, service-owned
-   validation, Bicep reconciliation, Kustomize rendering, manifest publication,
-   Flux configuration, and rollout verification. SQLmort invokes that engine
-   directly and retains only concrete repository URLs, node-pool composition,
-   identities, Key Vault references, image selections, plugin registration, and
-   environment values.
-
-   - [x] Repo-less generic worker uses PilotSwarm's native deployment service and
-     Flux path; duplicate SQLmort wrappers and manifests are removed.
-   - [x] Git-cache uses PilotSwarm's instance-scoped deployment service and Flux
-     path; SQLmort retains only its base/stamp overlays.
-   - [ ] Move the repo-pinned `git-repo-worker` DaemonSet from
-     `deploy/apps/git-worker/apply-worker.ps1` to the same platform-owned,
-     instance-scoped deployment model.
-
-4. **Upstream the generic functional-test harness and neutral smoke clients (optional
+3. **Upstream the generic functional-test harness and neutral smoke clients (optional
    platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,
    baseline, and comparison runner. Its engine can move upstream while SQLmort's
    `playlist.yml` and SQL scenario definitions remain internal. Likewise, neutral examples
    for model listing, prompt submission, multi-turn sessions, and hello-world health checks
    can become PilotSwarm examples after removing SQL-branded package names and defaults.
 
-5. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
+4. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
    image build, manifest rendering, apply, and rollout mechanics under
    `deploy/apps/kusto-mcp/` may move to PilotSwarm if they add capabilities not already
    present. Concrete clusters, services, image destinations, identities, and acceptance

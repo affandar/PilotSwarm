@@ -102,7 +102,68 @@ const PLACEHOLDER_FILES = {
       ],
     },
   ],
+  "git-repo-worker": [
+    {
+      relPath: "base/model_providers.json",
+      tokens: [
+        {
+          placeholder: "__FOUNDRY_ENDPOINT__",
+          envKey: "FOUNDRY_ENDPOINT",
+          trimTrailingSlash: true,
+        },
+      ],
+    },
+  ],
 };
+
+function appendOverlayEnvMaps({ service, serviceManifest, overlayDst, env }) {
+  const mapKeys = serviceManifest?.gitops?.overlayEnvMaps ?? [];
+  if (mapKeys.length === 0) return;
+
+  const existing = readFileSync(overlayDst, "utf8");
+  const existingKeys = new Set(
+    existing
+      .split(/\r?\n/)
+      .map((line) => line.match(/^([A-Z_][A-Z0-9_]*)=/)?.[1])
+      .filter(Boolean),
+  );
+  const appended = [];
+  for (const mapKey of mapKeys) {
+    const raw = String(env[mapKey] ?? "").trim();
+    if (!raw) continue;
+    for (const pair of raw.split(";")) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const separator = trimmed.indexOf("=");
+      if (separator < 1) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} entry is not NAME=value: '${trimmed}'.`,
+        );
+      }
+      const key = trimmed.slice(0, separator).trim();
+      const value = trimmed.slice(separator + 1);
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} has invalid env name '${key}'.`,
+        );
+      }
+      if (existingKeys.has(key)) {
+        throw new Error(
+          `[stage-manifests] ${service} ${mapKey} cannot override declared overlay key '${key}'.`,
+        );
+      }
+      existingKeys.add(key);
+      appended.push(`${key}=${value}`);
+    }
+  }
+  if (appended.length > 0) {
+    writeFileSync(
+      overlayDst,
+      `${existing.replace(/\s*$/, "")}\n${appended.join("\n")}\n`,
+    );
+    log("ok", `Appended ${appended.length} ${service} deployment-defined env value(s)`);
+  }
+}
 
 function applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env }) {
   const manifestRules = (serviceManifest?.gitops?.placeholders ?? []).map((rule) => ({
@@ -229,17 +290,19 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // file. Local `kustomize build` on the source tree will fail (file
   // intentionally absent) — all real builds go through deploy.mjs →
   // stage-manifests first.
-  if (service === "portal") {
+  if (service === "portal" || service === "git-repo-worker") {
     const workerCatalog = join(REPO_ROOT, "deploy", "gitops", "worker", "base", "model_providers.json");
-    const portalCatalog = join(stagedServiceRoot, "base", "model_providers.json");
+    const targetCatalog = join(stagedServiceRoot, "base", "model_providers.json");
     if (!existsSync(workerCatalog)) {
       throw new Error(
-        `Cannot stage portal: worker catalog missing at ${workerCatalog}. ` +
-          `Portal model_providers.json is sourced from the worker base.`,
+        `Cannot stage ${service}: worker catalog missing at ${workerCatalog}.`,
       );
     }
-    cpSync(workerCatalog, portalCatalog);
-    log("info", `Staged worker model_providers.json → portal/base/model_providers.json`);
+    cpSync(workerCatalog, targetCatalog);
+    log(
+      "info",
+      `Staged worker model_providers.json → ${service}/base/model_providers.json`,
+    );
   }
 
   // Substitute the per-service overlay .env in place inside the staged
@@ -270,7 +333,11 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // and writes it into the Deployment pod-template annotation, forcing
   // a rolling update whenever the SPC's projected key set changes. See
   // deploy/scripts/lib/spc-keys-hash.mjs for the full rationale.
-  if (service === "worker" || service === "portal") {
+  if (
+    service === "worker" ||
+    service === "portal" ||
+    service === "git-repo-worker"
+  ) {
     env.SPC_KEYS_HASH = computeSpcKeysHash({ service });
   }
 
@@ -289,8 +356,10 @@ export function stageManifests({ service, envName, env, stagingDir }) {
     srcPath: overlaySrc,
     dstPath: overlayDst,
     envMap: env,
+    optionalKeys: serviceManifest?.gitops?.optionalEnvKeys ?? [],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);
+  appendOverlayEnvMaps({ service, serviceManifest, overlayDst, env });
 
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).

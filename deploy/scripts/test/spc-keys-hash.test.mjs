@@ -34,6 +34,17 @@ test("portal hash matches sha256-12 of sorted PORTAL_SPC_KEYS", () => {
   assert.match(got, /^[0-9a-f]{12}$/);
 });
 
+test("git-repo-worker reuses the worker secret-key contract", () => {
+  assert.deepEqual(
+    _SPC_KEYS_BY_SERVICE["git-repo-worker"],
+    _SPC_KEYS_BY_SERVICE.worker,
+  );
+  assert.equal(
+    computeSpcKeysHash({ service: "git-repo-worker" }),
+    computeSpcKeysHash({ service: "worker" }),
+  );
+});
+
 // NOTE: previously this file asserted that worker and portal hashes
 // differ. That invariant no longer holds: after the Phase 6 split that
 // reclassified the portal auth/authz settings as ConfigMap-backed config,
@@ -99,5 +110,20 @@ test("PORTAL_SPC_KEYS mirrors deploy/gitops/portal/base/secret-provider-class.ya
     join(REPO_ROOT, "deploy", "gitops", "portal", "base", "secret-provider-class.yaml"),
   );
   const constKeys = [..._SPC_KEYS_BY_SERVICE.portal].sort();
+  assert.deepEqual(constKeys, yamlKeys);
+});
+
+test("git-repo-worker SPC keys mirror its SecretProviderClass", () => {
+  const yamlKeys = extractSpcKeys(
+    join(
+      REPO_ROOT,
+      "deploy",
+      "gitops",
+      "git-repo-worker",
+      "base",
+      "secret-provider-class.yaml",
+    ),
+  );
+  const constKeys = [..._SPC_KEYS_BY_SERVICE["git-repo-worker"]].sort();
   assert.deepEqual(constKeys, yamlKeys);
 });

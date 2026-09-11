@@ -20,6 +20,9 @@ param aksClusterName string
 @description('Logical name for this Flux configuration (e.g. "worker", "portal").')
 param configName string
 
+@description('Optional key for the single Flux kustomization. Defaults to configName.')
+param kustomizationName string = ''
+
 @description('Blob container endpoint URL (e.g. https://<account>.blob.core.windows.net).')
 param blobContainerEndpoint string
 
@@ -36,6 +39,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' existing = 
   name: aksClusterName
 }
 
+var effectiveKustomizationName = empty(kustomizationName) ? configName : kustomizationName
+
 resource fluxConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024-11-01' = {
   scope: aks
   name: configName
@@ -51,7 +56,7 @@ resource fluxConfig 'Microsoft.KubernetesConfiguration/fluxConfigurations@2024-1
       timeoutInSeconds: 600
     }
     kustomizations: {
-      '${configName}': {
+      '${effectiveKustomizationName}': {
         path: kustomizationPath
         dependsOn: []
         timeoutInSeconds: 600

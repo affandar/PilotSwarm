@@ -38,6 +38,18 @@ test("rejects an invalid generic-worker replica count", () => {
   );
 });
 
+test("skips repo-less worker validation for externally composed worker services", () => {
+  const env = {
+    PILOTSWARM_WORKER_TAGS: "repo:sample",
+    WORKER_REPLICAS: "",
+  };
+  assert.doesNotThrow(() =>
+    composeDerivedEnv(env, { includeGenericWorkerDefaults: false }),
+  );
+  assert.equal(env.PILOTSWARM_WORKER_TAGS, "repo:sample");
+  assert.equal(env.WORKER_REPLICAS, "");
+});
+
 test("composes DATABASE_URL from POSTGRES_FQDN with bootstrap defaults", () => {
   const env = { POSTGRES_FQDN: "ps.example.postgres.database.azure.com" };
   composeDerivedEnv(env);

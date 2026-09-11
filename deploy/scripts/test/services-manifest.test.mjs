@@ -47,7 +47,13 @@ test("real manifest loads and matches the canonical service shape", () => {
     m.services["git-cache"].gitops.manifestContainer,
     "git-cache-__DEPLOY_INSTANCE__-manifests",
   );
+  assert.equal(m.services["git-repo-worker"].instanceRequired, true);
+  assert.equal(
+    m.services["git-repo-worker"].gitops.overlay,
+    "__GIT_REPO_WORKER_OS__",
+  );
   assert.ok(!m.allSequence.includes("git-cache"));
+  assert.ok(!m.allSequence.includes("git-repo-worker"));
   assert.equal(m.services["base-infra"].kind, "infra");
   assert.equal(m.services["pls-anchor"].kind, "infra");
   assert.equal(m.services["cert-manager"].kind, "infra");
@@ -76,6 +82,7 @@ test("derived constants match prior hardcoded shape (regression contract)", () =
   assert.deepEqual(SERVICE_TO_MODULES.worker, ["base-infra", "worker"]);
   assert.deepEqual(SERVICE_TO_MODULES.portal, ["base-infra", "portal"]);
   assert.deepEqual(SERVICE_TO_MODULES["git-cache"], ["git-cache"]);
+  assert.deepEqual(SERVICE_TO_MODULES["git-repo-worker"], ["git-repo-worker"]);
   assert.deepEqual(SERVICE_TO_MODULES["base-infra"], ["base-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["global-infra"], ["global-infra"]);
   assert.deepEqual(SERVICE_TO_MODULES["pls-anchor"], ["base-infra", "pls-anchor"]);
@@ -107,6 +114,9 @@ test("pipelineForService respects defaults by kind", () => {
   assert.deepEqual(pipelineForService(m.services["base-infra"], m.root), ["bicep", "seed-secrets"]);
   assert.deepEqual(defaultPipelineForKind("infra", m.root), ["bicep"]);
   assert.deepEqual(pipelineForService(m.services["git-cache"], m.root), [
+    "bicep", "manifests", "rollout",
+  ]);
+  assert.deepEqual(pipelineForService(m.services["git-repo-worker"], m.root), [
     "bicep", "manifests", "rollout",
   ]);
 });

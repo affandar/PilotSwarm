@@ -63,6 +63,7 @@ const PORTAL_SPC_KEYS = [
 const SPC_KEYS_BY_SERVICE = {
   worker: WORKER_SPC_KEYS,
   portal: PORTAL_SPC_KEYS,
+  "git-repo-worker": WORKER_SPC_KEYS,
 };
 
 /**

@@ -20,6 +20,14 @@ size and defaults to `3`. Composition repositories may override these settings
 through process environment variables while keeping their private values
 outside PilotSwarm.
 
+The generic Windows worker uses
+[`build-windows-worker.ps1`](build-windows-worker.ps1). It can build the
+platform base and SDK together, or expose the same two boundaries to a
+composition repository: `-BaseOnly` emits the canonical base, and
+`-WorkerBaseImage <image>` places the thin SDK layer on top of an externally
+composed image. PilotSwarm therefore owns the generic image mechanics without
+owning any private layers inserted between those boundaries.
+
 ## Prerequisites
 
 - **Node.js ≥ 20** (already a repo dep — `node --version`)
@@ -116,6 +124,12 @@ npm run deploy -- worker foo --env-overlay ../org-deployment/worker.env
 npm run deploy -- git-cache foo --instance sample-repo \
   --env-overlay ../org-deployment/sample-repo.env \
   --env-overlay ../org-deployment/sample-repo.foo.env
+
+# Repo-worker image composition stays external; the platform deploys the exact ref
+GIT_REPO_WORKER_IMAGE=registry.example/private-worker:published \
+npm run deploy -- git-repo-worker foo --instance sample-repo \
+  --env-overlay ../org-deployment/sample-repo.env \
+  --env-overlay ../org-deployment/sample-repo.foo.env
 ```
 
 > **Note**: when invoking via `npm run deploy`, separate npm flags from
@@ -128,7 +142,7 @@ npm run deploy -- git-cache foo --instance sample-repo \
 ```
 npm run deploy -- <service> <env> [flags]
 
-Services:  worker | portal | git-cache | baseinfra | globalinfra | all
+Services:  worker | portal | git-cache | git-repo-worker | baseinfra | globalinfra | all
 Envs:      a local env name created with `npm run deploy:new-env`
 
 Flags:
@@ -136,6 +150,7 @@ Flags:
   --region <name>     Override LOCATION from <env>.env
   --image-tag <tag>   Default: <env>-<short-sha>[-dirty]
   --instance <name>   Required by instance-scoped services such as git-cache
+                      and git-repo-worker
   --env-overlay <path> Overlay an external KEY=VALUE file on the local env.
                        Repeat in precedence order; later files win.
                        Relative paths resolve from the current working directory.
@@ -157,10 +172,10 @@ Flags:
 | `noop` | Load env, run preflight (Azure login + subscription match), exit. | all |
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
-| `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. The standalone git-cache service also reconciles its instance-specific AKS node pool and workload-identity federation. | per-service module list |
+| `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. Git-cache also reconciles its instance-specific AKS node pool and workload-identity federation; git-repo-worker creates an isolated manifest container and Flux configuration. | per-service module list |
 | `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
-| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>[-<instance>]-<env>/`, then `az storage blob upload-batch` the Kustomize tree to the Flux Storage Bucket. Instance-scoped services publish to an isolated container. | worker, portal, git-cache |
-| `rollout` | Force the service's Flux Kustomization to reconcile, then wait for the declared Deployment or DaemonSet. Image verification is enabled for platform-built app images and disabled for fixed/external images. | worker, portal, git-cache |
+| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>[-<instance>]-<env>/`, then `az storage blob upload-batch` the Kustomize tree to the Flux Storage Bucket. Instance-scoped services publish to an isolated container. | worker, portal, git-cache, git-repo-worker |
+| `rollout` | Force the service's Flux Kustomization to reconcile, verify declared prerequisites, then wait for the declared Deployment or DaemonSet. Platform-built images are checked by tag; externally composed repo-worker images are checked by exact reference. | worker, portal, git-cache, git-repo-worker |
 
 The default pipeline (no `--steps`) is the full chain. For `baseinfra`
 and `globalinfra` the chain ends at `bicep` (no app artifacts to roll

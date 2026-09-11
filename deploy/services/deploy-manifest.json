@@ -5,7 +5,7 @@
 
   "infraOrder": ["global-infra", "base-infra", "pls-anchor", "cert-manager", "cert-manager-issuers"],
   "services":   ["worker", "portal"],
-  "standaloneServices": ["git-cache"],
+  "standaloneServices": ["git-cache", "git-repo-worker"],
 
   "regionShort": {
     "westus":         "wus",

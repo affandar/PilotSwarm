@@ -105,6 +105,10 @@ test("git-cache stages and renders the Windows manifest variant", () => {
   assert.match(daemonset, /name: git-cache/);
   assert.match(daemonset, /serviceAccountName: pilotswarm-git-cache/);
   assert.match(overlayEnv, /GIT_CACHE_IMAGE=example\.azurecr\.io\/pilotswarm-worker-win:test/);
+  assert.match(
+    overlayEnv,
+    /GIT_CACHE_SERVICE_ACCOUNT_NAME=pilotswarm-git-cache-sample-repo/,
+  );
   assert.match(rbac, /name: pilotswarm-git-cache/);
   assert.match(secrets, /objectName: git-cache-ado-pat/);
   assert.match(daemonset, /ADO_PAT_FILE/);
@@ -235,6 +239,8 @@ test("git-cache rollout resolves to its instance DaemonSet and Flux config", () 
       namespace: "pilotswarm",
       kustomizationName: "git-cache-sample-repo-git-cache-sample-repo",
       verifyImage: false,
+      expectedImage: null,
+      prerequisites: [],
       timeout: "30m",
     },
   );

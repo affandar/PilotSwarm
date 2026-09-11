@@ -46,12 +46,43 @@ export function resolveRolloutSpec({ service, env }) {
     env,
     `${service} rollout.fluxConfiguration`,
   );
+  const kustomizationName = rollout.fluxKustomization
+    ? resolveEnvTemplate(
+        rollout.fluxKustomization,
+        env,
+        `${service} rollout.fluxKustomization`,
+      )
+    : `${fluxConfigName}-${fluxConfigName}`;
   return {
     resourceName,
     resourceKind,
     namespace,
-    kustomizationName: `${fluxConfigName}-${fluxConfigName}`,
+    kustomizationName,
     verifyImage: rollout.verifyImage !== false,
+    expectedImage: rollout.expectedImageEnv
+      ? resolveEnvTemplate(
+          `__${rollout.expectedImageEnv}__`,
+          env,
+          `${service} rollout.expectedImageEnv`,
+        )
+      : null,
+    prerequisites: (rollout.prerequisites ?? []).map((prerequisite) => ({
+      kind: resolveEnvTemplate(
+        prerequisite.kind,
+        env,
+        `${service} rollout prerequisite.kind`,
+      ),
+      name: resolveEnvTemplate(
+        prerequisite.name,
+        env,
+        `${service} rollout prerequisite.name`,
+      ),
+      namespace: resolveEnvTemplate(
+        prerequisite.namespace,
+        env,
+        `${service} rollout prerequisite.namespace`,
+      ),
+    })),
     timeout: rollout.timeout || DEFAULT_ROLLOUT_TIMEOUT,
   };
 }
@@ -68,15 +99,38 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
     namespace,
     kustomizationName,
     verifyImage,
+    expectedImage,
+    prerequisites,
     timeout,
   } = spec;
 
   const kubeEnv = ensureKubeContext(env, stagingDir);
 
+  for (const prerequisite of prerequisites) {
+    const result = run(
+      "kubectl",
+      [
+        "get",
+        prerequisite.kind,
+        prerequisite.name,
+        "-n",
+        prerequisite.namespace,
+        "-o",
+        "name",
+      ],
+      { capture: true, env: kubeEnv, allowFail: true },
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `Missing prerequisite for ${service}: ${prerequisite.kind}/${prerequisite.name} ` +
+          `in namespace ${prerequisite.namespace}. Deploy the required service first.`,
+      );
+    }
+  }
+
   // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
-  // Our `flux-config.bicep` passes `configName` as both the FluxConfig name
-  // and the single kustomization key, so the resulting Kustomization is
-  // named `<service>-<service>` (e.g. `worker-worker`).
+  // Most services use configName as the key, while instance-scoped services
+  // may declare the exact resulting name to stay within Azure naming limits.
   // 1) Force Flux to pull the just-uploaded Bucket artifact and apply it. We
   //    can't trust `kubectl wait kustomization --for=condition=Ready` here:
   //    Ready is sticky from the prior reconcile, so it returns immediately
@@ -139,9 +193,13 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
     { capture: true, env: kubeEnv },
   );
   const liveImage = (result.stdout || "").trim();
-  if (!liveImage.endsWith(`:${imageTag}`)) {
+  const imageMatches = expectedImage
+    ? liveImage === expectedImage
+    : liveImage.endsWith(`:${imageTag}`);
+  if (!imageMatches) {
+    const expected = expectedImage || `an image ending in ':${imageTag}'`;
     throw new Error(
-      `Live image tag mismatch for ${service}/${envName}: deployment shows '${liveImage}' but expected tag '${imageTag}'. ` +
+      `Live image mismatch for ${service}/${envName}: workload shows '${liveImage}' but expected ${expected}. ` +
         `The just-pushed image was not applied even after 'flux reconcile --with-source'. ` +
         `Inspect with: 'kubectl describe kustomization/${kustomizationName} -n ${FLUX_NAMESPACE}' and 'flux get sources bucket -n ${FLUX_NAMESPACE}'.`,
     );

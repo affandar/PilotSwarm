@@ -151,10 +151,46 @@ export function validateServiceManifest(obj, path) {
         errs.push(`${path}: rollout.fluxConfiguration must be a non-empty string`);
       }
       if (
+        obj.rollout.fluxKustomization !== undefined &&
+        (typeof obj.rollout.fluxKustomization !== "string" ||
+          obj.rollout.fluxKustomization.length === 0)
+      ) {
+        errs.push(`${path}: rollout.fluxKustomization must be a non-empty string`);
+      }
+      if (
         obj.rollout.verifyImage !== undefined &&
         typeof obj.rollout.verifyImage !== "boolean"
       ) {
         errs.push(`${path}: rollout.verifyImage must be a boolean`);
+      }
+      if (
+        obj.rollout.expectedImageEnv !== undefined &&
+        (typeof obj.rollout.expectedImageEnv !== "string" ||
+          !/^[A-Z][A-Z0-9_]*$/.test(obj.rollout.expectedImageEnv))
+      ) {
+        errs.push(`${path}: rollout.expectedImageEnv must be an env-key string`);
+      }
+      if (obj.rollout.prerequisites !== undefined) {
+        if (!Array.isArray(obj.rollout.prerequisites)) {
+          errs.push(`${path}: rollout.prerequisites must be an array`);
+        } else {
+          for (const prerequisite of obj.rollout.prerequisites) {
+            if (
+              !prerequisite ||
+              typeof prerequisite !== "object" ||
+              typeof prerequisite.kind !== "string" ||
+              typeof prerequisite.name !== "string" ||
+              typeof prerequisite.namespace !== "string" ||
+              !prerequisite.kind ||
+              !prerequisite.name ||
+              !prerequisite.namespace
+            ) {
+              errs.push(
+                `${path}: rollout.prerequisites entries require non-empty kind, name, and namespace`,
+              );
+            }
+          }
+        }
       }
       if (
         obj.rollout.timeout !== undefined &&
@@ -218,6 +254,19 @@ export function validateServiceManifest(obj, path) {
             }
             if (rule.required !== undefined && typeof rule.required !== "boolean") {
               errs.push(`${path}: gitops.placeholders[].required must be a boolean`);
+            }
+          }
+        }
+        for (const key of ["optionalEnvKeys", "overlayEnvMaps"]) {
+          if (obj.gitops[key] !== undefined) {
+            if (
+              !Array.isArray(obj.gitops[key]) ||
+              obj.gitops[key].some(
+                (value) =>
+                  typeof value !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(value),
+              )
+            ) {
+              errs.push(`${path}: gitops.${key} must contain env-key strings`);
             }
           }
         }
@@ -366,6 +415,7 @@ export async function configureServiceEnv({
   phase = "initial",
   imageTag = null,
   imageTagExplicit = false,
+  envOverlays = [],
 }) {
   const serviceManifest = loadDeployManifest().services[service];
   const moduleRel = serviceManifest?.configurationModule;
@@ -388,6 +438,7 @@ export async function configureServiceEnv({
     phase,
     imageTag,
     imageTagExplicit,
+    envOverlays,
     service,
   });
 }

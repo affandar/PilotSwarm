@@ -1,0 +1,66 @@
+{
+  "$schema": "../deploy.schema.json",
+  "schemaVersion": 1,
+  "_comment": "Generic instance-scoped repo-pinned worker. This service intentionally has no image block or build/push stages: the composition repository supplies the complete worker image and all repository-specific values.",
+  "name": "git-repo-worker",
+  "kind": "app",
+  "instanceRequired": true,
+  "configurationModule": "configure-env.mjs",
+  "gitops": {
+    "source": "git-repo-worker",
+    "overlay": "__GIT_REPO_WORKER_OS__",
+    "manifestContainer": "repo-worker-__DEPLOY_INSTANCE__-manifests",
+    "optionalEnvKeys": [
+      "PLUGIN_SPEC",
+      "ADO_PAT_KEYVAULT_SECRET_URI",
+      "REPO_MCP_ALLOW",
+      "REPO_MCP_REMOTE_ONLY",
+      "ADO_NUGET_FEED_URLS",
+      "DEFAULT_MCP_JSON",
+      "CALLER_AUTH_KEYVAULT_NAME",
+      "CALLER_AUTH_ENV_TOKENS",
+      "PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS"
+    ],
+    "overlayEnvMaps": ["WORKER_EXTRA_ENV"],
+    "placeholders": [
+      {
+        "path": "base/kustomization.yaml",
+        "envKeys": ["DEPLOY_INSTANCE"],
+        "required": true
+      },
+      {
+        "path": "components/linux/daemonset.yaml",
+        "envKeys": ["WORKER_MAX_UNAVAILABLE"],
+        "required": true
+      },
+      {
+        "path": "components/windows/daemonset.yaml",
+        "envKeys": ["WORKER_MAX_UNAVAILABLE"],
+        "required": true
+      }
+    ]
+  },
+  "bicep": {
+    "modules": [
+      { "name": "git-repo-worker", "scope": "group" }
+    ]
+  },
+  "rollout": {
+    "kind": "DaemonSet",
+    "name": "__GIT_REPO_WORKER_DAEMONSET_NAME__",
+    "namespace": "pilotswarm",
+    "fluxConfiguration": "git-repo-worker-__DEPLOY_INSTANCE__",
+    "fluxKustomization": "__GIT_REPO_WORKER_FLUX_KUSTOMIZATION_NAME__",
+    "verifyImage": true,
+    "expectedImageEnv": "GIT_REPO_WORKER_IMAGE",
+    "prerequisites": [
+      {
+        "kind": "serviceaccount",
+        "name": "pilotswarm-git-cache-__DEPLOY_INSTANCE__",
+        "namespace": "pilotswarm"
+      }
+    ],
+    "timeout": "30m"
+  },
+  "pipeline": ["bicep", "manifests", "rollout"]
+}

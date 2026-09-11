@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - secret-provider-class.yaml
+
+configMapGenerator:
+  - name: git-repo-worker-model-providers
+    files:
+      - model_providers.json
+    literals:
+      - DEPLOY_INSTANCE=__DEPLOY_INSTANCE__

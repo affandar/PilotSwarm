@@ -1,0 +1,145 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_REPO_WORKER_DAEMONSET_NAME
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - metadata.name
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_REPO_WORKER_SERVICE_ACCOUNT_NAME
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.serviceAccountName
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_REPO_WORKER_SECRET_PROVIDER_CLASS_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - metadata.name
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.volumes.[name=secrets-store].csi.volumeAttributes.secretProviderClass
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_REPO_WORKER_SECRET_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.secretObjects.0.secretName
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.containers.[name=git-repo-worker].envFrom.1.secretRef.name
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.REPO_NAME
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - metadata.labels.[pilotswarm.io/git-cache-repo]
+          - spec.selector.matchLabels.[pilotswarm.io/git-cache-repo]
+          - spec.template.metadata.labels.[pilotswarm.io/git-cache-repo]
+          - spec.template.spec.nodeSelector.[pilotswarm.io/git-cache-repo]
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_REPO_WORKER_IMAGE
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.initContainers.[name=wait-for-mirror].image
+          - spec.template.spec.containers.[name=git-repo-worker].image
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.WORKER_MEM_LIMIT
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.containers.[name=git-repo-worker].resources.limits.memory
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.CACHE_HOSTPATH
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.volumes.[name=git-cache].hostPath.path
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.GIT_ENLISTMENT_HOSTPATH
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.spec.volumes.[name=enlistment].hostPath.path
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.WORKLOAD_IDENTITY_CLIENT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.clientID
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.KV_NAME
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.keyvaultName
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.AZURE_TENANT_ID
+    targets:
+      - select:
+          kind: SecretProviderClass
+        fieldPaths:
+          - spec.parameters.tenantId
+
+  - source:
+      kind: ConfigMap
+      name: git-repo-worker-env
+      fieldPath: data.SPC_KEYS_HASH
+    targets:
+      - select:
+          kind: DaemonSet
+        fieldPaths:
+          - spec.template.metadata.annotations.[pilotswarm.dev/spc-keys-hash]

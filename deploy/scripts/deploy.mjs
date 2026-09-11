@@ -116,7 +116,7 @@ function parseArgs(argv) {
   if (positional.length < 2) {
     throw new Error(
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
-        "  <service>    worker | portal | git-cache | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
+        "  <service>    worker | portal | git-cache | git-repo-worker | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
         "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --help",
     );
@@ -136,7 +136,7 @@ function printHelp() {
       "Usage:",
       "  npm run deploy -- <service> <env> [flags]",
       "",
-      "Services:  worker | portal | git-cache | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
+      "Services:  worker | portal | git-cache | git-repo-worker | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all",
       "           ('all' runs the canonical end-to-end sequence:",
       "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
@@ -229,7 +229,9 @@ async function runStage(name, ctx) {
       // BLOB_CONTAINER_ENDPOINT / POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) into
       // the in-process env map, derive DATABASE_URL et al. so the
       // subsequent manifests stage finds them.
-      composeDerivedEnv(ctx.env);
+      composeDerivedEnv(ctx.env, {
+        includeGenericWorkerDefaults: ctx.service === "worker",
+      });
       return;
     case "seed-secrets":
       await seedSecrets({
@@ -252,6 +254,7 @@ async function runStage(name, ctx) {
         phase: "manifests",
         imageTag: ctx.imageTag,
         imageTagExplicit: ctx.imageTagExplicit,
+        envOverlays: ctx.envOverlays,
       });
       const stagedServiceRoot = stageManifests({
         service: ctx.service,
@@ -363,9 +366,15 @@ async function main() {
   // runs the cache starts empty; composeDerivedEnv is invoked again after
   // each successful bicep stage in runStage() so manifests-stage env
   // substitution sees the composed values.
-  composeDerivedEnv(env);
+  composeDerivedEnv(env, {
+    includeGenericWorkerDefaults: service === "worker" || service === "all",
+  });
   if (service !== "all") {
-    await configureServiceEnv({ service, env });
+    await configureServiceEnv({
+      service,
+      env,
+      envOverlays: sources.overlays,
+    });
   }
 
   // 4) Preflight CLIs (EC-1)
@@ -621,6 +630,7 @@ async function runOneService({
     region: env.LOCATION,
     imageTag,
     imageTagExplicit,
+    envOverlays,
     stagingDir: stage,
     moduleListOverride,
     force,
