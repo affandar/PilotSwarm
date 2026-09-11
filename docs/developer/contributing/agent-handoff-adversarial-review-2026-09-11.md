@@ -107,4 +107,21 @@ lifecycle tests pass (eight failed before repair), and 24 related lifecycle,
 model-reload, system-bootstrap and feature-worker tests pass. Both shutdown
 repairs preserve durable state and require no orchestration-version change.
 
-Clean full release gate after these repairs: pending.
+The clean full release gate at `50414e30` passed on 2026-09-11 with
+`./scripts/run-tests.sh --all-providers` and four SDK test workers:
+
+| Provider | Passed | Failed | Skipped | Total |
+| --- | ---: | ---: | ---: | ---: |
+| PostgreSQL SDK | 1,977 | 0 | 17 | 1,994 |
+| HorizonDB SDK | 1,990 | 0 | 4 | 1,994 |
+| Live HorizonDB store | 149 | 0 | 0 | 149 |
+
+Both provider phases exited zero. Each passed the deploy-script suite (250),
+SDK unit suite (936), app suites (22 TUI, 141 web, 781 UI), and MCP checks.
+The full workspace build and the combined shutdown-focused pass (39 tests)
+also passed. The 118 handoff cases, 15 native-task runtime cases, and six
+legacy-startup cases passed on both providers. Standard optional skips remain
+as described above; no failing test was skipped or weakened for this gate.
+
+The run used isolated test schemas with the global stale-schema sweep disabled.
+No production data or deployment configuration was changed by these tests.
