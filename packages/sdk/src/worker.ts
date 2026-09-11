@@ -211,6 +211,9 @@ export class PilotSwarmWorker {
     /** Mtime watcher that re-loads model_providers.json on file change. */
     private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
     private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
+    /** Close admission when drain begins; _started stays true until teardown ends. */
+    private _providerReconciliationEnabled = false;
+    private _providerReconciliation: Promise<void> | null = null;
     /** Embedded PilotSwarm framework prompt. */
     private _frameworkBasePrompt: string | null = null;
     /** Tool names declared by the embedded PilotSwarm framework default agent. */
@@ -363,13 +366,36 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+    }
 
+    private _startProviderPolling(): void {
+        this._providerReconciliationEnabled = true;
         // Poll for model_providers.json changes (30s, unref'd so it never
         // holds the process open). On reload, swap the worker's registry AND
         // the SessionManager's — new sessions and per-turn model resolution
         // pick up the fresh catalog immediately.
-        if (this._modelProvidersReloader?.path || this._modelProviders) {
+        if (!this._modelProvidersReloadTimer && (this._modelProvidersReloader?.path || this._modelProviders)) {
             this._modelProvidersReloadTimer = setInterval(() => {
+                this._reconcileProvidersAndSystemAgents(true);
+            }, 30_000);
+            this._modelProvidersReloadTimer.unref?.();
+        }
+    }
+
+    private _stopProviderPolling(): void {
+        this._providerReconciliationEnabled = false;
+        if (this._modelProvidersReloadTimer) {
+            clearInterval(this._modelProvidersReloadTimer);
+            this._modelProvidersReloadTimer = null;
+        }
+    }
+
+    private _reconcileProvidersAndSystemAgents(refreshProviders: boolean): void {
+        // Initial bootstrap and periodic reconciliation share one task. A slow
+        // catalog must not accumulate overlapping refreshes or agent starts.
+        if (!this._providerReconciliationEnabled || this._providerReconciliation) return;
+        this._providerReconciliation = (async () => {
+            if (refreshProviders) {
                 if (this._modelProvidersReloader?.checkAndReload()) {
                     this._modelProviders = this._modelProvidersReloader.current;
                     this._modelProviderTypes = this._modelProvidersReloader.types;
@@ -382,12 +408,12 @@ export class PilotSwarmWorker {
                 // catalog is re-read on the same tick as the file. Without
                 // it a provider somebody just added would resolve no
                 // credential until the worker restarted.
-                void this._refreshProviderRegistry()
-                    .then(() => this._startSystemAgents())
-                    .catch((err) => console.warn(`[PilotSwarmWorker] provider/system reconciliation failed: ${String((err as Error)?.message ?? err)}`));
-            }, 30_000);
-            this._modelProvidersReloadTimer.unref?.();
-        }
+                await this._refreshProviderRegistry();
+            }
+            if (this._providerReconciliationEnabled) await this._startSystemAgents();
+        })()
+            .catch((err) => console.warn(`[PilotSwarmWorker] provider/system reconciliation failed: ${String((err as Error)?.message ?? err)}`))
+            .finally(() => { this._providerReconciliation = null; });
     }
 
     /**
@@ -875,6 +901,7 @@ export class PilotSwarmWorker {
             console.error("[PilotSwarmWorker] Runtime error:", err);
         });
         this._started = true;
+        this._startProviderPolling();
 
         // Autonomous eviction clock (lifecycle protocol §3.4): local session
         // state is a cache. Sessions idle past the hold window + margin are
@@ -906,12 +933,12 @@ export class PilotSwarmWorker {
         // Auto-start system agents defined in plugins (idempotent), but do not
         // block worker.start() on the bootstrap race. The TUI should become
         // interactive even if first-run system-agent startup is slow.
-        void this._startSystemAgents().catch((err: any) => {
-            console.warn(`[PilotSwarmWorker] background system agent startup failed: ${err?.message ?? err}`);
-        });
+        // Provider routing was refreshed above, before the runtime started.
+        this._reconcileProvidersAndSystemAgents(false);
     }
 
     async stop(): Promise<void> {
+        this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
             this._evictionTimer = null;
@@ -936,6 +963,9 @@ export class PilotSwarmWorker {
             await this.runtime.shutdown(shutdownTimeoutMs);
             this.runtime = null;
         }
+        // Stop fetching first, then let any already-admitted bootstrap finish
+        // while the catalog/provider it uses are still open.
+        await this._providerReconciliation;
         await this.sessionManager.shutdown();
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
@@ -975,6 +1005,7 @@ export class PilotSwarmWorker {
      *      lock timeout.
      */
     async gracefulShutdown(): Promise<void> {
+        this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
 
@@ -2007,6 +2038,7 @@ export class PilotSwarmWorker {
 
         const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
         for (const plan of resolveSystemAgentSessionPlans(this._loadedSystemAgents)) {
+            if (!this._providerReconciliationEnabled) return;
             const override = overrideByAgent.get(plan.agent.id);
             const route = override ?? systemDefault;
             if (!route.model || !this._modelProviders?.hasModel(route.model)) {
