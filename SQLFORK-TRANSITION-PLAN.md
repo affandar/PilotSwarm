@@ -293,14 +293,7 @@ The audit found the following candidates, in recommended execution order:
    .NET client independently for generic upstream contributions. The former SQLmort Python SDK
    has been removed and is no longer an upstream source.
 
-3. **Upstream the generic functional-test harness and neutral smoke clients (optional
-   platform contribution).** `tests/functional/run_tests.py` is a reusable playlist,
-   baseline, and comparison runner. Its engine can move upstream while SQLmort's
-   `playlist.yml` and SQL scenario definitions remain internal. Likewise, neutral examples
-   for model listing, prompt submission, multi-turn sessions, and hello-world health checks
-   can become PilotSwarm examples after removing SQL-branded package names and defaults.
-
-4. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
+3. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
    image build, manifest rendering, apply, and rollout mechanics under
    `deploy/apps/kusto-mcp/` may move to PilotSwarm if they add capabilities not already
    present. Concrete clusters, services, image destinations, identities, and acceptance
@@ -314,9 +307,9 @@ SQL fleet topology and layered Windows tooling; domain prompts, work-item fixtur
 acceptance playlists, and runbooks; and private repository-to-audience mappings.
 
 **Recommended sequence:** first expose and consume the canonical provider contract; then
-move the neutral client SDKs; then split deployment mechanics; finally consider the test
-harness, smoke clients, and Kusto MCP wrappers. Each move must leave SQLmort with only a thin
-domain composition layer and must not make PilotSwarm depend on `sqlmort`.
+move the neutral client SDKs; then split deployment mechanics; finally consider Kusto MCP
+wrappers. Each move must leave SQLmort with only a thin domain composition layer and must
+not make PilotSwarm depend on `sqlmort`.
 
 ## 7. Strategy A — Reconcile the existing fork (default)
 

@@ -7,6 +7,9 @@
 #   ./scripts/test-local.sh --suite=smoke    # run only matching suite(s)
 #   ./scripts/test-local.sh smoke            # same as --suite=smoke
 #   ./scripts/test-local.sh --sequential     # force suites one at a time
+#   ./scripts/test-local.sh --external-test-dir=../plugin/tests
+#   ./scripts/test-local.sh --external-only --external-test-dir=../plugin/tests
+#   ./scripts/test-local.sh --external-only --external-test-dir=../plugin/tests --external-test-filter=smoke
 #   ./scripts/test-local.sh --all-providers  # run baseline, then each configured provider overlay
 #   ./scripts/test-local.sh --with-horizondb # run one pass with HorizonDB provider overlay
 #
@@ -26,11 +29,41 @@ HORIZONDB_ENV_FILE="${HORIZONDB_ENV_FILE:-.env.horizondb}"
 
 WITH_HORIZONDB=0
 ALL_PROVIDERS=0
+EXTERNAL_ONLY=0
 SCRIPT_ARGS=()
+EXTERNAL_TEST_DIRS=()
+EXTERNAL_TEST_FILTERS=()
+EXPECT_EXTERNAL_TEST_DIR=0
+EXPECT_EXTERNAL_TEST_FILTER=0
 for arg in "$@"; do
+    if [ "$EXPECT_EXTERNAL_TEST_DIR" = "1" ]; then
+        EXTERNAL_TEST_DIRS+=("$arg")
+        EXPECT_EXTERNAL_TEST_DIR=0
+        continue
+    fi
+    if [ "$EXPECT_EXTERNAL_TEST_FILTER" = "1" ]; then
+        EXTERNAL_TEST_FILTERS+=("$arg")
+        EXPECT_EXTERNAL_TEST_FILTER=0
+        continue
+    fi
     case "$arg" in
         --help|-h)
             SCRIPT_ARGS+=("$arg")
+            ;;
+        --external-test-dir)
+            EXPECT_EXTERNAL_TEST_DIR=1
+            ;;
+        --external-test-dir=*)
+            EXTERNAL_TEST_DIRS+=("${arg#--external-test-dir=}")
+            ;;
+        --external-only)
+            EXTERNAL_ONLY=1
+            ;;
+        --external-test-filter)
+            EXPECT_EXTERNAL_TEST_FILTER=1
+            ;;
+        --external-test-filter=*)
+            EXTERNAL_TEST_FILTERS+=("${arg#--external-test-filter=}")
             ;;
         --with-horizondb)
             WITH_HORIZONDB=1
@@ -48,17 +81,18 @@ for arg in "$@"; do
     esac
 done
 
-if { [ "$WITH_HORIZONDB" != "1" ] || [ "$ALL_PROVIDERS" = "1" ]; } && [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
-    exit 1
-fi
-
 print_help() {
         cat <<'EOF'
 Usage:
     ./scripts/run-tests.sh                    Run all suites in parallel (default)
     ./scripts/run-tests.sh --parallel         Run all suites in parallel explicitly
     ./scripts/run-tests.sh --sequential       Run all suites sequentially
+    ./scripts/run-tests.sh --external-test-dir=<path>
+                                               Add an external Vitest directory
+    ./scripts/run-tests.sh --external-only --external-test-dir=<path>
+                                               Run only explicit external directories
+    ./scripts/run-tests.sh --external-test-filter=<substring>
+                                               Filter files in external directories
     ./scripts/run-tests.sh --all-providers    Run baseline, then each configured provider overlay
     ./scripts/run-tests.sh --with-horizondb   Run one pass with HorizonDB provider overlay
     ./scripts/run-tests.sh --suite=<name>     Run matching suite(s)
@@ -72,6 +106,9 @@ Examples:
     ./scripts/run-tests.sh wait-affinity
     ./scripts/run-tests.sh session-policy
     ./scripts/run-tests.sh sub-agents reliability
+    ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm
+    ./scripts/run-tests.sh --external-only --external-test-dir=../plugin-repo/tests/pilotswarm
+    ./scripts/run-tests.sh --external-only --external-test-dir=../plugin-repo/tests/pilotswarm --external-test-filter=smoke
     ./scripts/run-tests.sh --all-providers
     ./scripts/run-tests.sh --with-horizondb composition-tiers
     ./scripts/run-tests.sh --with-horizondb embedder-outcomes
@@ -79,6 +116,19 @@ Examples:
 
 Notes:
 - Suite filters may be positional names or --suite=<name>, and can be mixed.
+- --external-test-dir is repeatable. Each directory is run as a separate
+  Vitest phase after PilotSwarm's package tests and before its SDK Vitest phase.
+  External directories are explicit and optional; the runner never discovers
+  sibling repositories automatically.
+- --external-only runs only explicitly supplied external directories. It is
+  intended for fast consumer/plugin iteration and does not require PilotSwarm's
+  database, provider credentials, builds, or built-in test phases.
+- --external-test-filter is repeatable and forwards Vitest file-name substring
+  filters only to the external directories.
+- External test directories cannot currently be combined with suite filters or
+  --all-providers. --external-only also cannot be combined with provider modes.
+  Those combinations fail fast rather than silently running a partial or
+  duplicated external suite.
 - Suite filters are substring matches under packages/sdk/test/local. When
     --with-horizondb is active, they also match provider-level integration tests
     under packages/horizon-store/test/integration (for example embedder-outcomes).
@@ -129,6 +179,96 @@ if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
                 ;;
         esac
     done
+fi
+
+if [ "$EXPECT_EXTERNAL_TEST_DIR" = "1" ]; then
+    echo "ERROR: --external-test-dir requires a directory path."
+    exit 1
+fi
+if [ "$EXPECT_EXTERNAL_TEST_FILTER" = "1" ]; then
+    echo "ERROR: --external-test-filter requires a substring."
+    exit 1
+fi
+for idx in "${!EXTERNAL_TEST_DIRS[@]}"; do
+    dir="${EXTERNAL_TEST_DIRS[$idx]}"
+    if [ ! -d "$dir" ]; then
+        echo "ERROR: external test directory does not exist: $dir"
+        exit 1
+    fi
+    EXTERNAL_TEST_DIRS[$idx]="$(cd "$dir" && pwd -P)"
+done
+
+# Build Vitest args before environment setup so --external-only can remain a
+# lightweight, provider-independent test path.
+VITEST_ARGS=(--run)
+SUITE_FILTERS=()
+if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
+    for arg in "${SCRIPT_ARGS[@]}"; do
+        case "$arg" in
+            --suite=*) SUITE_FILTERS+=("${arg#--suite=}") ;;
+            --sequential)
+                VITEST_ARGS=(--run --no-file-parallelism --maxConcurrency=1)
+                ;;
+            --parallel)
+                VITEST_ARGS=(--run)
+                ;;
+            --*)
+                echo "ERROR: unknown option: $arg"
+                exit 1
+                ;;
+            *)
+                SUITE_FILTERS+=("$arg")
+                ;;
+        esac
+    done
+fi
+
+if [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ] && [ "${#SUITE_FILTERS[@]}" -gt 0 ]; then
+    echo "ERROR: --external-test-dir cannot be combined with suite filters."
+    exit 1
+fi
+if [ "${#EXTERNAL_TEST_DIRS[@]}" -gt 0 ] && [ "$ALL_PROVIDERS" = "1" ]; then
+    echo "ERROR: --external-test-dir cannot be combined with --all-providers."
+    exit 1
+fi
+if [ "$EXTERNAL_ONLY" = "1" ] && [ "${#EXTERNAL_TEST_DIRS[@]}" -eq 0 ]; then
+    echo "ERROR: --external-only requires at least one --external-test-dir."
+    exit 1
+fi
+if [ "${#EXTERNAL_TEST_FILTERS[@]}" -gt 0 ] && [ "${#EXTERNAL_TEST_DIRS[@]}" -eq 0 ]; then
+    echo "ERROR: --external-test-filter requires at least one --external-test-dir."
+    exit 1
+fi
+if [ "$EXTERNAL_ONLY" = "1" ] && { [ "$WITH_HORIZONDB" = "1" ] || [ "$ALL_PROVIDERS" = "1" ]; }; then
+    echo "ERROR: --external-only cannot be combined with provider modes."
+    exit 1
+fi
+
+run_external_vitest_dir() {
+    local dir="$1"
+    shift
+    (
+        cd "$REPO_ROOT"
+        PILOTSWARM_EXTERNAL_TEST_ROOT="$dir" \
+            node node_modules/vitest/vitest.mjs \
+            --config scripts/external-vitest.config.mjs \
+            "$@"
+    )
+}
+
+if [ "$EXTERNAL_ONLY" = "1" ]; then
+    for dir in "${EXTERNAL_TEST_DIRS[@]}"; do
+        echo "🧪 Running external tests ($(basename "$dir"))..."
+        run_external_vitest_dir "$dir" "${VITEST_ARGS[@]}" "${EXTERNAL_TEST_FILTERS[@]}" \
+            || { echo "❌ External tests failed: $dir"; exit 1; }
+    done
+    echo "Overall result: PASS"
+    exit 0
+fi
+
+if { [ "$WITH_HORIZONDB" != "1" ] || [ "$ALL_PROVIDERS" = "1" ]; } && [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: $ENV_FILE not found. Create it with DATABASE_URL and GITHUB_TOKEN."
+    exit 1
 fi
 
 horizondb_provider_configured() {
@@ -468,6 +608,30 @@ run_app_tests() {
     (cd "$REPO_ROOT" && npm test --prefix packages/app) \
         || { echo "❌ packages/app tests failed"; exit 1; }
     record_run_phase "packages/app tests" "PASS"
+}
+
+run_external_tests() {
+    if [ "${#EXTERNAL_TEST_DIRS[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    local dir
+    local label
+    local external_args=(--run)
+    if [[ " ${VITEST_ARGS[*]} " == *" --no-file-parallelism "* ]]; then
+        external_args+=(--no-file-parallelism --maxConcurrency=1)
+    fi
+
+    for dir in "${EXTERNAL_TEST_DIRS[@]}"; do
+        label="external tests ($(basename "$dir"))"
+        echo "🧪 Running $label..."
+        run_external_vitest_dir "$dir" "${external_args[@]}" "${EXTERNAL_TEST_FILTERS[@]}" || {
+            record_run_phase "$label" "FAIL"
+            echo "❌ $label failed"
+            exit 1
+        }
+        record_run_phase "$label" "PASS"
+    done
 }
 
 # Run the @pilotswarm/horizon-store LIVE integration suite (the provider-level
@@ -812,32 +976,6 @@ cleanup_test_state() {
 cleanup_test_state
 trap cleanup_test_state EXIT
 
-# Build vitest args.
-# Default mode runs with Vitest's normal parallelism. Use --sequential for a
-# deterministic one-at-a-time run when debugging contention or backend capacity issues.
-VITEST_ARGS=(--run)
-SUITE_FILTERS=()
-if [ "${#SCRIPT_ARGS[@]}" -gt 0 ]; then
-    for arg in "${SCRIPT_ARGS[@]}"; do
-        case "$arg" in
-            --suite=*) SUITE_FILTERS+=("${arg#--suite=}") ;;
-            --sequential)
-                VITEST_ARGS=(--run --no-file-parallelism --maxConcurrency=1)
-                ;;
-            --parallel)
-                VITEST_ARGS=(--run)
-                ;;
-            --*)
-                echo "ERROR: unknown option: $arg"
-                exit 1
-                ;;
-            *)
-                SUITE_FILTERS+=("$arg")
-                ;;
-        esac
-    done
-fi
-
 # Run
 cd "$SDK_DIR"
 TARGET_FILES=()
@@ -882,6 +1020,7 @@ else
     run_sdk_unit_tests
     run_app_tests
     run_horizon_store_tests
+    run_external_tests
     if [ -n "${PILOTSWARM_TEST_PHASE:-}" ]; then
         echo "🧪 SDK Vitest phase [$PILOTSWARM_TEST_PHASE]: ${PILOTSWARM_TEST_PHASE_LABEL:-provider pass}"
     fi
