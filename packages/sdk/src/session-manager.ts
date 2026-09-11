@@ -48,6 +48,7 @@ const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
+const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
 export class SessionLockAcquireTimeoutError extends Error {
@@ -2500,23 +2501,43 @@ export class SessionManager {
         return [...this.sessions.keys()];
     }
 
-    /** Shutdown: destroy all sessions, stop CopilotClient. */
+    /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
         this.unsubscribeFeatureFlags?.();
         this.unsubscribeFeatureFlags = null;
-        for (const [_, session] of this.sessions) {
-            try { await session.destroy(); } catch {}
-        }
+        // CopilotClient.stop owns session detachment. Detaching each session
+        // first can hang forever in the SDK's unbounded session.detach RPC.
+        // Snapshot and release this pool before awaiting: late SDK cleanup
+        // must never clear clients/configuration installed by a later start.
+        const clients = [...new Set(this.clients.values())];
+        this.clients.clear();
         this.sessions.clear();
         this.sessionAgentCopies.clear();
         this.sessionBindingFingerprints.clear();
         this.sessionApplicationTools.clear();
         this.sessionConfigs.clear();
         this.sessionClientKeys.clear();
-        for (const [, client] of this.clients) {
-            try { await client.stop(); } catch {}
-        }
-        this.clients.clear();
+        // Each process gets the same deadline concurrently; one stuck client
+        // cannot block another or multiply the worker's termination budget.
+        // This is final cleanup only, not the individual-session eviction path.
+        await Promise.all(clients.map(async (client) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                const errors = await Promise.race([
+                    client.stop(),
+                    new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS);
+                    }),
+                ]);
+                if (errors?.length) throw errors[0];
+            } catch {
+                console.warn("[SessionManager] Copilot did not shut down cleanly; forcing its local process to stop.");
+                try { await client.forceStop(); }
+                catch { console.warn("[SessionManager] Copilot force-stop failed."); }
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }));
     }
 
     /**
