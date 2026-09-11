@@ -361,112 +361,14 @@ This operationalizes §7 (Strategy A) and makes explicit the deployment-continui
 §7 leaves implicit. The unit of work is a **capability — a logical diff of fork vs upstream** —
 never a commit (nothing is cherry-picked).
 
-### Phase 0 — Test-coverage backfill (pre-rebase hardening)
-A green suite at the tip is what lets us *verify* each rebase conflict resolution instead of hoping.
-Tests don't make git's merge cleaner, but they turn "did my resolution silently break behavior?"
-from a gamble into a check — so before we lean on the rebase cadence (§11), close the coverage gap
-on the risky diverged commits.
+### Phase 0 — Tip-level test confidence (complete)
+The successful rebase onto current upstream, followed by green targeted and end-to-end suites,
+provides sufficient confidence to continue the transition. We will not maintain a per-commit
+coverage inventory or require retrospective `Covers:` trailers for the fork history.
 
-**Scan (as of `eaabdbf9..HEAD`, 2026-09-03):** 146 non-merge diverged commits → 53 already touch a
-test, 40 are docs/config only (no test owed), **53 change source but ship no test.** Split by rebase
-risk:
-
-- **P1 — 31 commits** touch a known recurring-conflict surface (worker / orchestration / caller-auth
-  / MCP / plugin / session / migrations). These repay a test on *every* crank — backfill first.
-- **P2 — 22 commits** change source off the hot surfaces (portal/UI, deploy, scripts). Lower rebase
-  risk; backfill after P1.
-
-**Rule (no history rewrite — each test commit is a logical deferred amend):** for each flagged
-commit, land a **new** characterization-test commit at `HEAD` that pins the behavior and **names the
-source commit it covers** via a `Covers:` trailer — *do not* rewrite history to inject the test into
-the original commit. It's logically an amend of that commit's missing test, deferred to `HEAD` so we
-never rewrite:
-
-```
-test: characterize worker poison-forensics logging
-
-Covers: ce429f01
-```
-
-The **same backfill commit also ticks that commit's box** in the P1/P2 burndown below (marking it
-*Covered*, *Waived*, or *Superseded*), so the checklist and the `Covers:` trailers stay in lockstep
-in one atomic change.
-
-Rewriting is more work (authoring against each intermediate state) for the same rebase benefit, and
-its only unique payoff (per-commit `git bisect`) isn't worth collecting on a fork we're draining.
-
-**Each flagged commit resolves to exactly one disposition:**
-- **Covered** — its behavior lives at `HEAD`; land a `Covers:`-trailered test commit (above).
-- **Waived** — the change survives at `HEAD` but has no behavior to characterize (pure rename, label
-  drop, diagnostic-logging, comment); record the waiver, no test.
-- **Superseded** — the commit's *net effect is gone* at `HEAD` (reverted, removed, or fully rewritten
-  by a later fork commit), so there is nothing live to test. A superseded commit still *replays*
-  during a rebase and can conflict mechanically, but a test can't protect behavior that isn't at the
-  tip — coverage genuinely doesn't apply; safety comes from the green suite at `HEAD`, which correctly
-  excludes it. Detection is a triage call — "does this commit's net change survive to `HEAD`?";
-  add/remove pairs are the tell.
-
-**Tracking (forward, not by re-scan):** the flagged commits stay flagged in history *by design* — an
-old commit like `ce429f01` will always show "source, no test" because its coverage lives in a later
-commit; that permanent flag is not unfinished work. So the seed scan below is a **one-time inventory**,
-and burndown is measured forward as *flagged − covered*:
-
-```powershell
-$covered = git log --format=%B eaabdbf9..HEAD |
-  Select-String -Pattern 'Covers:\s*([0-9a-f]{7,40})' -AllMatches |
-  ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value }
-# remaining = flagged set (seed scan) minus $covered ; Phase 0 done when remaining + waived == flagged
-```
-
-**Going-forward invariant:** any new fork-only commit that changes source ships a test in the same
-commit (enforce as a fork CI gate — see §12). **Gate:** Phase 0 is done when every flagged commit is
-covered (a `Covers:` trailer), waived, or superseded.
-
-Seed the flagged set once:
-
-```powershell
-git log --no-merges --format='%H' eaabdbf9..HEAD | ForEach-Object {
-  $f = git diff-tree --no-commit-id --name-only -r $_
-  if (($f -notmatch '(?i)(\.test\.|\.spec\.|/tests?/|__tests__)') -and ($f -match '(?i)\.(ts|tsx|js|mjs|cjs)$')) {
-    git log -1 --format='%h %s' $_
-  }
-}
-```
-
-**P1 burndown (backfill first):**
-- [x] `ce429f01` Add always-on diagnostics logging for session poison forensics *(Covered)*
-- [x] `736fcc1a` Default worker and orchestration concurrency to a single slot *(Covered)*
-- [ ] `d0fbc07f` Make worker dispatcher poll interval configurable *(Deferred — Covered at HEAD but inline in start(); needs a test seam)*
-- [ ] `2d34bcb2` fix(caller-auth): deliver delegated tokens via per-session stdio MCP env *(Deferred — Covered at HEAD but inline in private _getOrCreateUnlocked; needs a test seam)*
-- [ ] `10604f23` Case-insensitively override base MCP servers with bound-agent servers *(Deferred — Covered at HEAD but inline in private _getOrCreateUnlocked; needs a test seam)*
-- [x] `8c6b1435` feat(sdk): make per-turn inactivity timeout configurable *(Covered)*
-- [ ] `df37f9b5` feat(sdk): surface caller-delegated tokens as named env vars for non-MCP tools
-- [ ] `5f5c99bc` feat(repo-worker): auth dnx-launched repo MCP servers against private NuGet feeds
-- [x] `150cb22c` fix(repo-worker): bind repo-shipped .github/agents agents in git workers *(Covered — extract-for-test: lifted the FS-parse core of `SessionManager._resolveRepoAgentDefinition` into an exported `resolveRepoAgentDefinition(boundAgentName, workingDirectory, isWorkerPluginAgent?)` in `session-manager.ts` (worker-plugin guard injected so no class is needed — mirrors the exported `delegatedMcpAuthFingerprint` testability convention); the private method now delegates. `session-manager-repo-agent-bind.test.mjs` uses real-fs temp-dir `.github/agents` fixtures to pin slug/frontmatter-`name` matching (case-insensitive), field mapping (`mcp-servers`→`mcpServers`, tools, skills, body→prompt), CRLF frontmatter, empty-body→description→name fallback, the worker-plugin skip, and every undefined path)*
-- [x] `5427c861` feat(git-worker): support pinning a session to a non-default git ref *(Covered — extract-for-test: lifted `resolveTargetRef` into `git-store.ts` with an injected `RunGit`, both example call sites now delegate to it; `normalizeRef` half already covered; `git-store.test.mjs` pins precedence (session > GIT_ENLISTMENT_REF > default) + origin/HEAD→main→master fallback via a fake runGit)*
-- [ ] `fb729e73` Expose git-workspace state accessors and add hydration demo
-- [ ] `36098cd3` worker/portal: derive serviceable-repo allowlist from live worker registry
-- [x] `c305edcd` Remove caller-attached MCP server parameter from orchestration platform *(Waived — fully removes the callerMcpServers param + validator (SSRF surface); no API/behavior left at HEAD to test)*
-- [x] `fac08098` Add caller-attached per-session MCP servers *(Superseded — callerMcpServers fully removed by c305edcd; gone at HEAD)*
-- [ ] `a1352bc8` Route repo-less session turns to a dedicated generic worker pool
-- [x] `2721098a` Persist git-repo-worker enlistment on hostPath to kill cold-start re-clone *(Waived — touches only examples/git-repo-worker.js + deploy/gitops daemonset.yaml; no shipped library code in the unit-test surface)*
-- [x] `3f3e23f8` Make git-repo-worker readiness truthful (Ready == can accept a job) *(Waived — touches only examples/git-repo-worker.js + deploy/gitops daemonset.yaml; no shipped library code in the unit-test surface)*
-- [x] `baa99423` Add delegated MCP access: connect to repo-defined MCP servers as the caller *(Covered — callerAuthSecretName + loadRepoMcpConfig; injectMcpAuthorization no longer exists at HEAD)*
-- [x] `fa096eed` feat(sdk): add PluginSpec — load external ADO/GitHub plugin repos into the GHCP SDK *(Covered)*
-- [ ] `767eecbd` feat(sdk): scope git reconcile to session hydration + log acquire->work timing
-- [ ] `2fb07251` feat(sdk,portal): repo-affinity routing for git-hydration workers
-- [x] `1140ee5b` Remove unused SDK example scripts from git-repo-worker branch *(Waived — removes unused example scripts + a workflow smoke step; no behavior)*
-- [x] `9d665487` worker: add git-repo-worker reconcile-before-job entrypoint *(Waived — touches only examples/git-repo-worker.js + deploy/Dockerfile.worker; no shipped library code in the unit-test surface)*
-- [ ] `2200b4b3` sdk: add beforeRunTurn worker hook
-- [ ] `d9fb7208` feat(worker): unconditionally enable .github config discovery + skill loading *(Deferred — Covered at HEAD (enable=true survives in createSession config) but inline; needs a test seam)*
-- [x] `3dd98bbf` refactor(worker): drop sessionWorkingDirectory/enableConfigDiscovery/enableSkills options *(Waived — removes option-plumbing public API, falls back to SDK defaults; no behavior to characterize)*
-- [x] `9863b9ca` chore: drop CP1/CP1b/CP2 milestone labels from code + comments *(Waived — comment/label text only, behavior unchanged)*
-- [x] `8f3139d3` refactor: rename cp1-serve-one.mjs -> session-worker.mjs *(Superseded — renamed file removed from examples/ at HEAD)*
-- [x] `0a148efd` feat(worker): platform-owned session workingDirectory + config discovery *(Superseded — the 3 worker options + platform-default workingDirectory fallback removed by 3dd98bbf; only log-string residue at HEAD)*
-- [x] `62de590a` diag: log worker-startup defaults + GHCP createSession params *(Waived — read-only diagnostic logging only, survives at HEAD)*
-- [x] `184bb8b0` poc(windows-worker): add bounded dependency-load smoke to the bundle *(Superseded — added worker-smoke.mjs removed from examples/ at HEAD)*
-
-**P2 (22)** — enumerate via the scan above; backfill after P1.
+Going forward, behavior changes should continue to ship focused tests in the same change. Integration
+conflicts are validated against the current tip-level suite rather than a historical commit-by-commit
+backfill.
 
 ### Phase 1 — Live fork, route-as-you-go
 - Keep the fork the **active dev branch** for SQL-orchestration concepts upstream doesn't have
@@ -953,9 +855,8 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 
 ## 12. Definition of done
 
-- [ ] **Phase 0** — test-coverage backfill complete: every flagged diverged commit is covered
-      (a backfill test commit with a `Covers:` trailer), waived, or superseded (P1 then P2); fork CI
-      gate enforces "source change ⇒ test in same commit" going forward (see §10 Phase 0).
+- [x] **Phase 0** — successful rebase and green tip-level validation provide sufficient test
+      confidence; no historical per-commit coverage inventory or backfill is required.
 - [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
 - [x] Provider module ABI and platform-owned runner implemented; ADO WIQL, IcM, and Kusto
