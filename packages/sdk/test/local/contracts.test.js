@@ -89,9 +89,15 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "find_canvas_app",
     "load_skill",
 ];
+const EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES = [
+    ...EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES,
+    // Declared by the framework base: parents discover caller-visible static
+    // and published specialists before choosing generic or native delegation.
+    "ps_list_agents",
+];
 const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,
-    ...EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES,
+    ...EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES,
 ];
 const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
     ...EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES,
@@ -667,6 +673,7 @@ async function testFactsToolsAlwaysAvailable(env) {
         assertIncludes(JSON.stringify(toolNames), "store_fact", "store_fact should be available to every agent");
         assertIncludes(JSON.stringify(toolNames), "read_facts", "read_facts should be available to every agent");
         assertIncludes(JSON.stringify(toolNames), "delete_fact", "delete_fact should be available to every agent");
+        assertIncludes(JSON.stringify(toolNames), "ps_list_agents", "named agents with no extra tools still receive admitted framework discovery");
 
         const systemManaged = await worker.sessionManager.getOrCreate("facts-always-on-system-session", {
             boundAgentName: "beta",
@@ -678,6 +685,7 @@ async function testFactsToolsAlwaysAvailable(env) {
         assertIncludes(JSON.stringify(systemToolNames), "store_fact", "store_fact should be available to every system agent");
         assertIncludes(JSON.stringify(systemToolNames), "read_facts", "read_facts should be available to every system agent");
         assertIncludes(JSON.stringify(systemToolNames), "delete_fact", "delete_fact should be available to every system agent");
+        assertIncludes(JSON.stringify(systemToolNames), "ps_list_agents", "app system agents still receive admitted framework discovery");
     } finally {
         await worker.stop();
     }
@@ -727,7 +735,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
         null,
         {
             frameworkBasePrompt: "Framework base prompt",
-            frameworkBaseToolNames: EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES,
+            frameworkBaseToolNames: EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES,
         },
         env.sessionStateDir,
     );
@@ -736,7 +744,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
     manager.setFactStore(createNoopFactStore());
     manager.setSessionCatalog(createNoopSessionCatalog());
     manager.setToolRegistry(new Map(
-        EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES.map((toolName) => [
+        EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES.map((toolName) => [
             toolName,
             defineTool(toolName, {
                 description: `${toolName} test tool`,
@@ -751,7 +759,7 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
     }, { turnIndex: 0 });
 
     const createdToolNames = (fakeClient.createdSessionConfigs[0]?.tools ?? []).map((tool) => tool.name);
-    for (const toolName of EXPECTED_FRAMEWORK_ARTIFACT_TOOL_NAMES) {
+    for (const toolName of EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES) {
         assertIncludes(
             JSON.stringify(createdToolNames),
             toolName,

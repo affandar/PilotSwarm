@@ -17,6 +17,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const SCRIPT = fileURLToPath(new URL("../../../../scripts/run-tests.sh", import.meta.url));
 const raw = readFileSync(SCRIPT, "utf8");
@@ -120,4 +121,21 @@ test("the provider-budget suites are reachable from the gate", () => {
         assert.ok(file.endsWith(".test.mjs"), `${file} must end .test.mjs to be run by node --test`);
         readFileSync(fileURLToPath(new URL(`../../../../${file}`, import.meta.url)), "utf8");
     }
+});
+
+
+test("shared-provider safety switch skips both stale sweeps without disabling test phases", () => {
+    const start = live.indexOf("cleanup_test_state() {");
+    assert.notEqual(start, -1);
+    const cleanupDefinition = live.slice(start, live.indexOf("\n}", start) + 2);
+    assert.match(live, /\ncleanup_test_state\ntrap cleanup_test_state EXIT/);
+    const program = `${cleanupDefinition}\nnode() { printf 'STALE_SWEEP_CALLED\\n'; }\nREPO_ROOT=/unused\ncleanup_test_state\ntrap cleanup_test_state EXIT\n`;
+    const inherited = { ...process.env };
+    delete inherited.PS_TEST_SKIP_STALE_CLEANUP;
+    const normal = execFileSync("bash", ["-c", program], { env: inherited, encoding: "utf8" });
+    assert.equal((normal.match(/STALE_SWEEP_CALLED/g) ?? []).length, 2);
+    const safe = execFileSync("bash", ["-c", program], { env: { ...inherited, PS_TEST_SKIP_STALE_CLEANUP: "1" }, encoding: "utf8" });
+    assert.doesNotMatch(safe, /STALE_SWEEP_CALLED/);
+    assert.equal((safe.match(/Global stale-test cleanup disabled/g) ?? []).length, 2);
+    assert.equal((live.match(/\$\{PS_TEST_SKIP_STALE_CLEANUP/g) ?? []).length, 1, "the opt-out must guard only the global cleanup function");
 });

@@ -1,6 +1,7 @@
+import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
+import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -9,7 +10,8 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
-import { PgSessionCatalog } from "./cms.js";
+import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
+import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
 import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
@@ -30,7 +32,6 @@ import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
 import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
-import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import type { AgentConfig } from "./agent-loader.js";
@@ -210,6 +211,9 @@ export class PilotSwarmWorker {
     /** Mtime watcher that re-loads model_providers.json on file change. */
     private _modelProvidersReloader: ReturnType<typeof createModelProvidersReloader> | null = null;
     private _modelProvidersReloadTimer: ReturnType<typeof setInterval> | null = null;
+    /** Close admission when drain begins; _started stays true until teardown ends. */
+    private _providerReconciliationEnabled = false;
+    private _providerReconciliation: Promise<void> | null = null;
     /** Embedded PilotSwarm framework prompt. */
     private _frameworkBasePrompt: string | null = null;
     /** Tool names declared by the embedded PilotSwarm framework default agent. */
@@ -221,7 +225,7 @@ export class PilotSwarmWorker {
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
     /** Prompt lookup used for direct named/system sessions. */
-    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }> = {};
+    private _agentPromptLookup: Record<string, AgentPromptEntry> = {};
     /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
     private _frameworkBaseDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Descriptor for the app default layer (from app default.agent.md or inline config). */
@@ -362,13 +366,36 @@ export class PilotSwarmWorker {
             effectiveSessionStateDir,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
+    }
 
+    private _startProviderPolling(): void {
+        this._providerReconciliationEnabled = true;
         // Poll for model_providers.json changes (30s, unref'd so it never
         // holds the process open). On reload, swap the worker's registry AND
         // the SessionManager's — new sessions and per-turn model resolution
         // pick up the fresh catalog immediately.
-        if (this._modelProvidersReloader?.path || this._modelProviders) {
+        if (!this._modelProvidersReloadTimer && (this._modelProvidersReloader?.path || this._modelProviders)) {
             this._modelProvidersReloadTimer = setInterval(() => {
+                this._reconcileProvidersAndSystemAgents(true);
+            }, 30_000);
+            this._modelProvidersReloadTimer.unref?.();
+        }
+    }
+
+    private _stopProviderPolling(): void {
+        this._providerReconciliationEnabled = false;
+        if (this._modelProvidersReloadTimer) {
+            clearInterval(this._modelProvidersReloadTimer);
+            this._modelProvidersReloadTimer = null;
+        }
+    }
+
+    private _reconcileProvidersAndSystemAgents(refreshProviders: boolean): void {
+        // Initial bootstrap and periodic reconciliation share one task. A slow
+        // catalog must not accumulate overlapping refreshes or agent starts.
+        if (!this._providerReconciliationEnabled || this._providerReconciliation) return;
+        this._providerReconciliation = (async () => {
+            if (refreshProviders) {
                 if (this._modelProvidersReloader?.checkAndReload()) {
                     this._modelProviders = this._modelProvidersReloader.current;
                     this._modelProviderTypes = this._modelProvidersReloader.types;
@@ -381,12 +408,12 @@ export class PilotSwarmWorker {
                 // catalog is re-read on the same tick as the file. Without
                 // it a provider somebody just added would resolve no
                 // credential until the worker restarted.
-                void this._refreshProviderRegistry()
-                    .then(() => this._startSystemAgents())
-                    .catch((err) => console.warn(`[PilotSwarmWorker] provider/system reconciliation failed: ${String((err as Error)?.message ?? err)}`));
-            }, 30_000);
-            this._modelProvidersReloadTimer.unref?.();
-        }
+                await this._refreshProviderRegistry();
+            }
+            if (this._providerReconciliationEnabled) await this._startSystemAgents();
+        })()
+            .catch((err) => console.warn(`[PilotSwarmWorker] provider/system reconciliation failed: ${String((err as Error)?.message ?? err)}`))
+            .finally(() => { this._providerReconciliation = null; });
     }
 
     /**
@@ -741,6 +768,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -854,65 +882,17 @@ export class PilotSwarmWorker {
             this.registerTools(rmTools);
         }
 
-        // ps_list_agents tool — exposes user-creatable agents by default.
-        // NOTE: prefixed with `ps_` to avoid collision with the Copilot SDK's
-        // built-in `list_agents` tool (introduced in @github/copilot 1.0.32),
-        // which lists live background-agent task instances rather than blueprints.
-        const listAgentsTool = defineTool("ps_list_agents", {
-            description:
-                "List all available agent BLUEPRINTS (definitions loaded from .agent.md files). " +
-                "By default this returns only user-creatable named agents. " +
-                "Worker-managed system agents are hidden from the default list because they are NOT valid spawn_agent targets. " +
-                "Pass systemOnly=true only when you need to inspect system-agent definitions for diagnostics. " +
-                "Use this to discover what agents CAN be spawned. To check status of sub-agents you ALREADY spawned, use check_agents instead. " +
-                "IMPORTANT: Do NOT call this unless you actually need to spawn an agent and don't know its name. " +
-                "Seeing an agent in this list does NOT mean you should spawn it.",
-            parameters: {
-                type: "object" as const,
-                properties: {
-                    systemOnly: {
-                        type: "boolean",
-                        description: "If true, only return system agents. Default: false",
-                    },
-                    creatableOnly: {
-                        type: "boolean",
-                        description: "If true, only return user-creatable (non-system) agents. This matches the default behavior.",
-                    },
-                },
-            },
-            handler: async (args: { systemOnly?: boolean; creatableOnly?: boolean }) => {
-                const allAgents = [
-                    ...this._loadedAgents.map(a => ({
-                        name: a.name,
-                        namespace: (a as any).namespace || "custom",
-                        qualifiedName: `${(a as any).namespace || "custom"}:${a.name}`,
-                        description: a.description || null,
-                        tools: a.tools || [],
-                        skills: a.skills || [],
-                        system: false,
-                        creatable: true,
-                        id: null,
-                        parent: null,
-                    })),
-                    ...this._loadedSystemAgents.map(a => ({
-                        name: a.name,
-                        namespace: a.namespace || "pilotswarm",
-                        qualifiedName: `${a.namespace || "pilotswarm"}:${a.name}`,
-                        description: a.description || null,
-                        tools: a.tools || [],
-                        system: true,
-                        creatable: false,
-                        id: a.id || null,
-                        parent: a.parent || null,
-                    })),
-                ];
-                let filtered = allAgents.filter(a => !a.system);
-                if (args.systemOnly) {
-                    filtered = allAgents.filter(a => a.system);
-                } else if (args.creatableOnly) {
-                    filtered = allAgents.filter(a => !a.system);
-                }
-                return JSON.stringify({ agents: filtered, total: filtered.length }, null, 2);
+        // ps_ avoids the Copilot CLI's native list_agents task-status tool.
+        // Listing uses the same owner and copy resolution as spawn_agent.
+        const listAgentsTool = createAgentDiscoveryTool({
+            // Same identities/owners/order as the raw spawn definitions,
+            // with MCP references already reduced to their admitted grants.
+            getUserAgents: () => this._loadedAgents,
+            getSystemAgents: () => this._loadedSystemAgents,
+            getCallerOwnerKey: async (sessionId) => {
+                if (!this._catalog || !sessionId) return null;
+                const owner = await resolveEffectiveSpawnOwner((id) => this._catalog!.getSession(id), sessionId);
+                return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
             },
         });
         this.registerTools([listAgentsTool]);
@@ -921,6 +901,7 @@ export class PilotSwarmWorker {
             console.error("[PilotSwarmWorker] Runtime error:", err);
         });
         this._started = true;
+        this._startProviderPolling();
 
         // Autonomous eviction clock (lifecycle protocol §3.4): local session
         // state is a cache. Sessions idle past the hold window + margin are
@@ -952,12 +933,12 @@ export class PilotSwarmWorker {
         // Auto-start system agents defined in plugins (idempotent), but do not
         // block worker.start() on the bootstrap race. The TUI should become
         // interactive even if first-run system-agent startup is slow.
-        void this._startSystemAgents().catch((err: any) => {
-            console.warn(`[PilotSwarmWorker] background system agent startup failed: ${err?.message ?? err}`);
-        });
+        // Provider routing was refreshed above, before the runtime started.
+        this._reconcileProvidersAndSystemAgents(false);
     }
 
     async stop(): Promise<void> {
+        this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
             this._evictionTimer = null;
@@ -982,6 +963,9 @@ export class PilotSwarmWorker {
             await this.runtime.shutdown(shutdownTimeoutMs);
             this.runtime = null;
         }
+        // Stop fetching first, then let any already-admitted bootstrap finish
+        // while the catalog/provider it uses are still open.
+        await this._providerReconciliation;
         await this.sessionManager.shutdown();
         if (this._catalog) {
             try { await this._catalog.close(); } catch {}
@@ -1021,6 +1005,7 @@ export class PilotSwarmWorker {
      *      lock timeout.
      */
     async gracefulShutdown(): Promise<void> {
+        this._stopProviderPolling();
         const rawDrainMs = Number.parseInt(process.env.PILOTSWARM_WORKER_SHUTDOWN_TIMEOUT_MS || "", 10);
         const drainBudgetMs = Number.isFinite(rawDrainMs) && rawDrainMs >= 0 ? rawDrainMs : 60_000;
 
@@ -1124,9 +1109,9 @@ export class PilotSwarmWorker {
      * a broken package degrades to "packages unchanged/quarantined", never
      * to a dead worker.
      *
-     * Hot-swap semantics (existing runtime behavior, relied on, not added):
-     * prompts re-read per turn, tool HANDLERS re-register per turn, tool
-     * DECLARATIONS and MCP configs reach the CLI only on cold create/resume.
+     * SessionManager adopts one package snapshot per turn. Handler-only changes
+     * re-register in place; changed prompts, declarations or MCP grants recreate
+     * the warm CLI handle at the next turn boundary.
      */
     private _startConfigurationPolling(): void {
         if (!this._catalog || this._agentPackagesTimer) return;
@@ -1450,7 +1435,7 @@ export class PilotSwarmWorker {
             const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
             const mcpKey = (agent as any).packageId
                 ? packageAgentKey((agent as any).packageId, agent.name)
-                : agent.name;
+                : agent.namespace ? `${agent.namespace}:${agent.name}` : agent.name;
             return {
                 ...rest,
                 // The agent's OWN prompt (skills already composed in), never
@@ -1461,8 +1446,8 @@ export class PilotSwarmWorker {
                     appDefault: this._appDefaultPrompt,
                     activeAgentPrompt: agent.prompt,
                 }) ?? agent.prompt,
-                // mcpKey is the qualified key for a package agent, the bare
-                // name for a deployment/inline one — the only keys registered.
+                // MCP uses the exact same copy as the authored prompt, even
+                // when two static namespaces declare the same agent name.
                 ...(this._agentMcpServers[mcpKey]
                     ? { mcpServers: this._agentMcpServers[mcpKey] }
                     : {}),
@@ -1610,19 +1595,11 @@ export class PilotSwarmWorker {
             );
         }
 
-        // Per-agent maps. Agents merge by name with later definitions
-        // overriding earlier ones (same contract as prompt resolution), so
-        // ALWAYS assign: a later definition with no MCP declarations must
-        // clear a shadowed definition's grants, never inherit them.
-        //
-        // A PACKAGE agent registers ONLY under a package-qualified key, never
-        // the bare name. With scope shadowing two copies share the bare name,
-        // and a bare-name entry is last-write-wins — a session resolving one
-        // copy could read the other's grants (or a user package could strip a
-        // deployment agent's grants fleet-wide). The bare name is therefore
-        // reserved for deployment/inline agents, which have no packageId; the
-        // session-manager reads the qualified key for package copies and the
-        // bare key only for non-package agents.
+        // Published agents use package-qualified keys. Static definitions use
+        // namespace-qualified keys; the bare alias retains the first static
+        // definition, matching the prompt lookup's deployment default. Never
+        // let a same-name package or another namespace replace these grants.
+        const assignedStaticKeys = new Set<string>();
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             const resolved: Record<string, any> = {};
             if (agent.inheritDefaultMcpServers === true) {
@@ -1634,13 +1611,18 @@ export class PilotSwarmWorker {
                 packageId: (agent as any).packageId ?? null,
                 packageScope: (agent as any).packageScope ?? null,
             });
-            const key = (agent as any).packageId
-                ? packageAgentKey((agent as any).packageId, agent.name)
-                : agent.name;
-            if (Object.keys(resolved).length > 0) {
-                this._agentMcpServers[key] = resolved;
-            } else {
-                delete this._agentMcpServers[key];
+            const packageId = (agent as any).packageId;
+            const keys = packageId
+                ? [packageAgentKey(packageId, agent.name)]
+                : [...new Set([agent.name, ...(agent.namespace ? [`${agent.namespace}:${agent.name}`] : [])])];
+            for (const key of keys) {
+                if (!packageId && assignedStaticKeys.has(key)) continue;
+                if (!packageId) assignedStaticKeys.add(key);
+                if (Object.keys(resolved).length > 0) {
+                    this._agentMcpServers[key] = resolved;
+                } else {
+                    delete this._agentMcpServers[key];
+                }
             }
         }
     }
@@ -1785,6 +1767,7 @@ export class PilotSwarmWorker {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
+                toolNames: [...(agent.tools ?? [])],
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
                 ...(agent.packageId ? {
@@ -1797,6 +1780,17 @@ export class PilotSwarmWorker {
                 ...copyOf(winner),
                 ...(agents.length > 1 ? { copies: agents.map(copyOf) } : {}),
             };
+            // Persisted static bindings use this exact namespace key. The
+            // alias carries the composed prompt, declarations and descriptor
+            // of that copy, never the bare-name winner from another namespace.
+            const assignedAliases = new Set<string>();
+            for (const agent of agents) {
+                if (agent.packageId || !agent.namespace) continue;
+                const key = `${agent.namespace}:${agent.name}`;
+                if (assignedAliases.has(key)) continue;
+                assignedAliases.add(key);
+                this._agentPromptLookup[key] = copyOf(agent);
+            }
             if (agents.length > 1) {
                 console.warn(
                     `[PilotSwarmWorker] agent name "${name}" is served by ${agents.length} loaded copies `
@@ -2044,6 +2038,7 @@ export class PilotSwarmWorker {
 
         const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
         for (const plan of resolveSystemAgentSessionPlans(this._loadedSystemAgents)) {
+            if (!this._providerReconciliationEnabled) return;
             const override = overrideByAgent.get(plan.agent.id);
             const route = override ?? systemDefault;
             if (!route.model || !this._modelProviders?.hasModel(route.model)) {

@@ -171,7 +171,7 @@ New test file: `test/local/session-policy.test.js`
 | Orch allows named agent | Orch | Session with valid agentId → orchestration runs normally |
 | Orch allows sub-agent spawn | Orch | `spawn_agent` inside session → not blocked by policy |
 | No policy = open behavior | Both | No `session-policy.json` → all creation paths work |
-| System agents omitted from creatable list | Worker | `ps_list_agents` with `creatableOnly=true` omits system agents |
+| System agents omitted from creatable list | Worker | `ps_list_agents` lists spawnable agents by default; `systemOnly=true` inspects worker-managed definitions |
 | Agent namespacing | Worker | Agents have correct namespace from plugin source |
 | Deletion still protects system | CMS | `deleteSession()` on system session → rejected |
 

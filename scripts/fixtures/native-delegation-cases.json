@@ -188,5 +188,146 @@
     ],
     "expectedAgent": "deepwiki",
     "prompt": "Use our configured repository-documentation specialist to answer questions about microsoft/duroxide through its hosted knowledge index. I do not know the registered agent name; discover the matching role and spawn it."
+  },
+  {
+    "id": "static-specialist-source-fit",
+    "split": "calibration",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "incident-index",
+    "expectedAssignment": true,
+    "prompt": "Assign an investigator to correlate the actual incident records for three authentication outages in our incident archive. I need common causes and evidence from the timelines, not a review of incident-response documentation."
+  },
+  {
+    "id": "published-specialist-semantic-fit",
+    "split": "calibration",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "build-sentinel",
+    "expectedAssignment": true,
+    "prompt": "Delegate checking failed CI runs across our shared services. Have the investigator read the build logs, distinguish flaky tests from new regressions, and report back with check-run references."
+  },
+  {
+    "id": "published-over-native-shortcut",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "incident-review",
+    "expectedAssignment": true,
+    "prompt": "This should be a quick review: ask an agent to critique the incident-response runbook in a public GitHub repository through its hosted docs index. Use whichever execution arrangement makes sense; no actual incident records are needed."
+  },
+  {
+    "id": "personal-specialist-fit",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "release-watch",
+    "expectedAssignment": true,
+    "prompt": "Spin off someone to diagnose failures in my personal development project CI. They need my private check-run logs, not the shared release-promotion service. Keep them available for follow-up."
+  },
+  {
+    "id": "shared-specialist-shadowed-name",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "__shared:release-watch",
+    "expectedAssignment": true,
+    "prompt": "Delegate following deployment promotions and release approvals in the shared release service. Report approvals that have been waiting since yesterday. This concerns release governance, not CI build diagnosis."
+  },
+  {
+    "id": "private-specialist-invisible",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedGeneric": true,
+    "prompt": "Spin off an agent to reconcile these payroll CSV exports and identify mismatched ledger totals. Export A: employee_id,gross_pay\nE101,4200\nE102,3900\nE103,5100. Export B: employee_id,gross_pay\nE101,4200\nE102,3800\nE103,5100. Pass these inputs to the investigator and ask for row references and the total difference."
+  },
+  {
+    "id": "private-specialist-owning-user",
+    "split": "holdout",
+    "catalog": "specialists",
+    "caller": "bob",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "payroll-auditor",
+    "expectedAssignment": true,
+    "prompt": "Delegate reconciliation of the payroll export ledgers in my private finance workspace. Identify mismatches and provide source row references for each."
+  },
+  {
+    "id": "broad-source-research-boundary",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "prompt": "Spin off a researcher to compare the SIL Open Font License 1.1, Apache License 2.0, and MIT License for redistribution of font files. Have the researcher obtain each text from its official public source and report requirements with citations. This may take several hours.",
+    "allowedAgentNames": [
+      null,
+      "generic-crawler"
+    ],
+    "judgmentBoundary": "A generic researcher is preferred; the broadly described source crawler is also a defensible choice for obtaining and comparing official document texts. Other named roles are not accepted."
+  },
+  {
+    "id": "explicit-direct-over-specialist",
+    "split": "holdout",
+    "catalog": "specialists",
+    "expected": [
+      "direct"
+    ],
+    "prompt": "Do not spawn or delegate to any agents. Read the local package.json yourself and tell me its version."
+  },
+  {
+    "id": "named-explicit-assignment",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedAgent": "build-sentinel",
+    "expectedAssignment": true,
+    "prompt": "Find and spawn our build-sentinel role. Give it this assignment immediately: inspect the latest failed check for acme/catalog and return the failing job, first relevant error, and a suggested next step. Do not start its default intake and then send the assignment later."
+  },
+  {
+    "id": "no-specialist-self-contained-analysis",
+    "split": "holdout",
+    "catalog": "specialists",
+    "catalogInContext": false,
+    "expectedCatalogLookup": true,
+    "expected": [
+      "durable"
+    ],
+    "expectedGeneric": true,
+    "prompt": "Spin off an agent to solve this self-contained integer optimization problem and explain why its result is optimal. Find nonnegative integers x, y, z with x+y+z=60, 3x+5y+8z=280, x at least 10 and y at most 25. Minimize the absolute difference between x and y; break ties by choosing the smallest z. Have the agent enumerate the valid triples and return a concise proof. All inputs are given here; no external sources are needed."
   }
 ]

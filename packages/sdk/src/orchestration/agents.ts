@@ -29,6 +29,16 @@ export function isSubAgentTerminalStatus(status?: string): boolean {
     return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+/** Preserve child answers when a status probe only has orchestration exit output. */
+export function getChildResultFromStatus(
+    child: { result?: unknown; resultSource?: string },
+    previous?: string,
+): string | undefined {
+    if (typeof child.result !== "string" || !child.result) return previous;
+    if (child.resultSource === "orchestration") return previous;
+    return child.result;
+}
+
 /**
  * A status that satisfies a parent's wait: the child either finished
  * (terminal) or will never speak again on its own — idle after answering, or
@@ -261,9 +271,7 @@ export function* applyChildUpdate(
             // parent must be told so it can answer or re-task.
             agent.status = "input_required";
         }
-        if (parsed.result && parsed.result !== "done") {
-            agent.result = parsed.result.slice(0, 2000);
-        }
+        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 2000);
     } catch {}
 
     return true;
@@ -286,6 +294,7 @@ export function* refreshTrackedSubAgents(
             isSystem?: boolean;
             agentId?: string;
             result?: string;
+            resultSource?: string;
             error?: string;
         }>;
 
@@ -301,7 +310,7 @@ export function* refreshTrackedSubAgents(
                         sessionId: child.sessionId,
                         task: existing?.task ?? child.title ?? "(spawned sub-agent)",
                         status: localStatus,
-                        result: child.result ?? existing?.result,
+                        result: getChildResultFromStatus(child, existing?.result),
                         agentId: child.agentId ?? existing?.agentId,
                         contract,
                     } satisfies SubAgentEntry;
@@ -318,7 +327,7 @@ export function* refreshTrackedSubAgents(
                     sessionId: child.sessionId,
                     task: existing?.task ?? child.title ?? "(spawned sub-agent)",
                     status: normalizedStatus,
-                    result: child.result ?? existing?.result,
+                    result: getChildResultFromStatus(child, existing?.result),
                     agentId: child.agentId ?? existing?.agentId,
                     contract,
                 } satisfies SubAgentEntry;
@@ -334,14 +343,35 @@ export function* notifyParentOfTerminalState(
     runtime: DurableSessionRuntime,
     updateType: "completed" | "cancelled",
     reason: string,
+    commandId?: string,
+    requestedBy?: string,
 ): Generator<any, void, any> {
     if (!runtime.options.parentSessionId) return;
     try {
+        // Acknowledge the parent's own cleanup without delivering another
+        // CHILD_UPDATE prompt. That prompt replaced real child results in a
+        // digest and woke an already-finished parent for no new work. Keep the
+        // lifecycle in CMS and an audit event; check_agents/wait_for_agents and
+        // graceful-shutdown polling still observe the actual terminal state.
+        // Only runtime-stamped provenance matching the direct parent qualifies.
+        // A user-supplied reason such as "Completed by parent" is not evidence.
+        if (commandId && requestedBy === runtime.options.parentSessionId) {
+            yield runtime.manager.recordSessionEvent(runtime.options.parentSessionId, [{
+                eventType: "session.child_cleanup_completed",
+                data: {
+                    childSessionId: runtime.input.sessionId,
+                    commandId,
+                    requestedBy,
+                    status: updateType,
+                },
+            }]);
+            return;
+        }
         const verdict = updateType === "completed" ? "success" : "cancelled";
         yield runtime.manager.sendToSession(runtime.options.parentSessionId,
             `[CHILD_UPDATE from=${runtime.input.sessionId} type=${updateType} iter=${runtime.state.iteration} verdict=${verdict}]\n${reason}`);
     } catch (err: any) {
-        runtime.ctx.traceInfo(`[orch] sendToSession(parent) on ${updateType} failed: ${err.message} (non-fatal)`);
+        runtime.ctx.traceInfo(`[orch] parent notification on ${updateType} failed: ${err.message} (non-fatal)`);
     }
 }
 
@@ -349,6 +379,7 @@ export function* completeSession(
     runtime: DurableSessionRuntime,
     reason: string,
     commandId?: string,
+    requestedBy?: string,
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
@@ -357,7 +388,7 @@ export function* completeSession(
 
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "completed", null, null);
     publishStatus(runtime, "completed");
-    yield* notifyParentOfTerminalState(runtime, "completed", reason);
+    yield* notifyParentOfTerminalState(runtime, "completed", reason, commandId, requestedBy);
 
     try {
         yield runtime.session.destroy();
@@ -380,6 +411,7 @@ export function* cancelSession(
     reason: string,
     commandId?: string,
     deleteAfterCancel = false,
+    requestedBy?: string,
 ): Generator<any, void, any> {
     runtime.state.pendingShutdown = null;
     runtime.state.waitingForAgentIds = null;
@@ -392,7 +424,7 @@ export function* cancelSession(
         publishStatus(runtime, "cancelled");
     }
 
-    yield* notifyParentOfTerminalState(runtime, "cancelled", reason);
+    yield* notifyParentOfTerminalState(runtime, "cancelled", reason, commandId, requestedBy);
 
     try {
         yield runtime.session.destroy();
@@ -487,10 +519,10 @@ export function* finalizePendingShutdown(runtime: DurableSessionRuntime): Genera
     yield* cancelInFlightDistiller(runtime);
     const shutdown = runtime.state.pendingShutdown;
     if (shutdown.mode === "done") {
-        yield* completeSession(runtime, shutdown.reason, shutdown.commandId);
+        yield* completeSession(runtime, shutdown.reason, shutdown.commandId, shutdown.requestedBy);
         return;
     }
-    yield* cancelSession(runtime, shutdown.reason, shutdown.commandId, shutdown.mode === "delete");
+    yield* cancelSession(runtime, shutdown.reason, shutdown.commandId, shutdown.mode === "delete", shutdown.requestedBy);
 }
 
 export function* maybeResolveAgentWaitCompletion(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
@@ -547,14 +579,18 @@ export function* beginGracefulShutdown(
     yield* refreshTrackedSubAgents(runtime, { preserveTerminalTaskStatus: false });
 
     const shutdownReason = String(cmdMsg.args?.reason || defaultShutdownReason(mode));
+    const requestedBy = typeof cmdMsg.requestedBy === "string"
+        && cmdMsg.requestedBy === runtime.options.parentSessionId
+        && typeof cmdMsg.id === "string" && cmdMsg.id.trim()
+        ? cmdMsg.requestedBy : undefined;
     const targetAgents = state.subAgents.filter((agent) => !isSubAgentTerminalStatus(agent.status));
 
     if (targetAgents.length === 0) {
         if (mode === "done") {
-            yield* completeSession(runtime, shutdownReason, cmdMsg.id);
+            yield* completeSession(runtime, shutdownReason, cmdMsg.id, requestedBy);
             return;
         }
-        yield* cancelSession(runtime, shutdownReason, cmdMsg.id, mode === "delete");
+        yield* cancelSession(runtime, shutdownReason, cmdMsg.id, mode === "delete", requestedBy);
         return;
     }
 
@@ -568,7 +604,7 @@ export function* beginGracefulShutdown(
         try {
             const childCmdId = `${cmdMsg.cmd}-cascade-${state.iteration}-${child.sessionId.slice(0, 8)}`;
             yield runtime.manager.sendCommandToSession(child.sessionId,
-                { type: "cmd", cmd: childCmd, id: childCmdId, args: { reason: childReason } });
+                { type: "cmd", cmd: childCmd, id: childCmdId, args: { reason: childReason }, requestedBy: runtime.input.sessionId });
         } catch (err: any) {
             runtime.ctx.traceInfo(`[orch] ${cmdMsg.cmd}: failed to signal child ${child.sessionId}: ${err.message} (non-fatal)`);
         }
@@ -582,6 +618,7 @@ export function* beginGracefulShutdown(
         deadlineAtMs: startedAtMs + SHUTDOWN_TIMEOUT_MS,
         targetAgentIds: targetAgents.map((agent) => agent.orchId),
         commandId: cmdMsg.id,
+        ...(requestedBy ? { requestedBy } : {}),
     };
     state.waitingForAgentIds = [...state.pendingShutdown.targetAgentIds];
     clearPendingChildDigest(runtime);
@@ -642,30 +679,23 @@ export function* handleSubAgentAction(
             let boundAgentPackageId: string | undefined;
             let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
             let resolvedAgentName = result.agentName;
-            const requiredTool = typeof result.requiredTool === "string"
-                ? result.requiredTool.trim()
-                : "";
-            if (result.requiredTool !== undefined && (!requiredTool || requiredTool.length > 128)) {
+            if (Object.hasOwn(result, "requiredTool") || Object.hasOwn(result, "required_tool")) {
                 queueFollowup(runtime,
-                    `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`);
+                    `[SYSTEM: spawn_agent failed — required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.]`);
                 return true;
             }
-            let selectedByRequiredTool = false;
-
-            const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
-                agentTask = useDefinitionDefaults
-                    ? (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`)
-                    : (result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
-                agentSystemMessage = useDefinitionDefaults ? undefined : result.systemMessage;
-                agentToolNames = useDefinitionDefaults
-                    ? (agentDef.tools ?? undefined)
-                    : (result.toolNames ?? agentDef.tools ?? undefined);
+            const applyAgentDef = (agentDef: any) => {
+                agentTask = result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`;
+                agentSystemMessage = undefined;
+                // A named child's package owns its complete extra-tool surface.
+                // Explicit [] also prevents inheriting a parent's specialist tools.
+                agentToolNames = agentDef.tools ?? [];
                 agentIsSystem = agentDef.system ?? false;
                 if (!agentTitleIsExplicit) agentTitle = agentDef.title;
-                agentId = agentDef.id ?? resolvedAgentName;
+                agentId = agentDef.id ?? agentDef.name;
                 agentSplash = agentDef.splash;
                 bootstrapRequiredTool = agentDef.initialRequiredTool;
-                boundAgentName = agentDef.name;
+                boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
                 boundAgentPackageId = agentDef.packageId;
                 promptLayeringKind = agentDef.promptLayerKind
                     ?? (agentDef.system
@@ -683,22 +713,6 @@ export function* handleSubAgentAction(
                     queueFollowup(runtime, `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" not found. Use ps_list_agents to see available agents.]`);
                     return true;
                 }
-            } else if (requiredTool) {
-                ctx.traceInfo(`[orch] resolving agent config for required tool: ${requiredTool}`);
-                const resolution = yield runtime.manager.resolveAgentForRequiredTool(requiredTool, runtime.input.sessionId);
-                if (!resolution || resolution.status === "not_found") {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — no caller-visible creatable agent declares required tool "${requiredTool}".]`);
-                    return true;
-                }
-                if (resolution.status === "ambiguous") {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — required tool "${requiredTool}" is declared by multiple visible agents: ${resolution.candidates.join(", ")}. Retry with agent_name to disambiguate.]`);
-                    return true;
-                }
-                agentDef = resolution.agent;
-                resolvedAgentName = agentDef.name;
-                selectedByRequiredTool = true;
             }
             if (agentDef) {
                 if (agentDef.system && agentDef.creatable === false) {
@@ -708,23 +722,18 @@ export function* handleSubAgentAction(
                     );
                     return true;
                 }
-                if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
+                if (result.toolNames !== undefined) {
                     queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`);
+                        `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name, or remove tool_names.]`);
                     return true;
                 }
-                if (result.toolNames?.length) {
-                    queueFollowup(runtime,
-                        `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`);
-                    return true;
-                }
-                if (result.systemMessage) {
+                if (result.systemMessage !== undefined) {
                     queueFollowup(runtime,
                         `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`);
                     return true;
                 }
-                applyAgentDef(agentDef, !selectedByRequiredTool && resolvedAgentName !== result.agentName);
-                if (requiredTool) bootstrapRequiredTool = requiredTool;
+                // The named definition owns its startup requirement.
+                applyAgentDef(agentDef);
             }
 
             // NOTE: a system parent does NOT make its children system.
@@ -758,6 +767,10 @@ export function* handleSubAgentAction(
             const {
                 boundAgentName: _parentBoundAgentName,
                 boundAgentPackageId: _parentBoundAgentPackageId,
+                boundAgentSource: _parentBoundAgentSource,
+                namedAgentToolAdditions: _parentNamedAgentToolAdditions,
+                childContract: _parentChildContract,
+                detachedPackageToolPolicy: _parentDetachedPackageToolPolicy,
                 promptLayering: _parentPromptLayering,
                 agentIdentity: _parentAgentIdentity,
                 isCrawler: _parentIsCrawler,
@@ -766,15 +779,17 @@ export function* handleSubAgentAction(
             } = state.config;
             const childConfig: SerializableSessionConfig = {
                 ...parentConfig,
+                // Pass the assignment and sub-agent context to named children,
+                // not the parent's custom persona competing with their own.
+                ...(boundAgentName ? { systemMessage: undefined } : {}),
                 ...(agentModel ? { model: agentModel } : {}),
                 ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                 ...(result.contextTier !== undefined ? { contextTier: result.contextTier } : {}),
                 ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                 ...(boundAgentName ? { boundAgentName } : {}),
                 ...(boundAgentPackageId ? { boundAgentPackageId } : {}),
-                ...(!boundAgentName ? {
-                    detachedPackageToolPolicy: result.toolNames?.length ? "reject" : "drop",
-                } : {}),
+                ...(boundAgentName && !boundAgentPackageId ? { boundAgentSource: "deployment" as const } : {}),
+                detachedPackageToolPolicy: boundAgentName || result.toolNames?.length ? "reject" : "drop",
                 ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),
@@ -891,14 +906,14 @@ export function* handleSubAgentAction(
                     const parsed = JSON.parse(rawStatus);
                     if (parsed.status === "completed" || parsed.status === "failed" || parsed.status === "idle") {
                         agent.status = parsed.status === "failed" ? "failed" : "completed";
-                        if (parsed.result) agent.result = parsed.result.slice(0, 1000);
+                        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 1000);
                     }
                     statusLines.push(
                         `  - Agent ${agent.orchId}\n` +
                         `    Task: "${agent.task.slice(0, 120)}"\n` +
                         `    Status: ${parsed.status}\n` +
                         `    Iterations: ${parsed.iterations ?? 0}\n` +
-                        `    Output: ${parsed.result ?? "(no output yet)"}`
+                        `    Output: ${getChildResultFromStatus(parsed, agent.result) ?? "(no output yet)"}`
                     );
                 } catch (err: any) {
                     statusLines.push(
@@ -1008,7 +1023,7 @@ export function* handleSubAgentAction(
             try {
                 const cmdId = `done-${state.iteration}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" } });
+                    { type: "cmd", cmd: "done", id: cmdId, args: { reason: "Completed by parent" }, requestedBy: runtime.input.sessionId });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] complete_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: complete_agent failed: ${err.message}]`);
@@ -1040,7 +1055,7 @@ export function* handleSubAgentAction(
             try {
                 const cmdId = `cancel-${state.iteration}-${agentEntry.sessionId.slice(0, 8)}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: cancelReason } });
+                    { type: "cmd", cmd: "cancel", id: cmdId, args: { reason: cancelReason }, requestedBy: runtime.input.sessionId });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] cancel_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: cancel_agent failed: ${err.message}]`);
@@ -1079,7 +1094,7 @@ export function* handleSubAgentAction(
 
                 const cmdId = `delete-${state.iteration}-${agentEntry.sessionId.slice(0, 8)}`;
                 yield runtime.manager.sendCommandToSession(agentEntry.sessionId,
-                    { type: "cmd", cmd: "delete", id: cmdId, args: { reason: deleteReason } });
+                    { type: "cmd", cmd: "delete", id: cmdId, args: { reason: deleteReason }, requestedBy: runtime.input.sessionId });
             } catch (err: any) {
                 ctx.traceInfo(`[orch] delete_agent failed: ${err.message}`);
                 queueFollowup(runtime, `[SYSTEM: delete_agent failed: ${err.message}]`);

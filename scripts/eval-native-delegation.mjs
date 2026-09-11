@@ -8,7 +8,12 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "../packages/sdk/dist/session-manager.js";
 import { NATIVE_SUBAGENT_GUIDANCE } from "../packages/sdk/dist/native-subagents.js";
-import { scoreDelegation } from "./lib/native-delegation-score.mjs";
+import { DELEGATION_SETUP_TOOLS, isDelegationDecision, scoreDelegation } from "./lib/native-delegation-score.mjs";
+import { delegationCatalogDefinitions } from "./lib/native-delegation-catalog.mjs";
+import { createAgentDiscoveryTool, listAgentDefinitionsForCaller } from "../packages/sdk/dist/agent-discovery.js";
+import { FeatureFlagCache } from "../packages/sdk/dist/feature-flag-cache.js";
+import { FEATURE_FLAGS } from "../packages/sdk/dist/feature-flags.js";
+import { assertNativeEvaluationSetup } from "./lib/native-delegation-setup.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const option = name => process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -19,6 +24,8 @@ const ref = option("ref");
 const repeats = Number(option("repeats") || 1);
 const out = path.resolve(option("out") || ".tmp/native-delegation-eval.json");
 const selected = option("cases")?.split(",");
+const suite = option("suite") || "all";
+if (!["all", "named-selection", "routing"].includes(suite)) throw new Error("--suite must be all, named-selection or routing");
 const readSource = file => ref
     ? execFileSync("git", ["show", `${ref}:${file}`], { cwd: root, encoding: "utf8" })
     : fs.readFileSync(path.join(root, file), "utf8");
@@ -29,10 +36,24 @@ if (!process.env.GITHUB_TOKEN) throw new Error("GITHUB_TOKEN is required; use an
 if (!Number.isInteger(repeats) || repeats < 1 || repeats > 10) throw new Error("repeats must be 1..10");
 const cases = JSON.parse(fs.readFileSync(new URL("./fixtures/native-delegation-cases.json", import.meta.url)))
     .filter(c => !selected || selected.includes(c.id))
+    .filter(c => suite !== "named-selection" || c.catalog === "specialists")
+    .filter(c => suite !== "routing" || c.catalog !== "specialists")
     .map(c => nativeMode === "off" ? { ...c, expected: c.expected.includes("native") ? ["durable", "clarify"] : c.expected, expectedChildNative: false } : c);
 if (!cases.length) throw new Error("No cases selected");
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "ps-delegation-eval-"));
-const manager = new SessionManager(process.env.GITHUB_TOKEN, null, { nativeSubagents: nativeMode, frameworkBasePrompt: base }, path.join(home, "session-state"));
+const manager = new SessionManager(process.env.GITHUB_TOKEN, null, { nativeSubagents: "sync", frameworkBasePrompt: base }, path.join(home, "session-state"));
+// Keep the worker ceiling enabled in both modes; exercise the actual feature
+// flag, not just a constructor option that can mask a missing policy cache.
+const featureKey = "copilot.native_tasks";
+const featureCache = new FeatureFlagCache({
+    revisions: async () => [{ featureKey, revision: "1" }],
+    snapshot: async () => ({
+        definitions: [{ featureKey, ...FEATURE_FLAGS[featureKey], revision: "1" }],
+        settings: [{ featureKey, scope: "cluster", userId: null, enabled: nativeMode === "sync", allowUserOverride: false, revision: "1" }],
+    }),
+});
+await featureCache.pollRevisionsAndRefresh();
+manager.setFeatureFlagCache(featureCache);
 const facts = new Map();
 manager.setFactStore({
     readFacts: async () => ({ count: facts.size, facts: [...facts.values()] }),
@@ -42,25 +63,24 @@ manager.setFactStore({
         return { stored: stored.length, facts: stored };
     },
 });
-// Fixed catalog from the localhost deployment. Only discovery is executed;
-// every potentially effectful tool remains denied by the hook below.
-const agents = [
-    { name: "deepwiki", description: "Answers questions about any public GitHub repository using the DeepWiki MCP server." },
-    { name: "generic-crawler", description: "Consultative crawler that scopes a source, designs the fact and graph schema, pilots, runs the full crawl, and keeps the corpus fresh." },
-];
-const isPreparation = (name, args) => ["ps_list_agents", "store_fact", "read_facts", "view", "rg", "glob", "grep"].includes(name)
+// Use the worker's real visibility/selection helper with synthetic static and
+// published definitions. Parent model choices remain live; child effects do not.
+const isPreparation = (name, args) => [...DELEGATION_SETUP_TOOLS, "view", "rg", "glob", "grep"].includes(name)
     || name === "bash" && String(args?.command || "").split(/\s*&&\s*/).every(part => /^(pwd|git (remote -v|status --short|rev-parse (HEAD|--show-toplevel)|branch --show-current))$/.test(part.trim()));
-const isDecision = (calls, scenario) => calls.some(t => ["spawn_agent", "task", "ask_user"].includes(t.name))
-    || scenario.expected.includes("direct") && calls.length > 0;
 const results = [];
 const startedAt = new Date().toISOString();
+const sourceHashes = Object.fromEntries([
+    "packages/sdk/dist/session-manager.js", "packages/sdk/dist/managed-session.js", "packages/sdk/dist/agent-discovery.js",
+    "scripts/lib/native-delegation-catalog.mjs", "scripts/lib/native-delegation-score.mjs", "scripts/fixtures/native-delegation-cases.json",
+].map(file => [file, createHash("sha256").update(fs.readFileSync(path.join(root, file))).digest("hex")]));
 const report = () => {
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, JSON.stringify({ model, nativeMode, reasoningEffort: "medium", ref: ref || "working-tree", repeats,
-        startedAt, promptHashes: { base: createHash("sha256").update(base).digest("hex"), native: createHash("sha256").update(guidance).digest("hex") },
-        method: "Real Copilot SDK/CLI and model; production SessionManager prompt composition/tool schemas; fixed named-agent catalog; bounded read-only preparation and isolated in-memory facts allowed; external effects denied; score first delegation decision. Follow-up case supplies a conversation summary. --ref overrides authored base/native prompts, not tool definitions.",
+    fs.writeFileSync(out, JSON.stringify({ model, nativeMode, suite, reasoningEffort: "medium", ref: ref || "working-tree", repeats,
+        startedAt, sourceHashes, promptHashes: { base: createHash("sha256").update(base).digest("hex"), native: createHash("sha256").update(guidance).digest("hex") },
+        method: "Real Copilot SDK/CLI and model; production SessionManager prompts/tool schemas and caller-visible agent discovery; in-memory real FeatureFlagCache with per-session admission and SDK agent-list assertions; synthetic loaded static/published definitions with personal visibility and shadowing; bounded read-only preparation and isolated in-memory facts allowed; external effects denied; score first delegation decision. Follow-up case supplies a conversation summary. --ref overrides authored base/native prompts, not tool definitions.",
         results, passed: results.filter(r => r.pass).length, total: results.length }, null, 2));
 };
+report();
 try {
     for (let repeat = 1; repeat <= repeats; repeat++) for (const scenario of cases) {
         const sessionId = randomUUID();
@@ -68,13 +88,20 @@ try {
         let capture;
         let preparationCount = 0;
         let catalogLookups = 0;
+        const userAgents = delegationCatalogDefinitions(scenario.catalog);
+        const getCallerOwnerKey = async () => `eval\u0001${scenario.caller || "alice"}`;
+        const agents = await listAgentDefinitionsForCaller({ userAgents, getCallerOwnerKey });
+        const discoveryTool = createAgentDiscoveryTool({
+            getUserAgents: () => userAgents, getSystemAgents: () => [], getCallerOwnerKey,
+        });
+        const catalogResult = { agents, total: agents.length };
         const config = { model, reasoningEffort: "medium", contextTier: "default", workingDirectory: root,
-            ...(scenario.catalogInContext !== false && { systemMessage: { content: `Available user-creatable agent index: ${JSON.stringify(agents)}. This is the same catalog returned by ps_list_agents.` } }),
-            tools: [{ name: "ps_list_agents", description: "List available user-creatable named agents you can spawn with spawn_agent(agent_name=...).", parameters: { type: "object", properties: {} }, handler: async () => JSON.stringify(agents) }],
+            ...(scenario.catalogInContext !== false && { systemMessage: { content: `Current complete caller-visible user-creatable agent catalog: ${JSON.stringify(catalogResult)}. This is the same catalog returned by ps_list_agents.` } }),
+            tools: [discoveryTool],
             hooks: { onPreToolUse: input => {
                 if (input.toolName === "ps_list_agents") catalogLookups++;
                 const calls = [{ name: input.toolName, arguments: input.toolArgs }];
-                if (isDecision(calls, scenario)) capture?.({ content: "", calls });
+                if (isDelegationDecision(calls, scenario)) capture?.({ content: "", calls });
                 else if (++preparationCount < 12 && isPreparation(input.toolName, input.toolArgs)) return undefined;
                 else if (preparationCount >= 12) capture?.({ content: "Preparation limit reached before delegation", calls });
                 return { permissionDecision: "deny", permissionDecisionReason: "Evaluation capture: execution disabled" };
@@ -93,6 +120,12 @@ try {
         const managed = await manager.getOrCreate(sessionId, config, { turnIndex: 0 });
         manager._buildLastInstructionsSection = compose;
         const sdk = managed.getCopilotSession();
+        const nativeSetup = {
+            featureEnabled: featureCache.resolve(featureKey, null, { required: true }).enabled,
+            canAdmitNativeTask: managed.canAdmitNativeTask(),
+            agentNames: (await sdk.rpc.agent.list()).agents.map(agent => agent.name),
+        };
+        assertNativeEvaluationSetup(nativeMode, nativeSetup);
         let timer;
         let stop;
         try {
@@ -100,7 +133,7 @@ try {
                 capture = resolve;
                 timer = setTimeout(() => reject(new Error("No decision within 90 seconds")), 90_000);
                 stop = sdk.on(event => {
-                    if (event.type === "assistant.message" && (isDecision(event.data.toolRequests || [], scenario) || event.data.phase === "final_answer" && !event.data.toolRequests?.length)) {
+                    if (event.type === "assistant.message" && (isDelegationDecision(event.data.toolRequests || [], scenario) || event.data.phase === "final_answer" && !event.data.toolRequests?.length)) {
                         resolve({ content: event.data.content || "", calls: (event.data.toolRequests || []).map(t => ({ name: t.name, arguments: t.arguments })) });
                     } else if (event.type === "session.error") reject(new Error(event.data.message));
                 });
@@ -108,13 +141,13 @@ try {
             await sdk.send({ prompt: scenario.prompt });
             const chosen = await decision;
             const names = chosen.calls.map(t => t.name);
-            const score = scoreDelegation(scenario, chosen, { model, nativeMode, knownAgents: agents.map(a => a.name), catalogLookups });
+            const score = scoreDelegation(scenario, chosen, { model, nativeMode, knownAgents: agents.map(a => a.agent_name), catalogLookups });
             const { route } = score;
             results.push({ id: scenario.id, split: scenario.split, repeat, sessionId, expected: scenario.expected, expectedAgent: scenario.expectedAgent,
-                ...score, preparationCount, catalogLookups, durationMs: Date.now() - start, ...chosen });
+                ...score, scenario, nativeSetup, preparationCount, catalogLookups, catalog: agents, durationMs: Date.now() - start, ...chosen });
             console.log(JSON.stringify({ id: scenario.id, repeat, route, pass: results.at(-1).pass, tools: names }));
         } catch (error) {
-            results.push({ id: scenario.id, repeat, sessionId, expected: scenario.expected, route: "error", pass: false, error: error.message });
+            results.push({ id: scenario.id, repeat, sessionId, scenario, expected: scenario.expected, route: "error", pass: false, error: error.message });
             console.log(JSON.stringify({ id: scenario.id, repeat, error: error.message }));
         } finally {
             clearTimeout(timer);
@@ -125,6 +158,7 @@ try {
     }
 } finally {
     await manager.shutdown();
+    await featureCache.stop();
     fs.rmSync(home, { recursive: true, force: true });
 }
 console.log(JSON.stringify({ out, passed: results.filter(r => r.pass).length, total: results.length }));

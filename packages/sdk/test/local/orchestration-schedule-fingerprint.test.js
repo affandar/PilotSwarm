@@ -53,7 +53,6 @@ const GOLDEN_SURFACE = [
     "runtime.manager.recordRegenerated",
     "runtime.manager.recordSessionEvent",
     "runtime.manager.resolveAgentConfig",
-    "runtime.manager.resolveAgentForRequiredTool",
     "runtime.manager.runRegenArchive",
     "runtime.manager.runRegenCancelDistiller",
     "runtime.manager.runRegenCheckDistiller",

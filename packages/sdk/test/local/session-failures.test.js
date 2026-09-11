@@ -21,6 +21,35 @@ import { rmSync } from "node:fs";
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
+// Capture progress before teardown removes the isolated schema. A response
+// deadline alone cannot distinguish queue/lease delay from failed recovery or
+// a slow model. Keep the original failure and never print conversation content.
+async function recordRecoveryFailure(catalog, mgmt, sessionId) {
+    let timer;
+    try {
+        await Promise.race([
+            (async () => {
+                const [row, status, events] = await Promise.allSettled([
+                    catalog.getSession(sessionId),
+                    mgmt.getSessionStatus(sessionId),
+                    catalog.getSessionEvents(sessionId),
+                ]);
+                console.error('[recovery failure]', JSON.stringify({
+                    sessionId,
+                    state: row.status === 'fulfilled' ? row.value?.state : 'unavailable',
+                    orchestrationStatus: status.status === 'fulfilled' ? status.value?.orchestrationStatus : 'unavailable',
+                    turnStatus: status.status === 'fulfilled' ? status.value?.customStatus?.status : 'unavailable',
+                    events: events.status === 'fulfilled' ? events.value.slice(-20).map(event => ({
+                        seq: event.seq, type: event.eventType, time: event.createdAt, worker: event.workerNodeId,
+                    })) : 'unavailable',
+                }));
+            })(),
+            new Promise(resolve => { timer = setTimeout(resolve, 5_000); }),
+        ]);
+    } catch { /* Diagnostics must not replace the test failure. */ }
+    finally { clearTimeout(timer); }
+}
+
 async function createSessionWithDeletedResumableState(env) {
     const commonOpts = {
         store: env.store,
@@ -111,6 +140,9 @@ async function testMissingStateRecoversViaLossyReplay(env) {
             && String(event.data?.content || "").includes("replaying this turn after a worker restart lost the live Copilot session state"),
         );
         assertNotNull(replayNotice, "recovery should record a visible replay notice");
+    } catch (error) {
+        await recordRecoveryFailure(catalog, mgmt, recovered.sessionId);
+        throw error;
     } finally {
         await recovered.cleanup();
         await mgmt.stop();
@@ -134,6 +166,9 @@ async function testRecoveredSessionsAcceptFutureMessages(env) {
         assert(second && second.length > 0, "client should still accept follow-up messages after recovery");
 
         await mgmt.sendMessage(recovered.sessionId, "Reply with a short acknowledgement.");
+    } catch (error) {
+        await recordRecoveryFailure(recovered.worker.catalog, mgmt, recovered.sessionId);
+        throw error;
     } finally {
         await recovered.cleanup();
         await mgmt.stop();

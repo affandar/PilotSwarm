@@ -25,7 +25,7 @@ export type TurnAction =
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] }
-    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
+    | { type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] }
     | { type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] }
     | { type: "check_agents"; events?: CapturedEvent[] }
     | { type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] }
@@ -63,7 +63,7 @@ type TurnResultVariant =
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "input_required"; question: string; choices?: string[]; allowFreeform?: boolean; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "spawn_agent"; task: string; model?: string; reasoningEffort?: ReasoningEffort; contextTier?: ContextTier; systemMessage?: string | { mode: "append" | "replace"; content: string }; toolNames?: string[]; agentName?: string; /** Historical spawn selector, retained only to deserialize frozen orchestration histories. New requests reject it. */ requiredTool?: string; title?: string; contract?: Record<string, unknown>; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "message_agent"; agentId: string; message: string; contractPatch?: Record<string, unknown>; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "check_agents"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "wait_for_agents"; agentIds: string[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -134,7 +134,6 @@ export interface TurnOptions {
         manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
-            required_tool?: string;
             task?: string;
             model?: string;
             reasoning_effort?: ReasoningEffort;
@@ -198,10 +197,14 @@ export interface SerializableSessionConfig {
     workingDirectory?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
-    /** Internal: name of the bound agent definition whose prompt should be layered into this session. */
+    /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
     boundAgentName?: string;
     /** Internal: exact resolved package copy; prevents shared/private rebinding on another worker. */
     boundAgentPackageId?: string;
+    /** Explicitly selected deployment definition; absent retains legacy owner-shadowing behavior. */
+    boundAgentSource?: "deployment";
+    /** Internal: explicit root-session tool additions; package-owned capabilities still follow the current definition. */
+    namedAgentToolAdditions?: string[];
     /** Internal: how an unbound delegated child handles package-owned tool names. */
     detachedPackageToolPolicy?: "drop" | "reject";
     /** Internal: selects how framework, app, and agent prompts compose for this session. */
@@ -407,6 +410,8 @@ export interface PilotSwarmSessionInfo {
     /** Number of fires completed for cron_at schedules. */
     cronFiresCompleted?: number;
     result?: string;
+    /** Internal opt-in status metadata; absent preserves the legacy response shape. */
+    resultSource?: "response" | "orchestration";
     error?: string;
     iterations: number;
     /** If this is a sub-agent session, the parent session's ID. */
@@ -652,6 +657,8 @@ export interface OrchestrationInput {
         deadlineAtMs: number;
         targetAgentIds: string[];
         commandId?: string;
+        /** Runtime-stamped parent that requested cleanup; never inferred from the reason. */
+        requestedBy?: string;
     };
 
     // ─── Sub-agent state ─────────────────────────────────────

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { scoreDelegation } from "../lib/native-delegation-score.mjs";
+import { isDelegationDecision, scoreDelegation } from "../lib/native-delegation-score.mjs";
 
 const options = { model: "gpt-5.6-terra", knownAgents: ["deepwiki", "generic-crawler"] };
 const call = (name, args) => ({ name, arguments: args });
@@ -107,13 +107,64 @@ test("admitted native profiles and inherited mode/model pass, and every call is 
 for (const [name, args] of [
     ["missing task", {}], ["blank task", { task: "  " }], ["object task", { task: {} }],
     ["unknown name", { agent_name: "imaginary" }], ["blank name", { agent_name: "" }],
-    ["null name", { agent_name: null }], ["task override", { agent_name: "deepwiki", task: "Replace role" }],
+    ["null name", { agent_name: null }],
     ["empty task override", { agent_name: "deepwiki", task: "" }],
     ["null task override", { agent_name: "deepwiki", task: null }],
     ["system override", { agent_name: "deepwiki", system_message: "Replace role" }],
     ["empty system override", { agent_name: "deepwiki", system_message: "" }],
+    ["tool override", { agent_name: "deepwiki", tool_names: ["bash"] }],
+    ["empty tool override", { agent_name: "deepwiki", tool_names: [] }],
+    ["null tool override", { agent_name: "deepwiki", tool_names: null }],
+    ["removed selector", { required_tool: "deepwiki_query", task: "Explain architecture" }],
+    ["removed selector with name", { agent_name: "deepwiki", required_tool: "deepwiki_query" }],
+    ["null removed selector", { agent_name: "deepwiki", required_tool: null }],
+    ["camel case removed selector", { agent_name: "deepwiki", requiredTool: "deepwiki_query" }],
 ]) test(`durable arguments reject ${name}`, () => {
     expectScore({ expected: ["durable"] }, decision("spawn_agent", args), false);
+});
+
+test("catalog preparation cannot make an explicit no-delegation evaluation pass early", () => {
+    const scenario = { expected: ["direct"] };
+    const preparation = [call("ps_list_agents", {}), call("list_agents", {}), call("list_available_models", {}), call("read_facts", {}), call("store_fact", {})];
+    for (const calls of preparation.map(item => [item]).concat([preparation])) {
+        assert.equal(isDelegationDecision(calls, scenario), false);
+        assert.equal(expectScore(scenario, { calls }, false).route, "preparation");
+    }
+    const delegated = [call("spawn_agent", { agent_name: "deepwiki", task: "Inspect the project." })];
+    assert.equal(isDelegationDecision(delegated, scenario), true);
+    expectScore(scenario, { calls: delegated }, false);
+    const direct = [call("view", { path: "package.json" })];
+    assert.equal(isDelegationDecision(direct, scenario), true);
+    expectScore(scenario, { calls: direct }, true);
+});
+
+test("named children accept a concrete assignment while retaining the named definition", () => {
+    const scenario = { expected: ["durable"], expectedAgent: "deepwiki", expectedAssignment: true };
+    expectScore(scenario, decision("spawn_agent", { agent_name: "deepwiki", task: "Explain how this repository handles replay." }), true);
+    expectScore(scenario, decision("spawn_agent", { agent_name: "deepwiki" }), false);
+    expectScore({ expected: ["durable"], expectedAgent: "deepwiki" }, decision("spawn_agent", { agent_name: "deepwiki" }), true);
+});
+
+test("no matching specialist requires generic fallback and never a guessed or inaccessible name", () => {
+    const scenario = { expected: ["durable"], expectedGeneric: true, expectedCatalogLookup: true };
+    const config = { catalogLookups: 1 };
+    expectScore(scenario, decision("spawn_agent", { task: "Audit the service." }), true, config);
+    expectScore(scenario, decision("spawn_agent", { agent_name: "deepwiki", task: "Audit the service." }), false, config);
+    expectScore({ expected: ["durable"] }, decision("spawn_agent", { agent_name: "private-reviewer", task: "Audit." }), false);
+});
+
+test("an explicit judgment boundary accepts only its named alternatives or a generic child", () => {
+    const scenario = { expected: ["durable"], allowedAgentNames: [null, "generic-crawler"] };
+    const generic = call("spawn_agent", { task: "Compare documents." });
+    const crawler = call("spawn_agent", { agent_name: "generic-crawler", task: "Compare documents." });
+    expectScore(scenario, { calls: [generic] }, true);
+    expectScore(scenario, { calls: [crawler] }, true);
+    expectScore(scenario, { calls: [generic, crawler] }, true);
+    for (const name of ["deepwiki", "imaginary", "generic-crawler-extra", null]) {
+        expectScore(scenario, { calls: [generic, call("spawn_agent", { agent_name: name, task: "Compare documents." })] }, false);
+    }
+    expectScore(scenario, { calls: [] }, false);
+    expectScore(scenario, decision("task", nativeArgs), false);
 });
 
 test("exact named selection applies to every child and requires discovery when requested", () => {

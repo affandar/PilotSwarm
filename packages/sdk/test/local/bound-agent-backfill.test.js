@@ -18,12 +18,14 @@
  *
  * Every test uses two client instances sharing one store: client A creates,
  * client B (fresh process state, standing in for the other replica) sends
- * the first message.
+ * the first message. An unstarted legacy row now resolves its CMS agentId
+ * during normal startup. The safety-net fixture instead starts an immutable
+ * historical input directly, before client B resumes the live orchestration.
  *
  * Run: npx vitest run test/local/bound-agent-backfill.test.js
  */
 
-import { describe, it, beforeAll } from "vitest";
+import { describe, it, beforeAll, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -32,6 +34,8 @@ import { PilotSwarmClient, PilotSwarmWorker } from "../helpers/local-workers.js"
 import { assert, assertEqual, assertIncludes } from "../helpers/assertions.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { createAddTool, TEST_GPT_MODEL } from "../helpers/fixtures.js";
+import { DURABLE_SESSION_LATEST_VERSION, DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
+import { HANDOFF_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -107,7 +111,100 @@ async function restoredEvents(env, sessionId) {
     }
 }
 
+/** A pre-0072 catalog row still has the named identity and resolved model. */
+async function createLegacySession(env, client) {
+    const created = await client.createSessionForAgent("backfill-marker", { model: TEST_GPT_MODEL });
+    const catalog = await createCatalog(env);
+    try {
+        await catalog.pool.query(
+            `UPDATE "${env.cmsSchema}".sessions SET creation_config = NULL WHERE session_id = $1`,
+            [created.sessionId],
+        );
+        assertEqual(await catalog.getSessionCreationConfig(created.sessionId), null, "legacy creation config");
+        assertEqual((await catalog.getSession(created.sessionId)).agentId, "backfill-marker", "legacy CMS identity");
+    } finally {
+        await catalog.close?.();
+    }
+    return created.sessionId;
+}
+
+function historyInput(event, label) {
+    assert(event?.data, `${label}: durable history must contain an input`);
+    const payload = JSON.parse(event.data);
+    const input = typeof payload.input === "string" ? JSON.parse(payload.input) : payload.input;
+    assert(input && typeof input === "object", `${label}: durable input must be an object`);
+    return input;
+}
+
+async function startedInput(client, sessionId) {
+    const history = await client.duroxideClient.readExecutionHistory(`session-${sessionId}`, 1);
+    return historyInput(history.find(event => /Orchestrat.*Started/.test(event.kind)), "first orchestration start");
+}
+
+/** Read every execution so a continue-as-new cannot hide a dispatched turn. */
+async function scheduledActivityInputs(client, sessionId, activityName) {
+    const orchestrationId = `session-${sessionId}`;
+    const executions = await client.duroxideClient.listExecutions(orchestrationId);
+    const histories = await Promise.all(executions.map(id => client.duroxideClient.readExecutionHistory(orchestrationId, id)));
+    // Duroxide 0.1.29 writes the JSON-escaped name first, then embeds the
+    // activity's raw input. An unrelated empty input yields invalid JSON.
+    // Select by the complete name token; target inputs still parse strictly.
+    const namePrefix = `{"name":${JSON.stringify(activityName)}`;
+    return histories.flat()
+        .filter(event => event.kind === "ActivityScheduled" && event.data?.startsWith(namePrefix))
+        .map(event => historyInput(event, activityName));
+}
+
 describe("Durable creation config across replicas", () => {
+    it("a named child keeps its deployment binding when another client sends its first turn", async () => {
+        const env = getEnv();
+        await withSplitClients(env, {}, async (clientA, clientB) => {
+            const parent = await clientA.createSession({ model: TEST_GPT_MODEL });
+            const created = await clientA.createSession({
+                model: TEST_GPT_MODEL,
+                parentSessionId: parent.sessionId,
+                nestingLevel: 1,
+                agentId: "backfill-marker",
+                boundAgentName: "backfill-marker",
+                boundAgentSource: "deployment",
+                detachedPackageToolPolicy: "reject",
+                childContract: { purpose: "Return the sum", wakeOn: "completion" },
+                toolNames: [],
+                systemMessage: "Complete the parent's bounded assignment.",
+            });
+            const catalog = await createCatalog(env);
+            try {
+                const stored = await catalog.getSessionCreationConfig(created.sessionId);
+                assertEqual(stored.boundAgentName, "backfill-marker");
+                assertEqual(stored.boundAgentSource, "deployment");
+                assertEqual(stored.detachedPackageToolPolicy, "reject");
+                assertEqual(stored.childContract.purpose, "Return the sum");
+                assertEqual(stored.boundAgentPackageId, undefined);
+                const row = await catalog.getSession(created.sessionId);
+                assertEqual(row.parentSessionId, parent.sessionId);
+            } finally {
+                await catalog.close();
+            }
+
+            const resumed = await clientB.resumeSession(created.sessionId);
+            const response = await resumed.sendAndWait("What is 1+1? One word.", TIMEOUT);
+            assertIncludes(response, AGENT_MARKER, "persisted deployment binding must reach the child SDK");
+            // Inspect the actual durable first-turn input created by replica B,
+            // rather than its in-memory config or a serializer in isolation.
+            const history = await clientB.duroxideClient.readExecutionHistory(`session-${created.sessionId}`, 1);
+            const started = history.find(event => /Orchestrat.*Started/.test(event.kind));
+            assert(started?.data, "durable history must contain the first orchestration input");
+            const payload = JSON.parse(started.data);
+            const input = typeof payload.input === "string" ? JSON.parse(payload.input) : payload.input ?? payload;
+            assertEqual(input.config.boundAgentSource, "deployment");
+            assertEqual(input.config.detachedPackageToolPolicy, "reject");
+            assertEqual(input.config.childContract.purpose, "Return the sum");
+            assertEqual(input.parentSessionId ?? input.options?.parentSessionId, parent.sessionId);
+            assertEqual(input.nestingLevel, 1, "cross-client startup must preserve the child depth limit");
+            assertEqual((await restoredEvents(env, created.sessionId)).length, 0);
+        });
+    }, TIMEOUT);
+
     it("an agent session created on A and first-messaged on B keeps its agent — durably, without the safety net", async () => {
         const env = getEnv();
         await withSplitClients(env, {}, async (clientA, clientB) => {
@@ -200,42 +297,79 @@ describe("Durable creation config across replicas", () => {
         });
     }, TIMEOUT);
 
-    it("a legacy session (row without creation config) heals through the safety net, announced exactly once", async () => {
+    it("an unstarted legacy row resolves its CMS agent identity normally without the safety net", async () => {
         const env = getEnv();
         await withSplitClients(env, {}, async (clientA, clientB) => {
-            // Shape of every session created BEFORE migration 0072: a real
-            // row with an agentId but no creation_config. Create it properly,
-            // then null the column — byte-for-byte the legacy state, without
-            // hand-rolling row values the create path normally derives.
-            const created = await clientA.createSessionForAgent("backfill-marker", {
-                model: TEST_GPT_MODEL,
-            });
-            const sessionId = created.sessionId;
+            const sessionId = await createLegacySession(env, clientA);
+            const resumed = await clientB.resumeSession(sessionId);
+            const response = await resumed.sendAndWait("What is 2+2? Answer with one word.", TIMEOUT);
+            assertIncludes(response, AGENT_MARKER, "normal startup must resolve the legacy row's named agent");
+
+            // The catalog has no creation config. The identity therefore comes
+            // from CMS; the startup resolver then binds the scheduled turn.
+            const input = await startedInput(clientB, sessionId);
+            assertEqual(input.agentId, "backfill-marker", "first start restores the durable agent identity");
+            assertEqual(input.config.boundAgentName, undefined, "fixture must begin without a serialized binding");
+            const resolutions = await scheduledActivityInputs(clientB, sessionId, HANDOFF_ACTIVITY_NAMES.resolveAgentConfig);
+            assert(resolutions.some(item => item.agentName === "backfill-marker"), "normal startup must resolve the named definition");
+            const turns = await scheduledActivityInputs(clientB, sessionId, HANDOFF_ACTIVITY_NAMES.runTurn);
+            assert(turns.length >= 1, "durable history must contain a scheduled turn");
+            for (const turn of turns) {
+                assertEqual(turn.config.boundAgentName, "backfill-fixture:backfill-marker", "the resolved namespace must reach the durable activity input");
+                assertEqual(turn.config.boundAgentSource, "deployment", "startup must select the deployment definition");
+            }
+            assertEqual((await restoredEvents(env, sessionId)).length, 0, "normal startup must leave worker backfill idle");
+        });
+    }, TIMEOUT);
+
+    it("an already-started legacy input heals through the worker safety net, announced exactly once", async () => {
+        const env = getEnv();
+        await withSplitClients(env, {}, async (clientA, clientB) => {
+            const sessionId = await createLegacySession(env, clientA);
+            const orchestrationId = `session-${sessionId}`;
+            // Exercise the active worker's compatibility with the historical
+            // lost-config shape. Starting through PilotSwarmClient today would
+            // repair agentId before it became immutable, missing this seam.
+            await clientA.duroxideClient.startOrchestrationVersioned(
+                orchestrationId,
+                DURABLE_SESSION_ORCHESTRATION_NAME,
+                { sessionId, config: { waitThreshold: 30 }, iteration: 0, blobEnabled: true },
+                DURABLE_SESSION_LATEST_VERSION,
+            );
+            // The raw API enqueues a start; wait until it is a real live
+            // orchestration so resumeSession cannot take the first-start path.
+            await vi.waitFor(async () => {
+                assertEqual((await clientA.duroxideClient.getInstanceInfo(orchestrationId)).status, "Running");
+            }, { timeout: 30_000, interval: 100 });
             const catalog = await createCatalog(env);
             try {
-                await catalog.pool.query(
-                    `UPDATE "${env.cmsSchema}".sessions SET creation_config = NULL WHERE session_id = $1`,
-                    [sessionId],
-                );
-                const stored = await catalog.getSessionCreationConfig(sessionId);
-                assertEqual(stored, null, "precondition: the row must look pre-0072");
+                await catalog.updateSession(sessionId, { orchestrationId, state: "running" });
             } finally {
                 await catalog.close?.();
             }
+            const original = await startedInput(clientA, sessionId);
+            assertEqual(original.agentId, undefined, "legacy durable input must lack the outer named identity");
+            assertEqual(JSON.stringify(original.config), JSON.stringify({ waitThreshold: 30 }), "legacy durable config must retain its original lost-config shape");
+            assertEqual((await restoredEvents(env, sessionId)).length, 0, "no turn has reached the safety net yet");
 
             const resumed = await clientB.resumeSession(sessionId);
-            const first = await resumed.sendAndWait("What is 2+2? Answer with one word.", TIMEOUT);
-            console.log(`  First response: "${first}"`);
-            assertIncludes(first, AGENT_MARKER, "the worker-side backfill must restore the agent for a legacy session");
-
-            const second = await resumed.sendAndWait("And 3+3? One word.", TIMEOUT);
-            console.log(`  Second response: "${second}"`);
-            assertIncludes(second, AGENT_MARKER, "the backfill must keep restoring on every turn");
-
-            // The heal re-fires each turn (the durable input is beyond
-            // repair) but is ANNOUNCED once per session per worker process.
-            const restored = await restoredEvents(env, sessionId);
-            assertEqual(restored.length, 1, "session.bound_agent_restored must be recorded exactly once, not per turn");
+            for (const [index, prompt] of [
+                "What is 2+2? Answer with one word.",
+                "And 3+3? One word.",
+            ].entries()) {
+                const response = await resumed.sendAndWait(prompt, TIMEOUT);
+                assertIncludes(response, AGENT_MARKER, `worker backfill must supply the agent prompt on turn ${index + 1}`);
+                assertEqual((await restoredEvents(env, sessionId)).length, 1,
+                    `worker backfill must have exactly one announcement after turn ${index + 1}`);
+                const turns = await scheduledActivityInputs(clientB, sessionId, HANDOFF_ACTIVITY_NAMES.runTurn);
+                assert(turns.length >= index + 1, "durable history must contain each scheduled turn");
+                for (const turn of turns) {
+                    assertEqual(turn.config.boundAgentName, undefined, "worker must receive the legacy input without a bound agent");
+                }
+            }
+            assertEqual((await scheduledActivityInputs(clientB, sessionId, HANDOFF_ACTIVITY_NAMES.resolveAgentConfig)).length, 0,
+                "the already-started legacy input must never enter normal named startup resolution");
+            assertEqual((await startedInput(clientB, sessionId)).agentId, undefined, "resuming must not rewrite the historical input");
         });
     }, TIMEOUT);
 });

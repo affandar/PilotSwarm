@@ -95,7 +95,17 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
     const { state, options, input } = runtime;
     if (state.iteration !== 0 || options.parentSessionId || !input.agentId || options.isSystem) return;
 
-    const agentDef: any = yield runtime.manager.resolveAgentConfig(input.agentId, input.sessionId);
+    const binding = state.config.boundAgentPackageId || state.config.boundAgentSource
+        ? {
+            ...(state.config.boundAgentPackageId ? { packageId: state.config.boundAgentPackageId } : {}),
+            ...(state.config.boundAgentSource ? { source: state.config.boundAgentSource } : {}),
+        }
+        : undefined;
+    const agentDef: any = yield runtime.manager.resolveAgentConfig(
+        binding ? state.config.boundAgentName ?? input.agentId : input.agentId,
+        input.sessionId,
+        binding,
+    );
     if (agentDef?.system && agentDef?.creatable === false) {
         const message =
             `Agent "${input.agentId}" is a worker-managed system agent and cannot be started manually. ` +
@@ -107,8 +117,14 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         return;
     }
     if (agentDef) {
-        state.config.boundAgentName = agentDef.name;
+        // New clients distinguish caller additions from definition-derived tools.
+        // For older pending roots, preserve names outside the selected definition;
+        // SessionManager filters package-owned additions against the live registry.
+        state.config.namedAgentToolAdditions ??= (state.config.toolNames ?? [])
+            .filter(name => !(agentDef.tools ?? []).includes(name));
+        state.config.boundAgentName = !agentDef.packageId && agentDef.namespace ? `${agentDef.namespace}:${agentDef.name}` : agentDef.name;
         state.config.boundAgentPackageId = agentDef.packageId;
+        state.config.boundAgentSource = agentDef.packageId ? undefined : "deployment";
         const mergedToolNames = Array.from(new Set([
             ...(agentDef.tools ?? []),
             ...(state.config.toolNames ?? []),
@@ -124,7 +140,7 @@ export function* resolveTopLevelAgentConfig(runtime: DurableSessionRuntime): Gen
         }
         if (agentDef.crawler === true) state.config.isCrawler = true;
         if (agentDef.harvester === true) state.config.isHarvester = true;
-        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config);
+        runtime.session = createSessionProxy(runtime.ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
     }
 }
 
@@ -151,8 +167,8 @@ export function* createRuntime(
     state.lastResponseVersion = readCounter(ctx, RESPONSE_VERSION_KEY);
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
-    const manager = createSessionManagerProxy(ctx);
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config);
+    const manager = createSessionManagerProxy(ctx, "agent-handoff-v2", { childResultProvenance: true });
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 
