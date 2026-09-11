@@ -280,7 +280,7 @@ The audit found the following candidates, in recommended execution order:
    TypeScript structural compatibility, so this is not an immediate runtime blocker, but it is
    required to prevent silent ABI drift and complete the ownership seam.
 
-2. **Upstream the generic TypeScript PilotSwarm compatibility layer and .NET client
+2. **Upstream the generic TypeScript PilotSwarm compatibility layer
    (platform contribution).** SQLmort TypeScript callers now use the published
    `pilotswarm-sdk` directly. Platform-neutral gaps are staged under
    `Clients/sdk/typescript/src/upstream-candidates/`, including authentication bootstrap,
@@ -289,9 +289,8 @@ The audit found the following candidates, in recommended execution order:
    PilotSwarm TypeScript SDK idioms, then remove the SQLmort compatibility implementations.
 
    Keep SQL-specific repository-to-audience mappings, service audiences, token policy, and
-   other domain behavior under `Clients/sdk/typescript/src/sql-domain/`. Evaluate the existing
-   .NET client independently for generic upstream contributions. The former SQLmort Python SDK
-   has been removed and is no longer an upstream source.
+   other domain behavior under `Clients/sdk/typescript/src/sql-domain/`. The former SQLmort
+   Python and .NET SDKs have been removed and are no longer upstream sources.
 
 3. **Split Kusto MCP deployment wrappers only where reusable (lower priority).** Generic
    image build, manifest rendering, apply, and rollout mechanics under
@@ -1013,6 +1012,6 @@ small weekly rebases keep each migration/orchestration collision to one commit's
 3. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
 4. **Provider contract distribution** — choose a stable package/export shape and versioning
    policy for external provider authors, then migrate SQLmort off its three structural mirrors.
-5. **Client SDK ownership and naming** — select neutral Python and .NET package names, define
-   compatibility for current SQLmort callers, and isolate SQL-owned audience mappings before
-   upstreaming the generic clients.
+5. **TypeScript SDK ownership** — migrate SQLmort's generic compatibility candidates into the
+   published PilotSwarm TypeScript SDK, preserve compatibility for current SQLmort callers, and
+   keep SQL-owned audience mappings isolated in SQLmort.
