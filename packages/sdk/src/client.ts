@@ -20,7 +20,7 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
 } from "./types.js";
-import type { SessionCatalog, SessionEvent, SessionVisibility } from "./cms.js";
+import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
@@ -38,6 +38,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Client } = require("duroxide");
 
 const WAIT_POLL_SLICE_MS = 10_000;
+const MAX_SESSION_LINEAGE_HOPS = 128;
 
 function createAbortError(message: string, reason?: unknown): Error {
     if (reason instanceof Error) return reason;
@@ -101,6 +102,7 @@ export function projectSerializableSessionConfig(
         waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
         boundAgentName: fullConfig?.boundAgentName,
         boundAgentPackageId: fullConfig?.boundAgentPackageId,
+        boundAgentSource: fullConfig?.boundAgentSource,
         detachedPackageToolPolicy: fullConfig?.detachedPackageToolPolicy,
         promptLayering: fullConfig?.promptLayering,
         childContract: fullConfig?.childContract,
@@ -218,6 +220,7 @@ export class PilotSwarmClient {
                 systemMessage: resolvedConfig.systemMessage,
                 boundAgentName: resolvedConfig.boundAgentName,
                 boundAgentPackageId: resolvedConfig.boundAgentPackageId,
+                boundAgentSource: resolvedConfig.boundAgentSource,
                 detachedPackageToolPolicy: resolvedConfig.detachedPackageToolPolicy,
                 promptLayering: resolvedConfig.promptLayering,
                 childContract: resolvedConfig.childContract,
@@ -671,6 +674,47 @@ export class PilotSwarmClient {
 
     // ─── Internal ────────────────────────────────────────────
 
+    /**
+     * Creation and first send may land on different API processes. Restore the
+     * child boundary from durable lineage before starting an orchestration;
+     * otherwise the child silently becomes a root with a reset nesting budget.
+     */
+    private async _restoreLineageForStart(
+        sessionId: string,
+        row: SessionRow | null,
+    ): Promise<{ parentSessionId?: string; nestingLevel: number }> {
+        const invalid = (detail: string) => Object.assign(
+            new Error(`Cannot restore session lineage for "${sessionId}": ${detail}`),
+            { code: "SESSION_LINEAGE_INVALID" },
+        );
+        if (!row) throw invalid("the session is missing from the catalog.");
+        const parentSessionId = row.parentSessionId || undefined;
+        const visited = new Set([sessionId]);
+        let current = row;
+        let depth = 0;
+        while (current.parentSessionId) {
+            const parentId = current.parentSessionId;
+            if (visited.has(parentId)) throw invalid(`a parent cycle includes "${parentId}".`);
+            if (depth >= MAX_SESSION_LINEAGE_HOPS) throw invalid(`the parent chain exceeds ${MAX_SESSION_LINEAGE_HOPS} hops.`);
+            visited.add(parentId);
+            const parent = await this._catalog.getSession(parentId);
+            if (!parent) throw invalid(`parent session "${parentId}" is missing from the catalog.`);
+            current = parent;
+            depth++;
+        }
+        // An explicit same-client create depth is a supported override. The
+        // durable chain still supplies/validates ancestry; only an absent local
+        // depth is reconstructed, so known create-time semantics stay intact.
+        const nestingLevel = this.nestingLevels.get(sessionId) ?? depth;
+        if (!Number.isSafeInteger(nestingLevel) || nestingLevel < 0) {
+            throw invalid("the explicit nesting level must be a non-negative integer.");
+        }
+        if (parentSessionId) this.parentSessionIds.set(sessionId, parentSessionId);
+        else this.parentSessionIds.delete(sessionId);
+        this.nestingLevels.set(sessionId, nestingLevel);
+        return { parentSessionId, nestingLevel };
+    }
+
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
     private async _ensureOrchestrationAndSend(
         sessionId: string,
@@ -758,8 +802,7 @@ export class PilotSwarmClient {
         }
 
         if (!this.activeOrchestrations.has(sessionId)) {
-            const parentSessionId = this.parentSessionIds.get(sessionId);
-            const nestingLevel = this.nestingLevels.get(sessionId);
+            const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow);
             const input: OrchestrationInput = {
                 sessionId,
                 config: serializableConfig,

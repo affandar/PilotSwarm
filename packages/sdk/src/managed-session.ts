@@ -1006,8 +1006,8 @@ export class ManagedSession {
                 "If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, you should comply within runtime limits instead of collapsing the work into a direct answer. " +
                 "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
                 "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
-                "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
-                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm resolves the unique visible creatable owner and binds its full definition. " +
+                "For KNOWN user-creatable agents, pass agent_name. The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
+                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm selects the unique visible creatable agent providing it and binds that agent's full definition. The selected agent keeps its own startup requirement; required_tool does not require an immediate tool call. " +
                 "You MAY spawn multiple concurrent instances of the same agent_name (e.g. one per bug or per shard); they each get their own conversation. The only caps are the global maximum concurrent sub-agents and the maximum nesting depth. " +
                 "Sub-agents do NOT auto-terminate when they finish their task \u2014 they stay alive idle, ready for follow-up via message_agent. YOU are responsible for closing each child with complete_agent (graceful), cancel_agent (interrupt), or delete_agent (forceful) when you no longer need it. " +
                 "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
@@ -1022,15 +1022,15 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     required_tool: {
                         type: "string",
-                        description: "Generic capability selector. Resolve the unique visible creatable named agent declaring this tool, bind its complete definition, and require this tool during bootstrap. Use with task for delegated package-tool work. Ambiguous or missing ownership fails closed.",
+                        description: "Capability selector: choose the unique visible creatable named agent declaring this tool, or validate agent_name if supplied. Load its complete definition and preserve its existing startup requirement. This does not force this tool to run. Use task for the assignment. Missing or ambiguous matches return an error.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. This becomes the agent's first prompt. Do NOT use this for known agents — use agent_name instead.",
+                        description: "The assignment for the child, whether named or custom. This becomes its first prompt while a named agent retains its instructions, tools, and startup requirement. Required for custom agents; optional for named agents, whose initial prompt is the default.",
                     },
                     model: {
                         type: "string",
@@ -2119,10 +2119,10 @@ export class ManagedSession {
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
             description:
-                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name ONLY. " +
-                "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
-                "Do NOT pass task or system_message when using agent_name. " +
-                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm resolves the unique visible creatable owner and binds its full definition. " +
+                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name. " +
+                "The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
+                "Do not override system_message or tool_names when using agent_name. " +
+                "For delegated work that requires a tool but should not hard-code an agent name, pass required_tool; PilotSwarm selects the unique visible creatable agent providing it and binds that agent's full definition. The selected agent keeps its own startup requirement; required_tool does not require an immediate tool call. " +
                 "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
@@ -2136,15 +2136,15 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     required_tool: {
                         type: "string",
-                        description: "Generic capability selector. Resolve the unique visible creatable named agent declaring this tool, bind its complete definition, and require this tool during bootstrap. Use with task for delegated package-tool work. Ambiguous or missing ownership fails closed.",
+                        description: "Capability selector: choose the unique visible creatable named agent declaring this tool, or validate agent_name if supplied. Load its complete definition and preserve its existing startup requirement. This does not force this tool to run. Use task for the assignment. Missing or ambiguous matches return an error.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. Any task can be spawned — no pre-configured agent or skill is required.",
+                        description: "The assignment for the child, whether named or custom. A named agent retains its instructions, tools, and startup requirement. Required for custom agents; optional for named agents, whose initial prompt is the default.",
                     },
                     model: {
                         type: "string",

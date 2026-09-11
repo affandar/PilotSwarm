@@ -27,6 +27,7 @@
         "test:local:management": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/management.test.js",
         "test:local:cross-session": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/cross-session-messaging.test.js",
         "test:local:sub-agents": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/sub-agents/*.test.js",
+        "test:local:agent-handoff": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/parent-child-handoff.test.js test/local/native-reserved-tool-names.test.js test/local/package-reserved-quarantine.test.js test/local/agent-binding-refresh-runtime.test.js test/local/agent-handoff-routing.test.js test/local/bound-agent-backfill.test.js test/local/copilot-provider-compatibility.test.js test/local/system-child-propagation.test.js test/local/system-agent-cron-contracts.test.js test/local/snapshot-lineage-jump.test.js test/local/agent-package-portal-ops.test.js test/local/system-agents.test.js test/local/sub-agents/*.test.js",
         "test:local:kv-transport": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/kv-transport.test.js",
         "test:local:cms": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/list-sessions-page-owner.test.js",
         "test:local:contracts": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run test/local/contracts.test.js",

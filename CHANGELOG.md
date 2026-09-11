@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Keep a delegated named agent's prompt, tool handlers, declarations, MCP grants,
+  identity and mobile splash on its selected shared, private or deployment copy.
+  Refresh the binding at turn boundaries, resuming the Copilot handle when its
+  instructions or tool declarations change; fail closed when the copy disappears.
+- Keep `spawn_agent.required_tool` as a capability selector. Preserve the named
+  definition's startup requirement and accept `task` as its assignment. Named
+  children use their own extra tools and instructions plus platform defaults;
+  reject caller tool/system overrides, including empty values.
+- Reserve the complete native and platform tool namespace when loading packages,
+  including tools attached only to privileged sessions.
+- Preserve each child's explicit contract across SDK creation and restore its
+  parent/depth from the catalog when another API client sends the first message.
+  Grandchildren do not inherit their parent's own child contract.
+- Freeze orchestration 1.0.74 and introduce capability-tagged handoffs in 1.0.75.
+  Upgrade with a drain-first replacement of incompatible workers; see the
+  [upgrade guide](docs/developer/building/agent-handoff-upgrade.md).
+
 ## 0.5.65 — 2026-09-10
 
 Deterministic capability routing for delegated agents and fail-closed package

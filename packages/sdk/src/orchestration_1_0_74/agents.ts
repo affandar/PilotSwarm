@@ -650,15 +650,19 @@ export function* handleSubAgentAction(
                     `[SYSTEM: spawn_agent failed — required_tool must be a non-empty tool name of at most 128 characters.]`);
                 return true;
             }
-            const applyAgentDef = (agentDef: any) => {
-                agentTask = result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`;
-                agentSystemMessage = undefined;
-                // A named child's package owns its complete extra-tool surface.
-                // Explicit [] also prevents inheriting a parent's specialist tools.
-                agentToolNames = agentDef.tools ?? [];
+            let selectedByRequiredTool = false;
+
+            const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
+                agentTask = useDefinitionDefaults
+                    ? (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`)
+                    : (result.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
+                agentSystemMessage = useDefinitionDefaults ? undefined : result.systemMessage;
+                agentToolNames = useDefinitionDefaults
+                    ? (agentDef.tools ?? undefined)
+                    : (result.toolNames ?? agentDef.tools ?? undefined);
                 agentIsSystem = agentDef.system ?? false;
                 if (!agentTitleIsExplicit) agentTitle = agentDef.title;
-                agentId = agentDef.id ?? agentDef.name;
+                agentId = agentDef.id ?? resolvedAgentName;
                 agentSplash = agentDef.splash;
                 bootstrapRequiredTool = agentDef.initialRequiredTool;
                 boundAgentName = agentDef.name;
@@ -694,6 +698,7 @@ export function* handleSubAgentAction(
                 }
                 agentDef = resolution.agent;
                 resolvedAgentName = agentDef.name;
+                selectedByRequiredTool = true;
             }
             if (agentDef) {
                 if (agentDef.system && agentDef.creatable === false) {
@@ -708,19 +713,18 @@ export function* handleSubAgentAction(
                         `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`);
                     return true;
                 }
-                if (result.toolNames !== undefined) {
+                if (result.toolNames?.length) {
                     queueFollowup(runtime,
                         `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`);
                     return true;
                 }
-                if (result.systemMessage !== undefined) {
+                if (result.systemMessage) {
                     queueFollowup(runtime,
                         `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`);
                     return true;
                 }
-                // requiredTool selects/validates capability only. Startup is
-                // always the package's initialRequiredTool, even when different.
-                applyAgentDef(agentDef);
+                applyAgentDef(agentDef, !selectedByRequiredTool && resolvedAgentName !== result.agentName);
+                if (requiredTool) bootstrapRequiredTool = requiredTool;
             }
 
             // NOTE: a system parent does NOT make its children system.
@@ -754,9 +758,6 @@ export function* handleSubAgentAction(
             const {
                 boundAgentName: _parentBoundAgentName,
                 boundAgentPackageId: _parentBoundAgentPackageId,
-                boundAgentSource: _parentBoundAgentSource,
-                childContract: _parentChildContract,
-                detachedPackageToolPolicy: _parentDetachedPackageToolPolicy,
                 promptLayering: _parentPromptLayering,
                 agentIdentity: _parentAgentIdentity,
                 isCrawler: _parentIsCrawler,
@@ -765,17 +766,15 @@ export function* handleSubAgentAction(
             } = state.config;
             const childConfig: SerializableSessionConfig = {
                 ...parentConfig,
-                // Pass the assignment and sub-agent context to named children,
-                // not the parent's custom persona competing with their own.
-                ...(boundAgentName ? { systemMessage: undefined } : {}),
                 ...(agentModel ? { model: agentModel } : {}),
                 ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                 ...(result.contextTier !== undefined ? { contextTier: result.contextTier } : {}),
                 ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                 ...(boundAgentName ? { boundAgentName } : {}),
                 ...(boundAgentPackageId ? { boundAgentPackageId } : {}),
-                ...(boundAgentName && !boundAgentPackageId ? { boundAgentSource: "deployment" as const } : {}),
-                detachedPackageToolPolicy: boundAgentName || result.toolNames?.length ? "reject" : "drop",
+                ...(!boundAgentName ? {
+                    detachedPackageToolPolicy: result.toolNames?.length ? "reject" : "drop",
+                } : {}),
                 ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                 ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                 ...(result.contract ? { childContract: result.contract } : {}),

@@ -1,6 +1,7 @@
+import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey } from "./session-manager.js";
+import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -221,7 +222,7 @@ export class PilotSwarmWorker {
     /** System agents loaded from plugins — started automatically on worker start. */
     private _loadedSystemAgents: AgentConfig[] = [];
     /** Prompt lookup used for direct named/system sessions. */
-    private _agentPromptLookup: Record<string, { prompt: string; kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent"; descriptor?: import("./prompt-layers.js").PromptLayerDescriptor }> = {};
+    private _agentPromptLookup: Record<string, AgentPromptEntry> = {};
     /** Descriptor for the PilotSwarm framework base layer (from system default.agent.md). */
     private _frameworkBaseDescriptor: import("./prompt-layers.js").PromptLayerDescriptor | null = null;
     /** Descriptor for the app default layer (from app default.agent.md or inline config). */
@@ -741,6 +742,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -1124,9 +1126,9 @@ export class PilotSwarmWorker {
      * a broken package degrades to "packages unchanged/quarantined", never
      * to a dead worker.
      *
-     * Hot-swap semantics (existing runtime behavior, relied on, not added):
-     * prompts re-read per turn, tool HANDLERS re-register per turn, tool
-     * DECLARATIONS and MCP configs reach the CLI only on cold create/resume.
+     * SessionManager adopts one package snapshot per turn. Handler-only changes
+     * re-register in place; changed prompts, declarations or MCP grants recreate
+     * the warm CLI handle at the next turn boundary.
      */
     private _startConfigurationPolling(): void {
         if (!this._catalog || this._agentPackagesTimer) return;
@@ -1785,6 +1787,7 @@ export class PilotSwarmWorker {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
+                toolNames: [...(agent.tools ?? [])],
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
                 ...(agent.packageId ? {

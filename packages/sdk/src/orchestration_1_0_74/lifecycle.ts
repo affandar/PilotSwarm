@@ -171,7 +171,7 @@ export function* releaseAffinity(
     ctx.traceInfo(`[orch] releasing worker affinity (reason=${reason})`);
     state.activeTimer = null;
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config);
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",

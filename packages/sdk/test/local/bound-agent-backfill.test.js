@@ -108,6 +108,55 @@ async function restoredEvents(env, sessionId) {
 }
 
 describe("Durable creation config across replicas", () => {
+    it("a named child keeps its deployment binding when another client sends its first turn", async () => {
+        const env = getEnv();
+        await withSplitClients(env, {}, async (clientA, clientB) => {
+            const parent = await clientA.createSession({ model: TEST_GPT_MODEL });
+            const created = await clientA.createSession({
+                model: TEST_GPT_MODEL,
+                parentSessionId: parent.sessionId,
+                nestingLevel: 1,
+                agentId: "backfill-marker",
+                boundAgentName: "backfill-marker",
+                boundAgentSource: "deployment",
+                detachedPackageToolPolicy: "reject",
+                childContract: { purpose: "Return the sum", wakeOn: "completion" },
+                toolNames: [],
+                systemMessage: "Complete the parent's bounded assignment.",
+            });
+            const catalog = await createCatalog(env);
+            try {
+                const stored = await catalog.getSessionCreationConfig(created.sessionId);
+                assertEqual(stored.boundAgentName, "backfill-marker");
+                assertEqual(stored.boundAgentSource, "deployment");
+                assertEqual(stored.detachedPackageToolPolicy, "reject");
+                assertEqual(stored.childContract.purpose, "Return the sum");
+                assertEqual(stored.boundAgentPackageId, undefined);
+                const row = await catalog.getSession(created.sessionId);
+                assertEqual(row.parentSessionId, parent.sessionId);
+            } finally {
+                await catalog.close();
+            }
+
+            const resumed = await clientB.resumeSession(created.sessionId);
+            const response = await resumed.sendAndWait("What is 1+1? One word.", TIMEOUT);
+            assertIncludes(response, AGENT_MARKER, "persisted deployment binding must reach the child SDK");
+            // Inspect the actual durable first-turn input created by replica B,
+            // rather than its in-memory config or a serializer in isolation.
+            const history = await clientB.duroxideClient.readExecutionHistory(`session-${created.sessionId}`, 1);
+            const started = history.find(event => /Orchestrat.*Started/.test(event.kind));
+            assert(started?.data, "durable history must contain the first orchestration input");
+            const payload = JSON.parse(started.data);
+            const input = typeof payload.input === "string" ? JSON.parse(payload.input) : payload.input ?? payload;
+            assertEqual(input.config.boundAgentSource, "deployment");
+            assertEqual(input.config.detachedPackageToolPolicy, "reject");
+            assertEqual(input.config.childContract.purpose, "Return the sum");
+            assertEqual(input.parentSessionId ?? input.options?.parentSessionId, parent.sessionId);
+            assertEqual(input.nestingLevel, 1, "cross-client startup must preserve the child depth limit");
+            assertEqual((await restoredEvents(env, created.sessionId)).length, 0);
+        });
+    }, TIMEOUT);
+
     it("an agent session created on A and first-messaged on B keeps its agent — durably, without the safety net", async () => {
         const env = getEnv();
         await withSplitClients(env, {}, async (clientA, clientB) => {

@@ -1,3 +1,4 @@
+import { routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -88,6 +89,14 @@ export type RequiredToolAgentResolution =
     | { status: "resolved"; agent: ResolvedAgentDefinition; candidates: string[] }
     | { status: "not_found"; candidates: string[] }
     | { status: "ambiguous"; candidates: string[] };
+
+/** Same lineage principal for inline and durable agent selection. */
+async function resolveCallerAgentOwnerKey(catalog: SessionCatalog | null | undefined, sessionId?: string): Promise<string | null> {
+    const owner = catalog && sessionId
+        ? await resolveEffectiveSpawnOwner((id) => catalog.getSession(id), sessionId).catch(() => null)
+        : null;
+    return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
+}
 
 /**
  * THE agent-name resolver: FQN parsing, fuzzy matching, package privacy, and
@@ -672,6 +681,7 @@ export function createSessionProxy(
     sessionId: string,
     affinityKey: string,
     config: SerializableSessionConfig,
+    routingContract?: ActivityRoutingContract,
 ) {
     return {
         runTurn(
@@ -680,12 +690,12 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[] },
         ) {
-            return ctx.scheduleActivityOnSession(
+            return routeHandoffActivity(ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
-                // pre-1.0.67 workers don't register it, so a rolling deploy can
-                // never hand the fresh-epoch create to a worker that would
-                // silently resume the dead transcript instead.
-                turnMeta?.epochStart ? "runTurn2" : "runTurn",
+                // with an explicit contract since 1.0.67. New handoffs ALSO
+                // require a capability tag: activity names alone do not stop
+                // old workers from dequeuing work they cannot execute.
+                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
                 {
                     sessionId,
                     prompt,
@@ -725,7 +735,7 @@ export function createSessionProxy(
                         : {}),
                 },
                 affinityKey,
-            );
+            ), routingContract);
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -938,7 +948,7 @@ export function bootstrapTurnOptions(requiredTool?: string) {
 // The orchestration's view of the SessionManager singleton.
 // Operations that don't require session affinity.
 
-export function createSessionManagerProxy(ctx: any) {
+export function createSessionManagerProxy(ctx: any, routingContract?: ActivityRoutingContract) {
     return {
         listModels() {
             return ctx.scheduleActivity("listModels", {});
@@ -948,10 +958,10 @@ export function createSessionManagerProxy(ctx: any) {
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
         spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string) {
-            return ctx.scheduleActivity("spawnChildSession", {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
-            });
+            }), routingContract);
         },
     /**
      * Resolve a loaded agent config by name. Returns null if not found.
@@ -962,17 +972,18 @@ export function createSessionManagerProxy(ctx: any) {
      * the orchestration generator keeps the yield sequence byte-identical, so
      * this is not an orchestration version change.
      */
-    resolveAgentConfig(agentName: string, callerSessionId?: string) {
-        return ctx.scheduleActivity("resolveAgentConfig", {
+    resolveAgentConfig(agentName: string, callerSessionId?: string, binding?: { packageId?: string; source?: "deployment" }) {
+        return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("resolveAgentConfig", routingContract), {
             agentName,
             callerSessionId: callerSessionId ?? ctx.instanceId,
-        });
+            ...(binding ? { binding } : {}),
+        }), routingContract);
     },
         resolveAgentForRequiredTool(requiredTool: string, callerSessionId?: string) {
-            return ctx.scheduleActivity("resolveAgentForRequiredTool", {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("resolveAgentForRequiredTool", routingContract), {
                 requiredTool,
                 callerSessionId: callerSessionId ?? ctx.instanceId,
-            });
+            }), routingContract);
         },
         /** Send a message to a session via the PilotSwarmClient SDK. */
         sendToSession(sessionId: string, message: string) {
@@ -1696,17 +1707,7 @@ export function registerActivities(
         // previous inline copy had none of that: it could hand another user's
         // private agent to this session and could not address the shared copy
         // of a shadowed name.
-        const getCallerOwnerKeyInline = async () => {
-            const owner = catalog
-                ? await resolveEffectiveSpawnOwner(
-                    (id) => catalog!.getSession(id),
-                    input.sessionId,
-                ).catch(() => null)
-                : null;
-            return owner?.provider && owner?.subject
-                ? `${owner.provider}\u0001${owner.subject}`
-                : null;
-        };
+        const getCallerOwnerKeyInline = () => resolveCallerAgentOwnerKey(catalog, input.sessionId);
         const resolveAgentConfigInline = (agentName: string) =>
             resolveAgentDefinitionForCaller({
                 agentName,
@@ -2052,15 +2053,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         ...(args.reasoning_effort ? { reasoningEffort: args.reasoning_effort } : {}),
                         boundAgentName: agentDef.name,
                         ...(agentDef.packageId ? { boundAgentPackageId: agentDef.packageId } : {}),
+                        ...(!agentDef.packageId ? { boundAgentSource: "deployment" as const } : {}),
                         promptLayering: { kind: "app-agent" as const },
                         ...(agentDef.tools ? { toolNames: agentDef.tools } : {}),
-                        agentId: agentDef.id ?? agentName,
+                        agentId: agentDef.id ?? agentDef.name,
                         ...(owner ? { owner } : {}),
                     });
 
                     if (catalog) {
                         const meta: Record<string, any> = {
-                            agentId: agentDef.id ?? agentName,
+                            agentId: agentDef.id ?? agentDef.name,
                             title: typeof args.title === "string" && args.title.trim()
                                 ? args.title.trim()
                                 : `${agentDef.title || agentName}: ${newSessionId.slice(0, 8)}`,
@@ -2154,19 +2156,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     let boundAgentPackageId: string | undefined;
                     let promptLayeringKind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" | undefined;
                     let resolvedAgentName = args.agent_name;
-                    let selectedByRequiredTool = false;
-
-                    const applyAgentDef = (agentDef: any, useDefinitionDefaults = false) => {
-                        agentTask = useDefinitionDefaults
-                            ? (agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`)
-                            : (args.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`);
-                        agentSystemMessage = useDefinitionDefaults ? undefined : args.system_message;
-                        agentToolNames = useDefinitionDefaults
-                            ? (agentDef.tools ?? undefined)
-                            : (args.tool_names ?? agentDef.tools ?? undefined);
+                    const applyAgentDef = (agentDef: any) => {
+                        agentTask = args.task || agentDef.initialPrompt || `You are the ${agentDef.name} agent. Begin your work.`;
+                        agentSystemMessage = undefined;
+                        // Match durable spawning: no parent package tools when
+                        // the selected definition declares no extra tools.
+                        agentToolNames = agentDef.tools ?? [];
                         agentIsSystem = agentDef.system ?? false;
                         if (!agentTitleIsExplicit) agentTitle = agentDef.title;
-                        agentId = agentDef.id ?? resolvedAgentName;
+                        agentId = agentDef.id ?? agentDef.name;
                         agentSplash = agentDef.splash;
                         agentSplashMobile = agentDef.splashMobile;
                         bootstrapRequiredTool = agentDef.initialRequiredTool;
@@ -2196,7 +2194,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         }
                         agentDef = resolution.agent;
                         resolvedAgentName = agentDef.name;
-                        selectedByRequiredTool = true;
                     }
                     if (agentDef) {
                         if (agentDef.system && agentDef.creatable === false) {
@@ -2206,14 +2203,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         if (requiredTool && !agentDef.tools?.includes(requiredTool)) {
                             return `[SYSTEM: spawn_agent failed — agent "${resolvedAgentName}" does not declare required tool "${requiredTool}".]`;
                         }
-                        if (args.tool_names?.length) {
+                        if (args.tool_names !== undefined) {
                             return `[SYSTEM: spawn_agent failed — tool_names cannot override a bound named-agent definition. Use a custom task without agent_name/required_tool, or remove tool_names.]`;
                         }
-                        if (args.system_message) {
+                        if (args.system_message !== undefined) {
                             return `[SYSTEM: spawn_agent failed — system_message cannot override a bound named-agent definition. Put the bounded assignment in task instead.]`;
                         }
-                        applyAgentDef(agentDef, !selectedByRequiredTool && resolvedAgentName !== args.agent_name);
-                        if (requiredTool) bootstrapRequiredTool = requiredTool;
+                        // Capability selection cannot replace package startup.
+                        applyAgentDef(agentDef);
                     }
 
                     // Spawned children inherit the parent lineage's EFFECTIVE
@@ -2251,6 +2248,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const {
                         boundAgentName: _parentBoundAgentName,
                         boundAgentPackageId: _parentBoundAgentPackageId,
+                        boundAgentSource: _parentBoundAgentSource,
+                        childContract: _parentChildContract,
+                        detachedPackageToolPolicy: _parentDetachedPackageToolPolicy,
                         promptLayering: _parentPromptLayering,
                         agentIdentity: _parentAgentIdentity,
                         isCrawler: _parentIsCrawler,
@@ -2259,15 +2259,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     } = input.config;
                     const childConfig: SerializableSessionConfig = {
                         ...parentConfig,
+                        ...(boundAgentName ? { systemMessage: undefined } : {}),
                         ...(agentModel ? { model: agentModel } : {}),
                         ...(agentReasoningEffort ? { reasoningEffort: agentReasoningEffort } : {}),
                         ...(args.context_tier !== undefined ? { contextTier: args.context_tier } : {}),
                         ...(agentSystemMessage ? { systemMessage: agentSystemMessage } : {}),
                         ...(boundAgentName ? { boundAgentName } : {}),
                         ...(boundAgentPackageId ? { boundAgentPackageId } : {}),
-                        ...(!boundAgentName ? {
-                            detachedPackageToolPolicy: args.tool_names?.length ? "reject" : "drop",
-                        } : {}),
+                        ...(boundAgentName && !boundAgentPackageId ? { boundAgentSource: "deployment" as const } : {}),
+                        detachedPackageToolPolicy: boundAgentName || args.tool_names?.length ? "reject" : "drop",
                         ...(promptLayeringKind ? { promptLayering: { kind: promptLayeringKind } } : {}),
                         ...(agentToolNames ? { toolNames: agentToolNames } : {}),
                         ...(args.contract ? { childContract: args.contract } : {}),
@@ -2315,8 +2315,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
+                        boundAgentSource: childConfig.boundAgentSource,
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
+                        childContract: childConfig.childContract,
                         toolNames: childConfig.toolNames,
                         waitThreshold: childConfig.waitThreshold,
                         agentId,
@@ -4011,11 +4013,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
-    runtime.registerActivity("runTurn", runTurnHandler);
-    // Session regeneration: the epoch-start turn dispatches under a NEW
-    // activity name so pre-1.0.67 workers — which would silently resume the
-    // dead transcript — structurally cannot receive it (deployment gate §4).
-    runtime.registerActivity("runTurn2", runTurnHandler);
+    registerHandoffActivity(runtime, "runTurn", runTurnHandler);
+    // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
+    // capability-tagged alias; the tag filter performs actual worker routing.
+    registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -4456,14 +4457,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // resolveAgentDefinitionForCaller — shared with the control bridge so
     // spawn_agent/create_agent_session and this activity can never disagree
     // about which agent a name means.
-    runtime.registerActivity("resolveAgentConfig", async (
+    registerHandoffActivity(runtime, "resolveAgentConfig", async (
         _activityCtx: any,
-        input: { agentName: string; callerSessionId?: string },
+        input: { agentName: string; callerSessionId?: string; binding?: { packageId?: string; source?: "deployment" } },
     ): Promise<ResolvedAgentDefinition | null> => {
+        // Top-level verification sessions already selected a package/deployment
+        // copy at creation. Keep that selection through the startup resolver.
+        // An unavailable pin yields no definition; it never falls back by name.
+        const pinnedCandidates = (agents?: any[]) => agents?.filter(agent =>
+            (!input.binding?.packageId || agent.packageId === input.binding.packageId)
+            && (input.binding?.source !== "deployment" || (!agent.packageId && agent.packageScope == null)));
         return resolveAgentDefinitionForCaller({
             agentName: input.agentName,
-            userAgents,
-            systemAgents,
+            userAgents: pinnedCandidates(userAgents),
+            systemAgents: pinnedCandidates(systemAgents),
             // PACKAGE PRIVACY, enforced at RESOLUTION rather than at creation.
             //
             // Workers install every enabled package, including other users'
@@ -4480,19 +4487,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             //
             // Deployment-owned plugin agents carry no package owner and stay
             // public, exactly as before.
-            getCallerOwnerKey: async () => {
-                const row = input.callerSessionId
-                    ? await catalog?.getSession(input.callerSessionId)
-                    : null;
-                const owner = row?.owner as any;
-                return owner?.provider && owner?.subject
-                    ? `${owner.provider}\u0001${owner.subject}`
-                    : null;
-            },
+            getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.callerSessionId),
         });
     });
 
-    runtime.registerActivity("resolveAgentForRequiredTool", async (
+    registerHandoffActivity(runtime, "resolveAgentForRequiredTool", async (
         _activityCtx: any,
         input: { requiredTool: string; callerSessionId?: string },
     ): Promise<RequiredToolAgentResolution> => {
@@ -4500,15 +4499,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             requiredTool: input.requiredTool,
             userAgents,
             systemAgents,
-            getCallerOwnerKey: async () => {
-                const row = input.callerSessionId
-                    ? await catalog?.getSession(input.callerSessionId)
-                    : null;
-                const owner = row?.owner as any;
-                return owner?.provider && owner?.subject
-                    ? `${owner.provider}\u0001${owner.subject}`
-                    : null;
-            },
+            getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.callerSessionId),
         });
     });
 
@@ -4517,7 +4508,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // System child agents with a stable agentId use a deterministic UUID.
     // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
-    runtime.registerActivity("spawnChildSession", async (
+    registerHandoffActivity(runtime, "spawnChildSession", async (
         activityCtx: any,
         input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string },
     ): Promise<string> => {
@@ -4607,8 +4598,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,
+                boundAgentSource: input.config.boundAgentSource,
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
+                childContract: input.config.childContract,
                 toolNames: input.config.toolNames,
                 waitThreshold: input.config.waitThreshold,
                 agentId: input.agentId,
@@ -4628,14 +4621,23 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
             if (input.agentId) meta.agentId = input.agentId;
             if (input.splash) meta.splash = input.splash;
-            // Frozen orchestration versions don't thread splashMobile through
-            // the spawn input, so resolve it from the loaded agent definition.
+            // Resolve mobile metadata through the same package pin and caller
+            // visibility rules as the prompt/tools, including for older inputs
+            // that carry only an agent id. A bare first match can expose another
+            // user's copy when private and shared packages have the same name.
             if (input.agentId) {
-                const normalizeId = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-                const lookup = normalizeId(input.agentId);
-                const agentDef = [...(userAgents ?? []), ...(systemAgents ?? [])].find(
-                    (a: any) => [a.id, a.name].map(normalizeId).filter(Boolean).includes(lookup),
-                ) as any;
+                const packageId = input.config.boundAgentPackageId;
+                const fromBoundCopy = (agents?: any[]) => packageId
+                    ? agents?.filter(a => a.packageId === packageId)
+                    : input.config.boundAgentSource === "deployment"
+                        ? agents?.filter(a => !a.packageId && a.packageScope == null)
+                        : agents;
+                const agentDef = await resolveAgentDefinitionForCaller({
+                    agentName: input.config.boundAgentName ?? input.agentId,
+                    userAgents: fromBoundCopy(userAgents),
+                    systemAgents: fromBoundCopy(systemAgents),
+                    getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.parentSessionId),
+                });
                 if (agentDef?.splashMobile) meta.splashMobile = agentDef.splashMobile;
             }
             if (Object.keys(meta).length > 0 && catalog) {

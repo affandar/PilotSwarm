@@ -202,6 +202,8 @@ export interface SerializableSessionConfig {
     boundAgentName?: string;
     /** Internal: exact resolved package copy; prevents shared/private rebinding on another worker. */
     boundAgentPackageId?: string;
+    /** Explicitly selected deployment definition; absent retains legacy owner-shadowing behavior. */
+    boundAgentSource?: "deployment";
     /** Internal: how an unbound delegated child handles package-owned tool names. */
     detachedPackageToolPolicy?: "drop" | "reject";
     /** Internal: selects how framework, app, and agent prompts compose for this session. */

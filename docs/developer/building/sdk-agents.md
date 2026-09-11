@@ -232,9 +232,14 @@ When the caller needs a tool but should not hard-code an agent name, use
 `spawn_agent(required_tool="tool_name")`. PilotSwarm resolves the unique
 caller-visible creatable owner and binds its complete definition. Combining
 `agent_name` and `required_tool` verifies that the named agent declares the
-tool. Do not pass package-owned tools to ad hoc children with `tool_names`.
+tool. This selects a capability; it does not require that tool to run at startup.
+The named agent's existing `initialRequiredTool` remains its startup requirement.
+Do not pass package-owned tools to ad hoc children with `tool_names`.
 
-Use `task=` only for truly ad hoc custom sub-agents. Do not use `task="sweeper"` or `task="resourcemgr"` for named system agents.
+Use `task=` to give either a named or custom child its assignment. Named children
+load their own instructions and tools; omitting `task` uses their `initialPrompt`.
+Do not use `task="sweeper"` or `task="resourcemgr"` as a substitute for selecting an
+agent by name. Worker-managed system agents are not valid manual spawn targets.
 
 ### Sub-agent models
 

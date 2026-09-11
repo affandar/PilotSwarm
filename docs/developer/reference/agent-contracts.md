@@ -24,7 +24,11 @@ Contract:
 - if an agent is already known by name, spawn it with `spawn_agent(agent_name="...")`
 - if delegation requires a capability but should not hard-code an agent name, use `spawn_agent(required_tool="...")`; PilotSwarm binds the unique caller-visible creatable agent that declares it
 - combining `agent_name` and `required_tool` asserts that the named agent owns the tool; it does not attach the tool to a different agent
-- use `task=` only for ad hoc custom agents
+- `task=` supplies the assignment for either named or custom children; a named agent uses its `initialPrompt` when no task is supplied
+- `required_tool` selects or validates capability availability; it does not force a tool invocation or replace the selected agent's `initialRequiredTool`
+- named children always load their own declared tools (including an empty list) plus platform defaults; they do not inherit the parent's package tools or custom persona and cannot override the definition with `tool_names` or `system_message`
+- each child's explicit `contract` crosses SDK creation and durable startup; a grandchild does not inherit its parent's own child contract
+- parent links and nesting depth survive creation and first message on different API clients; invalid/cyclic ancestry fails before starting the child
 - do not pass package-owned tools through `tool_names`; package prompt, skills, startup contract, and handlers stay attached to their owning named-agent definition
 - known system agents like `sweeper` and `resourcemgr` should not be created via `task="..."`
 

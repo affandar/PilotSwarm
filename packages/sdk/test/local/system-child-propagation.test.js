@@ -162,7 +162,7 @@ describe("sub-agent isSystem contract", () => {
         });
         const gen = handleSubAgentAction(runtime, { type: "spawn_agent", requiredTool: "package_catalog" });
         pump(gen, responders, () => captured.isSystem !== undefined);
-        assertEqual(captured.requiredTool, "package_catalog");
+        assertEqual(captured.requiredTool, undefined, "capability selection must not invent a startup requirement");
         assertEqual(captured.config.boundAgentName, "catalog-analyst");
         assertEqual(captured.config.toolNames.join(","), "package_catalog,package_history");
         assertEqual(captured.config.boundAgentPackageId, "pkg-catalog");
