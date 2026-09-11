@@ -135,3 +135,9 @@ on both user requests and actionable internal prompts still fail. These and the
 existing notification/wait suites passed 185 focused tests; 36 routing/version
 checks, nine snapshot/version checks and the SDK build passed. The full provider gate remains stopped
 at the user's request and must pass before release.
+
+A subsequent [before/after reproduction](../contributing/child-cleanup-reproduction-2026-09-11.md)
+runs the same four assertions against released v0.5.64, the pre-fix checkpoint,
+and the repair: both old versions fail all four for the expected behavior;
+the repair passes all four. This tests model-call scheduling with in-memory
+effects, without claiming a live reproduction of the model's empty answer.

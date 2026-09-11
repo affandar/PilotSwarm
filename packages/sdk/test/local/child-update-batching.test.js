@@ -486,6 +486,73 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
     };
 }
 
+// Use the real command producer and child shutdown handler before delivering
+// their output to the full parent orchestration harness. This fixture also runs
+// unchanged against the pre-fix source for the negative-control reproduction.
+async function captureParentRequestedCleanup(action) {
+    const { handleSubAgentAction, beginGracefulShutdown } = await import("../../src/orchestration/agents.ts");
+    const { createInitialState, deriveOptions } = await import("../../src/orchestration/state.ts");
+    const commands = [], messages = [], events = [];
+    const tracked = { orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle", result: "AUDIT RESULT" };
+    function runtime(input) {
+        const values = new Map();
+        const options = deriveOptions(input);
+        return {
+            input, options, state: createInitialState(input, options),
+            ctx: { traceInfo() {}, setCustomStatus() {},
+                getValue: key => values.get(key), setValue: (key, value) => values.set(key, value),
+                clearValue: key => values.delete(key), utcNow: () => 0,
+            },
+            manager: {
+                sendCommandToSession: (sessionId, command) => { commands.push({ sessionId, command }); },
+                listChildSessions: () => "[]",
+                sendToSession: (sessionId, prompt) => { messages.push({ sessionId, prompt }); },
+                recordSessionEvent: (sessionId, entries) => { events.push({ sessionId, entries }); },
+                updateCmsState() {}, getDescendantSessionIds: () => [], deleteSession() {},
+            },
+            session: { destroy() {} },
+        };
+    }
+    // In-memory activity results are immediately available; yield them back to
+    // the generator exactly as the real orchestration receives activity results.
+    function settle(generator) {
+        let next = generator.next();
+        for (let step = 0; !next.done && step < 100; step++) next = generator.next(next.value);
+        expect(next.done, "cleanup must settle").toBe(true);
+    }
+    const parent = runtime({ sessionId: "parent-session", config: {}, iteration: 5, subAgents: [tracked] });
+    settle(handleSubAgentAction(parent, { type: action, agentId: tracked.orchId }));
+    expect(commands).toHaveLength(1);
+    expect(commands[0].sessionId).toBe(tracked.sessionId);
+    const child = runtime({ sessionId: tracked.sessionId, parentSessionId: "parent-session", config: {}, iteration: 5 });
+    settle(beginGracefulShutdown(child, commands[0].command.cmd, commands[0].command));
+    expect(child.state.orchestrationResult).toBe({ complete_agent: "done", cancel_agent: "cancelled", delete_agent: "deleted" }[action]);
+    return { messages, events, tracked };
+}
+
+describe("parent cleanup round trip", () => {
+    beforeEach(() => { vi.resetModules(); });
+
+    it.each(["complete_agent", "cancel_agent", "delete_agent"])("%s does not schedule another parent model call", async action => {
+        const cleanup = await captureParentRequestedCleanup(action);
+        // The parent's final answer has already been delivered. Only the actual
+        // child shutdown output is queued; no user prompt or scheduled work.
+        const harness = createHarness({
+            messages: cleanup.messages.map(message => ({ atMs: 0, payload: { prompt: message.prompt } })),
+            inputOverrides: {
+                isSystem: false, cronSchedule: undefined, activeTimerState: undefined,
+                subAgents: [cleanup.tracked],
+                sessionStatuses: { "child-session-1": { status: action === "complete_agent" ? "completed" : "cancelled", result: action === "complete_agent" ? "done" : "cancelled" } },
+            },
+        });
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+        expect(result.runTurnCall, "a cleanup acknowledgement must not become a new work prompt").toBeUndefined();
+        expect(result.blocked).toBe(true);
+        expect(cleanup.events.some(event => event.sessionId === "parent-session"
+            && event.entries.some(entry => entry.eventType === "session.child_cleanup_completed"))).toBe(true);
+    });
+});
+
 describe("orchestration child update batching", () => {
     beforeEach(() => {
         vi.resetModules();
