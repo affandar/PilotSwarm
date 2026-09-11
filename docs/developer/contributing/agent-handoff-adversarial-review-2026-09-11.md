@@ -76,4 +76,35 @@ select the exact activity name before decoding Duroxide's diagnostic input and
 verify the namespace-qualified deployment binding. They preserve the two-turn,
 exactly-one-announcement assertion for already-started legacy input.
 
-Clean full release gate: pending.
+The next full gate at `a066220e` passed 1,959 PostgreSQL SDK tests but timed out
+one system-agent coexistence case during teardown (17 standard skips). Its
+149 live HorizonDB store tests passed; the remaining HorizonDB SDK phase was
+stopped after the timeout was independently reproduced. It is not a passing gate.
+
+Four isolated reruns of that case passed. A four-way concurrent reproduction
+produced three passes and the same 180-second timeout. Instrumented source
+showed durable-runtime shutdown finishing in five seconds, followed by an
+unresolved Copilot `session.detach` inside final manager cleanup. The repaired
+four-way rerun passed all four, including one actual detach stall that hit the
+new ten-second deadline and recovered through the SDK's public `forceStop()`.
+
+Final manager cleanup now stops each unique pooled client concurrently;
+`CopilotClient.stop()` already detaches its sessions. It handles both thrown
+errors and returned error arrays, and force-stops a stalled client after ten
+seconds. Eight deterministic tests cover the installed SDK detach path,
+duplicate client aliases, concurrent clients, errors, late completion/rejection,
+untouched storage, preserved locks and ordinary eviction. The first six
+regression assertions all failed before the repair. These tests and existing
+lock/dehydration cases pass (15 total). An independent reviewer approved the
+patch. The deadline bounds this final cleanup, not all preceding dehydration
+or OS process exit; deployment still verifies that old pods/processes are gone.
+
+The reproduction also exposed a pre-existing provider-poller leak: it ran from
+construction and continued during shutdown. Polling is now owned by start/stop,
+coalesces refresh and bootstrap into one task, stops admitting work at drain,
+and settles admitted startup before closing storage. Nine deterministic
+lifecycle tests pass (eight failed before repair), and 24 related lifecycle,
+model-reload, system-bootstrap and feature-worker tests pass. Both shutdown
+repairs preserve durable state and require no orchestration-version change.
+
+Clean full release gate after these repairs: pending.

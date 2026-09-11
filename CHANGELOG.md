@@ -41,7 +41,14 @@ restart. Parent-requested child cleanup no longer triggers a redundant model tur
   remain for frozen histories.
   Upgrade with a drain-first replacement of incompatible workers; see the
   [upgrade guide](docs/developer/building/agent-handoff-upgrade.md).
-
+- Prevent Copilot CLI's GitHub-only `snippy` field from reaching OpenAI/Azure
+  BYOK chat-completions requests. Keep native GitHub and Anthropic clients on
+  their original transport, with separate client pools and compatibility tests.
+- Bound final Copilot client cleanup after the durable runtime drains, using
+  the SDK force-stop fallback for stalled detach requests. Preserve snapshots
+  and session locks; ordinary session eviction retains its existing behavior.
+- Stop provider polling when worker shutdown begins, settle admitted system-agent
+  startup before closing storage, and restore exactly one poller on restart.
 - Retry transient Windows directory rename failures during snapshot hydration
   with a bounded backoff.
 
