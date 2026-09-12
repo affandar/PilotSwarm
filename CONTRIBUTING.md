@@ -83,6 +83,50 @@ rather than a stable platform.
    repository-specific fixtures, endpoints, and credentials in the repository
    that owns them.
 
+   Each supplied directory is an independent Vitest root and must follow this
+   contract:
+
+   - Follow Vitest's standard `*.test.*` or `*.spec.*` discovery conventions
+     for JavaScript, TypeScript, JSX, and TSX modules.
+   - Write tests for the Node environment. Vitest globals such as `describe`,
+     `it`, and `expect` are enabled; tests do not need to import `vitest`.
+   - Resolve files relative to the external directory; do not assume the
+     PilotSwarm repository is the working directory.
+   - Install consumer dependencies and prepare generated artifacts before
+     invoking the runner. `--external-only` does not build either repository.
+     The consumer must install the public `pilotswarm-sdk` version it intends
+     to validate; the runner does not substitute the platform checkout's
+     private source tree for that package.
+   - Provide required environment variables and credentials explicitly.
+     PilotSwarm's `.env` and provider setup are not loaded by `--external-only`.
+   - Import supported public package exports rather than private source files.
+   - Keep shared setup inside the test directory or import it from the consumer
+     package. The runner uses `scripts/external-vitest.config.mjs` and does not
+     discover a consumer `vitest.config.*` automatically.
+   - Treat `--external-test-filter` values as test-file path substrings, not
+     individual test-name filters.
+
+   A minimal external test can be created as
+   `tests/pilotswarm/platform-contract.test.mjs`:
+
+   ```js
+   import { normalizeVisibility } from "pilotswarm-sdk/api";
+
+   describe("platform integration", () => {
+     it("uses a public platform contract", () => {
+       expect(normalizeVisibility("SHARED_READ")).toBe("shared_read");
+     });
+   });
+   ```
+
+   Run it from the PilotSwarm checkout:
+
+   ```bash
+   ./scripts/run-tests.sh --external-only \
+     --external-test-dir=../plugin-repo/tests/pilotswarm \
+     --external-test-filter=platform-contract
+   ```
+
 ## Project Layout
 
 ```
