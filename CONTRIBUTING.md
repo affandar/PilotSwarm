@@ -89,8 +89,9 @@ rather than a stable platform.
    - Name test files `*.test.js`, `*.test.mjs`, `*.test.ts`, or `*.test.mts`.
    - Write tests for the Node environment. Vitest globals such as `describe`,
      `it`, and `expect` are enabled; tests do not need to import `vitest`.
-   - Resolve files relative to the external directory; do not assume the
-     PilotSwarm repository is the working directory.
+   - Resolve fixtures relative to the test module, for example with
+     `import.meta.url`. The supplied directory is Vitest's discovery root, but
+     `process.cwd()` remains the PilotSwarm checkout that invokes the runner.
    - Install consumer dependencies and prepare generated artifacts before
      invoking the runner. `--external-only` does not build either repository.
      The consumer must install the public `pilotswarm-sdk` version it intends

@@ -15,12 +15,24 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../../../../scripts/run-tests.sh", import.meta.url));
+const EXTERNAL_FIXTURE = "packages/sdk/test/fixtures/external-vitest";
 const raw = readFileSync(SCRIPT, "utf8");
+
+function bashExecutable() {
+    if (process.platform !== "win32") return "bash";
+    const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
+    const gitRoot = resolve(gitExecPath, "../../..");
+    const bash = join(gitRoot, "bin", "bash.exe");
+    assert.ok(existsSync(bash), `Git Bash not found at ${bash}`);
+    return bash;
+}
 
 /** Comments cannot wire anything, so they are not evidence of wiring. */
 const live = raw
@@ -189,4 +201,24 @@ test("external Vitest directories are explicit, optional test phases", () => {
         externalOnly < environmentSetup,
         "external-only mode must dispatch before PilotSwarm provider environment setup",
     );
+});
+
+test("external-only executes a caller-owned Vitest suite", () => {
+    const output = execFileSync(
+        bashExecutable(),
+        [
+            SCRIPT,
+            "--external-only",
+            `--external-test-dir=${EXTERNAL_FIXTURE}`,
+            "--external-test-filter=consumer-smoke",
+        ],
+        {
+            cwd: REPO_ROOT,
+            encoding: "utf8",
+            env: { ...process.env, PS_TEST_MAX_WORKERS: "1" },
+        },
+    );
+
+    assert.match(output, /consumer-smoke\.test\.mjs/);
+    assert.match(output, /Overall result: PASS/);
 });
