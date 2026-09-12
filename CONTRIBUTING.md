@@ -62,6 +62,71 @@ rather than a stable platform.
    npm run test:local:sub-agents
    ```
 
+   Plugin and consumer repositories can add an explicit Vitest directory to
+   the complete PilotSwarm gate without changing its built-in suite:
+
+   ```bash
+   ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm
+   ```
+
+   During plugin-only iteration, skip PilotSwarm's built-in phases and provider
+   setup explicitly:
+
+   ```bash
+   ./scripts/run-tests.sh --external-only \
+     --external-test-dir=../plugin-repo/tests/pilotswarm \
+     --external-test-filter=audience-map
+   ```
+
+   External directories are optional and are never discovered automatically.
+   Their tests should use public PilotSwarm package surfaces while keeping
+   repository-specific fixtures, endpoints, and credentials in the repository
+   that owns them.
+
+   Each supplied directory is an independent Vitest root and must follow this
+   contract:
+
+   - Name test files `*.test.js`, `*.test.mjs`, `*.test.ts`, or `*.test.mts`.
+   - Write tests for the Node environment. Vitest globals such as `describe`,
+     `it`, and `expect` are enabled; tests do not need to import `vitest`.
+   - Resolve fixtures relative to the test module, for example with
+     `import.meta.url`. The supplied directory is Vitest's discovery root, but
+     `process.cwd()` remains the PilotSwarm checkout that invokes the runner.
+   - Install consumer dependencies and prepare generated artifacts before
+     invoking the runner. `--external-only` does not build either repository.
+     The consumer must install the public `pilotswarm-sdk` version it intends
+     to validate; the runner does not substitute the platform checkout's
+     private source tree for that package.
+   - Provide required environment variables and credentials explicitly.
+     PilotSwarm's `.env` and provider setup are not loaded by `--external-only`.
+   - Import supported public package exports rather than private source files.
+   - Keep shared setup inside the test directory or import it from the consumer
+     package. The runner uses `scripts/external-vitest.config.mjs` and does not
+     discover a consumer `vitest.config.*` automatically.
+   - Treat `--external-test-filter` values as test-file path substrings, not
+     individual test-name filters.
+
+   A minimal external test can be created as
+   `tests/pilotswarm/platform-contract.test.mjs`:
+
+   ```js
+   import { normalizeVisibility } from "pilotswarm-sdk/api";
+
+   describe("platform integration", () => {
+     it("uses a public platform contract", () => {
+       expect(normalizeVisibility("SHARED_READ")).toBe("shared_read");
+     });
+   });
+   ```
+
+   Run it from the PilotSwarm checkout:
+
+   ```bash
+   ./scripts/run-tests.sh --external-only \
+     --external-test-dir=../plugin-repo/tests/pilotswarm \
+     --external-test-filter=platform-contract
+   ```
+
 ## Project Layout
 
 ```

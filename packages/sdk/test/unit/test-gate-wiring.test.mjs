@@ -15,12 +15,24 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../../../../scripts/run-tests.sh", import.meta.url));
+const EXTERNAL_FIXTURE = "packages/sdk/test/fixtures/external-vitest";
 const raw = readFileSync(SCRIPT, "utf8");
+
+function bashExecutable() {
+    if (process.platform !== "win32") return "bash";
+    const gitExecPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
+    const gitRoot = resolve(gitExecPath, "../../..");
+    const bash = join(gitRoot, "bin", "bash.exe");
+    assert.ok(existsSync(bash), `Git Bash not found at ${bash}`);
+    return bash;
+}
 
 /** Comments cannot wire anything, so they are not evidence of wiring. */
 const live = raw
@@ -52,6 +64,7 @@ const REQUIRED = [
     "run_sdk_unit_tests",
     "run_app_tests",
     "run_horizon_store_tests",
+    "run_external_tests",
 ];
 
 test("every phase is called from the full-pass dispatch", () => {
@@ -71,8 +84,9 @@ test("each phase is defined, and its body runs something", () => {
         const start = live.indexOf(`${phase}() {`);
         assert.notEqual(start, -1, `${phase} has no definition`);
         const body = live.slice(start, live.indexOf("\n}", start));
-        assert.match(
-            body, /\b(npm|node|npx)\b/,
+        assert.ok(
+            /\b(npm|node|npx)\b/.test(body) ||
+                (phase === "run_external_tests" && /run_external_vitest_dir/.test(body)),
             `${phase} defines no command to run — a phase that executes nothing passes for free`,
         );
         assert.match(
@@ -123,7 +137,6 @@ test("the provider-budget suites are reachable from the gate", () => {
     }
 });
 
-
 test("shared-provider safety switch skips both stale sweeps without disabling test phases", () => {
     const start = live.indexOf("cleanup_test_state() {");
     assert.notEqual(start, -1);
@@ -138,4 +151,74 @@ test("shared-provider safety switch skips both stale sweeps without disabling te
     assert.doesNotMatch(safe, /STALE_SWEEP_CALLED/);
     assert.equal((safe.match(/Global stale-test cleanup disabled/g) ?? []).length, 2);
     assert.equal((live.match(/\$\{PS_TEST_SKIP_STALE_CLEANUP/g) ?? []).length, 1, "the opt-out must guard only the global cleanup function");
+});
+
+test("external Vitest directories are explicit, optional test phases", () => {
+    assert.match(live, /--external-test-dir/, "runner must expose the external directory option");
+    assert.match(live, /--external-only/, "runner must expose a targeted external-only mode");
+    assert.match(live, /--external-test-filter/, "runner must support targeted external file iteration");
+    assert.match(live, /EXTERNAL_TEST_DIRS=\(\)/, "external directories must be empty by default");
+    assert.deepEqual(
+        [...raw.matchAll(/EXTERNAL_TEST_DIRS\+=\(([^)]*)\)/g)].map((match) => match[1]),
+        ['"$arg"', '"${arg#--external-test-dir=}"'],
+        "external directories must originate only from explicit CLI arguments",
+    );
+    const start = live.indexOf("run_external_tests() {");
+    assert.notEqual(start, -1, "run_external_tests has no definition");
+    const body = live.slice(start, live.indexOf("\n}", start));
+    assert.match(body, /EXTERNAL_TEST_DIRS/, "external phase must use explicitly supplied directories");
+    assert.match(body, /run_external_vitest_dir/, "external phase must execute the shared Vitest helper");
+    assert.match(
+        body,
+        /for dir in "\$\{EXTERNAL_TEST_DIRS\[@\]\}"/,
+        "external phase must iterate only the caller-supplied directories",
+    );
+    assert.match(
+        body,
+        /run_external_vitest_dir "\$dir"/,
+        "external phase must pass the caller-supplied directory to Vitest unchanged",
+    );
+
+    const helperStart = live.indexOf("run_external_vitest_dir() {");
+    assert.notEqual(helperStart, -1, "run_external_vitest_dir has no definition");
+    const helperBody = live.slice(helperStart, live.indexOf("\n}", helperStart));
+    assert.match(helperBody, /\bnode\b/, "external Vitest helper must execute Node");
+    assert.match(helperBody, /PILOTSWARM_EXTERNAL_TEST_ROOT/, "external root must be passed to the generic Vitest config");
+    assert.match(helperBody, /external-vitest\.config\.mjs/, "external phase must use PilotSwarm's generic config");
+
+    const config = readFileSync(
+        fileURLToPath(new URL("../../../../scripts/external-vitest.config.mjs", import.meta.url)),
+        "utf8",
+    );
+    assert.match(config, /PILOTSWARM_EXTERNAL_TEST_ROOT/, "config root must come from the caller");
+    assert.match(config, /\*\*\/\*\.test\.\{js,mjs,ts,mts\}/, "config must accept JavaScript and TypeScript tests");
+    assert.match(config, /globals:\s*true/, "external tests should not need their own Vitest runtime import");
+
+    const externalOnly = live.indexOf('if [ "$EXTERNAL_ONLY" = "1" ]; then');
+    const environmentSetup = live.indexOf('load_env_file "$ENV_FILE"');
+    assert.ok(externalOnly >= 0, "external-only mode has no dispatch");
+    assert.ok(
+        externalOnly < environmentSetup,
+        "external-only mode must dispatch before PilotSwarm provider environment setup",
+    );
+});
+
+test("external-only executes a caller-owned Vitest suite", () => {
+    const output = execFileSync(
+        bashExecutable(),
+        [
+            SCRIPT,
+            "--external-only",
+            `--external-test-dir=${EXTERNAL_FIXTURE}`,
+            "--external-test-filter=consumer-smoke",
+        ],
+        {
+            cwd: REPO_ROOT,
+            encoding: "utf8",
+            env: { ...process.env, PS_TEST_MAX_WORKERS: "1" },
+        },
+    );
+
+    assert.match(output, /consumer-smoke\.test\.mjs/);
+    assert.match(output, /Overall result: PASS/);
 });
