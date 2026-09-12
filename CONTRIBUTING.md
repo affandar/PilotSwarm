@@ -86,8 +86,7 @@ rather than a stable platform.
    Each supplied directory is an independent Vitest root and must follow this
    contract:
 
-   - Follow Vitest's standard `*.test.*` or `*.spec.*` discovery conventions
-     for JavaScript, TypeScript, JSX, and TSX modules.
+   - Name test files `*.test.js`, `*.test.mjs`, `*.test.ts`, or `*.test.mts`.
    - Write tests for the Node environment. Vitest globals such as `describe`,
      `it`, and `expect` are enabled; tests do not need to import `vitest`.
    - Resolve files relative to the external directory; do not assume the
