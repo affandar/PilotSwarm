@@ -18,7 +18,7 @@
 - [8. Strategy B: clean-room reimplementation](#8-strategy-b--clean-room-reimplementation-alternative)
 - [9. Recommendation](#9-recommendation)
 - [10. Execution plan](#10-execution-plan-phased)
-- [11. Rebase protocol](#11-rebase-protocol)
+- [11. Merge protocol](#11-merge-protocol)
 - [12. Definition of done](#12-definition-of-done)
 - [13. Open decisions](#13-open-decisions)
 
@@ -144,7 +144,7 @@ The internal staging repository maintains two OSS mirror refs for these comparis
 ### Remotes
 
 ```
-origin     https://github.com/affandar/PilotSwarm.git                    (public upstream — rebase source)
+origin     https://github.com/affandar/PilotSwarm.git                    (public upstream — merge source)
 ghe        https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging.git    (internal staging — SAML SSO-governed, private)
 ```
 
@@ -158,10 +158,10 @@ deliberately-scrubbed platform enhancements route back upstream.
 **Why a separate repo, not a branch of the OSS repo? (TL;DR)** Git visibility is per-**repo**, not
 per-branch — a branch of a public repo is public the moment you push it, so any SQL IP on it leaks
 instantly. A separate internal repo is the only real privacy boundary; we still track upstream by
-adding it as a git **remote** and rebasing (§11).
+adding it as a git **remote** and merging (§11).
 
 We diverged from PilotSwarm `main` at `eaabdbf9` (2026-08-08 — the current divergence point,
-which advances each rebase). In that window the fork accumulated **two
+which advances each merge). In that window the fork accumulated **two
 kinds of value, tangled into the same commits/files:**
 - **SQL-specific values that cannot live in an OSS repo** — real internal endpoints, AAD scopes,
   and CI-gate names (the Tier 1 IP in §5) that must stay in `sqlmort`.
@@ -173,8 +173,8 @@ The problem is that these are mixed together, not that the fork exists. Left alo
 *drifts* — every week upstream moves and the reconciliation cost grows.
 
 We are **not freezing the divergence.** Instead we set up a standing protocol:
-- (a) **Constantly rebase** the fork onto upstream so it never drifts — the fork stays a thin,
-  current superset of `main` rather than a snapshot that rots (the §11 rebase protocol).
+- (a) **Constantly merge the upstream repo into the fork** so it never drifts — the fork stays
+  a thin, current superset of `main` rather than a snapshot that rots (the §11 merge protocol).
 - (b) **Formalize the SQL-specific values in `sqlmort`** — a composition repo carrying
   environment-specific templates on top of a shared platform — so proprietary/SQL config
   lives in one place instead of tangled through the tree.
@@ -182,7 +182,7 @@ We are **not freezing the divergence.** Instead we set up a standing protocol:
   time (§6A).
 
 The end state is two repos — a pure-platform core (fork → upstream) and `sqlmort` — kept
-aligned by continuous rebase, not a one-time cutover.
+aligned by continuous merge, not a one-time cutover.
 
 ## 5. IP classification (what goes upstream vs. internal)
 
@@ -342,7 +342,11 @@ not a commit.)
 
 **Pros:** reuses the actual working, tested code (least rework); the scan shows the IP surface
 is tiny (2 files), so this is low-risk. **Cons:** the PRs are large and entangled with weeks of
-mixed commits; rebasing onto a moved `main` has conflict cost.
+mixed commits (orthogonal to the integration mechanic — assembling themed upstream PRs is work
+regardless). Merging a moved `main` still has a conflict cost, but under the §11
+merge protocol each conflict is resolved **once and persists**, and a theme's delta converges to
+zero as it lands upstream — rather than being re-litigated on every integration as it was under
+rebase.
 
 ## 8. Strategy B — Clean-room reimplementation (alternative)
 
@@ -357,7 +361,7 @@ functionality we actually want, and reimplement it directly against current `ori
 3. Put SQL-specific pieces straight into `sqlmort` — never in the fork.
 4. Delete the fork once the target capabilities exist upstream + internal.
 
-**Pros:** no messy rebase; clean separation of concerns from the start; no risk of dragging
+**Pros:** no messy history to reconcile; clean separation of concerns from the start; no risk of dragging
 internal fixtures upstream by accident. **Cons:** discards working, tested code; higher
 implementation effort; risk of behavioral drift from what already works.
 
@@ -390,7 +394,7 @@ backfill.
   upstream (drained later via a theme PR); **SQL-specific** → `sqlmort` (or genericize in place).
 - **Author upstream-first only when practical** (genuinely generic, no dependency on
   not-yet-upstreamed primitives); everything else is fork-first by necessity.
-- Run a **constant rebase** cadence so the fork stays `origin/main + delta`, however that delta churns.
+- Run a **constant merge** cadence so the fork stays `origin/main + delta`, however that delta churns.
 - Keep deploying from the fork for now (single deployable, as today).
 
 ### Phase 2 — Carve SQL out behind a plugin seam; `sqlmort` becomes the deployment repo (→ 2 repos)
@@ -456,7 +460,8 @@ backfill.
     theme's final file state, commit clean) — not a replay of entangled history.
   - Open the PR into `affandar/main` from a GitHub fork of `affandar` (a **contribution remote**,
     never a deploy input).
-  - On merge, the next fork rebase **drains** that theme (its commits collapse to no-ops);
+  - On merge, the next fork merge **drains** that theme (byte-identical → auto-converges;
+    divergent → resolve take-upstream);
     reconcile if upstream modified or independently built it.
 - Suggested order (foundation → top): **(3)** orchestration primitives → **(2)** job-generator /
   lifecycle → **(4)** delegated-MCP + seam → **(8)** worker hardening → **(1)** git-hydration fleet
@@ -464,6 +469,48 @@ backfill.
   **(10)** reliability / deploy fixes trickle in throughout.
 - For any theme too entangled to lift — notably **(3)**, where upstream already added a parallel
   `orchestration_1_0_68/69` — use **Strategy B (clean-room on upstream's version)** instead of lifting.
+
+**Upstream PR review synchronization (minimize the follow-on merge conflict).** The reviewed
+upstream tree is authoritative. Review comments often move it away from the fork snapshot used to
+open the PR, so synchronize the accepted review delta back into the fork *before* the upstream PR
+merges:
+
+1. **Record the submitted PR head.** Keep the initial contribution-branch SHA as
+   `$submittedPrHead`; it is the base for isolating review-driven changes.
+2. **During active review, edit the upstream PR branch first.** Apply suggestions and requested
+   revisions there. Do not independently reinterpret the same comment in both repositories; two
+   hand-written implementations of one review request create avoidable semantic drift.
+3. **At approval, freeze the reviewed head.** Fetch the contribution branch and capture its exact
+   SHA as `$reviewedPrHead`. Do not merge the PR if its head changes after this point without
+   repeating the synchronization gate.
+4. **Mirror only the accepted review delta into the fork:**
+   ```powershell
+   $themePaths = @(
+     'path/to/platform-owned-file'
+   )
+
+   git diff --binary $submittedPrHead $reviewedPrHead -- $themePaths |
+     git apply --3way
+   ```
+   Set `$themePaths` to the platform-owned files in that PR. Never import SQL-specific
+   composition or private history. For a file wholly owned by the upstreamed theme, prefer making
+   the fork copy byte-identical to `$reviewedPrHead`; for a mixed file, apply only the reviewed
+   platform hunks and preserve explicitly identified fork-only behavior.
+5. **Commit and validate the synchronized fork tip before allowing the upstream merge.** Run the
+   theme's focused tests in both trees. If an urgent fork fix landed during review, first add its
+   generic portion to the upstream PR, then repeat steps 3–5.
+6. **Merge the approved PR, then absorb it immediately.** Confirm the approved SHA was the one
+   merged, fetch the resulting `origin/main`, refresh `oss/head`, and merge `origin/main` into the
+   fork. If Git still reports a conflict in an upstreamed theme, resolve its platform-owned surface
+   to the **actual merged `origin/main` tree**; reapply only explicitly documented fork-only
+   overlays.
+7. **Prove the theme drained.** The theme paths must disappear from dashboard A's file diff:
+   `git diff origin/main...HEAD -- $themePaths`. If they remain, the fork retained a divergent
+   copy and the upstreaming cycle is not complete.
+
+Do not merge the contribution branch itself into the private fork or cherry-pick its full PR
+history. The synchronization unit is the accepted, path-scoped review delta; the subsequent
+`origin/main` merge remains the authoritative history integration.
 
 ### Phase 4 — Retire (gated on a behavioral shift, still 2 repos)
 - This is **steady-state routing**, not a one-time burndown: new platform work flows in the top,
@@ -479,76 +526,140 @@ backfill.
 > `sqlmort` — `sqlmort` owns composition, and "done" means the **fork-vs-upstream logical diff
 > is empty**, not "all commits replayed."
 
-## 11. Rebase protocol
+## 11. Merge protocol
 
-The fork tracks upstream by **rebase, not merge** — that's what keeps history linear and the
-fork-vs-upstream diff a clean "what we add" delta (a merge buries it under merge commits).
-Rebasing rewrites published history, so it runs on a **candidate branch first**, gets validated,
-then is swapped in and force-pushed. **The live deployable branch is never rebased in place.**
+The fork tracks upstream by **merge, not rebase.** This reverses an earlier draft of this plan,
+and the reason is specific to how this fork operates: it is **published** (on `ghe`) and it
+contributes work upstream as **synthesized, final-state diffs** — not cherry-picked commits.
+Rebase's one real advantage is that it *auto-drops* a fork commit once an identical patch lands
+upstream (matched by patch-id). But a synthesized diff is **never** patch-identical to the messy
+incremental history that produced it, so that auto-drop **never fires** here — the very benefit
+that would justify rebase is unavailable. Meanwhile rebase's costs are all still charged:
+rewriting **published** history forces a candidate-branch-and-force-push dance, and every upstream
+crank **replays** the whole ~140-commit delta, re-presenting the same conflicts each time.
 
-**Cadence.** Rebase little and often — weekly, and after each upstream theme merges. Frequent
-small rebases keep the conflict surface tiny; a long gap lets it balloon (the current +46 gap
-already yields ~36 conflicting files, including the `orchestration_1_0_68/69` add/add).
+Merge inverts that trade. A merge from `origin/main`:
+- **never rewrites published history** — the live branch moves forward by a merge commit, so
+  there is no force-push, no candidate branch, no rollback tags, and no "reset to the wrong ref"
+  hazard;
+- **resolves each conflict once and keeps it** — the resolution is recorded in the merge commit
+  and is never re-presented on the next crank (rebase re-presents it every time);
+- **converges a drained theme automatically** — once a theme has landed upstream, the next merge
+  sees the *same* change on both sides and collapses it with **no** conflict (byte-identical) or a
+  trivial take-upstream resolution (see the "trivial convergence" note under *Per-merge steps*).
+
+The objection the earlier draft raised — "a merge buries the delta under merge commits" — does
+**not** apply to how we actually measure the delta. We read divergence with
+`git diff origin/main...HEAD` (three-dot: merge-base → HEAD), which reports the **tree** delta
+regardless of how many merge commits sit in history. Merge commits make the *log* noisier; they
+do **not** inflate the *diff*. Linear history was never the goal — a **shrinking tree delta** is.
+
+**Cadence.** Merge little and often — weekly, and immediately after each of your upstream PRs
+**lands in `origin/main`** (not when you open it). Frequent small merges keep each conflict
+surface tiny and let drained themes converge promptly; a long gap lets the conflict surface
+balloon (a +46 gap already yields ~36 conflicting files, including the `orchestration_1_0_68/69`
+add/add).
 
 **One-time setup.**
-- `git config rerere.enabled true` — records each conflict resolution and auto-reapplies it on
-  later rebases (so you resolve the orchestration collision *once*, not every week).
+- `git config rerere.enabled true` — records each conflict resolution and auto-reapplies it if the
+  same conflict recurs. Under merge, resolutions already persist in history, so `rerere` is a
+  convenience (e.g. across parallel worktrees), not the load-bearing mechanism it was under rebase.
 
-**Branch & tag naming.**  Dates in tag names are the **committer date of the referenced commit**
-(`YYYY-MM-DD`), not the day you happened to tag — so each tag is self-describing.
-- **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
-  every rebase; all by-name references (`sqlmort` core pin, CI, PR policy) point here.
-- **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
-- **Last-integrated OSS baseline:** branch `oss/main` — points to the upstream commit the feature
-  branch was most recently rebased onto. Advance it only after a successful swap (step 7).
+**Branch & tag naming.**  Merge does not rewrite the live branch, so the elaborate
+candidate/rollback-tag scheme the rebase protocol needed is gone. What remains:
+- **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — advanced by merge
+  commits from `origin/main`, **never force-pushed**; all by-name references (`sqlmort` core pin,
+  CI, PR policy) point here.
+- **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9` — the *original* divergence
+  point, kept only as a historical marker.
+- **Last-integrated OSS baseline:** branch `oss/main` — points to the upstream commit most recently
+  merged into the feature branch. Advance it only after a successful merge is published (step 5).
 - **Current OSS mirror:** branch `oss/head` — a fast-forward-only mirror of the latest fetched
-  public `origin/main`, refreshed before each rebase attempt (step 1). Together these GHE-only refs
+  public `origin/main`, refreshed before each merge attempt (step 1). Together these GHE-only refs
   power in-repository comparisons because the private staging repo and public upstream do not share
   a GitHub fork network.
-- **Candidate branch (ephemeral):** `cand/<upstreamDate>-<upstreamSha>` — deleted after swap.
-  **Deliberately *not* named `rebase/onto-…`:** that name is the `onto-` *tag*, and git resolves a
-  bare ref as a **tag before a branch** — a same-named branch + tag makes `reset`/`push` silently
-  pick the tag (the upstream base, with **no fork commits**). Keep the candidate in its own `cand/`
-  namespace so the two can never collide.
-- **Per-rebase tags (immutable):** `rebase/from-<forkTipDate>-<forkTipSha>` (rollback point) and
-  `rebase/onto-<upstreamDate>-<upstreamSha>` (the upstream tip rebased onto). Consumers needing a
-  reproducible deploy pin to the `onto-` tag rather than the moving branch.
-- **Initial baseline (before any rebase):** `rebase/from-2026-09-03-2dc49630` (the original fork tip)
-  and `rebase/onto-2026-08-08-eaabdbf9` (the merge-base it rested on) — the first row of the audit trail.
-- **Current tip (as of the 2026-09-08 rebase):** `rebase/from-2026-09-08-e25ef7d5`, replayed onto
-  `origin/main` `6df642ef` (the newest `rebase/onto-…` row).
 
-**Model.** The stable branch name never changes (so no script, CI ref, or PR policy breaks); every
-pre-rebase tip is frozen under an immutable `from-` tag before the rewrite, so a bad force-push is
-always recoverable by repointing the branch back onto the frozen tip. We **keep every tag** — the
-full set is a permanent audit trail and rollback ledger.
+**Refresh `oss/head` safely (manual or scheduled invocation):**
 
-![Stable branch with frozen rollback tags: steady-state rebase model and post-force-push rollback](SQLFORK-rebase-rollback-model.svg)
+```powershell
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-> **Reading the diagram.** *(1) Steady state:* each fork tip `Fn` is a fresh replay of the ~140-commit
-> delta onto the newest upstream tip `Un` (new SHAs — the tips are siblings, not a chain). Only the
-> `feature/aks-git-repo-worker` branch moves; every older tip stays reachable via its frozen `from-` tag.
-> *(2) Rollback:* a bad rebase force-pushed the branch to `B`; because the last-good tip `G` is still pinned
-> by a pushed `from-` tag, its objects were never GC-eligible, so
-> `git reset --hard rebase/from-2026-09-08-e25ef7d5 && git push --force-with-lease` restores the branch onto `G`.
+git fetch origin main
+if ($LASTEXITCODE -ne 0) {
+  throw 'Failed to fetch origin/main.'
+}
 
-**Per-rebase steps.**
-1. Pull the new upstream `main`, then refresh the fast-forward-only current-OSS mirror:
+$publishedHead = git ls-remote --heads ghe refs/heads/oss/head
+if ($LASTEXITCODE -ne 0) {
+  throw 'Failed to inspect ghe/oss/head.'
+}
+
+if ($publishedHead) {
+  git fetch ghe +refs/heads/oss/head:refs/remotes/ghe/oss/head
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Failed to refresh the local ghe/oss/head tracking ref.'
+  }
+
+  git merge-base --is-ancestor ghe/oss/head origin/main
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Refusing to rewrite oss/head: origin/main is not a fast-forward.'
+  }
+}
+
+git push ghe origin/main:refs/heads/oss/head
+if ($LASTEXITCODE -ne 0) {
+  throw 'Failed to publish oss/head.'
+}
+```
+
+This script writes **only** `oss/head`. Do not replace the explicit refspec with `--mirror`, a
+wildcard, or `oss/main`: the `oss/main` baseline advances only after the upstream merge has been
+validated and the resulting feature-branch merge commit has been published (step 5).
+
+- **Optional integration tags (immutable):** if you want reproducible deploy pins, tag each merge
+  commit — e.g. `merge/<upstreamDate>-<upstreamSha>` — and have consumers pin to the tag rather
+  than the moving branch. Unlike the old rebase `from-`/`onto-` tags these are **not** needed for
+  rollback: merge rollback is a plain `git reset`/`git revert` (see *Rollback*).
+
+There are **no** candidate branches, no `from-`/`onto-` rollback tags, and no ambiguous
+tag-vs-branch name hazard under merge — none of that machinery exists anymore.
+
+**Model.** The live branch moves **forward only**: each upstream crank is absorbed as a merge
+commit on `feature/aks-git-repo-worker`, so the branch name and every by-name reference are stable
+and history is append-only. Because nothing is rewritten, there is no force-push to recover from —
+the pre-merge tip is always reachable as the merge commit's **first parent** (`HEAD^1`), and a bad
+merge is undone with a plain `git reset --hard HEAD^1` (before pushing) or `git revert -m 1` (after).
+
+![Append-only merge model: upstream trunk with periodic merge commits into the fork, and a theme draining to zero](SQLFORK-merge-model.svg)
+
+> **Reading the diagram.** *(1) Steady state:* the fork is **one append-only branch** — each upstream
+> crank `Un` enters as a merge commit `Mn` (the pre-merge tip is always `HEAD^1`); nothing is
+> rewritten, so there is no force-push, and each conflict is resolved **once** in the merge commit and
+> never re-presented. *(2) Drain:* a theme `T` carried in the fork (`T*`) is upstreamed; once it lands
+> in `origin/main`, the next merge **converges** it — byte-identical → auto-resolves, divergent →
+> conflict resolved by taking upstream's version — so the fork's redundant copy drops and the delta
+> shrinks. Verify with `git diff origin/main...HEAD`; if `T` still shows, drop your copy explicitly.
+
+**Per-merge steps.**
+1. Pull the new upstream `main`, then refresh the fast-forward-only compare mirror:
    ```
    git fetch origin main
    git push ghe origin/main:refs/heads/oss/head
    ```
-   The `oss/main...oss/head` dashboard now shows what has accumulated upstream since the last
-   successful integration.
-2. Backup the current fork tip for rollback:
-   `git tag -a rebase/from-<forkTipDate>-<forkTipSha> feature/aks-git-repo-worker -m "pre-rebase fork tip"`.
-3. Cut a candidate branch (or worktree) from the current fork tip:
-   `git switch -c cand/<upstreamDate>-<upstreamSha> feature/aks-git-repo-worker`.
-4. Replay the ~140 divergence commits onto the new upstream tip:
-   `git rebase origin/main`  (equivalently `git rebase --onto origin/main upstream-base`).
-5. Resolve conflicts **by class**:
-   - **Theme already upstreamed** → the commit is now redundant; resolve to upstream's version, or
-     `git rebase --skip` if fully absorbed (the theme *drains* out and the delta shrinks).
+   If you just landed an upstream PR, confirm it is actually in `origin/main` before merging —
+   merging before it lands merges nothing. The `oss/main...oss/head` dashboard now shows exactly
+   what has accumulated upstream since the last successful integration.
+2. Merge upstream into the live branch:
+   `git switch feature/aks-git-repo-worker && git merge origin/main`.
+   No candidate branch, no backup tag — the pre-merge tip is `HEAD^1` and nothing is rewritten.
+3. Resolve conflicts **by class** (same taxonomy as before — merge just presents each once and
+   keeps the resolution):
+   - **Theme already upstreamed** → *this is the drain.* If the fork's copy is byte-identical to
+     what landed, git converges it with **no conflict** (both sides made the same change). If it
+     landed with review edits / squash / your synthesis gap, you get a conflict → **resolve to
+     upstream's version** so your redundant copy is dropped and the delta shrinks. Do **not** keep
+     yours "to be safe" — that is exactly what stops the delta from shrinking.
    - **Parallel implementation** (e.g. `orchestration_1_0_68/69`) → if the two sides implement the
      *same* behavior, adopt upstream's and delete the fork's divergent copy (the Strategy-B reconcile
      flagged in Open decisions). **But if the fork's copy layered fork-only behavior on top — e.g.
@@ -565,55 +676,42 @@ full set is a permanent audit trail and rollback ledger.
      **code half** (here) and a **DB half** (a deploy-time ledger re-stamp — see *Migration ledger
      reconciliation* below); do **both**, or an already-deployed fork DB silently skips upstream's
      migrations at the reused numbers.
-     - **Code half.** With `U = max(upstream version)` on the newly-rebased tip, renumber the fork's
+     - **Code half.** With `U = max(upstream version)` on the newly-merged tip, renumber the fork's
        migrations to `U+1 … U+n`. Compute the target from the fork's **divergence-baseline set** — the
        migrations added after `upstream-base`, in their original fork order, keyed by *name* — **not**
        from wherever they landed last cycle, so offsets don't compound. Update three places per
        migration (the list entry `version`, the SQL function name, and its definition) plus every test
-       that asserts the number. Numbers must stay unique and ordered, so `rerere` can't reliably
-       auto-resolve this — the target shifts each rebase.
+       that asserts the number. With merge you resolve this **once** and the resolution persists in
+       history — unlike rebase, it is not re-presented on the next crank.
      - **Idempotency invariant.** Every fork migration must be re-runnable (`CREATE … IF NOT EXISTS`,
        `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then `ADD CONSTRAINT`) — the backstop
        that makes any accidental replay a harmless no-op. Keep it true for new fork migrations.
-   - **Genuine fork-only work** → keep; reapply on top.
+   - **Genuine fork-only work** → no conflict; it rides through untouched.
 
    > **No-defer invariant.** A dropped fork feature or unresolved divergence is **re-applied by
-   > default**. Never silently defer, `--skip`, or adopt-upstream-and-drop a fork behavior. When a
+   > default**. Never silently defer or adopt-upstream-and-drop a fork behavior. When a
    > divergence surfaces, surface it back to the owner and get **explicit approval before deferring**.
    > "It looks large" is not grounds to defer — it is grounds to *ask*. Offline unit tests do **not**
    > cover routing/deployment behavior (owner-affinity, worker tagging), so a green suite is not
-   > evidence a fork feature survived; verify feature presence against the pre-rebase tip explicitly.
+   > evidence a fork feature survived; verify feature presence against the pre-merge tip (`HEAD^1`)
+   > explicitly.
 
-   Continue with `git rebase --continue` until the replay completes.
-6. **Validate on the candidate — before swapping anything:**
+   Finish with `git merge --continue` (or resolve + `git commit`) to seal the merge commit.
+4. **Validate the merge result — before pushing:**
    - build + unit/integration tests green,
    - smoke: bring up worker + portal, run one lifecycle-job E2E,
-   - deploy to **non-prod** (`sqlmort` pinned at the candidate) and sanity-check.
-7. **Swap in** once green. If the live branch gained new commits during validation, rebase those
-   few onto the candidate first. Then capture the SHAs up front and swap **by SHA** — never by the
-   ambiguous `rebase/onto-…` name (see the warning below):
+   - deploy to **non-prod** (`sqlmort` pinned at the merged tip) and sanity-check.
+   If validation fails, `git reset --hard HEAD^1` (nothing was pushed) and retry — no force-push,
+   no candidate to discard.
+5. **Publish** once green — a plain fast-forward push (no force):
    ```
-   #   $CAND = validated candidate tip   (git rev-parse cand/<upstreamDate>-<upstreamSha>)
-   #   $OLD  = live tip being replaced    (git rev-parse feature/aks-git-repo-worker)  # the from- tag target
-   #   $BASE = upstream tip rebased onto  (git rev-parse origin/main)
-   git tag -a rebase/onto-<upstreamDate>-<upstreamSha> $BASE -m "upstream base rebased onto"
-   git branch -f feature/aks-git-repo-worker $CAND          # move the ref by SHA, no checkout, tree untouched
-   git push ghe refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
-   git push ghe feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
-   git push ghe $BASE:refs/heads/oss/main            # 7b. advance the last-integrated OSS baseline
+   git push ghe feature/aks-git-repo-worker
+   git push ghe origin/main:refs/heads/oss/main    # advance the last-integrated baseline
+   #   (optional reproducible-deploy pin:)
+   #   git tag -a merge/<upstreamDate>-<upstreamSha> -m "merged upstream <sha>"
+   #   git push ghe refs/tags/merge/<upstreamDate>-<upstreamSha>
    ```
-   > **Why by SHA, not name.** The `onto-` *tag* and (pre-2026-09) the candidate *branch* shared the
-   > name `rebase/onto-…`; git resolves a bare ref as a **tag before a branch**, so `git reset --hard
-   > rebase/onto-…` silently resolves to the *tag* — the bare upstream base with **no fork commits** —
-   > and would reset the live branch to upstream, dropping all ~140 fork commits. Hardened form:
-   > (a) the candidate lives in the `cand/` namespace so it can't collide with the tag; (b) move the
-   > live branch with `git branch -f … $CAND` (explicit SHA, **no** checkout — leaves your working
-   > tree and the candidate checkout untouched); (c) push tags via fully-qualified `refs/tags/…`
-   > (not `--tags`, which also sprays unrelated local tags and can't disambiguate a name); (d) pin the
-   > lease to the exact `$OLD` SHA so a stray background fetch can't defeat `--force-with-lease`.
-   > **Stash uncommitted/untracked work first (`git stash push -u`), and never land a follow-up
-   > commit on the ephemeral `cand/` branch — it is deleted in step 9; commit on the stable branch.**
-8. **Re-measure & refresh:**
+6. **Re-measure & refresh:**
    ```
    git rev-list --count ghe/oss/main..ghe/oss/head  # upstream commits pending integration
    git diff --stat ghe/oss/main...HEAD               # accumulated fork delta
@@ -621,19 +719,18 @@ full set is a permanent audit trail and rollback ledger.
    ```
    Track the accumulated fork delta through
    [`oss/main...feature`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker),
-   upstream integration risk through
+   upstream merge risk through
    [`oss/main...oss/head`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...oss/head),
    and the direct tree delta through
    [`oss/head..feature`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/head..feature/aks-git-repo-worker).
-9. Clean up: delete the candidate branch (`git branch -D cand/<upstreamDate>-<upstreamSha>`); keep the
-   `from-`/`onto-` tags as the permanent audit trail.
+   If you upstreamed a theme and the net delta did **not** drop, the merge kept your redundant copy —
+   resolve that surface to upstream's version (or delete your copy) explicitly.
 
-**Rollback.** If validation fails, discard the candidate — the live branch never moved. If a bad
-rebase was already pushed, restore **by SHA** and force-push with an explicit lease:
-`git branch -f feature/aks-git-repo-worker rebase/from-<forkTipDate>-<forkTipSha>` then
-`git push ghe feature/aks-git-repo-worker --force-with-lease` — the `from-` tag name is
-unambiguous (no branch shares it) and its objects were never GC-eligible, so the last-good tip is
-always reachable.
+**Rollback.** Before pushing, a bad merge is undone with `git reset --hard HEAD^1` — the pre-merge
+tip is always the merge commit's first parent, so there is nothing to recover from a tag. After
+pushing, don't rewrite published history: `git revert -m 1 <mergeCommit>` backs the merge out with a
+forward commit; then fix the problem and merge again. Because merge never force-pushes, there is no
+lost-commit recovery scenario to guard against.
 
 **Migration ledger reconciliation (deployed fork DBs).** The migrator is a per-version **ledger**
 (`copilot_sessions.schema_migrations`), not a high-water-mark: each migration runs iff its exact
@@ -646,9 +743,9 @@ now occupy. On the next deploy the runner sees those strings as applied and
 everything around them still applies), while the fork's renumbered entries are unrecorded.
 
 Fix it with a **name-keyed re-stamp** (Variant B), run as a **pre-deploy hook in the same rollout**
-as the rebased image (so no old-code boot lands on a half-re-stamped ledger). Key on `name` — stable
-across cycles — **not** on the old number (which moves every rebase); that is what makes the recipe
-survive repeated rebases:
+as the merged image (so no old-code boot lands on a half-re-stamped ledger). Key on `name` — stable
+across cycles — **not** on the old number (which moves every integration); that is what makes the
+recipe survive repeated merges:
 
 ```sql
 BEGIN;
@@ -666,11 +763,11 @@ COMMIT;
 > file diff.** The authoritative source set is *every* fork migration whose `name` is applied in the
 > **deployed ledger** but sits at a **different `version` in the target code** (join deployed
 > `schema_migrations.name` against the `version/name` pairs parsed from `cms-migrations.ts`). A
-> migration can be renumbered *anywhere* in the rebase — not only inside the contiguous block the
+> migration can be renumbered *anywhere* in the integration — not only inside the contiguous block the
 > renumber commit touched — so the commit diff undercounts. **Day-1 incident:** the VALUES list was
 > built from the renumber commit's diff (11 rows, `0047–0057`) and missed two fork migrations
 > (`session_git_state_pinning` `0045→0077`, `fix_session_git_state_setter` `0046→0078`) that the
-> rebase relocated elsewhere. The half-re-stamp left `0045/0046` still keyed to the old fork names, so
+> integration relocated elsewhere. The half-re-stamp left `0045/0046` still keyed to the old fork names, so
 > the runner skipped upstream's new `0045 session_canvases` and then **stalled at `0064 canvas_kv`**
 > (`relation "…session_canvases" does not exist`). Run the name-diff as a **pre-flight gate** and
 > assert its row count equals the number of fork migrations above the divergence baseline before
@@ -695,7 +792,7 @@ strict order. Snapshot the DB first — this writes to a shared/prod store.
 **Preventing the old-worker re-run race (advisory-lock gate).** The re-stamp and the new-image
 rollout are not naturally atomic: migrations run on process **boot** only — `PgSessionCatalog.initialize()`
 (`cms.ts`) is guarded by `this.initialized`, so an already-running pod never re-runs DDL, but a pod
-that **(re)starts** after the re-stamp and before it is replaced *will*. Old (pre-rebase) code whose
+that **(re)starts** after the re-stamp and before it is replaced *will*. Old (pre-merge) code whose
 migration list still puts the fork DDL at the old numbers (`0045–0057`) would then see those numbers as absent (we moved
 them to `0077–0089`) and **re-insert the fork rows at the old numbers**, recreating the exact collision
 — and idempotent (`IF NOT EXISTS`) DDL does **not** save you, because it is the ledger re-insert, not
@@ -711,7 +808,7 @@ the whole cutover and every booting worker — old or new — parks in the poll 
 1. Admin session: `SELECT pg_advisory_lock(420573475);` — acquire and **hold** (session-scoped, so it
    survives the re-stamp's `BEGIN…COMMIT`).
 2. In that **same held session**, run the re-stamp `UPDATE … COMMIT` and assert `n` rows changed.
-3. **Still holding the lock**, roll the rebased image across **every** workload. The fleet upgrades by
+3. **Still holding the lock**, roll the merged image across **every** workload. The fleet upgrades by
    **two different mechanisms** — get this wrong and the roll either silently reverts or deadlocks:
    - **The Deployments are Flux-managed** (`portal` + `worker` Kustomizations own `pilotswarm-portal`
      and `copilot-runtime-worker`, reconciled from an Azure blob **Bucket** source on a **2-minute
@@ -774,7 +871,7 @@ roll, uncordon) is the simpler bulletproof alternative when a short fleet downti
 
 - [x] **Phase 0** — successful rebase and green tip-level validation provide sufficient test
       confidence; no historical per-commit coverage inventory or backfill is required.
-- [ ] Constant rebase cadence established and maintained — fork tracks `origin/main` (keeps the
+- [ ] Constant merge cadence established and maintained — fork tracks `origin/main` (keeps the
       delta current and drainable) until retirement.
 - [x] Provider module ABI and platform-owned runner implemented; ADO WIQL, IcM, and Kusto
       concrete
@@ -817,14 +914,14 @@ roll, uncordon) is the simpler bulletproof alternative when a short fleet downti
 
 1. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
    so this is a *reconcile two implementations* problem, not an add. Decide per subsystem: adopt
-   upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork rebase
+   upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork merge
    hits, so decide early. *(The one known Strategy-B candidate; default stays A per §9.)*
 2. **Deploy-layer split** — enumerate which `deploy/` files are generic (→ core, upstreamed) vs
    SQL-specific (→ `sqlmort`: core-version pin, IcM injection, ACR/AKS/AFD/PG targeting, governance
    overrides). Reconcile SQLmort's apply wrappers and generic-worker manifest against existing
    PilotSwarm deployment support rather than creating duplicate implementations. Must be settled
    before `sqlmort` can own the pipeline (§10 Phase 2 and §6B).
-3. **Rebase cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
+3. **Merge cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
 4. **Provider contract distribution** — choose a stable package/export shape and versioning
    policy for external provider authors, then migrate SQLmort off its three structural mirrors.
 5. **TypeScript SDK ownership** — migrate SQLmort's generic compatibility candidates into the
