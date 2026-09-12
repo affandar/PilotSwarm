@@ -2,16 +2,35 @@
 # Run the full PilotSwarm local integration test suite using vitest.
 #
 # Usage:
-#   ./scripts/test-local.sh                  # run all suites in parallel (default)
-#   ./scripts/test-local.sh --parallel       # run suites in parallel explicitly
-#   ./scripts/test-local.sh --suite=smoke    # run only matching suite(s)
-#   ./scripts/test-local.sh smoke            # same as --suite=smoke
-#   ./scripts/test-local.sh --sequential     # force suites one at a time
-#   ./scripts/test-local.sh --external-test-dir=../plugin/tests
-#   ./scripts/test-local.sh --external-only --external-test-dir=../plugin/tests
-#   ./scripts/test-local.sh --external-only --external-test-dir=../plugin/tests --external-test-filter=smoke
-#   ./scripts/test-local.sh --all-providers  # run baseline, then each configured provider overlay
-#   ./scripts/test-local.sh --with-horizondb # run one pass with HorizonDB provider overlay
+# Run all suites in parallel (default)
+#   ./scripts/run-tests.sh
+#
+# Run suites in parallel explicitly
+#   ./scripts/run-tests.sh --parallel
+#
+# Run only matching suite(s)
+#   ./scripts/run-tests.sh --suite=smoke
+#
+# Positional form of --suite=smoke
+#   ./scripts/run-tests.sh smoke
+#
+# Force suites to run one at a time
+#   ./scripts/run-tests.sh --sequential
+#
+# Add an external suite to the full gate
+#   ./scripts/run-tests.sh --external-test-dir=../plugin/tests
+#
+# Run only the external suite
+#   ./scripts/run-tests.sh --external-only --external-test-dir=../plugin/tests
+#
+# Run matching external test files only
+#   ./scripts/run-tests.sh --external-only --external-test-dir=../plugin/tests --external-test-filter=smoke
+#
+# Run the baseline and each configured provider overlay
+#   ./scripts/run-tests.sh --all-providers
+#
+# Run one pass with the HorizonDB provider overlay
+#   ./scripts/run-tests.sh --with-horizondb
 #
 # Prerequisites:
 #   - For baseline / --all-providers: PostgreSQL and GITHUB_TOKEN in .env.
