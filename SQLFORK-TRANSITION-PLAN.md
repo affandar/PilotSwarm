@@ -72,57 +72,71 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 
 ## 3. Current state (as of this draft)
 
-> **Canonical divergence point:** [`eaabdbf9`](https://github.com/affandar/PilotSwarm/commit/eaabdbf9dbf5801b77ac9eef7cd36d2e6baa41c0)
-> on `affandar/PilotSwarm`. This is the merge-base between this fork and upstream
-> `main` — the divergence compare is measured against it (`git diff eaabdbf9...HEAD`,
-> equivalently `origin/main...HEAD` since `eaabdbf9` is the merge-base).
+> **Original divergence point:** [`eaabdbf9`](https://github.com/affandar/PilotSwarm/commit/eaabdbf9dbf5801b77ac9eef7cd36d2e6baa41c0)
+> on `affandar/PilotSwarm`, retained as the frozen `upstream-base` marker. The successful
+> 2026-09-08 integration advanced the current merge-base to `6df642ef`; future merges continue
+> advancing it.
 
 
-| Ref | Tip (code) | Ahead of `origin/main` | Visibility |
+| Ref | Tip (code) | Ahead / behind `origin/main` | Visibility |
 | --- | --- | :---: | --- |
-| local `feature/aks-git-repo-worker` | `2d7cec67` | 171† | — |
-| `origin` = `affandar/PilotSwarm` `main` | `6df642ef` | — | 🌐 public upstream |
-| `ghe` = `azure-data/PilotSwarm-SQL-staging` | `2d7cec67` | 171† | 🔒 internal org staging |
+| local `feature/aks-git-repo-worker` | `32f3438a` | 196 / 4† | — |
+| `origin` = `affandar/PilotSwarm` `main` | `855aadca` | — | 🌐 public upstream |
+| `ghe` = `azure-data/PilotSwarm-SQL-staging` | `32f3438a` | 196 / 4† | 🔒 internal org staging |
 
-> † As of the **2026-09-08 rebase**, the fork sits **cleanly on the current upstream tip**
-> (`6df642ef`) — **171 ahead / 0 behind**. Of those 171, **18 are fork-only scaffolding** (this
-> transition plan + its diagram, committed incrementally); the remaining **153** are the routable
-> divergence scope.
+> † Snapshot taken **2026-09-11** after fetching public upstream. The live three-dot dashboard below
+> replaces this snapshot after `oss/main` is refreshed.
 
 ```
    🌐 affandar/PilotSwarm   (upstream · main = the continuous horizontal trunk)
+   Snapshot captured 2026-09-11
 
-   …──o──o──o──o──o── … ──o──●   6df642ef   ← origin/main (2026-09-07) = current rebase base
-                             │
-                             └──o──o──o── … ──o──►   2d7cec67   ← feature/aks-git-repo-worker   🔒 ghe
-                                   our fork: +171 (153 code + 18 plan/scaffolding) · 0 behind
+   …──o──o──o── … ──●──o──o──o──●   855aadca (2026-09-11)  ← origin/main
+                    │ 6df642ef (2026-09-07) = current merge base
+                    │
+                    └──o──o──o── … ──o──►   32f3438a   ← feature/aks-git-repo-worker   🔒 ghe
+                          our fork: +196 · 4 behind
 
-   (original divergence eaabdbf9 sits far to the left, frozen as upstream-base; the merge-base
-    advances to the newest upstream tip on every rebase, so the fork is replayed — not branched — here)
+   (original divergence eaabdbf9 sits far to the left, frozen as upstream-base; each merge advances
+    the merge-base to the newest integrated upstream tip, while origin/main may move ahead again)
 ```
 
-- **Rebased onto** `origin/main` **`6df642ef`** on **2026-09-08** — the merge-base *is* the current
-  upstream tip, so the fork is **0 behind**. (Original divergence was at **`eaabdbf9`**, still frozen
-  as the `upstream-base` tag; the merge-base advances to the newest upstream tip on every rebase.)
+- **Last merged from** `origin/main` **`6df642ef`** on **2026-09-08**. At the
+  **2026-09-11** snapshot, public upstream is at **`855aadca`**, so the fork is **4 commits behind**.
+  (Original divergence was at **`eaabdbf9`**, still frozen as the `upstream-base` tag.)
 
-- The code divergence (`git diff origin/main...feature/aks-git-repo-worker`) = **241 files / +57,421 / −3,842 / 171 commits**.
+- The fork-side divergence (`git diff origin/main...feature/aks-git-repo-worker`) at that snapshot =
+  **317 files / +62,593 / −4,063 / 196 commits**.
   This is the scope to route — each capability lands upstream or moves internal, not a
   commit-by-commit burndown.
-- **All 171** commits are internal-only on `ghe`; upstream `affandar` carries no
+- **All 196** branch-only commits are internal-only on `ghe`; upstream `affandar` carries no
   divergent refs.
-- **Browse the full divergence diff:**
-  [`upstream-base...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/upstream-base...feature/aks-git-repo-worker)
-  on the internal `azure-data/PilotSwarm-SQL-staging` staging repo. `upstream-base` is a
-  frozen ref pinned at the *original* divergence point **`eaabdbf9`**, so the compare reads as
-  **236 ahead / 0 behind** — the fork's 171 commits **plus** the ~65 upstream commits pulled into
-  history by rebasing past `eaabdbf9`. Because this baseline is frozen, it **grows** with each rebase;
-  use the `oss/main` drain link below for the *shrinking* fork-vs-current-upstream delta.
-- **Browse the current (draining) delta — the drain-to-zero permalink:**
+
+The internal staging repository maintains two OSS mirror refs for these comparisons:
+`oss/main` is the upstream commit most recently integrated into the feature branch, while
+`oss/head` is refreshed from the latest observed public `origin/main`.
+
+![Commit graph showing the fork-side, upstream-lag, and direct tree comparison ranges](SQLFORK-compare-dashboards.svg)
+
+> This comparison model is independent of whether integration uses rebase or merge. Rebase rewrites
+> the feature-side commits while merge appends merge commits, but the three ref relationships remain
+> the same. Under merge, dashboard A's **ahead commit count** includes merge-history commits and is
+> not a drain metric; use its **Files changed** view for the fork delta and dashboard C for convergence.
+
+- **A · Blue — Browse the accumulated fork delta since the last integration:**
   [`oss/main...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker)
-  — `oss/main` is a fast-forward-only mirror of the **current** upstream tip (advanced each rebase, §11 step 7),
-  so this compare tracks the **shrinking** delta as themes drain upstream. When it reports **0 files
-  changed**, the fork-vs-upstream logical diff is empty. (Contrast the frozen `upstream-base` link above,
-  which shows the delta since *original* divergence and therefore does **not** shrink as you rebase.)
+  — because `oss/main` is the last integrated upstream commit, this shows the feature branch's
+  accumulated commits and file changes on top of that baseline. The fork-specific delta is drained
+  when this dashboard reports **0 files changed**, even if public OSS has advanced since the baseline.
+- **B · Orange — Browse upstream changes since the last integration — merge-risk dashboard:**
+  [`oss/main...oss/head`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...oss/head)
+  — this shows exactly how far public OSS has advanced since the last integration. Its commits and
+  touched files are the new overlap surface that may produce textual or semantic merge conflicts.
+- **C · Purple — Browse the current net tree delta — synchronization dashboard:**
+  [`oss/head..feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/head..feature/aks-git-repo-worker)
+  — the two-dot comparison is the direct tip-to-tip diff. **0 files changed** here, together with
+  **0 commits** in dashboard B, means the fork is also fully synchronized with current OSS; that is
+  stronger than merely proving its unique delta has drained.
 - **Browse the SQL-internal composition repo:**
   [`azure-data/sqlmort`](https://msft.ghe.com/azure-data/sqlmort) — the active "move it
   internal" destination for SQL-owned IP, deployment values, plugins, and scenarios.
@@ -156,8 +170,7 @@ kinds of value, tangled into the same commits/files:**
   the platform and belong back **upstream** (§6A).
 
 The problem is that these are mixed together, not that the fork exists. Left alone it also
-*drifts* — every week upstream moves and the reconciliation cost grows (quantified in the §11
-ledger).
+*drifts* — every week upstream moves and the reconciliation cost grows.
 
 We are **not freezing the divergence.** Instead we set up a standing protocol:
 - (a) **Constantly rebase** the fork onto upstream so it never drifts — the fork stays a thin,
@@ -314,7 +327,7 @@ not a commit.)
 2. **Upstream the platform work as organic, themed PRs** (everything in §6A except Tier 1):
    - Group by theme (§6A): git-hydration/worker, job-generator framework, orchestration
      versioning, UI timeline, SDK auth/lifecycle, deploy, etc. Each theme is one reviewable PR.
-   - Cut each PR from current `origin/main` (46 commits ahead). Prefer **path-scoped assembly**
+   - Cut each PR from current `origin/main`. Prefer **path-scoped assembly**
      — bring over the theme's final file state and commit it clean — over replaying the
      entangled per-commit history; reserve commit-by-commit replay for the few themes whose
      history is already tight. Stack dependent PRs (foundation → features → UI/deploy).
@@ -329,7 +342,7 @@ not a commit.)
 
 **Pros:** reuses the actual working, tested code (least rework); the scan shows the IP surface
 is tiny (2 files), so this is low-risk. **Cons:** the PRs are large and entangled with weeks of
-mixed commits; rebasing onto a moved `main` (46 commits) has conflict cost.
+mixed commits; rebasing onto a moved `main` has conflict cost.
 
 ## 8. Strategy B — Clean-room reimplementation (alternative)
 
@@ -486,12 +499,12 @@ already yields ~36 conflicting files, including the `orchestration_1_0_68/69` ad
 - **Live branch (stable, never renamed):** `feature/aks-git-repo-worker` — force-pushed in place on
   every rebase; all by-name references (`sqlmort` core pin, CI, PR policy) point here.
 - **Divergence marker (frozen):** tag `upstream-base` = `eaabdbf9`.
-- **Compare baseline (moving mirror):** branch `oss/main` — a fast-forward-only mirror of
-  `origin/main` (the upstream tip the fork was last rebased onto), pushed to `ghe`. It is
-  **not** the fork's `main`, is never committed to, and exists only to power an in-repo GitHub
-  compare — cross-repo compare against `affandar` is unavailable (the private fork and public
-  upstream share no fork network). Advanced after each swap (step 7). Invariant:
-  `oss/main == origin/main == the newest onto- tag`.
+- **Last-integrated OSS baseline:** branch `oss/main` — points to the upstream commit the feature
+  branch was most recently rebased onto. Advance it only after a successful swap (step 7).
+- **Current OSS mirror:** branch `oss/head` — a fast-forward-only mirror of the latest fetched
+  public `origin/main`, refreshed before each rebase attempt (step 1). Together these GHE-only refs
+  power in-repository comparisons because the private staging repo and public upstream do not share
+  a GitHub fork network.
 - **Candidate branch (ephemeral):** `cand/<upstreamDate>-<upstreamSha>` — deleted after swap.
   **Deliberately *not* named `rebase/onto-…`:** that name is the `onto-` *tag*, and git resolves a
   bare ref as a **tag before a branch** — a same-named branch + tag makes `reset`/`push` silently
@@ -520,7 +533,13 @@ full set is a permanent audit trail and rollback ledger.
 > `git reset --hard rebase/from-2026-09-08-e25ef7d5 && git push --force-with-lease` restores the branch onto `G`.
 
 **Per-rebase steps.**
-1. `git fetch origin` — pull the new upstream `main`.
+1. Pull the new upstream `main`, then refresh the fast-forward-only current-OSS mirror:
+   ```
+   git fetch origin main
+   git push ghe origin/main:refs/heads/oss/head
+   ```
+   The `oss/main...oss/head` dashboard now shows what has accumulated upstream since the last
+   successful integration.
 2. Backup the current fork tip for rollback:
    `git tag -a rebase/from-<forkTipDate>-<forkTipSha> feature/aks-git-repo-worker -m "pre-rebase fork tip"`.
 3. Cut a candidate branch (or worktree) from the current fork tip:
@@ -581,7 +600,7 @@ full set is a permanent audit trail and rollback ledger.
    git branch -f feature/aks-git-repo-worker $CAND          # move the ref by SHA, no checkout, tree untouched
    git push ghe refs/tags/rebase/onto-<upstreamDate>-<upstreamSha> refs/tags/rebase/from-<forkTipDate>-<forkTipSha>
    git push ghe feature/aks-git-repo-worker --force-with-lease=feature/aks-git-repo-worker:$OLD
-   git push ghe $BASE:refs/heads/oss/main            # 7b. advance the moving compare baseline to the upstream tip
+   git push ghe $BASE:refs/heads/oss/main            # 7b. advance the last-integrated OSS baseline
    ```
    > **Why by SHA, not name.** The `onto-` *tag* and (pre-2026-09) the candidate *branch* shared the
    > name `rebase/onto-…`; git resolves a bare ref as a **tag before a branch**, so `git reset --hard
@@ -594,14 +613,18 @@ full set is a permanent audit trail and rollback ledger.
    > lease to the exact `$OLD` SHA so a stray background fetch can't defeat `--force-with-lease`.
    > **Stash uncommitted/untracked work first (`git stash push -u`), and never land a follow-up
    > commit on the ephemeral `cand/` branch — it is deleted in step 9; commit on the stable branch.**
-8. **Re-measure & refresh:** the new merge-base is now `origin/main`, so
-   `git diff origin/main...HEAD` reports the *current* delta — update §3's metrics and the diagram.
-   (`upstream-base` stays frozen at `eaabdbf9` as the original-divergence marker; advance it only if
-   you'd rather the compare link track the shrinking current delta.) Track the drain in the UI via
-   the moving compare
-   [`oss/main...feature/aks-git-repo-worker`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker):
-   because `oss/main` was just advanced in step 7 it shows **only** the fork's real delta, so
-   **"drained to zero" = this compare reports 0 files changed.**
+8. **Re-measure & refresh:**
+   ```
+   git rev-list --count ghe/oss/main..ghe/oss/head  # upstream commits pending integration
+   git diff --stat ghe/oss/main...HEAD               # accumulated fork delta
+   git diff --stat ghe/oss/head HEAD                  # direct net tree delta
+   ```
+   Track the accumulated fork delta through
+   [`oss/main...feature`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...feature/aks-git-repo-worker),
+   upstream integration risk through
+   [`oss/main...oss/head`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/main...oss/head),
+   and the direct tree delta through
+   [`oss/head..feature`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/compare/oss/head..feature/aks-git-repo-worker).
 9. Clean up: delete the candidate branch (`git branch -D cand/<upstreamDate>-<upstreamSha>`); keep the
    `from-`/`onto-` tags as the permanent audit trail.
 

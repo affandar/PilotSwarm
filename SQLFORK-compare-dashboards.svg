@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="560" viewBox="0 0 980 560" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrow-purple-start" markerWidth="10" markerHeight="10" refX="2" refY="3" orient="auto">
+      <path d="M8,0 L0,3 L8,6 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect width="980" height="560" fill="#ffffff"/>
+  <text x="24" y="32" font-size="18" font-weight="700" fill="#111827">What each live compare dashboard tells us</text>
+  <text x="24" y="54" font-size="11" fill="#4b5563">Protocol-neutral comparison topology: oss/main is the last integrated OSS commit; oss/head is the latest public tip.</text>
+  <text x="24" y="70" font-size="10" fill="#6b7280">Rebase rewrites feature-side commits; merge appends merge commits. The three comparison ranges remain the same.</text>
+
+  <g transform="translate(0 40)">
+  <!-- Commit graph -->
+  <line x1="70" y1="140" x2="300" y2="140" stroke="#6b7280" stroke-width="3"/>
+  <line x1="300" y1="140" x2="420" y2="90" stroke="#6b7280" stroke-width="3"/>
+  <line x1="420" y1="90" x2="850" y2="90" stroke="#6b7280" stroke-width="3"/>
+  <line x1="300" y1="140" x2="420" y2="190" stroke="#6b7280" stroke-width="3"/>
+  <line x1="420" y1="190" x2="850" y2="190" stroke="#6b7280" stroke-width="3"/>
+
+  <circle cx="300" cy="140" r="16" fill="#374151"/>
+  <text x="300" y="145" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">M</text>
+  <text x="300" y="168" text-anchor="middle" font-size="10" fill="#374151">oss/main · last integration</text>
+
+  <g fill="#6b7280">
+    <circle cx="470" cy="90" r="9"/>
+    <circle cx="620" cy="90" r="9"/>
+    <circle cx="800" cy="90" r="13"/>
+    <circle cx="470" cy="190" r="9"/>
+    <circle cx="620" cy="190" r="9"/>
+    <circle cx="800" cy="190" r="13"/>
+  </g>
+  <g fill="#ffffff" font-size="9" font-weight="700" text-anchor="middle">
+    <text x="470" y="94">U1</text>
+    <text x="620" y="94">U2</text>
+    <text x="800" y="94">U3</text>
+    <text x="470" y="194">F1</text>
+    <text x="620" y="194">F2</text>
+    <text x="800" y="194">F3</text>
+  </g>
+
+  <rect x="828" y="72" width="128" height="28" rx="14" fill="#f3f4f6" stroke="#6b7280"/>
+  <text x="892" y="90" text-anchor="middle" font-size="10" font-weight="700" fill="#374151">oss/head · OSS tip</text>
+  <rect x="828" y="172" width="128" height="36" rx="14" fill="#ecfdf5" stroke="#059669"/>
+  <text x="892" y="187" text-anchor="middle" font-size="9" font-weight="700" fill="#065f46">feature/aks-git-</text>
+  <text x="892" y="199" text-anchor="middle" font-size="9" font-weight="700" fill="#065f46">repo-worker</text>
+
+  <!-- Comparison ranges -->
+  <path d="M318,153 C390,205 620,225 790,199" fill="none" stroke="#2563eb" stroke-width="3" marker-end="url(#arrow-blue)"/>
+  <path d="M318,127 C390,75 620,55 790,81" fill="none" stroke="#d97706" stroke-width="3" marker-end="url(#arrow-orange)"/>
+  <line x1="800" y1="108" x2="800" y2="172" stroke="#7c3aed" stroke-width="3"
+        marker-start="url(#arrow-purple-start)" marker-end="url(#arrow-purple)"/>
+
+  <circle cx="550" cy="62" r="11" fill="#d97706"/>
+  <text x="550" y="66" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">B</text>
+  <text x="566" y="66" font-size="10" font-weight="700" fill="#b45309">upstream lag</text>
+
+  <circle cx="550" cy="218" r="11" fill="#2563eb"/>
+  <text x="550" y="222" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">A</text>
+  <text x="566" y="222" font-size="10" font-weight="700" fill="#1d4ed8">fork delta</text>
+
+  <circle cx="824" cy="140" r="11" fill="#7c3aed"/>
+  <text x="824" y="144" text-anchor="middle" font-size="10" font-weight="700" fill="#ffffff">C</text>
+  <text x="840" y="144" font-size="10" font-weight="700" fill="#6d28d9">net tree</text>
+
+  <line x1="24" y1="240" x2="956" y2="240" stroke="#e5e7eb"/>
+
+  <!-- Dashboard cards -->
+  <rect x="24" y="266" width="292" height="176" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="42" y="292" font-size="13" font-weight="700" fill="#1d4ed8">A · Blue arrow — Fork-side commit delta</text>
+  <text x="42" y="318" font-size="11" font-family="Consolas, monospace" fill="#111827">oss/main...feature/aks-git-repo-worker</text>
+  <text x="42" y="348" font-size="11" fill="#374151">Range: M → F3</text>
+  <text x="42" y="372" font-size="11" fill="#374151">Files changed = current fork delta from M.</text>
+  <text x="42" y="389" font-size="11" fill="#374151">Under merge, ahead count includes merge commits.</text>
+  <text x="42" y="418" font-size="11" font-weight="700" fill="#1d4ed8">Question answered:</text>
+  <text x="42" y="435" font-size="11" fill="#374151">What fork-owned work remains?</text>
+
+  <rect x="344" y="266" width="292" height="176" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+  <text x="362" y="292" font-size="13" font-weight="700" fill="#b45309">B · Orange arrow — Upstream lag</text>
+  <text x="362" y="318" font-size="11" font-family="Consolas, monospace" fill="#111827">oss/main...oss/head</text>
+  <text x="362" y="348" font-size="11" fill="#374151">Range: M → U3</text>
+  <text x="362" y="372" font-size="11" fill="#374151">Shows OSS commits and file changes that the</text>
+  <text x="362" y="389" font-size="11" fill="#374151">feature branch has not integrated yet.</text>
+  <text x="362" y="418" font-size="11" font-weight="700" fill="#b45309">Question answered:</text>
+  <text x="362" y="435" font-size="11" fill="#374151">How far behind current OSS are we?</text>
+
+  <rect x="664" y="266" width="292" height="176" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
+  <text x="682" y="292" font-size="13" font-weight="700" fill="#6d28d9">C · Purple arrow — Direct net tree delta</text>
+  <text x="682" y="318" font-size="11" font-family="Consolas, monospace" fill="#111827">oss/head..feature/aks-git-repo-worker</text>
+  <text x="682" y="348" font-size="11" fill="#374151">Comparison: U3 ↔ F3</text>
+  <text x="682" y="372" font-size="11" fill="#374151">Compares the two current trees directly,</text>
+  <text x="682" y="389" font-size="11" fill="#374151">including changes unique to either side.</text>
+  <text x="682" y="418" font-size="11" font-weight="700" fill="#6d28d9">Question answered:</text>
+  <text x="682" y="435" font-size="11" fill="#374151">What differs right now?</text>
+
+  <rect x="100" y="458" width="780" height="50" rx="12" fill="#ecfdf5" stroke="#059669"/>
+  <text x="490" y="478" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">Fork delta drained = A has 0 files changed.</text>
+  <text x="490" y="496" text-anchor="middle" font-size="11" fill="#065f46">Fully synchronized with current OSS = B has 0 commits and C has 0 files changed.</text>
+  </g>
+</svg>
