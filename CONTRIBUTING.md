@@ -62,6 +62,27 @@ rather than a stable platform.
    npm run test:local:sub-agents
    ```
 
+   Plugin and consumer repositories can add an explicit Vitest directory to
+   the complete PilotSwarm gate without changing its built-in suite:
+
+   ```bash
+   ./scripts/run-tests.sh --external-test-dir=../plugin-repo/tests/pilotswarm
+   ```
+
+   During plugin-only iteration, skip PilotSwarm's built-in phases and provider
+   setup explicitly:
+
+   ```bash
+   ./scripts/run-tests.sh --external-only \
+     --external-test-dir=../plugin-repo/tests/pilotswarm \
+     --external-test-filter=audience-map
+   ```
+
+   External directories are optional and are never discovered automatically.
+   Their tests should use public PilotSwarm package surfaces while keeping
+   repository-specific fixtures, endpoints, and credentials in the repository
+   that owns them.
+
 ## Project Layout
 
 ```
