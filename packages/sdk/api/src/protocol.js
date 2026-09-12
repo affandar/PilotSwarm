@@ -264,6 +264,21 @@ export const OPERATIONS = [
     { name: "setSystemGitHubCopilotKey", access: "fleet:admin", method: "PUT", path: "/admin/system-github-copilot-key", params: { key: body() }, admin: true, summary: "Set (or clear with null) the System user's GitHub Copilot key, used by ownerless system sessions. [admin]" },
     { name: "getSystemGitHubCopilotKeyStatus", access: "fleet:admin", method: "GET", path: "/admin/system-github-copilot-key", admin: true, summary: "Whether a System GitHub Copilot key is configured and who last changed it. [admin]" },
 
+    // Feature keys are code-defined. Caller identity is stamped by each transport.
+    { name: "listFeatureFlags", access: "authed", method: "GET", path: "/management/features/catalog", summary: "List code-defined feature flags and published defaults." },
+    { name: "listFeatureFlagUsers", access: "fleet:admin", method: "GET", path: "/management/features/users", params: { query: query("string") }, summary: "Find users to manage feature preferences. [admin]" },
+    { name: "getClusterFeatureFlags", access: "authed", method: "GET", path: "/management/features/cluster", summary: "Read cluster feature policy." },
+    { name: "setClusterFeatureFlag", access: "fleet:admin", method: "PUT", path: "/management/features/cluster/:featureKey", params: { featureKey: path("featureKey"), enabled: body(), allowUserOverride: body(), expectedRevision: body(), requestId: body() }, summary: "Set cluster feature policy atomically. [admin]" },
+    { name: "resetClusterFeatureFlag", access: "fleet:admin", method: "DELETE", path: "/management/features/cluster/:featureKey", params: { featureKey: path("featureKey"), expectedRevision: query("string"), requestId: query("string") }, summary: "Reset cluster feature policy to published defaults. [admin]" },
+    // Literal me routes precede the parameterized user route.
+    { name: "getMyFeatureFlags", access: "authed", method: "GET", path: "/management/users/me/features", summary: "Read my feature preferences and effective values." },
+    { name: "setMyFeatureFlag", access: "authed", method: "PUT", path: "/management/users/me/features/:featureKey", params: { featureKey: path("featureKey"), enabled: body(), expectedRevision: body(), requestId: body() }, summary: "Set my preference; locked cluster policy still takes precedence." },
+    { name: "unsetMyFeatureFlag", access: "authed", method: "DELETE", path: "/management/users/me/features/:featureKey", params: { featureKey: path("featureKey"), expectedRevision: query("string"), requestId: query("string") }, summary: "Remove my preference and inherit cluster policy." },
+    { name: "getUserFeatureFlags", access: "fleet:admin", method: "GET", path: "/management/users/:userId/features", params: { userId: path("userId") }, summary: "Read a user's feature preferences. [admin]" },
+    { name: "setUserFeatureFlag", access: "fleet:admin", method: "PUT", path: "/management/users/:userId/features/:featureKey", params: { userId: path("userId"), featureKey: path("featureKey"), enabled: body(), expectedRevision: body(), requestId: body() }, summary: "Set a user's feature preference. [admin]" },
+    { name: "unsetUserFeatureFlag", access: "fleet:admin", method: "DELETE", path: "/management/users/:userId/features/:featureKey", params: { userId: path("userId"), featureKey: path("featureKey"), expectedRevision: query("string"), requestId: query("string") }, summary: "Remove a user's preference and restore inheritance. [admin]" },
+    { name: "listFeatureFlagChanges", access: "fleet:admin", method: "GET", path: "/management/features/changes", params: { limit: query("number") }, summary: "Read feature-setting audit history. [admin]" },
+
     // ── Provider budgets (docs/proposals/providers-and-budgets.md) ──────
     // A session runs provider:model and that provider is charged. Every
     // operation carries the caller down to the cms_provider_* procedures,

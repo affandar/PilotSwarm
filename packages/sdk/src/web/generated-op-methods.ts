@@ -46,6 +46,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getCanvasLive",
     "getCanvasShareLink",
     "getChildOutcome",
+    "getClusterFeatureFlags",
     "getCurrentUserProfile",
     "getDefaultModel",
     "getDefaults",
@@ -66,6 +67,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getLogConfig",
     "getModelDefaults",
     "getModelsByProvider",
+    "getMyFeatureFlags",
     "getOrchestrationStats",
     "getProviderStatus",
     "getProviderUsage",
@@ -94,6 +96,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSharedFactsStats",
     "getSystemGitHubCopilotKeyStatus",
     "getTopEventEmitters",
+    "getUserFeatureFlags",
     "getUserStats",
     "getWorkerCount",
     "getWorkerTimeline",
@@ -108,6 +111,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listAuthzAudit",
     "listChildOutcomes",
     "listCreatableAgents",
+    "listFeatureFlagChanges",
+    "listFeatureFlags",
+    "listFeatureFlagUsers",
     "listGraphNamespaces",
     "listJobGeneratorCycles",
     "listJobGeneratorDefinitions",
@@ -140,6 +146,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "renameSession",
     "republishAgentPackageVersion",
     "resetCanvasShareLink",
+    "resetClusterFeatureFlag",
     "restartSystemSession",
     "revokeAgentPackageEditor",
     "revokeSessionShare",
@@ -154,11 +161,13 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setArtifactPinned",
     "setCanvasKvAccess",
     "setClusterDefault",
+    "setClusterFeatureFlag",
     "setCurrentUserGitHubCopilotKey",
     "setCurrentUserProfileSettings",
     "setJobWaitConditionOverride",
     "setModelDefault",
     "setMyDefault",
+    "setMyFeatureFlag",
     "setProviderAllowance",
     "setProviderHold",
     "setProviderLimit",
@@ -168,11 +177,14 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setSystemGitHubCopilotKey",
     "setSystemModelDefault",
     "setSystemSessionModel",
+    "setUserFeatureFlag",
     "similarFacts",
     "startFactsEmbedder",
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
+    "unsetMyFeatureFlag",
+    "unsetUserFeatureFlag",
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
@@ -564,6 +576,12 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read cluster feature policy.
+     * @remarks `GET /management/features/cluster` — access: `authed`
+     */
+    getClusterFeatureFlags(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Profile of the authenticated principal.
      * @remarks `GET /me/profile` — access: `authed`
      */
@@ -715,6 +733,12 @@ export interface ManagementOps {
      * @remarks `GET /models/by-provider` — access: `authed`
      */
     getModelsByProvider(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read my feature preferences and effective values.
+     * @remarks `GET /management/users/me/features` — access: `authed`
+     */
+    getMyFeatureFlags(params?: Record<string, never>): Promise<any>;
 
     /**
      * Orchestration runtime stats.
@@ -961,6 +985,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read a user's feature preferences. [admin]
+     * @remarks `GET /management/users/:userId/features` — access: `fleet:admin`
+     */
+    getUserFeatureFlags(params: {
+        userId: string;
+    }): Promise<any>;
+
+    /**
      * Per-user stats.
      * @remarks `GET /management/users/stats` — access: `fleet:read`
      */
@@ -1072,6 +1104,28 @@ export interface ManagementOps {
      * @remarks `GET /agents` — access: `authed`
      */
     listCreatableAgents(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read feature-setting audit history. [admin]
+     * @remarks `GET /management/features/changes` — access: `fleet:admin`
+     */
+    listFeatureFlagChanges(params: {
+        limit?: number;
+    }): Promise<any>;
+
+    /**
+     * List code-defined feature flags and published defaults.
+     * @remarks `GET /management/features/catalog` — access: `authed`
+     */
+    listFeatureFlags(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Find users to manage feature preferences. [admin]
+     * @remarks `GET /management/features/users` — access: `fleet:admin`
+     */
+    listFeatureFlagUsers(params: {
+        query?: string;
+    }): Promise<any>;
 
     /**
      * List graph namespaces (corpora).
@@ -1352,6 +1406,16 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Reset cluster feature policy to published defaults. [admin]
+     * @remarks `DELETE /management/features/cluster/:featureKey` — access: `fleet:admin`
+     */
+    resetClusterFeatureFlag(params: {
+        featureKey: string;
+        expectedRevision?: string;
+        requestId?: string;
+    }): Promise<any>;
+
+    /**
      * Restart a system session (complete | terminate | hard_delete).
      * @remarks `POST /management/sessions/:agentIdOrSessionId/restart-system` — access: `fleet:admin`
      */
@@ -1488,6 +1552,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Set cluster feature policy atomically. [admin]
+     * @remarks `PUT /management/features/cluster/:featureKey` — access: `fleet:admin`
+     */
+    setClusterFeatureFlag(params: {
+        featureKey: string;
+        enabled?: any;
+        allowUserOverride?: any;
+        expectedRevision?: any;
+        requestId?: any;
+    }): Promise<any>;
+
+    /**
      * Set (or clear with null) the per-user GitHub Copilot key.
      * @remarks `PUT /me/github-copilot-key` — access: `authed`
      */
@@ -1535,6 +1611,17 @@ export interface ManagementOps {
         model?: any;
         reasoning?: any;
         context?: any;
+    }): Promise<any>;
+
+    /**
+     * Set my preference; locked cluster policy still takes precedence.
+     * @remarks `PUT /management/users/me/features/:featureKey` — access: `authed`
+     */
+    setMyFeatureFlag(params: {
+        featureKey: string;
+        enabled?: any;
+        expectedRevision?: any;
+        requestId?: any;
     }): Promise<any>;
 
     /**
@@ -1627,6 +1714,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Set a user's feature preference. [admin]
+     * @remarks `PUT /management/users/:userId/features/:featureKey` — access: `fleet:admin`
+     */
+    setUserFeatureFlag(params: {
+        userId: string;
+        featureKey: string;
+        enabled?: any;
+        expectedRevision?: any;
+        requestId?: any;
+    }): Promise<any>;
+
+    /**
      * Semantic nearest-neighbours of a known fact. [enhanced]
      * @remarks `POST /facts/similar` — access: `facts:read`
      */
@@ -1667,6 +1766,27 @@ export interface ManagementOps {
      */
     storeFact(params: {
         input?: any;
+    }): Promise<any>;
+
+    /**
+     * Remove my preference and inherit cluster policy.
+     * @remarks `DELETE /management/users/me/features/:featureKey` — access: `authed`
+     */
+    unsetMyFeatureFlag(params: {
+        featureKey: string;
+        expectedRevision?: string;
+        requestId?: string;
+    }): Promise<any>;
+
+    /**
+     * Remove a user's preference and restore inheritance. [admin]
+     * @remarks `DELETE /management/users/:userId/features/:featureKey` — access: `fleet:admin`
+     */
+    unsetUserFeatureFlag(params: {
+        userId: string;
+        featureKey: string;
+        expectedRevision?: string;
+        requestId?: string;
     }): Promise<any>;
 
     /**
@@ -1810,6 +1930,7 @@ export function createManagementOps(
         getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
         getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
+        getClusterFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getClusterFeatureFlags", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
         getDefaultModel: (params: Record<string, unknown> = {}) => callOp("getDefaultModel", params),
         getDefaults: (params: Record<string, unknown> = {}) => callOp("getDefaults", params),
@@ -1830,6 +1951,7 @@ export function createManagementOps(
         getLogConfig: (params: Record<string, unknown> = {}) => callOp("getLogConfig", params),
         getModelDefaults: (params: Record<string, unknown> = {}) => callOp("getModelDefaults", params),
         getModelsByProvider: (params: Record<string, unknown> = {}) => callOp("getModelsByProvider", params),
+        getMyFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getMyFeatureFlags", params),
         getOrchestrationStats: (params: Record<string, unknown> = {}) => callOp("getOrchestrationStats", params),
         getProviderStatus: (params: Record<string, unknown> = {}) => callOp("getProviderStatus", params),
         getProviderUsage: (params: Record<string, unknown> = {}) => callOp("getProviderUsage", params),
@@ -1858,6 +1980,7 @@ export function createManagementOps(
         getSharedFactsStats: (params: Record<string, unknown> = {}) => callOp("getSharedFactsStats", params),
         getSystemGitHubCopilotKeyStatus: (params: Record<string, unknown> = {}) => callOp("getSystemGitHubCopilotKeyStatus", params),
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
+        getUserFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getUserFeatureFlags", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         getWorkerTimeline: (params: Record<string, unknown> = {}) => callOp("getWorkerTimeline", params),
@@ -1872,6 +1995,9 @@ export function createManagementOps(
         listAuthzAudit: (params: Record<string, unknown> = {}) => callOp("listAuthzAudit", params),
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
+        listFeatureFlagChanges: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagChanges", params),
+        listFeatureFlags: (params: Record<string, unknown> = {}) => callOp("listFeatureFlags", params),
+        listFeatureFlagUsers: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagUsers", params),
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
         listJobGeneratorCycles: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorCycles", params),
         listJobGeneratorDefinitions: (params: Record<string, unknown> = {}) => callOp("listJobGeneratorDefinitions", params),
@@ -1904,6 +2030,7 @@ export function createManagementOps(
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
+        resetClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("resetClusterFeatureFlag", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
@@ -1918,11 +2045,13 @@ export function createManagementOps(
         setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),
         setCanvasKvAccess: (params: Record<string, unknown> = {}) => callOp("setCanvasKvAccess", params),
         setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
+        setClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setClusterFeatureFlag", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
         setCurrentUserProfileSettings: (params: Record<string, unknown> = {}) => callOp("setCurrentUserProfileSettings", params),
         setJobWaitConditionOverride: (params: Record<string, unknown> = {}) => callOp("setJobWaitConditionOverride", params),
         setModelDefault: (params: Record<string, unknown> = {}) => callOp("setModelDefault", params),
         setMyDefault: (params: Record<string, unknown> = {}) => callOp("setMyDefault", params),
+        setMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setMyFeatureFlag", params),
         setProviderAllowance: (params: Record<string, unknown> = {}) => callOp("setProviderAllowance", params),
         setProviderHold: (params: Record<string, unknown> = {}) => callOp("setProviderHold", params),
         setProviderLimit: (params: Record<string, unknown> = {}) => callOp("setProviderLimit", params),
@@ -1932,11 +2061,14 @@ export function createManagementOps(
         setSystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setSystemGitHubCopilotKey", params),
         setSystemModelDefault: (params: Record<string, unknown> = {}) => callOp("setSystemModelDefault", params),
         setSystemSessionModel: (params: Record<string, unknown> = {}) => callOp("setSystemSessionModel", params),
+        setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
+        unsetMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetMyFeatureFlag", params),
+        unsetUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetUserFeatureFlag", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),

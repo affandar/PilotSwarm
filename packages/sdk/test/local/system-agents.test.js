@@ -289,6 +289,7 @@ async function testChildAgentCmsMetadata(env) {
 
             // isSystem flag
             assertEqual(child.isSystem, true, `${child.agentId} should be system`);
+            assertEqual(child.owner, null, `${child.agentId} uses its persisted system identity, not a user owner`);
 
             // Parent link
             assertEqual(
@@ -305,6 +306,13 @@ async function testChildAgentCmsMetadata(env) {
 
             console.log(`    isSystem=${child.isSystem}, parent=${child.parentSessionId?.slice(0, 8)}, agentId=${child.agentId}`);
         }
+
+        // Real CMS bootstrap rows are ownerless. Their feature-tool identity
+        // must come from isSystem; rejecting owner=null prevents the root from
+        // ever entering runTurn, even though all child metadata was created.
+        const parent = await catalog.getSession(pilotswarmId);
+        assertEqual(parent.isSystem, true, "pilotswarm should retain its persisted system identity");
+        assertEqual(parent.owner, null, "pilotswarm bootstrap should be ownerless");
 
         // Validate duroxide + CMS integrity for parent
         await validateSessionAfterTurn(env, pilotswarmId, {

@@ -17,6 +17,7 @@ import type {
     JobJournalEntryRow,
     WorkerTimelineEntry,
 } from "../cms.js";
+import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -873,6 +874,19 @@ export class WebPilotSwarmManagementClient {
     async listProviders(_viewer?: unknown): Promise<any> {
         return this.ops.listProviders();
     }
+
+    async listFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.listFeatureFlags(); }
+    async getClusterFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getClusterFeatureFlags(); }
+    async getMyFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getMyFeatureFlags(); }
+    async getUserFeatureFlags(_viewer: FeatureViewer, userId: number): Promise<FeatureView> { return this.ops.getUserFeatureFlags({ userId: String(userId) }); }
+    async setClusterFeatureFlag(_viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.setClusterFeatureFlag(input); }
+    async resetClusterFeatureFlag(_viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.resetClusterFeatureFlag(input); }
+    async setMyFeatureFlag(_viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.setMyFeatureFlag(input); }
+    async unsetMyFeatureFlag(_viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.unsetMyFeatureFlag(input); }
+    async setUserFeatureFlag(_viewer: FeatureViewer, userId: number, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.setUserFeatureFlag({ ...input, userId: String(userId) }); }
+    async unsetUserFeatureFlag(_viewer: FeatureViewer, userId: number, input: FeatureMutation): Promise<FeatureMutationResult> { return this.ops.unsetUserFeatureFlag({ ...input, userId: String(userId) }); }
+    async listFeatureFlagChanges(_viewer: FeatureViewer, limit?: number): Promise<unknown[]> { return this.ops.listFeatureFlagChanges({ limit }); }
+    async listFeatureFlagUsers(_viewer: FeatureViewer, query?: string) { return this.ops.listFeatureFlagUsers({ query }); }
 
     async getProviderStatus(_viewer: unknown, names?: string[] | null): Promise<any> {
         return this.ops.getProviderStatus({ names: names?.length ? names.join(",") : undefined });

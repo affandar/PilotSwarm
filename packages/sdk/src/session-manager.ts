@@ -1,3 +1,8 @@
+import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
+import type { FeatureFlagCache } from "./feature-flag-cache.js";
+import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
+import { FeatureFlagError } from "./feature-flags.js";
+import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
 import { ManagedSession } from "./managed-session.js";
@@ -47,6 +52,7 @@ const DEHYDRATE_STORE_MAX_RETRIES = 1;
 const DEHYDRATE_STORE_RETRY_BASE_DELAY_MS = 0;
 const SESSION_LOCK_BACKOFF_MS = [5_000, 10_000, 20_000] as const;
 const SESSION_LOCK_MAX_WAIT_MS = 120_000;
+const COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 export const SESSION_LOCK_ACQUIRE_TIMEOUT_CODE = "PILOTSWARM_SESSION_LOCK_ACQUIRE_TIMEOUT";
 
 /**
@@ -127,6 +133,8 @@ function isMissingDehydrateSnapshotError(error: unknown): boolean {
  */
 export interface AgentCopyEntry {
     prompt: string;
+    /** Current named-agent declarations; [] explicitly means no additional tools. */
+    toolNames?: string[];
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
@@ -141,6 +149,24 @@ export interface AgentCopyEntry {
  */
 export interface AgentPromptEntry extends AgentCopyEntry {
     copies?: AgentCopyEntry[];
+}
+
+export class PackageToolBindingError extends Error {
+    readonly code = "PACKAGE_TOOL_REQUIRES_BOUND_AGENT";
+
+    constructor(readonly toolName: string) {
+        super(`Package tool "${toolName}" requires its owning named-agent definition. Use ps_list_agents to find its named agent, then call spawn_agent with the exact agent_name and your assignment in task.`);
+        this.name = "PackageToolBindingError";
+    }
+}
+
+export class BoundAgentPackageUnavailableError extends Error {
+    readonly code = "BOUND_AGENT_PACKAGE_UNAVAILABLE";
+
+    constructor(readonly packageId: string, message = `The bound agent package "${packageId}" is no longer available to this session.`) {
+        super(message);
+        this.name = "BoundAgentPackageUnavailableError";
+    }
 }
 
 /** Key under which a package copy's per-agent config (MCP) is registered. */
@@ -297,10 +323,27 @@ export function resolveRepoAgentDefinition(
     return undefined;
 }
 
+/** Resolve an already-authorized exact package copy while rechecking owner visibility. */
+export function pickAgentCopyByPackageIdForOwner(
+    entry: AgentPromptEntry | undefined,
+    packageId: string,
+    ownerKey: string | null,
+): AgentCopyEntry | undefined {
+    if (!entry || !packageId) return undefined;
+    const copies = entry.copies?.length ? entry.copies : [entry];
+    const copy = copies.find((candidate) => candidate.packageId === packageId);
+    if (!copy) return undefined;
+    if (copy.packageScope !== "user") return copy;
+    return agentOwnerKey(copy.packageOwner) === ownerKey && ownerKey !== null
+        ? copy
+        : undefined;
+}
+
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
     appDefaultPrompt?: string;
@@ -373,10 +416,57 @@ export interface WorkerDefaults {
     turnInactivityTimeoutMs?: number;
 }
 
+/** Resolve every part of a bound agent using the same authorized package copy. */
+function resolveBoundAgentCopy(
+    workerDefaults: WorkerDefaults,
+    config: SerializableSessionConfig,
+    sessionOwnerKey: string | null,
+): AgentCopyEntry | undefined {
+    const entry = config.boundAgentName
+        ? workerDefaults.agentPromptLookup?.[config.boundAgentName]
+        : undefined;
+    if (config.boundAgentSource === "deployment") {
+        const copies = entry?.copies?.length ? entry.copies : entry ? [entry] : [];
+        const deployment = copies.find(copy => !copy.packageId && copy.packageScope == null);
+        if (config.boundAgentPackageId || !deployment) {
+            throw new BoundAgentPackageUnavailableError(
+                `deployment:${config.boundAgentName ?? ""}`,
+                `The bound deployment agent "${config.boundAgentName ?? ""}" is no longer available or has a conflicting package binding.`,
+            );
+        }
+        return deployment;
+    }
+    const copy = config.boundAgentPackageId
+        ? pickAgentCopyByPackageIdForOwner(entry, config.boundAgentPackageId, sessionOwnerKey)
+        : pickAgentCopyForOwner(entry, sessionOwnerKey);
+    if (config.boundAgentPackageId && !copy) {
+        throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId);
+    }
+    return copy;
+}
+
+/** Match the SDK wire declaration, including schemas supplied through Zod. */
+function toolDeclarationForFingerprint(tool: Tool<any>): Record<string, unknown> {
+    const parameters = tool.parameters as any;
+    return {
+        name: tool.name,
+        description: tool.description,
+        parameters: parameters != null && typeof parameters === "object" && typeof parameters.toJSONSchema === "function"
+            ? parameters.toJSONSchema()
+            : parameters,
+        overridesBuiltInTool: tool.overridesBuiltInTool,
+        skipPermission: tool.skipPermission,
+        defer: tool.defer ?? "never",
+        metadata: tool.metadata,
+        isTerminal: tool.isTerminal,
+    };
+}
+
 function buildEffectivePromptLayers(
     workerDefaults: WorkerDefaults,
     config: SerializableSessionConfig,
     sessionOwnerKey: string | null = null,
+    boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(workerDefaults, config, sessionOwnerKey) ?? null,
 ): PromptLayerDescriptor[] {
     const boundAgentName = config.boundAgentName;
     const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
@@ -385,8 +475,7 @@ function buildEffectivePromptLayers(
     if (workerDefaults.frameworkBaseDescriptor) layers.push(workerDefaults.frameworkBaseDescriptor);
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
-        const copy = pickAgentCopyForOwner(workerDefaults.agentPromptLookup?.[boundAgentName], sessionOwnerKey);
-        if (copy?.descriptor) layers.push(copy.descriptor);
+        if (boundAgentCopy?.descriptor) layers.push(boundAgentCopy.descriptor);
     }
     return layers;
 }
@@ -531,6 +620,8 @@ export class SessionManager {
         }
     }
     private sessions = new Map<string, ManagedSession>();
+    private featureFlags: FeatureFlagCache | null = null;
+    private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
     get activeSessionCount(): number {
@@ -568,10 +659,18 @@ export class SessionManager {
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
+    /** Only application-supplied tools; resolved registry/platform handlers are never cached as inputs. */
+    private sessionApplicationTools = new Map<string, Tool<any>[]>();
+    /** One authorized agent snapshot per turn, also used by dynamic prompt callbacks. */
+    private sessionAgentCopies = new Map<string, AgentCopyEntry | undefined>();
+    /** CLI declarations and MCP grants require a new SDK handle when they change. */
+    private sessionBindingFingerprints = new Map<string, string>();
     /** Worker-level tool registry — shared reference from PilotSwarmWorker. */
     private toolRegistry = new Map<string, Tool<any>>();
     /** Per-package tool maps, so a session prefers ITS package's handler on a name collision. */
     private packageToolRegistry: Map<string, Map<string, Tool<any>>> | null = null;
+    /** Package-owned names cannot be attached without the matching agent package binding. */
+    private packageToolNames = new Set<string>();
     /** Names registered by deployment code — a package tool must never shadow these. */
     private staticToolNames: Set<string> | null = null;
     /** Worker-level defaults for building blocks. */
@@ -653,6 +752,8 @@ export class SessionManager {
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
         this.sessionConfigs.set(sessionId, config);
+        if (config.tools?.length) this.sessionApplicationTools.set(sessionId, [...config.tools]);
+        else this.sessionApplicationTools.delete(sessionId);
     }
 
     private async _allowedModelProviderIds(sessionId: string): Promise<Set<string> | null> {
@@ -783,7 +884,6 @@ export class SessionManager {
      * cache would leak one identity's catalog onto another's sessions.
      */
     private modelCatalogCaches = new Map<string, { fetchedAt: number; models: Array<{ id: string; capabilities?: any }> }>();
-
     /**
      * Resolve whether a session's model can be shown images, plus the
      * provider's vision limits. `modelRef` is the session-config value
@@ -916,6 +1016,11 @@ export class SessionManager {
         this.toolRegistry = registry;
         this.packageToolRegistry = opts?.byPackage ?? null;
         this.staticToolNames = opts?.staticNames ?? null;
+        // Remember ownership after removal as well: a stale application-supplied
+        // handler must not become an ordinary tool when its package disappears.
+        for (const tools of this.packageToolRegistry?.values() ?? []) {
+            for (const name of tools.keys()) this.packageToolNames.add(name);
+        }
     }
 
     /** Set the cluster facts store for always-on facts tools. */
@@ -931,6 +1036,15 @@ export class SessionManager {
     /** Set the CMS catalog for always-on inspect tools (e.g. read_agent_events). */
     setSessionCatalog(catalog: SessionCatalog | null): void {
         this.sessionCatalog = catalog;
+    }
+
+    setFeatureFlagCache(cache: FeatureFlagCache | null): void {
+        this.unsubscribeFeatureFlags?.();
+        this.featureFlags = cache;
+        this.unsubscribeFeatureFlags = cache?.onChange(() => {
+            for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
+        }) ?? null;
+        for (const managed of this.sessions.values()) managed.refreshNativeFeaturePolicy();
     }
 
     /**
@@ -1189,7 +1303,7 @@ export class SessionManager {
             try {
                 await existing.destroy();
             } catch {}
-            this.sessions.delete(sessionId);
+            this._forgetWarmSession(sessionId);
         }
 
         try {
@@ -1228,7 +1342,7 @@ export class SessionManager {
             try {
                 await existing.destroy();
             } catch {}
-            this.sessions.delete(sessionId);
+            this._forgetWarmSession(sessionId);
         }
 
         try {
@@ -1361,7 +1475,7 @@ export class SessionManager {
                     const existing = this.sessions.get(sessionId);
                     if (existing) {
                         try { await existing.destroy(); } catch {}
-                        this.sessions.delete(sessionId);
+                        this._forgetWarmSession(sessionId);
                     }
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
@@ -1524,7 +1638,7 @@ export class SessionManager {
             ...(this.workerDefaults.appDefaultToolNames ?? []),
             ...(serializableConfig.toolNames ?? []),
         ]));
-        const effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
+        let effectiveSerializableConfig: SerializableSessionConfig = inheritedToolNames.length > 0
             ? { ...serializableConfig, toolNames: inheritedToolNames }
             : serializableConfig;
         // Which copy of the bound agent does this session get? Owner-aware:
@@ -1532,20 +1646,102 @@ export class SessionManager {
         // one, the same rule the registry resolver applies at create time.
         // Resolved once here; prompt, descriptor, MCP, and tool-handler picks
         // below all follow the same copy so a session can never mix copies.
-        const boundAgentEntry = effectiveSerializableConfig.boundAgentName
-            ? this.workerDefaults.agentPromptLookup?.[effectiveSerializableConfig.boundAgentName]
-            : undefined;
-        // A PACKAGE agent (as opposed to a deployment/inline agent) carries a
-        // packageId on its entry or on any of its copies. This is load-bearing
-        // for MCP resolution: a package agent must never fall back to the
-        // bare-name MCP key, which another copy of a shadowed name also wrote.
         const sessionOwnerKey = effectiveSerializableConfig.boundAgentName
             ? await this._sessionAgentOwnerKey(sessionId)
             : null;
-        const boundAgentCopy = pickAgentCopyForOwner(boundAgentEntry, sessionOwnerKey);
-        // Resolve tools: merge per-session (setConfig) + registry (toolNames)
         const storedConfig = this.sessionConfigs.get(sessionId);
-        const resolvedTools = this._resolveTools(storedConfig, effectiveSerializableConfig, boundAgentCopy?.packageId);
+        let boundAgentCopy: AgentCopyEntry | undefined;
+        let resolvedTools: Tool<any>[];
+        try {
+            boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
+            // Snapshot the selected prompt and descriptor. A registry refresh in the
+            // middle of a turn must not change instructions while handlers still
+            // belong to the previously selected version.
+            if (boundAgentCopy) boundAgentCopy = {
+                ...boundAgentCopy,
+                ...(boundAgentCopy.toolNames ? { toolNames: [...boundAgentCopy.toolNames] } : {}),
+                ...(boundAgentCopy.descriptor ? { descriptor: { ...boundAgentCopy.descriptor } } : {}),
+            };
+            if (boundAgentCopy?.toolNames && effectiveSerializableConfig.boundAgentName
+                && (effectiveSerializableConfig.boundAgentPackageId || effectiveSerializableConfig.detachedPackageToolPolicy
+                    || effectiveSerializableConfig.namedAgentToolAdditions !== undefined)) {
+                // Named definitions refresh as a unit. Roots may add ordinary
+                // application tools; protected children receive only defaults and
+                // their definition. Legacy package roots have no provenance, so
+                // retain their ordinary names but never stale package capabilities.
+                const additions = effectiveSerializableConfig.detachedPackageToolPolicy
+                    ? []
+                    : (effectiveSerializableConfig.namedAgentToolAdditions ?? effectiveSerializableConfig.toolNames ?? [])
+                        .filter(name => this.staticToolNames?.has(name) || !this.packageToolNames.has(name));
+                effectiveSerializableConfig = {
+                    ...effectiveSerializableConfig,
+                    toolNames: [...new Set([
+                        ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+                        ...(this.workerDefaults.appDefaultToolNames ?? []),
+                        ...boundAgentCopy.toolNames,
+                        ...additions,
+                    ])],
+                };
+            }
+            if (effectiveSerializableConfig.boundAgentSource === "deployment") {
+                // A deployment definition is bound, but owns no registry package.
+                // It cannot borrow a shared/private package's exported handlers.
+                effectiveSerializableConfig = { ...effectiveSerializableConfig, detachedPackageToolPolicy: "reject" };
+            }
+            resolvedTools = this._resolveTools(
+                { tools: this.sessionApplicationTools.get(sessionId) },
+                effectiveSerializableConfig,
+                boundAgentCopy?.packageId,
+            );
+        } catch (error) {
+            // Failed authorization/removal must not leave a reusable handle with
+            // the previous package's handlers or MCP grants.
+            await this.dropWarmSession(sessionId);
+            this.sessionAgentCopies.delete(sessionId);
+            throw error;
+        }
+        // Capture MCP grants with the same registry snapshot, before asynchronous
+        // provider/catalog work below can allow a package reload to intervene.
+        //
+        // Per-agent MCP (capability-profiles Phase 1): a session gets the
+        // base map (base-agent opt-ins + direct worker-config servers) plus
+        // its bound agent's resolved server map — resolved worker-side at the
+        // same chokepoint as the agent prompt. The deployment catalog is
+        // never applied wholesale.
+        //
+        // Read the MCP map of the copy THIS session actually resolved to.
+        // The worker registers a package agent's MCP under a package-qualified
+        // key only, and reserves the bare name for deployment/inline agents —
+        // so the resolved copy's own packageId is the discriminator:
+        //   • package copy resolved  → its qualified key (never the bare name,
+        //     which another copy of a shadowed name could have written);
+        //   • deployment/inline copy → the bare name (its own MCP);
+        //   • no copy resolved (a foreign-private-only name) → no grants.
+        // Keying off `boundAgentCopy.packageId` rather than "is any copy a
+        // package" is load-bearing: when a deployment agent and a package
+        // share a name and this session resolved the DEPLOYMENT copy, it must
+        // still get the deployment agent's bare-key MCP, not an empty
+        // qualified lookup.
+        const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
+            ? undefined
+            : boundAgentCopy.packageId
+                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
+                : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
+        // `let`: delegated repo-defined MCP servers (git-hydration) are merged
+        // into this map further down, so it must stay reassignable.
+        let effectiveMcpServers: Record<string, any> = {
+            ...(this.workerDefaults.baseMcpServers ?? {}),
+        };
+        const agentMcpOverrides = boundAgentMcpServers ?? {};
+        for (const agentServerName of Object.keys(agentMcpOverrides)) {
+            const agentServerLc = agentServerName.toLowerCase();
+            for (const baseServerName of Object.keys(effectiveMcpServers)) {
+                if (baseServerName !== agentServerName && baseServerName.toLowerCase() === agentServerLc) {
+                    delete effectiveMcpServers[baseServerName];
+                }
+            }
+            effectiveMcpServers[agentServerName] = agentMcpOverrides[agentServerName];
+        }
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -1705,7 +1901,7 @@ export class SessionManager {
                     { trace },
                 );
                 try { await existingWarm.destroy(); } catch {}
-                this.sessions.delete(sessionId);
+                this._forgetWarmSession(sessionId);
             }
         }
         // Non-MCP delegated-token surfacing — MUST run BEFORE ensureClient() below.
@@ -1967,16 +2163,36 @@ export class SessionManager {
         // sub-agent, fact, inspect, or graph tools. Mirrors the per-turn gate
         // in managed-session.ts runTurn — hard exclusion beats instructions.
         const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
+        const featureTools = this.sessionCatalog?.features
+            && ["resourcemgr", "pilotswarm", "agent-manager"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            && (await this._resolveFeatureViewer(sessionId)).isAdmin
+            ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
+        // Handler refresh alone cannot change the CLI's tool declarations.
+        // Role transitions must recreate the warm SDK handle at the next turn.
+        config.featureToolFingerprint = createHash("sha256")
+            .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
+            .digest("hex");
+        const nativeOwner = catalogRow?.owner ?? null;
+        // An unreadable owner must not bypass a user-level OFF by resolving
+        // cluster policy. Ownerless resolution is only for standalone managers.
+        const nativeOwnerKnown = !this.sessionCatalog || Boolean(nativeOwner?.provider && nativeOwner?.subject);
+        config.nativeFeatureAllowed = () => nativeOwnerKnown
+            && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
+        const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
+            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
+            && config.promptLayering?.kind !== "pilotswarm-system-agent";
+        config.nativeSubagents = nativeEnabled ? "sync" : "off";
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
-        ].map((t: any) => t.name));
+        ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         const allTools = [
             ...persistentSessionTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
@@ -1986,51 +2202,25 @@ export class SessionManager {
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
             ...unlessService(providerTools),
+            ...unlessService(featureTools),
         ];
         config.tools = persistentSessionTools;
 
         // Build system message: worker base + client override
-        const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey);
+        const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null);
 
-        // Per-agent MCP (capability-profiles Phase 1): a session gets the
-        // base map (base-agent opt-ins + direct worker-config servers) plus
-        // its bound agent's resolved server map — resolved worker-side at the
-        // same chokepoint as the agent prompt. The deployment catalog is
-        // never applied wholesale.
-        //
-        // Read the MCP map of the copy THIS session actually resolved to.
-        // The worker registers a package agent's MCP under a package-qualified
-        // key only, and reserves the bare name for deployment/inline agents —
-        // so the resolved copy's own packageId is the discriminator:
-        //   • package copy resolved  → its qualified key (never the bare name,
-        //     which another copy of a shadowed name could have written);
-        //   • deployment/inline copy → the bare name (its own MCP);
-        //   • no copy resolved (a foreign-private-only name) → no grants.
-        // Keying off `boundAgentCopy.packageId` rather than "is any copy a
-        // package" is load-bearing: when a deployment agent and a package
-        // share a name and this session resolved the DEPLOYMENT copy, it must
-        // still get the deployment agent's bare-key MCP, not an empty
-        // qualified lookup.
-        const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
-            ? undefined
-            : boundAgentCopy.packageId
-                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
-                : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
-        // `let`: delegated repo-defined MCP servers (git-hydration) are merged
-        // into this map further down, so it must stay reassignable.
-        let effectiveMcpServers: Record<string, any> = {
-            ...(this.workerDefaults.baseMcpServers ?? {}),
-        };
-        const agentMcpOverrides = boundAgentMcpServers ?? {};
-        for (const agentServerName of Object.keys(agentMcpOverrides)) {
-            const agentServerLc = agentServerName.toLowerCase();
-            for (const baseServerName of Object.keys(effectiveMcpServers)) {
-                if (baseServerName !== agentServerName && baseServerName.toLowerCase() === agentServerLc) {
-                    delete effectiveMcpServers[baseServerName];
-                }
-            }
-            effectiveMcpServers[agentServerName] = agentMcpOverrides[agentServerName];
-        }
+        // Handler changes use updateConfig; declaration, MCP and authored prompt
+        // changes need a fresh CLI handle at this turn boundary. Do not include
+        // per-turn runtime context or newly allocated handler function identity.
+        const bindingFingerprint = createHash("sha256").update(JSON.stringify({
+            boundAgentName: config.boundAgentName,
+            boundAgentSource: config.boundAgentSource,
+            boundAgentCopy,
+            mcpServers: effectiveMcpServers,
+            tools: allTools.map(toolDeclarationForFingerprint),
+        })).digest("hex");
+        const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
+            && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
 
         // Delegated MCP access (repo-stored config + caller-delegated auth):
         // when the caller supplied a credential at createSession — persisted to
@@ -2139,7 +2329,7 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(allTools),
+            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId) : allTools),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //
@@ -2185,7 +2375,8 @@ export class SessionManager {
             // become per-session/per-workload config knobs, not blanket defaults.
             enableConfigDiscovery: true,
             enableSkills: true,
-            hooks: config.hooks,
+            hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
+                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -2198,17 +2389,20 @@ export class SessionManager {
             // Suppress sub-agent streaming events — we never want the parent
             // session's event log polluted with grandchild deltas.
             includeSubAgentStreamingEvents: false,
-            // Exclude the Copilot SDK's built-in "task" tool — PilotSwarm provides
-            // its own durable sub-agent mechanism via spawn_agent / check_agents.
-            // The native "task" tool spawns in-process sub-agents that bypass the
-            // durable orchestration layer, causing the LLM to use the wrong mechanism.
-            excludedTools: ["task"],
+            // Native workers are explicitly scoped: built-ins inherit external
+            // tools, and loaded PilotSwarm agents expect durable child contracts.
+            excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
+            ...(nativeEnabled ? {
+                customAgents: nativeSubagentDefinitions(sdkModelName),
+                customAgentsLocalOnly: true,
+                excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
+            } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
-            ...(this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
@@ -2352,14 +2546,14 @@ export class SessionManager {
                     `discarding the warm Copilot session of the previous epoch.`,
                 );
                 await existing.destroy();
-                this.sessions.delete(sessionId);
-            } else if (existing.requiresModelRebind(config)) {
+                this._forgetWarmSession(sessionId);
+            } else if (bindingChanged || existing.requiresModelRebind(config)) {
                 console.warn(
-                    `[SessionManager] model config changed for ${sessionId}; ` +
-                    `disconnecting warm Copilot session so it can resume with the new model config.`,
+                    `[SessionManager] model or agent configuration changed for ${sessionId}; ` +
+                    `disconnecting warm Copilot session so it can resume with the updated configuration.`,
                 );
                 await existing.destroy();
-                this.sessions.delete(sessionId);
+                this._forgetWarmSession(sessionId);
             } else if (
                 this.sessionMcpAuthFingerprints.has(sessionId)
                 && this.sessionMcpAuthFingerprints.get(sessionId) !== mcpAuthFingerprint
@@ -2370,8 +2564,9 @@ export class SessionManager {
                     { trace },
                 );
                 await existing.destroy();
-                this.sessions.delete(sessionId);
+                this._forgetWarmSession(sessionId);
             } else {
+                this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 existing.updateConfig(config);
                 this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
                 return existing;
@@ -2499,7 +2694,9 @@ export class SessionManager {
         }));
         this.sessions.set(sessionId, managed);
         this.sessionMcpAuthFingerprints.set(sessionId, mcpAuthFingerprint);
-        const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config);
+        this.sessionAgentCopies.set(sessionId, boundAgentCopy);
+        this.sessionBindingFingerprints.set(sessionId, bindingFingerprint);
+        const promptLayers = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy ?? null);
         if (promptLayers.length > 0 && this.sessionCatalog) {
             void this.sessionCatalog.recordEvents(sessionId, [{
                 eventType: "session.prompt_layers",
@@ -2519,6 +2716,14 @@ export class SessionManager {
         return this.sessionStateDir;
     }
 
+    /** Release snapshots with their SDK handle; application tools survive ordinary hydration. */
+    private _forgetWarmSession(sessionId: string): void {
+        this.sessions.delete(sessionId);
+        this.sessionAgentCopies.delete(sessionId);
+        this.sessionBindingFingerprints.delete(sessionId);
+        this.sessionMcpAuthFingerprints.delete(sessionId);
+    }
+
     /**
      * Destroy the in-memory ManagedSession only — disk state untouched.
      * Used by the lifecycle preamble before overwriting local files with a
@@ -2527,13 +2732,10 @@ export class SessionManager {
      */
     async dropWarmSession(sessionId: string): Promise<void> {
         const existing = this.sessions.get(sessionId);
-        if (!existing) {
-            this.sessionMcpAuthFingerprints.delete(sessionId);
-            return;
+        if (existing) {
+            try { await existing.destroy(); } catch {}
         }
-        try { await existing.destroy(); } catch {}
-        this.sessions.delete(sessionId);
-        this.sessionMcpAuthFingerprints.delete(sessionId);
+        this._forgetWarmSession(sessionId);
     }
 
     /**
@@ -2604,12 +2806,12 @@ export class SessionManager {
             try {
                 emitSessionManagerTrace(sessionId, `destroy attempt ${attempt}/${DESTROY_MAX_RETRIES}`, { trace });
                 await session.destroy();
-                this.sessions.delete(sessionId);
+                this._forgetWarmSession(sessionId);
                 emitSessionManagerTrace(sessionId, `destroy complete on attempt ${attempt}/${DESTROY_MAX_RETRIES}`, { trace });
                 break; // Success
             } catch (err: any) {
                 lastDestroyError = normalizeError(err);
-                this.sessions.delete(sessionId); // Remove broken session from map
+                this._forgetWarmSession(sessionId); // Remove broken session from map
                 emitSessionManagerTrace(
                     sessionId,
                     `destroy failed on attempt ${attempt}/${DESTROY_MAX_RETRIES} error=${lastDestroyError.message}`,
@@ -2816,11 +3018,10 @@ export class SessionManager {
             return this._withSessionLock(sessionId, "destroySession", () => this.destroySession(sessionId, { lockHeld: true }));
         }
         const session = this.sessions.get(sessionId);
-        if (session) {
-            await session.destroy();
-            this.sessions.delete(sessionId);
-        }
-        this.sessionMcpAuthFingerprints.delete(sessionId);
+        if (session) await session.destroy();
+        this._forgetWarmSession(sessionId);
+        this.sessionApplicationTools.delete(sessionId);
+        this.sessionConfigs.delete(sessionId);
     }
 
     /**
@@ -2840,8 +3041,7 @@ export class SessionManager {
         try {
             await session.destroy();
         } catch {}
-        this.sessions.delete(sessionId);
-        this.sessionMcpAuthFingerprints.delete(sessionId);
+        this._forgetWarmSession(sessionId);
     }
 
     /**
@@ -2874,17 +3074,43 @@ export class SessionManager {
         return [...this.sessions.keys()];
     }
 
-    /** Shutdown: destroy all sessions, stop CopilotClient. */
+    /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
-        for (const [_, session] of this.sessions) {
-            try { await session.destroy(); } catch {}
-        }
-        this.sessions.clear();
-        this.sessionClientKeys.clear();
-        for (const [, client] of this.clients) {
-            try { await client.stop(); } catch {}
-        }
+        this.unsubscribeFeatureFlags?.();
+        this.unsubscribeFeatureFlags = null;
+        // CopilotClient.stop owns session detachment. Detaching each session
+        // first can hang forever in the SDK's unbounded session.detach RPC.
+        // Snapshot and release this pool before awaiting: late SDK cleanup
+        // must never clear clients/configuration installed by a later start.
+        const clients = [...new Set(this.clients.values())];
         this.clients.clear();
+        this.sessions.clear();
+        this.sessionAgentCopies.clear();
+        this.sessionBindingFingerprints.clear();
+        this.sessionApplicationTools.clear();
+        this.sessionConfigs.clear();
+        this.sessionClientKeys.clear();
+        // Each process gets the same deadline concurrently; one stuck client
+        // cannot block another or multiply the worker's termination budget.
+        // This is final cleanup only, not the individual-session eviction path.
+        await Promise.all(clients.map(async (client) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                const errors = await Promise.race([
+                    client.stop(),
+                    new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(new Error("Copilot shutdown timed out")), COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS);
+                    }),
+                ]);
+                if (errors?.length) throw errors[0];
+            } catch {
+                console.warn("[SessionManager] Copilot did not shut down cleanly; forcing its local process to stop.");
+                try { await client.forceStop(); }
+                catch { console.warn("[SessionManager] Copilot force-stop failed."); }
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }));
     }
 
     /**
@@ -2908,15 +3134,39 @@ export class SessionManager {
             : undefined;
         if (serializableConfig.toolNames?.length) {
             for (const name of serializableConfig.toolNames) {
-                const tool = (this.staticToolNames?.has(name) ? this.toolRegistry.get(name) : undefined)
-                    ?? packageTools?.get(name)
-                    ?? this.toolRegistry.get(name);
+                const staticTool = this.staticToolNames?.has(name)
+                    ? this.toolRegistry.get(name)
+                    : undefined;
+                const packageTool = packageTools?.get(name);
+                if (!staticTool && !packageTool && this.packageToolNames.has(name)) {
+                    if (serializableConfig.detachedPackageToolPolicy === "drop") continue;
+                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                        throw new PackageToolBindingError(name);
+                    }
+                }
+                const tool = staticTool ?? packageTool ?? this.toolRegistry.get(name);
                 if (tool) registryTools.push(tool);
             }
         }
 
+        const storedTools = (storedConfig?.tools ?? []).filter((tool) => {
+            const name = String((tool as any)?.name || "");
+            if (!name || this.staticToolNames?.has(name) || !this.packageToolNames.has(name)) return true;
+            // An explicitly supplied package handler follows the current package
+            // copy, never a stale object retained by the caller across a reload.
+            if (packageTools?.has(name) && serializableConfig.toolNames?.includes(name)) return true;
+            if (serializableConfig.detachedPackageToolPolicy === "drop") return false;
+            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                throw new PackageToolBindingError(name);
+            }
+            return true;
+        }).map((tool) => {
+            const name = String((tool as any)?.name || "");
+            return this.staticToolNames?.has(name) ? tool : packageTools?.get(name) ?? tool;
+        });
+
         const combined = [
-            ...(storedConfig?.tools ?? []),
+            ...storedTools,
             ...registryTools,
         ];
 
@@ -3097,22 +3347,19 @@ export class SessionManager {
 
     private _buildLastInstructionsSection(
         sessionId: string,
-        initialConfig: SerializableSessionConfig,
+        initialConfig: ManagedSessionConfig,
+        initialAgentCopy: AgentCopyEntry | null,
     ): SectionOverride {
         return {
             action: async (currentContent: string) => {
                 const latest = this.sessionConfigs.get(sessionId) ?? initialConfig;
                 const runtimeContext = extractPromptContent(latest.systemMessage);
-                // Owner-aware copy pick, re-resolved here because this action
-                // runs per compose: with scope shadowing one agent name can be
-                // served by several packages, and this session must get the
-                // copy its OWNER resolves to — not whichever loaded last.
-                const activeAgentPrompt = latest.boundAgentName
-                    ? pickAgentCopyForOwner(
-                        this.workerDefaults.agentPromptLookup?.[latest.boundAgentName],
-                        await this._sessionAgentOwnerKey(sessionId),
-                    )?.prompt
-                    : undefined;
+                // Follow the same per-turn snapshot as tools/MCP/descriptor.
+                // Re-selecting by bare name here could both defeat an explicit
+                // shared-package pin and adopt refreshed instructions mid-turn.
+                const activeAgentPrompt = (this.sessionAgentCopies.has(sessionId)
+                    ? this.sessionAgentCopies.get(sessionId)
+                    : initialAgentCopy)?.prompt;
                 // Orchestration ≥1.0.71 delivers the per-turn note inside the
                 // user turn (see prompt-system-context.ts) and flags it. For
                 // those turns the note must NOT land here: this section is
@@ -3133,6 +3380,10 @@ export class SessionManager {
                     runtimeContext,
                     ownSkillsIndex,
                     latest.systemContextInPrompt ? undefined : latest.turnSystemPrompt,
+                    // The SDK ignores sibling `content` when `action` is a
+                    // transform callback. Include worker guidance in the actual
+                    // rendered section, using the current session policy.
+                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance() : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);
@@ -3288,6 +3539,20 @@ export class SessionManager {
         }
     }
 
+    private async _resolveFeatureViewer(sessionId: string): Promise<FeatureViewer> {
+        // Never use the inspect-viewer TTL for feature mutations: demotion must
+        // apply on the next invocation, including an already-hydrated session.
+        const row = await this.sessionCatalog?.getSession(sessionId);
+        // CMS deliberately leaves worker-provisioned system sessions ownerless.
+        // Their persisted service classification supplies the same identity used
+        // by credential and inspect resolution; an agent name grants nothing.
+        const principal = row?.owner ?? (row?.isSystem === true ? SYSTEM_USER_PRINCIPAL : null);
+        if (!principal?.provider || !principal.subject) throw new FeatureFlagError("FEATURE_FORBIDDEN", "Feature tools require an authenticated session owner", 403);
+        const system = row?.isSystem === true && principal.provider === SYSTEM_USER_PRINCIPAL.provider
+            && principal.subject === SYSTEM_USER_PRINCIPAL.subject;
+        return { principal, isAdmin: system || await this._resolveOwnerIsAdmin(principal) };
+    }
+
     /**
      * A one-line-per-skill index of the private skills this session's owner
      * published, or undefined when there are none. Mirrors the wording of the
@@ -3344,20 +3609,21 @@ export class SessionManager {
 
     private _buildSystemMessage(
         sessionId: string,
-        config: SerializableSessionConfig,
+        config: ManagedSessionConfig,
         sessionOwnerKey: string | null = null,
+        boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
         const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);
-        const lastInstructions = this._buildLastInstructionsSection(sessionId, config);
+        const lastInstructions = this._buildLastInstructionsSection(sessionId, config, boundAgentCopy);
         const additionalSections = knowledgeToolInstructions
             ? { tool_instructions: knowledgeToolInstructions, last_instructions: lastInstructions }
             : { last_instructions: lastInstructions };
 
         const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
-        const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey);
+        const layerManifest = buildEffectivePromptLayers(this.workerDefaults, config, sessionOwnerKey, boundAgentCopy);
 
         return composeStructuredSystemMessage({
             frameworkBase,

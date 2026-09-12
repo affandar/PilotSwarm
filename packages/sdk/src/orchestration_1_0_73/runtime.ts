@@ -43,7 +43,6 @@ function* restoreActiveTimer(runtime: DurableSessionRuntime): Generator<any, voi
         ...(t.shouldRehydrate ? { shouldRehydrate: true } : {}),
         ...(t.waitPlan ? { waitPlan: t.waitPlan } : {}),
         ...(t.content ? { content: t.content } : {}),
-        ...(t.resumePrompt ? { resumePrompt: t.resumePrompt } : {}),
         ...(t.question ? { question: t.question } : {}),
         ...(t.choices ? { choices: t.choices } : {}),
         ...(t.allowFreeform !== undefined ? { allowFreeform: t.allowFreeform } : {}),

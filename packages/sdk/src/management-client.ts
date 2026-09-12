@@ -44,6 +44,8 @@ import { ProviderError } from "./provider-store.js";
 import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
+import { FeatureFlagError } from "./feature-flags.js";
+import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { logPoisonOnce } from "./diagnostics.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -4455,6 +4457,24 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         return this._catalog!.getWorkerTimeline(workerNodeId, options);
     }
+
+    private _requireFeatures(): FeatureStore {
+        this._ensureStarted();
+        if (!this._catalog?.features) throw new FeatureFlagError("FEATURE_UNAVAILABLE", "Feature settings are unavailable", 503);
+        return this._catalog.features;
+    }
+    async listFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "cluster"); }
+    async getClusterFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "cluster"); }
+    async getMyFeatureFlags(viewer: FeatureViewer): Promise<FeatureView> { return this._requireFeatures().read(viewer, "user"); }
+    async getUserFeatureFlags(viewer: FeatureViewer, userId: number): Promise<FeatureView> { return this._requireFeatures().read(viewer, "user", userId); }
+    async setClusterFeatureFlag(viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "cluster", input); }
+    async resetClusterFeatureFlag(viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "cluster", input, true); }
+    async setMyFeatureFlag(viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "user", input); }
+    async unsetMyFeatureFlag(viewer: FeatureViewer, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "user", input, true); }
+    async setUserFeatureFlag(viewer: FeatureViewer, userId: number, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "user", input, false, userId); }
+    async unsetUserFeatureFlag(viewer: FeatureViewer, userId: number, input: FeatureMutation): Promise<FeatureMutationResult> { return this._requireFeatures().mutate(viewer, "user", input, true, userId); }
+    async listFeatureFlagChanges(viewer: FeatureViewer, limit?: number): Promise<unknown[]> { return this._requireFeatures().changes(viewer, limit); }
+    async listFeatureFlagUsers(viewer: FeatureViewer, query?: string) { return this._requireFeatures().users(viewer, query); }
 
     async setAgentPackageScope(
         name: string,

@@ -9,6 +9,7 @@ import { planHoldRelease } from "../wait-affinity.js";
 import {
     buildShutdownWaitReason,
     failPendingShutdown,
+    getChildResultFromStatus,
     getStillRunningAgentIds,
     handleSubAgentAction,
     isSubAgentTerminalStatus,
@@ -373,7 +374,7 @@ export function* processPrompt(
                 if (!state.preserveAffinityOnHydrate) {
                     state.affinityKey = yield ctx.newGuid();
                 }
-                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config);
+                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
                 yield runtime.session.hydrate();
                 state.needsHydration = false;
                 state.preserveAffinityOnHydrate = false;
@@ -1664,9 +1665,7 @@ export function* processTimer(
                         } else if (parsed.status === "input_required") {
                             agent.status = "input_required";
                         }
-                        if (parsed.result) {
-                            agent.result = parsed.result.slice(0, 2000);
-                        }
+                        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 2000);
                     } catch {}
                 }
 

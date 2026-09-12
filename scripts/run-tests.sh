@@ -156,6 +156,9 @@ Notes:
     node suites, and the SDK Vitest result with file/test counts) plus an
     Overall PASS/FAIL line, and exits non-zero if any phase failed. The
     --all-providers path additionally prints its own combined provider summary.
+- Set PS_TEST_SKIP_STALE_CLEANUP=1 when using a shared test provider to skip
+    only the global before/after stale-schema sweep. This is inherited by both
+    --all-providers phases; individual tests still clean their own data.
 - Default runs load .env as the baseline/default provider config and then
     clear HORIZON_* provider vars, so a stale local .env cannot accidentally
     turn the default PgFactStore run into a HorizonDB run.
@@ -988,6 +991,10 @@ check_pg_max_connections() {
 check_pg_max_connections
 
 cleanup_test_state() {
+    if [ "${PS_TEST_SKIP_STALE_CLEANUP:-0}" = "1" ]; then
+        echo "🛡  Global stale-test cleanup disabled; each test still cleans its own isolated data."
+        return 0
+    fi
     echo "🧹 Cleaning stale local test state..."
     node "$REPO_ROOT/scripts/cleanup-test-schemas.js"
 }

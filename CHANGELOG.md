@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.5.66 — 2026-09-11
+
+Fast browser-side session search across the workspace and Master of Agents.
+
+- Search the sessions already loaded in the browser by title, topic, summary,
+  owner, agent, group, model, status, or session ID. Rank exact and phrase
+  matches ahead of prefixes, substrings, and bounded typo matches.
+- Support structured filters such as `author:`, `agent:`, `group:`, `model:`,
+  `status:`, `topic:`, `summary:`, and `id:` without issuing a server query.
+- Keep the search control fixed below the desktop list and use a compact,
+  explicit search action on mobile. Reuse the same control in the Master of
+  Agents session picker, preserve collapsed state, and restore list scroll when
+  search is cleared.
+
+## 0.5.65 — 2026-09-11
+
+Named agents retain their own instructions and tools across delegation and
+restart. Parent-requested child cleanup no longer triggers a redundant model turn.
+
+- Keep a delegated named agent's prompt, tool handlers, declarations, MCP grants,
+  identity and mobile splash on its selected shared, private or deployment copy.
+  Refresh the binding at turn boundaries, resuming the Copilot handle when its
+  instructions or tool declarations change; fail closed when the copy disappears.
+- Remove `required_tool` from `spawn_agent`; discover caller-visible static and
+  published roles through `ps_list_agents` and select an exact `agent_name`.
+  Align base/native prompts and selection evaluation to prefer matching specialists.
+  Preserve the named definition's startup requirement and accept `task` as its assignment. Named
+  children use their own extra tools and instructions plus platform defaults;
+  reject caller tool/system overrides, including empty values.
+- Keep unnamed children from inheriting package identity, privileged roles or
+  package handlers. Drop inherited detached package tools and reject explicit
+  requests for them.
+- Admit `ps_list_agents` through the base tool defaults and list only selectable
+  caller-visible definitions, with exact shared/namespace references and role
+  metadata. Keep selected static namespaces bound through child startup and
+  refresh, including their own prompt, declarations and MCP grants.
+- Reserve the complete native and platform tool namespace when loading packages,
+  including tools attached only to privileged sessions.
+- Preserve each child's explicit contract across SDK creation and restore its
+  parent/depth from the catalog when another API client sends the first message.
+  Grandchildren do not inherit their parent's own child contract.
+- Preserve root application-tool additions across named-definition refresh and
+  persist explicit logical depth across clients. Restore the saved agent ID at
+  first start so named startup requirements apply on every portal/worker.
+- Record parent-requested child completion, cancellation and deletion as cleanup
+  audit events instead of waking the parent model with its own acknowledgement.
+  Preserve child answers during status polling and keep explicit waits working.
+  Track result provenance so literal answers such as `done` or `failed` are
+  preserved while orchestration exit output cannot replace a child answer.
+  Genuine child updates and externally requested termination still notify parents.
+- Freeze orchestrations 1.0.73 through 1.0.77; active 1.0.78 keeps capability-tagged
+  handoffs and removes the spawn capability selector. Legacy activity handlers
+  remain for frozen histories.
+  Upgrade with a drain-first replacement of incompatible workers; see the
+  [upgrade guide](docs/developer/building/agent-handoff-upgrade.md).
+- Prevent Copilot CLI's GitHub-only `snippy` field from reaching OpenAI/Azure
+  BYOK chat-completions requests. Keep native GitHub and Anthropic clients on
+  their original transport, with separate client pools and compatibility tests.
+- Bound final Copilot client cleanup after the durable runtime drains, using
+  the SDK force-stop fallback for stalled detach requests. Preserve snapshots
+  and session locks; ordinary session eviction retains its existing behavior.
+- Stop provider polling when worker shutdown begins, settle admitted system-agent
+  startup before closing storage, and restore exactly one poller on restart.
+- Retry transient Windows directory rename failures during snapshot hydration
+  with a bounded backoff.
+
+## 0.5.64 — 2026-09-09
+
+Cluster and user feature flighting, bounded native Copilot delegation, and
+clearer live session activity.
+
+- Add code-defined feature flags with cluster and user settings across the SDK,
+  management API, web API, MCP, Resource Manager, Agent Smith, and admin UI.
+  Workers refresh policy revisions without rebuilding agent packages; running
+  sessions apply changes at safe turn boundaries.
+- Ship `copilot.native_tasks` disabled by default. When policy enables it,
+  eligible Copilot sessions may delegate synchronous local work to
+  `swarm-explore` and `swarm-task` on the same worker. Durable agents remain the
+  route for long-lived or wide fan-out work. The proposed
+  `swarm-rubber-duck` profile remains disabled.
+- Show abridged native-task lifecycle entries inline in chat while preserving
+  detailed child activity outside the parent answer. Keep warning cards in
+  transcript order as a session continues.
+- Render escaped newline sequences correctly in Question cards and keep chat
+  content isolated to its owning session during rapid navigation.
+
 ## 0.5.63 — 2026-09-07
 
 Faster Master of Agents navigation, stable reading positions, and compact
@@ -112,6 +198,10 @@ Personal desktop Master of Agents, session-navigation reliability, and chat UX.
 - Keep warnings in chronological chat history after recovery. New messages
   appear below them without a reload; retry updates preserve the card's DOM.
 
+- Preserve multiline tool-call disclosures as single records when integrating
+  the released chat-call UI, preventing stale rows after session switches.
+- Render escaped newlines as paragraphs and lines in pending and answered
+  Question cards, preserving code literals, Windows paths and stored answers.
 - Distinguish saved intermediate `Agent update` disclosures from live `Message
   preview` output. Streaming-disabled sessions and old history never show live
   preview labels or status; final answers retain normal chat formatting.

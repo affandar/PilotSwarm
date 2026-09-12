@@ -42,6 +42,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const GENERATED_FILE = resolve(here, "../../src/web/generated-op-methods.ts");
 const GENERATOR = resolve(here, "../../scripts/generate-web-client-ops.mjs");
+const normalizeNewlines = (value) => value.replace(/\r\n/g, "\n");
 
 function clientWithFakeApi() {
     const client = Object.create(WebPilotSwarmManagementClient.prototype);
@@ -73,8 +74,8 @@ test("the generated file is up to date with the protocol table", () => {
     const probe = resolve(mkdtempSync(join(tmpdir(), "ps-op-gen-")), "generated-op-methods.ts");
     execFileSync(process.execPath, [GENERATOR, probe], { stdio: "pipe" });
     assert.equal(
-        readFileSync(GENERATED_FILE, "utf8"),
-        readFileSync(probe, "utf8"),
+        normalizeNewlines(readFileSync(GENERATED_FILE, "utf8")),
+        normalizeNewlines(readFileSync(probe, "utf8")),
         "generated-op-methods.ts is stale — run `npm run generate:web-ops -w packages/sdk`",
     );
 });

@@ -11,7 +11,7 @@
  * Run: npx vitest run test/local/agent-package-portal-ops.test.js
  */
 
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import * as path from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
@@ -19,6 +19,7 @@ import { NodeSdkTransport } from "../../../app/tui/src/node-sdk-transport.js";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
+afterEach(() => vi.unstubAllEnvs());
 
 const ALICE = { provider: "test", subject: "portal-alice", email: "alice@test" };
 const BOB = { provider: "test", subject: "portal-bob", email: "bob@test" };
@@ -42,10 +43,15 @@ function fixtureFiles({ name = "portal-kit", version = "1.0.0", agentName = "por
 }
 
 async function makeTransport(env) {
-    process.env.PILOTSWARM_CMS_SCHEMA = env.cmsSchema;
-    process.env.ARTIFACT_DIR = path.join(env.baseDir, "portal-artifacts");
-    delete process.env.AZURE_STORAGE_CONNECTION_STRING;
-    delete process.env.AZURE_STORAGE_ACCOUNT_URL;
+    // Management startup opens every store, even when these tests only use
+    // the package catalog. Isolate ALL schemas; never inspect/migrate the
+    // developer's default ps_duroxide or facts schema as a side effect.
+    vi.stubEnv("PILOTSWARM_CMS_SCHEMA", env.cmsSchema);
+    vi.stubEnv("PILOTSWARM_DUROXIDE_SCHEMA", env.duroxideSchema);
+    vi.stubEnv("PILOTSWARM_FACTS_SCHEMA", env.factsSchema);
+    vi.stubEnv("ARTIFACT_DIR", path.join(env.baseDir, "portal-artifacts"));
+    vi.stubEnv("AZURE_STORAGE_CONNECTION_STRING", undefined);
+    vi.stubEnv("AZURE_STORAGE_ACCOUNT_URL", undefined);
     const transport = new NodeSdkTransport({ store: env.store, mode: "remote" });
     await transport.mgmt.start();
     return transport;

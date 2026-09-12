@@ -306,6 +306,46 @@ describe("inline control tool execution", () => {
         expect(result.content).toBe("Spawned titled child.");
     });
 
+    it.each(["inline", "fallback"])("does not expose the removed spawn selector in %s mode", async (mode) => {
+        const fakeSession = new FakeCopilotSession();
+        const spawnAgent = vi.fn();
+        const managed = new ManagedSession("removed-selector-schema", fakeSession, {});
+        await managed.runTurn("register tools", mode === "inline" ? { controlToolBridge: { spawnAgent } } : {});
+        const spawnTool = fakeSession.registeredTools.find((tool) => tool.name === "spawn_agent");
+        const staticTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent");
+        for (const tool of [spawnTool, staticTool]) {
+            expect(tool.parameters.properties).not.toHaveProperty("required_tool");
+            expect(tool.description).not.toContain("required_tool");
+            expect(tool.description).toContain("ps_list_agents");
+            expect(tool.description).toContain("static and published");
+        }
+        expect(spawnAgent).not.toHaveBeenCalled();
+    });
+
+    for (const mode of ["inline", "fallback"]) {
+        it.each([
+            { required_tool: "package_catalog" },
+            { agent_name: "catalog-analyst", required_tool: "package_catalog" },
+            { task: "Inspect one shard", required_tool: "package_catalog" },
+            { task: "Inspect one shard", required_tool: null },
+            { task: "Inspect one shard", required_tool: "" },
+            { task: "Inspect one shard", requiredTool: "package_catalog" },
+        ])(`rejects a stale selector before %s spawning in ${mode} mode`, async (args) => {
+            const fakeSession = new FakeCopilotSession();
+            fakeSession.scriptedToolCalls = [{ name: "spawn_agent", args }];
+            const spawnAgent = vi.fn();
+            const managed = new ManagedSession("removed-selector-rejection", fakeSession, {});
+            const result = await managed.runTurn("Delegate", mode === "inline" ? { controlToolBridge: { spawnAgent } } : {});
+            expect(result.type).toBe("completed");
+            expect(result.queuedActions ?? []).toHaveLength(0);
+            const completion = result.events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "spawn_agent");
+            expect(completion.data.result).toContain("required_tool is no longer supported by spawn_agent");
+            expect(completion.data.result).toContain("ps_list_agents");
+            expect(completion.data.result).toContain("agent_name");
+            expect(spawnAgent).not.toHaveBeenCalled();
+        });
+    }
+
     it("advertises and forwards child contracts and results", async () => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [
@@ -779,6 +819,23 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("error");
         expect(result.message).toContain("Cannot read properties of null");
         expect(onEvent.mock.calls.some(([event]) => event?.eventType === "session.error")).toBe(true);
+    });
+
+    it.each([
+        "Please produce the requested report.",
+        "Internal orchestration wake-up. A child has a new result requiring action.",
+    ])("still reports a real empty-response query error: %s", async prompt => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.assistantContent = null;
+        fakeSession.scriptedEvents = [{
+            type: "session.error",
+            data: { message: "No response was returned. Send your message again to retry.", errorType: "query" },
+        }];
+        const managed = new ManagedSession("empty-query-error", fakeSession, {});
+        const result = await managed.runTurn(prompt);
+        expect(result.type).toBe("error");
+        expect(result.message).toContain("No response was returned");
+        expect(result.events.some(event => event.eventType === "session.error")).toBe(true);
     });
 
     it("does not capture empty assistant messages at wait_for_agents boundaries", async () => {

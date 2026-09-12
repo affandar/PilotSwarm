@@ -1,3 +1,4 @@
+import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -10,6 +11,7 @@ import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
+import { NativeTaskObserver } from "./native-task-observer.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -730,6 +732,15 @@ export class ManagedSession {
     }
     /** Set for the duration of runTurn(); read by the lock-bypassing stop path. */
     private activeTurn: { turnIndex: number; startedAt: number } | null = null;
+    private nativeFeatureRevoked = false;
+    canAdmitNativeTask(): boolean {
+        return this.config.nativeSubagents === "sync" && !this.nativeFeatureRevoked
+            && (this.config.nativeFeatureAllowed?.() ?? false);
+    }
+    /** A cached OFF is sticky for this turn, even if the next poll is ON. */
+    refreshNativeFeaturePolicy(): void {
+        if (this.activeTurn && !this.canAdmitNativeTask()) this.nativeFeatureRevoked = true;
+    }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
@@ -1064,11 +1075,12 @@ export class ManagedSession {
                 "If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, you should comply within runtime limits instead of collapsing the work into a direct answer. " +
                 "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
                 "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
-                "For KNOWN user-creatable agents, pass agent_name. The agent's prompt, tools, and task load automatically. " +
+                "For KNOWN user-creatable agents, pass agent_name. The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
+                "Before choosing a custom child, check the available static and published agent definitions with ps_list_agents unless the current catalog already identifies a suitable specialist. Select by role, source access, and capabilities, then pass the exact agent_name from the list and task for the assignment. Prefer a suitable named specialist over recreating it as a generic child. " +
                 "You MAY spawn multiple concurrent instances of the same agent_name (e.g. one per bug or per shard); they each get their own conversation. The only caps are the global maximum concurrent sub-agents and the maximum nesting depth. " +
                 "Sub-agents do NOT auto-terminate when they finish their task \u2014 they stay alive idle, ready for follow-up via message_agent. YOU are responsible for closing each child with complete_agent (graceful), cancel_agent (interrupt), or delete_agent (forceful) when you no longer need it. " +
                 "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead. Do not attach package-owned names through tool_names; select their named agent through ps_list_agents so its instructions, tools, and startup requirement stay together. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "By default, sub-agents inherit the parent's model. " +
                 "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
@@ -1079,11 +1091,11 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's system message, tools, and initial prompt are loaded automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's instructions, tools, and startup requirement are loaded automatically. Optionally pass task for a specific assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. This becomes the agent's first prompt. Do NOT use this for known agents — use agent_name instead.",
+                        description: "The assignment for the child, whether named or custom. This becomes its first prompt while a named agent retains its instructions, tools, and startup requirement. Required for custom agents; optional for named agents, whose initial prompt is the default.",
                     },
                     model: {
                         type: "string",
@@ -1295,9 +1307,26 @@ export class ManagedSession {
      * misclassified as a retryable error.
      */
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
+        this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        let result: TurnResult | undefined;
+        let turnError: unknown;
+        let failed = false;
         try {
-            const result = await this._runTurnInner(prompt, opts);
+            try {
+                // Also retire native tasks restored from an interrupted worker.
+                if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession);
+                result = await this._runTurnInner(prompt, opts);
+            } catch (err) {
+                failed = true;
+                turnError = err;
+            }
+            // Cleanup failures must escape stop/error classification: the
+            // activity cannot commit a snapshot with native work still live.
+            if (this.config.nativeSubagents === "sync") await settleNativeSubagents(this.copilotSession, {
+                rejectRunning: result?.type === "completed" && !this.stopRequest,
+            });
+            // A stop can arrive DURING cleanup. Classify only after it settles.
             if (this.stopRequest) {
                 return {
                     type: "stopped",
@@ -1305,12 +1334,8 @@ export class ManagedSession {
                     ...((result as any)?.events ? { events: (result as any).events } : {}),
                 };
             }
-            return result;
-        } catch (err) {
-            if (this.stopRequest) {
-                return { type: "stopped", reason: this.stopRequest.reason };
-            }
-            throw err;
+            if (failed) throw turnError;
+            return result!;
         } finally {
             this.activeTurn = null;
             this.stopRequest = null;
@@ -2188,14 +2213,15 @@ export class ManagedSession {
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
             description:
-                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name ONLY. " +
-                "The agent's system message, tools, and initial prompt are loaded automatically from agent_name. " +
-                "Do NOT pass task or system_message when using agent_name. " +
+                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name. " +
+                "The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
+                "Do not override system_message or tool_names when using agent_name. " +
+                "Before choosing a custom child, check the available static and published agent definitions with ps_list_agents unless the current catalog already identifies a suitable specialist. Select by role, source access, and capabilities, then pass the exact agent_name from the list and task for the assignment. Prefer a suitable named specialist over recreating it as a generic child. " +
                 "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
                 "Call ps_list_agents to see all available named agents you CAN spawn. " +
                 "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. " +
-                "Any task you can describe can be spawned as a custom agent; you do not need a skill or pre-configured definition. " +
+                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. Do not attach package-owned names through tool_names; select their named agent through ps_list_agents so its instructions, tools, and startup requirement stay together. " +
+                "Use a custom agent when no available named definition fits the task. " +
                 "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
                 "If you want different reasoning power, also use only a reasoning_effort value listed for that model. " +
                 "Never invent, guess, or shorten model names.",
@@ -2204,11 +2230,11 @@ export class ManagedSession {
                 properties: {
                     agent_name: {
                         type: "string",
-                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). The agent's prompt, tools, and task load automatically. Do NOT also pass task or system_message. Worker-managed system agents are not valid here.",
+                        description: "Name of a known user-creatable agent to spawn (from ps_list_agents). Its instructions, tools, and startup requirement load automatically. Optionally pass task for an assignment; otherwise its initial prompt is used. Do not override system_message or tool_names. Worker-managed system agents are not valid here.",
                     },
                     task: {
                         type: "string",
-                        description: "For custom agents only: a clear description of what the sub-agent should do. Any task can be spawned — no pre-configured agent or skill is required.",
+                        description: "The assignment for the child, whether named or custom. A named agent retains its instructions, tools, and startup requirement. Required for custom agents; optional for named agents, whose initial prompt is the default.",
                     },
                     model: {
                         type: "string",
@@ -2245,8 +2271,11 @@ export class ManagedSession {
             },
             handler: async (args: { agent_name?: string; task?: string; model?: string; reasoning_effort?: ReasoningEffort; context_tier?: ContextTier; system_message?: string; tool_names?: string[]; title?: string; contract?: Record<string, unknown> }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_agent");
+                if (Object.hasOwn(args, "required_tool") || Object.hasOwn(args, "requiredTool")) {
+                    return "Error: required_tool is no longer supported by spawn_agent. Use ps_list_agents to find a suitable named agent, then pass its exact agent_name and your assignment in task.";
+                }
                 if (!args.agent_name && !args.task) {
-                    return "Error: either agent_name or task is required.";
+                    return "Error: agent_name or task is required.";
                 }
                 const reasoningEffort = args.reasoning_effort ? normalizeReasoningEffort(args.reasoning_effort) : undefined;
                 if (args.reasoning_effort && !reasoningEffort) {
@@ -2256,7 +2285,10 @@ export class ManagedSession {
                     return "Error: context_tier must be one of default, long_context.";
                 }
                 if (controlBridge) {
-                    return await controlBridge.spawnAgent({ ...args, ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) });
+                    return await controlBridge.spawnAgent({
+                        ...args,
+                        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+                    });
                 }
                 turnState.pendingActions.push({
                     type: "spawn_agent",
@@ -2744,7 +2776,8 @@ export class ManagedSession {
         // registerTools from the public types (it was always @internal) but
         // ships it unchanged in dist/session.js — cast until a public
         // handler-refresh API exists.
-        (this.copilotSession as any).registerTools(allTools);
+        (this.copilotSession as any).registerTools(this.config.nativeSubagents === "sync"
+            ? guardNativeExternalTools(allTools, this.copilotSession.sessionId) : allTools);
 
         // Collect the final assistant content and all events via on()
         let finalContent: string | undefined;
@@ -2774,6 +2807,15 @@ export class ManagedSession {
                 try {
                     opts.onEvent!({ eventType: "assistant.live_tick", data: payload });
                 } catch {}
+            })
+            : null;
+        const nativeTasks = this.config.nativeSubagents === "sync"
+            ? new NativeTaskObserver(this.copilotSession, {
+                turnIndex: opts?.turnIndex,
+                emit: (event) => {
+                    if (event.eventType !== "session.native_tasks_tick") collectedEvents.push(event);
+                    try { opts?.onEvent?.(event); } catch {}
+                },
             })
             : null;
         // Note: we used to emit a synthetic `assistant.streaming_progress`
@@ -2909,6 +2951,25 @@ export class ManagedSession {
                         }
                     }
 
+                    nativeTasks?.observe({ ...event, data: eventData });
+                    // This empty ephemeral event only invalidates the CLI task
+                    // registry. It is neither activity nor durable history.
+                    if (eventType === "session.background_tasks_changed") return;
+                    if (isNativeChildEvent(event)) {
+                        // Child events share the parent subscription. Keep usage
+                        // in the existing accounting stream, but namespace child
+                        // transcript/tools so they cannot settle parent state or
+                        // satisfy a required parent tool invocation.
+                        if (/delta|streaming/.test(eventType)) return;
+                        const nativeEvent: CapturedEvent = {
+                            eventType: eventType === "assistant.usage" || eventType.startsWith("subagent.")
+                                ? eventType : `native.${eventType}`,
+                            data: { ...eventData, nativeAgentId: event.agentId ?? eventData.nativeAgentId ?? eventData.parentToolCallId },
+                        };
+                        collectedEvents.push(nativeEvent);
+                        try { opts?.onEvent?.(nativeEvent); } catch {}
+                        return;
+                    }
                     const captured: CapturedEvent = { eventType, data: eventData };
                     if (eventType === "session.error" && isBenignPostCompletionQueryError(eventData)) {
                         deferredSessionError = captured;
@@ -3028,6 +3089,7 @@ export class ManagedSession {
 
             unsubscribers.push(
                 this.copilotSession.on("assistant.reasoning", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
                     currentReasoning = String(extractReasoningText(event?.data ?? event) || "").trim();
                     if (currentReasoning) {
                         lastPublishedReasoning = currentReasoning;
@@ -3039,6 +3101,7 @@ export class ManagedSession {
             for (const eventType of ["assistant.reasoning_delta", "reasoning_delta"] as const) {
                 unsubscribers.push(
                     (this.copilotSession as any).on(eventType, (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         currentReasoning = mergeReasoningText(
                             currentReasoning,
                             extractReasoningText(event?.data ?? event),
@@ -3052,6 +3115,7 @@ export class ManagedSession {
             if (opts?.onDelta) {
                 unsubscribers.push(
                     this.copilotSession.on("assistant.message_delta", (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         if (opts.requiredTool && !hasInvokedTool(collectedEvents, opts.requiredTool)) return;
                         if (event.data?.deltaContent) {
                             opts.onDelta!(event.data.deltaContent);
@@ -3064,6 +3128,7 @@ export class ManagedSession {
             if (opts?.onToolStart) {
                 unsubscribers.push(
                     this.copilotSession.on("tool.execution_start", (event: any) => {
+                        if (isNativeChildEvent(event)) return;
                         opts.onToolStart!(event.data?.toolName ?? "unknown", event.data?.toolArgs);
                     }),
                 );
@@ -3071,7 +3136,8 @@ export class ManagedSession {
 
             // session.idle = turn finished (normal completion or post-abort)
             unsubscribers.push(
-                this.copilotSession.on("session.idle", () => {
+                this.copilotSession.on("session.idle", (event: any) => {
+                    if (isNativeChildEvent(event)) return;
                     flushStreamingProgress(true);
                     publishReasoningSnapshot("session.idle", true);
                     liveTurn?.finishTurn();
@@ -3128,7 +3194,8 @@ export class ManagedSession {
         // the model's response to a mid-turn correction without tearing down the
         // event subscriptions set up above.
         const waitForNextIdle = (): Promise<void> => new Promise<void>((resolve) => {
-            const unsub = this.copilotSession.on("session.idle", () => {
+            const unsub = this.copilotSession.on("session.idle", (event: any) => {
+                if (isNativeChildEvent(event)) return;
                 flushStreamingProgress(true);
                 publishReasoningSnapshot("session.idle", true);
                 liveTurn?.finishTurn();
@@ -3309,6 +3376,7 @@ export class ManagedSession {
             // live row anyway so reconnecting viewers cannot see stale text.
             liveTurn?.finishTurn();
             liveTurn?.dispose();
+            nativeTasks?.finish(this.stopRequest ? "cancelled" : "interrupted");
             // Always clean up subscriptions
             for (const unsub of unsubscribers) unsub();
         }
@@ -3404,6 +3472,8 @@ export class ManagedSession {
      * Update configuration for the next turn.
      */
     updateConfig(config: Partial<ManagedSessionConfig>): void {
+        if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
+        if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;
         if (config.model !== undefined) this.config.model = config.model;
         if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) this.config.reasoningEffort = config.reasoningEffort;
         if (Object.prototype.hasOwnProperty.call(config, "contextTier")) this.config.contextTier = config.contextTier;
@@ -3431,6 +3501,10 @@ export class ManagedSession {
         const nextProviderFingerprint = config.providerFingerprint !== undefined
             ? config.providerFingerprint ?? null
             : currentProviderFingerprint;
+        if (config.nativeSubagents !== undefined
+            && config.nativeSubagents !== (this.config.nativeSubagents ?? "off")) return true;
+        if (config.featureToolFingerprint !== undefined
+            && config.featureToolFingerprint !== this.config.featureToolFingerprint) return true;
         return Boolean(
             (currentModel || nextModel)
             && (currentModel !== nextModel

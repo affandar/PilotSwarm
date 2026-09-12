@@ -8,6 +8,8 @@
  */
 
 import type { MigrationEntry } from "./pg-migrator.js";
+import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
+import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -397,73 +399,83 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         },
         {
             version: "0077",
-            name: "session_git_state_pinning",
-            sql: migration_0077_session_git_state_pinning(schema),
+            name: "feature_flags",
+            sql: featureFlagsMigration(schema),
         },
         {
             version: "0078",
-            name: "fix_session_git_state_setter",
-            sql: migration_0078_fix_session_git_state_setter(schema),
+            name: "native_tasks_default_policy",
+            sql: nativeTasksDefaultPolicyMigration(schema),
         },
         {
             version: "0079",
-            name: "job_generators",
-            sql: migration_0047_job_generators(schema),
+            name: "session_git_state_pinning",
+            sql: migration_0079_session_git_state_pinning(schema),
         },
         {
             version: "0080",
-            name: "job_session_acknowledgement",
-            sql: migration_0048_job_session_acknowledgement(schema),
+            name: "fix_session_git_state_setter",
+            sql: migration_0080_fix_session_git_state_setter(schema),
         },
         {
             version: "0081",
-            name: "job_lifecycle_state_runs_and_journal",
-            sql: migration_0049_job_lifecycle_state_runs_and_journal(schema),
+            name: "job_generators",
+            sql: migration_0081_job_generators(schema),
         },
         {
             version: "0082",
-            name: "job_external_operations",
-            sql: migration_0050_job_external_operations(schema),
+            name: "job_session_acknowledgement",
+            sql: migration_0082_job_session_acknowledgement(schema),
         },
         {
             version: "0083",
-            name: "worker_timeline_index",
-            sql: migration_0051_worker_timeline_index(schema),
+            name: "job_lifecycle_state_runs_and_journal",
+            sql: migration_0083_job_lifecycle_state_runs_and_journal(schema),
         },
         {
             version: "0084",
-            name: "worker_registration_refresh",
-            sql: migration_0052_worker_registration_refresh(schema),
+            name: "job_external_operations",
+            sql: migration_0084_job_external_operations(schema),
         },
         {
             version: "0085",
-            name: "session_routing_contract",
-            sql: migration_0053_session_routing_contract(schema),
+            name: "worker_timeline_index",
+            sql: migration_0085_worker_timeline_index(schema),
         },
         {
             version: "0086",
-            name: "job_cleanup_tombstones",
-            sql: migration_0054_job_cleanup_tombstones(schema),
+            name: "worker_registration_refresh",
+            sql: migration_0086_worker_registration_refresh(schema),
         },
         {
             version: "0087",
-            name: "job_waits",
-            sql: migration_0055_job_waits(schema),
+            name: "session_routing_contract",
+            sql: migration_0087_session_routing_contract(schema),
         },
         {
             version: "0088",
-            name: "job_wait_scheduling",
-            sql: migration_0056_job_wait_scheduling(schema),
+            name: "job_cleanup_tombstones",
+            sql: migration_0088_job_cleanup_tombstones(schema),
         },
         {
             version: "0089",
-            name: "job_wait_condition_overrides",
-            sql: migration_0057_job_wait_condition_overrides(schema),
+            name: "job_waits",
+            sql: migration_0089_job_waits(schema),
         },
         {
             version: "0090",
+            name: "job_wait_scheduling",
+            sql: migration_0090_job_wait_scheduling(schema),
+        },
+        {
+            version: "0091",
+            name: "job_wait_condition_overrides",
+            sql: migration_0091_job_wait_condition_overrides(schema),
+        },
+        {
+            version: "0092",
             name: "job_generator_source_provider_ids",
-            sql: migration_0090_job_generator_source_provider_ids(schema),
+            sql: migration_0092_job_generator_source_provider_ids(schema),
         },
     ];
 }
@@ -14836,7 +14848,7 @@ $$ LANGUAGE plpgsql;
 `;
 }
 
-// ─── Migration 0077: session git-state pinning ───────────────────
+// ─── Migration 0079: session git-state pinning ───────────────────
 //
 // Durable git working-tree state for pod hydration. Pins a session's base
 // commit at turn 0 so cold cross-pod resumes never track a moving mirror HEAD
@@ -14845,10 +14857,10 @@ $$ LANGUAGE plpgsql;
 // scalar get/set procs follow the users.github_copilot_key precedent (0010)
 // rather than widening the shared cms_get_session read shape.
 
-function migration_0077_session_git_state_pinning(schema: string): string {
+function migration_0079_session_git_state_pinning(schema: string): string {
     const s = `"${schema}"`;
     return `
--- 0077_session_git_state_pinning:
+-- 0079_session_git_state_pinning:
 --   - git_base_sha    TEXT: the pinned base commit, captured once at turn 0.
 --                     All future reconciles target this, never origin/HEAD.
 --   - git_head_sha    TEXT: the session branch tip (session's own commits).
@@ -14928,16 +14940,16 @@ $$ LANGUAGE plpgsql;
 `;
 }
 
-// ─── Migration 0078: fix cms_set_session_git_state result var type ──────────
+// ─── Migration 0080: fix cms_set_session_git_state result var type ──────────
 //
-// 0077 shipped cms_set_session_git_state with `v_found BOOLEAN`, then did
+// 0079 shipped cms_set_session_git_state with `v_found BOOLEAN`, then did
 // `GET DIAGNOSTICS v_found = ROW_COUNT` (an INTEGER) and `RETURN v_found > 0`.
 // On PostgreSQL that raises `operator does not exist: boolean > integer` at
 // call time (surfaced as "beforeRunTurn reconcile failed"), so the turn-0 base
 // pin never persisted. This is a forward-only, idempotent CREATE OR REPLACE that
-// repairs the function on DBs already advanced past 0077; fresh DBs get the
-// corrected body directly from 0077.
-function migration_0078_fix_session_git_state_setter(schema: string): string {
+// repairs the function on DBs already advanced past 0079; fresh DBs get the
+// corrected body directly from 0079.
+function migration_0080_fix_session_git_state_setter(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE OR REPLACE FUNCTION ${s}.cms_set_session_git_state(
@@ -14970,9 +14982,9 @@ $$ LANGUAGE plpgsql;
 `;
 }
 
-// ─── Migration 0047: durable JobGenerator registry ──────────────
+// ─── Migration 0081: durable JobGenerator registry ──────────────
 
-function migration_0047_job_generators(schema: string): string {
+function migration_0081_job_generators(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.job_generators (
@@ -15121,9 +15133,9 @@ CREATE TRIGGER trg_job_generator_definition_immutable
 `;
 }
 
-// ─── Migration 0048: Job session acknowledgement ───────────────
+// ─── Migration 0082: Job session acknowledgement ───────────────
 
-function migration_0048_job_session_acknowledgement(schema: string): string {
+function migration_0082_job_session_acknowledgement(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.job_sessions
@@ -15134,9 +15146,9 @@ ALTER TABLE ${s}.job_sessions
 `;
 }
 
-// ─── Migration 0049: durable Job lifecycle execution ───────────
+// ─── Migration 0083: durable Job lifecycle execution ───────────
 
-function migration_0049_job_lifecycle_state_runs_and_journal(schema: string): string {
+function migration_0083_job_lifecycle_state_runs_and_journal(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.jobs
@@ -15263,9 +15275,9 @@ WHERE js.job_id = sr.job_id
 `;
 }
 
-// ─── Migration 0050: durable external operations ────────────────
+// ─── Migration 0084: durable external operations ────────────────
 
-function migration_0050_job_external_operations(schema: string): string {
+function migration_0084_job_external_operations(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.job_external_operations (
@@ -15328,9 +15340,9 @@ CREATE INDEX IF NOT EXISTS ix_job_external_operations_state_run
 `;
 }
 
-// ─── Migration 0051: worker timeline query index ─────────────────
+// ─── Migration 0085: worker timeline query index ─────────────────
 
-function migration_0051_worker_timeline_index(schema: string): string {
+function migration_0085_worker_timeline_index(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
@@ -15339,9 +15351,9 @@ CREATE INDEX IF NOT EXISTS ix_session_events_worker_timeline
 `;
 }
 
-// ─── Migration 0052: refresh worker registration identity ───────
+// ─── Migration 0086: refresh worker registration identity ───────
 
-function migration_0052_worker_registration_refresh(schema: string): string {
+function migration_0086_worker_registration_refresh(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE OR REPLACE FUNCTION ${s}.cms_worker_heartbeat(
@@ -15399,9 +15411,9 @@ $$ LANGUAGE plpgsql;
 `;
 }
 
-// ─── Migration 0053: immutable session routing contract ─────────
+// ─── Migration 0087: immutable session routing contract ─────────
 
-function migration_0053_session_routing_contract(schema: string): string {
+function migration_0087_session_routing_contract(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.sessions
@@ -15415,9 +15427,9 @@ ALTER TABLE ${s}.sessions
 `;
 }
 
-// ─── Migration 0054: owner-managed logical Job cleanup ──────────
+// ─── Migration 0088: owner-managed logical Job cleanup ──────────
 
-function migration_0054_job_cleanup_tombstones(schema: string): string {
+function migration_0088_job_cleanup_tombstones(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.job_generators
@@ -15466,9 +15478,9 @@ CREATE INDEX IF NOT EXISTS ix_job_cleanup_tombstones_status
 `;
 }
 
-// ─── Migration 0055: canonical durable Job waits ────────────────
+// ─── Migration 0089: canonical durable Job waits ────────────────
 
-function migration_0055_job_waits(schema: string): string {
+function migration_0089_job_waits(schema: string): string {
     const s = `"${schema}"`;
     return `
 CREATE TABLE IF NOT EXISTS ${s}.job_waits (
@@ -15532,9 +15544,9 @@ CREATE INDEX IF NOT EXISTS ix_job_waits_due
 `;
 }
 
-// ─── Migration 0056: durable Job wait scheduling ────────────────
+// ─── Migration 0090: durable Job wait scheduling ────────────────
 
-function migration_0056_job_wait_scheduling(schema: string): string {
+function migration_0090_job_wait_scheduling(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.job_waits
@@ -15574,14 +15586,14 @@ CREATE INDEX IF NOT EXISTS ix_job_waits_check_lease
 `;
 }
 
-// ─── Migration 0057: operator condition overrides ───────────────
+// ─── Migration 0091: operator condition overrides ───────────────
 //
 // Lets an operator "mock" an individual observed condition as satisfied. The
 // override is a set of opaque condition keys (e.g. "policy:<configId>",
 // "reviewer:<id>") the observer honors by treating the matching condition as
 // satisfied when it rebuilds its live snapshot. Additive and inert by default:
 // an empty array changes nothing for any existing wait.
-function migration_0057_job_wait_condition_overrides(schema: string): string {
+function migration_0091_job_wait_condition_overrides(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.job_waits
@@ -15589,9 +15601,9 @@ ALTER TABLE ${s}.job_waits
 `;
 }
 
-// ─── Migration 0090: opaque JobGenerator source-provider IDs ─────────────
+// ─── Migration 0092: opaque JobGenerator source-provider IDs ─────────────
 
-function migration_0090_job_generator_source_provider_ids(schema: string): string {
+function migration_0092_job_generator_source_provider_ids(schema: string): string {
     const s = `"${schema}"`;
     return `
 ALTER TABLE ${s}.job_generator_definitions

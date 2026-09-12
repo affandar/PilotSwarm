@@ -20,6 +20,7 @@ const CSS = path.resolve(__dirname, "../src/index.css");
 // Where a token can legitimately come from, other than the stylesheet itself.
 const JS_SOURCES = [
     path.resolve(__dirname, "../../ui/react/src/web-app.js"),
+    path.resolve(__dirname, "../../ui/react/src/native-task-card.js"),
     path.resolve(__dirname, "../src/App.jsx"),
 ];
 

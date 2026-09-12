@@ -204,22 +204,53 @@ test("loadedAgents (customAgents surface) carries resolved maps, not name lists"
 
 // ─── Review-driven regressions ──────────────────────────────────
 
-test("a later same-name definition with no MCP declarations clears shadowed grants", () => {
+test("same-name static namespaces retain their own prompt, declarations and MCP through refresh", () => {
     const pluginA = buildFixturePlugin();
     const pluginB = makeTmpDir("ps-mcp-plugin-b-");
     fs.mkdirSync(path.join(pluginB, "agents"));
-    // Later tier redefines `withref` (which granted jira in plugin A) with
-    // NO MCP declarations — the lockdown override must win, like prompts do.
     writeAgent(path.join(pluginB, "agents"), "withref.agent.md", `
 schemaVersion: 2
 version: 2.0.0
 name: withref
-`, "Locked-down override.");
+tools: [security_tool]
+`, "SECURITY SECOND NAMESPACE");
     const worker = buildWorker([pluginA, pluginB]);
-    assert.equal(worker.agentMcpServers.withref, undefined, "override cleared the shadowed grant");
-    for (const entry of worker.loadedAgents.filter((a) => a.name === "withref")) {
-        assert.equal(entry.mcpServers, undefined, "no composed entry retains the shadowed map");
-    }
+    const namespaceA = path.basename(pluginA);
+    const namespaceB = path.basename(pluginB);
+    const keyA = `${namespaceA}:withref`;
+    const keyB = `${namespaceB}:withref`;
+    const lookup = worker._agentPromptLookup;
+    const maps = worker.agentMcpServers;
+    assert.match(lookup[keyB].prompt, /SECURITY SECOND NAMESPACE/);
+    assert.deepEqual(lookup[keyB].toolNames, ["security_tool"]);
+    assert.equal(lookup[keyB].descriptor.layerId, keyB);
+    assert.equal(lookup.withref.prompt, lookup[keyA].prompt, "legacy bare prompt retains first static definition");
+    assert.deepEqual(Object.keys(maps.withref), ["jira"], "bare MCP follows the same static default as its prompt");
+    assert.deepEqual(Object.keys(maps[keyA]), ["jira"]);
+    assert.equal(maps[keyB], undefined, "the second static definition cannot inherit the first's MCP grants");
+    const first = worker.loadedAgents.find(a => a.name === "withref" && a.namespace === namespaceA);
+    const second = worker.loadedAgents.find(a => a.name === "withref" && a.namespace === namespaceB);
+    assert.deepEqual(Object.keys(first.mcpServers), ["jira"]);
+    assert.equal(second.mcpServers, undefined);
+
+    writeAgent(path.join(pluginB, "agents"), "withref.agent.md", `
+schemaVersion: 2
+version: 2.1.0
+name: withref
+tools: [security_tool_v2]
+mcpServers: [github]
+`, "SECURITY SECOND NAMESPACE V2");
+    worker._resetLoadedPluginState();
+    worker._loadPlugins();
+    assert.equal(worker._agentPromptLookup, lookup, "live SessionManager lookup observes in-place refresh");
+    assert.equal(worker.agentMcpServers, maps);
+    assert.match(lookup[keyB].prompt, /SECURITY SECOND NAMESPACE V2/);
+    assert.deepEqual(lookup[keyB].toolNames, ["security_tool_v2"]);
+    assert.equal(lookup[keyB].descriptor.version, "2.1.0");
+    assert.deepEqual(Object.keys(maps[keyB]), ["github"]);
+    assert.deepEqual(Object.keys(maps[keyA]), ["jira"]);
+    assert.deepEqual(Object.keys(maps.withref), ["jira"]);
+    assert.doesNotMatch(lookup.withref.prompt, /SECURITY SECOND/);
 });
 
 test("comments between mcpServers: and its list items do not orphan the refs", () => {

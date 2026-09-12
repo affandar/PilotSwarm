@@ -20,7 +20,7 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
 } from "./types.js";
-import type { SessionCatalog, SessionEvent, SessionVisibility } from "./cms.js";
+import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
@@ -40,6 +40,7 @@ const require = createRequire(import.meta.url);
 const { SqliteProvider, Client } = require("duroxide");
 
 const WAIT_POLL_SLICE_MS = 10_000;
+const MAX_SESSION_LINEAGE_HOPS = 128;
 
 function createAbortError(message: string, reason?: unknown): Error {
     if (reason instanceof Error) return reason;
@@ -102,6 +103,11 @@ export function projectSerializableSessionConfig(
         workingDirectory: fullConfig?.workingDirectory,
         waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
         boundAgentName: fullConfig?.boundAgentName,
+        boundAgentPackageId: fullConfig?.boundAgentPackageId,
+        boundAgentSource: fullConfig?.boundAgentSource,
+        ...(fullConfig?.namedAgentToolAdditions !== undefined
+            ? { namedAgentToolAdditions: fullConfig.namedAgentToolAdditions } : {}),
+        detachedPackageToolPolicy: fullConfig?.detachedPackageToolPolicy,
         promptLayering: fullConfig?.promptLayering,
         childContract: fullConfig?.childContract,
         toolNames: allNames.length ? allNames : undefined,
@@ -250,6 +256,22 @@ export class PilotSwarmClient {
                     }
                     : undefined,
                 gitRef: config?.gitRef,
+                model: resolvedConfig.model,
+                reasoningEffort: resolvedConfig.reasoningEffort,
+                contextTier: resolvedConfig.contextTier,
+                systemMessage: resolvedConfig.systemMessage,
+                boundAgentName: resolvedConfig.boundAgentName,
+                boundAgentPackageId: resolvedConfig.boundAgentPackageId,
+                boundAgentSource: resolvedConfig.boundAgentSource,
+                ...(!isSubAgent && (resolvedConfig.boundAgentName || agentId) ? {
+                    namedAgentToolAdditions: resolvedConfig.namedAgentToolAdditions
+                        ?? projectSerializableSessionConfig(resolvedConfig, undefined).toolNames ?? [],
+                } : {}),
+                detachedPackageToolPolicy: resolvedConfig.detachedPackageToolPolicy,
+                promptLayering: resolvedConfig.promptLayering,
+                childContract: resolvedConfig.childContract,
+                tools: resolvedConfig.tools,
+                workingDirectory: resolvedConfig.workingDirectory,
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
@@ -269,6 +291,7 @@ export class PilotSwarmClient {
             contextTier: resolvedConfig.contextTier ?? undefined,
             modelResolutionSource: resolved?.source,
             parentSessionId: config?.parentSessionId,
+            ...(agentId ? { agentId } : {}),
             owner: config?.owner ?? null,
             groupId: config?.groupId ?? null,
             visibility: config?.visibility ?? null,
@@ -280,7 +303,10 @@ export class PilotSwarmClient {
                 }
                 : null,
             creationConfig: configForRow
-                ? JSON.parse(JSON.stringify(projectSerializableSessionConfig(configForRow, this.config.waitThreshold)))
+                ? {
+                    ...JSON.parse(JSON.stringify(projectSerializableSessionConfig(configForRow, this.config.waitThreshold))),
+                    ...(config?.nestingLevel !== undefined ? { bootstrapNestingLevel: config.nestingLevel } : {}),
+                }
                 : null,
         });
         if (resolved) {
@@ -807,6 +833,52 @@ export class PilotSwarmClient {
         });
     }
 
+    /**
+     * Creation and first send may land on different API processes. Restore the
+     * child boundary from durable lineage before starting an orchestration;
+     * otherwise the child silently becomes a root with a reset nesting budget.
+     */
+    private async _restoreLineageForStart(
+        sessionId: string,
+        row: SessionRow | null,
+        bootstrapNestingLevel?: unknown,
+    ): Promise<{ parentSessionId?: string; nestingLevel: number }> {
+        const invalid = (detail: string) => Object.assign(
+            new Error(`Cannot restore session lineage for "${sessionId}": ${detail}`),
+            { code: "SESSION_LINEAGE_INVALID" },
+        );
+        if (!row) throw invalid("the session is missing from the catalog.");
+        const parentSessionId = row.parentSessionId || undefined;
+        const visited = new Set([sessionId]);
+        let current = row;
+        let depth = 0;
+        while (current.parentSessionId) {
+            const parentId = current.parentSessionId;
+            if (visited.has(parentId)) throw invalid(`a parent cycle includes "${parentId}".`);
+            if (depth >= MAX_SESSION_LINEAGE_HOPS) throw invalid(`the parent chain exceeds ${MAX_SESSION_LINEAGE_HOPS} hops.`);
+            visited.add(parentId);
+            const parent = await this._catalog.getSession(parentId);
+            if (!parent) throw invalid(`parent session "${parentId}" is missing from the catalog.`);
+            current = parent;
+            depth++;
+        }
+        // Logical depth can differ from physical ancestry (managed system
+        // sessions start their own delegation budget). Preserve an explicit
+        // create depth across processes; older rows fall back to ancestry.
+        if (bootstrapNestingLevel !== undefined
+            && (typeof bootstrapNestingLevel !== "number" || !Number.isSafeInteger(bootstrapNestingLevel) || bootstrapNestingLevel < 0)) {
+            throw invalid("the stored bootstrap nesting level must be a non-negative integer.");
+        }
+        const nestingLevel = this.nestingLevels.get(sessionId) ?? bootstrapNestingLevel ?? depth;
+        if (!Number.isSafeInteger(nestingLevel) || nestingLevel < 0) {
+            throw invalid("the explicit nesting level must be a non-negative integer.");
+        }
+        if (parentSessionId) this.parentSessionIds.set(sessionId, parentSessionId);
+        else this.parentSessionIds.delete(sessionId);
+        this.nestingLevels.set(sessionId, nestingLevel);
+        return { parentSessionId, nestingLevel };
+    }
+
     /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
     private async _ensureOrchestrationAndSend(
         sessionId: string,
@@ -843,6 +915,7 @@ export class PilotSwarmClient {
         // waitThreshold must inherit the row's creation-time value, not this
         // process's default. The default applies only if neither side set it.
         let serializableConfig: SerializableSessionConfig | undefined;
+        let bootstrapNestingLevel: unknown;
 
         trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
@@ -853,8 +926,15 @@ export class PilotSwarmClient {
         await this._assertSessionActive(sessionId);
         {
             const stored = this._catalog.getSessionCreationConfig
-                ? await this._catalog.getSessionCreationConfig(sessionId).catch(() => null)
+                ? await this._catalog.getSessionCreationConfig(sessionId).catch(error => {
+                    // Missing legacy metadata is supported; an unreadable start
+                    // record cannot silently reset a persisted delegation budget.
+                    if (!this.activeOrchestrations.has(sessionId)) throw error;
+                    return null;
+                })
                 : null;
+            const { bootstrapNestingLevel: storedDepth, ...storedSessionConfig } = stored ?? {};
+            bootstrapNestingLevel = storedDepth;
             if (stored && !fullConfig) {
                 trace(`[client] creation config restored from catalog row (in-memory config miss)`);
             }
@@ -862,9 +942,16 @@ export class PilotSwarmClient {
                 ? JSON.parse(JSON.stringify(projectSerializableSessionConfig(fullConfig, undefined)))
                 : {};
             const merged: SerializableSessionConfig = {
-                ...((stored ?? {}) as SerializableSessionConfig),
+                ...(storedSessionConfig as SerializableSessionConfig),
                 ...overrides,
             };
+            // A partial resume may explicitly replace root tool additions before
+            // the first message, while retaining its durable named binding.
+            if ((merged.boundAgentName || merged.namedAgentToolAdditions !== undefined) && !cmsRow?.parentSessionId && fullConfig
+                && fullConfig.namedAgentToolAdditions === undefined
+                && (fullConfig.toolNames !== undefined || fullConfig.tools !== undefined)) {
+                merged.namedAgentToolAdditions = overrides.toolNames ?? [];
+            }
             if (merged.waitThreshold == null) merged.waitThreshold = this.config.waitThreshold;
             // Repo-affinity (git-hydration): the projection above does not
             // carry `repo`, so thread the in-memory value through explicitly.
@@ -959,8 +1046,10 @@ export class PilotSwarmClient {
             && opts?.bootstrap === true;
 
         if (!this.activeOrchestrations.has(sessionId)) {
-            const parentSessionId = this.parentSessionIds.get(sessionId);
-            const nestingLevel = this.nestingLevels.get(sessionId);
+            const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
+            // Explicit local identity keeps its precedence; another process
+            // reconstructs the named agent's startup contract from the row.
+            const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;
             const bootstrapAttachments = sanitizePromptAttachmentRefs(opts?.attachments);
             const input: OrchestrationInput = {
                 sessionId,
@@ -992,7 +1081,7 @@ export class PilotSwarmClient {
                 ...(parentSessionId ? { parentSessionId } : {}),
                 ...(nestingLevel != null ? { nestingLevel } : {}),
                 ...(this.systemSessions.has(sessionId) ? { isSystem: true } : {}),
-                ...(this.sessionAgentIds.has(sessionId) ? { agentId: this.sessionAgentIds.get(sessionId) } : {}),
+                ...(agentId ? { agentId } : {}),
                 ...(this._sessionPolicy ? { sessionPolicy: this._sessionPolicy } : {}),
                 ...(this._allowedAgentNames.length > 0 ? { allowedAgentNames: this._allowedAgentNames } : {}),
             };
@@ -1170,7 +1259,7 @@ export class PilotSwarmClient {
     }
 
     /** @internal */
-    async _getSessionInfo(sessionId: string): Promise<PilotSwarmSessionInfo> {
+    async _getSessionInfo(sessionId: string, options?: { includeResultSource?: boolean }): Promise<PilotSwarmSessionInfo> {
         const cmsRow = await this._catalog.getSession(sessionId);
 
         // Merge with live customStatus for real-time fields
@@ -1272,6 +1361,11 @@ export class PilotSwarmClient {
         const effectiveError = (status === "error" || status === "failed")
             ? (orchStatus.status === "Failed" ? orchStatus.error : (cmsRow?.lastError ?? undefined))
             : undefined;
+        const completedResponse = customStatus.turnResult?.type === "completed"
+            ? customStatus.turnResult
+            : latestResponse?.type === "completed" ? latestResponse : undefined;
+        const resultSource = completedResponse ? "response"
+            : orchStatus.status === "Completed" ? "orchestration" : undefined;
 
         return {
             sessionId,
@@ -1303,11 +1397,9 @@ export class PilotSwarmClient {
             contextUsage: customStatus?.contextUsage && typeof customStatus.contextUsage === "object"
                 ? customStatus.contextUsage
                 : undefined,
-            result: customStatus.turnResult?.type === "completed"
-                ? customStatus.turnResult.content
-                : latestResponse?.type === "completed"
-                    ? latestResponse.content
+            result: completedResponse ? completedResponse.content
                 : (orchStatus.status === "Completed" ? orchStatus.output : undefined),
+            ...(options?.includeResultSource && resultSource ? { resultSource } : {}),
             error: effectiveError,
         };
     }

@@ -486,6 +486,73 @@ function createHarness({ messages = [], inputOverrides = {} } = {}) {
     };
 }
 
+// Use the real command producer and child shutdown handler before delivering
+// their output to the full parent orchestration harness. This fixture also runs
+// unchanged against the pre-fix source for the negative-control reproduction.
+async function captureParentRequestedCleanup(action) {
+    const { handleSubAgentAction, beginGracefulShutdown } = await import("../../src/orchestration/agents.ts");
+    const { createInitialState, deriveOptions } = await import("../../src/orchestration/state.ts");
+    const commands = [], messages = [], events = [];
+    const tracked = { orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle", result: "AUDIT RESULT" };
+    function runtime(input) {
+        const values = new Map();
+        const options = deriveOptions(input);
+        return {
+            input, options, state: createInitialState(input, options),
+            ctx: { traceInfo() {}, setCustomStatus() {},
+                getValue: key => values.get(key), setValue: (key, value) => values.set(key, value),
+                clearValue: key => values.delete(key), utcNow: () => 0,
+            },
+            manager: {
+                sendCommandToSession: (sessionId, command) => { commands.push({ sessionId, command }); },
+                listChildSessions: () => "[]",
+                sendToSession: (sessionId, prompt) => { messages.push({ sessionId, prompt }); },
+                recordSessionEvent: (sessionId, entries) => { events.push({ sessionId, entries }); },
+                updateCmsState() {}, getDescendantSessionIds: () => [], deleteSession() {},
+            },
+            session: { destroy() {} },
+        };
+    }
+    // In-memory activity results are immediately available; yield them back to
+    // the generator exactly as the real orchestration receives activity results.
+    function settle(generator) {
+        let next = generator.next();
+        for (let step = 0; !next.done && step < 100; step++) next = generator.next(next.value);
+        expect(next.done, "cleanup must settle").toBe(true);
+    }
+    const parent = runtime({ sessionId: "parent-session", config: {}, iteration: 5, subAgents: [tracked] });
+    settle(handleSubAgentAction(parent, { type: action, agentId: tracked.orchId }));
+    expect(commands).toHaveLength(1);
+    expect(commands[0].sessionId).toBe(tracked.sessionId);
+    const child = runtime({ sessionId: tracked.sessionId, parentSessionId: "parent-session", config: {}, iteration: 5 });
+    settle(beginGracefulShutdown(child, commands[0].command.cmd, commands[0].command));
+    expect(child.state.orchestrationResult).toBe({ complete_agent: "done", cancel_agent: "cancelled", delete_agent: "deleted" }[action]);
+    return { messages, events, tracked };
+}
+
+describe("parent cleanup round trip", () => {
+    beforeEach(() => { vi.resetModules(); });
+
+    it.each(["complete_agent", "cancel_agent", "delete_agent"])("%s does not schedule another parent model call", async action => {
+        const cleanup = await captureParentRequestedCleanup(action);
+        // The parent's final answer has already been delivered. Only the actual
+        // child shutdown output is queued; no user prompt or scheduled work.
+        const harness = createHarness({
+            messages: cleanup.messages.map(message => ({ atMs: 0, payload: { prompt: message.prompt } })),
+            inputOverrides: {
+                isSystem: false, cronSchedule: undefined, activeTimerState: undefined,
+                subAgents: [cleanup.tracked],
+                sessionStatuses: { "child-session-1": { status: action === "complete_agent" ? "completed" : "cancelled", result: action === "complete_agent" ? "done" : "cancelled", resultSource: "orchestration" } },
+            },
+        });
+        const result = await harness.runUntilBlockedOrContinueAsNew();
+        expect(result.runTurnCall, "a cleanup acknowledgement must not become a new work prompt").toBeUndefined();
+        expect(result.blocked).toBe(true);
+        expect(cleanup.events.some(event => event.sessionId === "parent-session"
+            && event.entries.some(entry => entry.eventType === "session.child_cleanup_completed"))).toBe(true);
+    });
+});
+
 describe("orchestration child update batching", () => {
     beforeEach(() => {
         vi.resetModules();
@@ -1142,6 +1209,37 @@ describe("orchestration shutdown semantics", () => {
 describe("wait_for_agents resolution on child completion", () => {
     beforeEach(() => {
         vi.resetModules();
+    });
+
+    it("resolves an explicit barrier by polling after cleanup sends no child work prompt", async () => {
+        const harness = createHarness({
+            inputOverrides: {
+                cronSchedule: undefined,
+                waitingForAgentIds: ["agent-1"],
+                activeTimerState: { remainingMs: 0, originalDurationMs: 30_000, reason: "waiting for cleanup", type: "agent-poll", agentIds: ["agent-1"] },
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "running", result: "AUDIT RESULT" }],
+                sessionStatuses: { "child-session-1": { status: "completed", result: "done", resultSource: "orchestration" } },
+            },
+        });
+        const result = await harness.runUntilRunTurn();
+        expect(result.runTurnCall.prompt).toContain("Sub-agent completed");
+        expect(result.runTurnCall.prompt).toContain("AUDIT RESULT");
+        expect(result.runTurnCall.prompt).not.toContain("Result: done");
+    });
+
+    it("finishes parent shutdown by polling when descendants send no cleanup prompt", async () => {
+        const harness = createHarness({
+            messages: [{ atMs: 0, payload: { type: "cmd", cmd: "done", id: "close-parent" } }],
+            inputOverrides: {
+                subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "Audit", status: "idle" }],
+                getSessionStatus: (_id, state) => ({ status: state.nowMs >= 5000 ? "completed" : "running" }),
+            },
+        });
+        const result = await harness.runUntilDone();
+        expect(result.value).toBe("done");
+        expect(mockSession.runTurn).not.toHaveBeenCalled();
+        expect(result.state.sentCommands[0].command).toMatchObject({ cmd: "done", requestedBy: "parent-session" });
+        expect(JSON.parse(result.values.get(commandResponseKey("close-parent"))).result.ok).toBe(true);
     });
 
     it("resolves the wait when a completed child update races the child's auto-resumed wait timer", async () => {

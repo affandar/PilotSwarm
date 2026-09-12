@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 
-const migration = CMS_MIGRATIONS("jobgen_test").find((entry) => entry.version === "0079");
-const acknowledgementMigration = CMS_MIGRATIONS("jobgen_test").find((entry) => entry.version === "0080");
+const migration = CMS_MIGRATIONS("jobgen_test").find((entry) => entry.version === "0081");
+const acknowledgementMigration = CMS_MIGRATIONS("jobgen_test").find((entry) => entry.version === "0082");
 
 test("JobGenerator migration defines durable aggregate and history tables", () => {
     assert.ok(migration);

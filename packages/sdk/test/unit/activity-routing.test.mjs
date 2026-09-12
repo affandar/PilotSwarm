@@ -4,6 +4,7 @@ import {
     isOwnerScopedRoutingTag,
     ownerAffinityKey,
     repoFromRoutingTag,
+    requireWorkerRoutingTag,
     runTurnRoutingTag,
     scopeWorkerTagFilter,
     workerOwnerFromEnv,
@@ -39,6 +40,22 @@ test("personal workers advertise the same composite repo and generic tags", () =
             runTurnRoutingTag({ ownerAffinity: alice }),
         ],
     });
+});
+
+test("required capability tags compose with repo filters without changing their mode", () => {
+    assert.deepEqual(
+        requireWorkerRoutingTag({ defaultAnd: ["repo:sample-repo"] }, "handoff"),
+        { defaultAnd: ["repo:sample-repo", "handoff"] },
+    );
+    assert.deepEqual(
+        requireWorkerRoutingTag({ tags: ["gpu"] }, "handoff"),
+        { tags: ["gpu", "handoff"] },
+    );
+    assert.deepEqual(
+        requireWorkerRoutingTag(undefined, "handoff"),
+        { defaultAnd: ["handoff"] },
+    );
+    assert.equal(requireWorkerRoutingTag("none", "handoff"), "none");
 });
 
 test("personal workers reject unrestricted or mismatched owner routing", () => {
