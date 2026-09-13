@@ -42,9 +42,15 @@ project is archived and is not used here.
   enabled. Created through GitHub's API after the hosted setup saved the repository
   link without creating a webhook. Its URL and events follow the hosted service's
   published implementation: `https://cla-assistant.io/github/webhook/PilotSwarm`.
-- Observed status context / source: pending first live check.
+- Observed status context: `license/cla`; webhook PR and ping deliveries returned
+  HTTP 200. PR #78 reports `pending` with "Contributor License Agreement is not
+  signed yet." The service uses pending, not failure, for an unsigned contributor;
+  either blocks a required status check.
 - Unsigned-to-signed test: pending an actual contributor's acceptance.
-- Required merge check: pending verified integration.
+- Required merge check: active `CLA required` ruleset, ID `23131735`, applies to
+  `main`, requires a PR and successful `license/cla`, with no bypass actors. The
+  pre-existing disabled `Default-Rules` ruleset was preserved. No provider app ID
+  was returned by the observed legacy status, so this rule matches its context.
 - Agreement legal review: not performed.
 
 ## Existing contributors

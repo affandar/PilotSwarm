@@ -224,6 +224,6 @@ authority first. Employment at Microsoft or a signature on another project's CLA
 does not exempt you from this agreement. Each human contributor must be covered,
 including coauthors; opening a PR for someone else does not sign for them.
 
-CLA Assistant is being connected as part of this rollout. If the signing page or
-check is unavailable, contact the maintainer on your PR and wait for verification
-before merging. A missing check is not evidence of acceptance.
+The `license/cla` status is required before merging into `main`. If the signing
+page or check is unavailable, contact the maintainer on your PR and wait for
+verification before merging. A missing check is not evidence of acceptance.
