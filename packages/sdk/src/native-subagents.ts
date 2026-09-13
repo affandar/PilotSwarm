@@ -94,7 +94,12 @@ export function nativeSubagentDefinitions(model: string, access?: NativeTaskAcce
             prompt: "Perform the delegated commands in the local workspace. Return a concise outcome; include actionable error details on failure. Await your commands; do not detach processes or schedule later work. If you need user input or durable tools, report that to the parent.", },
     ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS, ...(access?.tools[agent.name as "swarm-explore" | "swarm-task"] ?? [])],
         ...(access ? { mcpServers: access.mcpServers[agent.name as "swarm-explore" | "swarm-task"],
-            prompt: agent.prompt + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true }));
+            description: agent.name === "swarm-explore"
+                ? "Investigate local files and allowlisted external sources; return concise source-backed findings."
+                : "Perform bounded local work with explicitly granted external tools and report results.",
+            prompt: (agent.name === "swarm-explore"
+                ? "Investigate the delegated question using local files or allowlisted external sources. Return concise findings with source references. Do not edit files."
+                : agent.prompt) + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true }));
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */

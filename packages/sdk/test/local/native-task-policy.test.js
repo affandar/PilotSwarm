@@ -71,6 +71,7 @@ describe("native task capability policy", () => {
     it("keeps defaults local-only and narrows each custom MCP server", () => {
         expect(nativeSubagentDefinitions("m")[0].tools).not.toContain("repo_read");
         const defs=nativeSubagentDefinitions("m",make());
+        expect(defs[0].description).toMatch(/allowlisted external sources/);
         expect(defs[0].tools).toContain("repo_read");expect(defs[0].tools).not.toContain("repo_write");
         expect(defs[0].mcpServers.notes.tools).toEqual(["read"]);
         expect(defs[1].mcpServers).toEqual({});
