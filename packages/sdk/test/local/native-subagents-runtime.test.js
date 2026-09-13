@@ -35,7 +35,7 @@ const assertNativeIsolation = requests => {
     }
 };
 
-async function harness(respond, run, mode = "sync") {
+async function harness(respond, run, mode = "sync", options = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-native-runtime-"));
     const server = await createNativeCopilotProvider((body, index) => respond(body, index, home));
     const registry = new ModelProviderRegistry({ providers: [{ id: "fixture", type: "openai", baseUrl: server.baseUrl, apiKey: "synthetic", models: [MODEL] }] });
@@ -45,10 +45,10 @@ async function harness(respond, run, mode = "sync") {
     const config = { model: `fixture:${MODEL}`, workingDirectory: home };
     const policy = await createFeaturePolicy();
     const createManager = (nativeMode = mode) => {
-        manager = new SessionManager(undefined, null, { nativeSubagents: nativeMode, modelProviders: registry, turnTimeoutMs: config.turnTimeoutMs ?? 10_000 }, join(home, "session-state"));
+        manager = new SessionManager(undefined, null, { ...options.workerDefaults, nativeSubagents: nativeMode, modelProviders: registry, turnTimeoutMs: config.turnTimeoutMs ?? 10_000 }, join(home, "session-state"));
         manager.setFeatureFlagCache(policy.cache);
         manager.setFactStore(facts);
-        manager.setConfig(sessionId, { ...config, tools: [{
+        manager.setConfig(sessionId, { ...config, tools: [...(options.tools ?? []), {
             name: "ps_marker", description: "Parent-only external tool", parameters: { type: "object", properties: {} },
             handler: () => { leaked++; return "EXTERNAL_TOOL_RAN"; },
         }] });
@@ -65,6 +65,81 @@ async function harness(respond, run, mode = "sync") {
 }
 
 describe("native subagents (real Copilot SDK/CLI, scripted local inference)", () => {
+    it("runs allowlisted external tools on real native children across warm/cold turns", { timeout: 60_000 }, async () => {
+        const calls=[];
+        const policy={"swarm-explore":["repo_read"],"swarm-task":["repo_write"]};
+        const tools=["repo_read","repo_write"].map(name=>({name,description:name,parameters:{type:"object",properties:{}},handler:(args,invocation)=>{calls.push({name,invocation});return name+"_RESULT";}}));
+        let profile="swarm-explore", revoked=false;
+        await harness(body=>{
+            if(parentRequest(body)) return body.messages.at(-1).role === "tool" ? {content:"DONE"} : {tools:[nativeTask({agent_type:profile})]};
+            const names=body.tools.map(t=>t.function.name);
+            if (revoked) {
+                expect(names).not.toContain("repo_read");expect(names).not.toContain("repo_write");
+                return {content:"TOOLS_REVOKED"};
+            }
+            const allowed=profile === "swarm-explore" ? "repo_read" : "repo_write";
+            expect(names).toContain(allowed);
+            expect(names).not.toContain(profile === "swarm-explore" ? "repo_write" : "repo_read");
+            expect(names).not.toContain("spawn_agent");
+            return body.messages.at(-1).role === "tool" ? {content:body.messages.at(-1).content} : {tools:[{name:allowed,args:{}}]};
+        },async({config,sessionId,createManager})=>{
+            config.boundAgentName="fixture";
+            let manager=createManager();
+            for(let turn=0;turn<4;turn++) {
+                if(turn===3){revoked=true;policy["swarm-explore"]=[];policy["swarm-task"]=[];}
+                profile=turn===1?"swarm-task":"swarm-explore";
+                if(turn===2){await manager.shutdown();manager=createManager();}
+                const managed=await manager.getOrCreate(sessionId,config,{turnIndex:turn});
+                const result=await managed.runTurn("Investigate through allowed tools"); expect(result.type).toBe("completed");
+                expect(calls).toHaveLength(Math.min(turn+1,3));
+                if(revoked) continue;
+                expect(calls[turn].invocation.durableSessionId).toBe(sessionId);
+                expect(calls[turn].invocation.nativeSessionId).not.toBe(sessionId);
+                expect(calls[turn].invocation.nativeTaskName).toBe(profile);
+            }
+        },"sync",{tools,workerDefaults:{agentPromptLookup:{fixture:{prompt:"Use native tasks",kind:"app-agent",nativeTaskTools:policy}}}});
+    });
+    it("inherits only allowlisted MCP operations in a real native task", {timeout:45_000}, async()=>{
+        const proof=join(tmpdir(),`native-mcp-${randomUUID()}.txt`);
+        const policy={"swarm-explore":["notes/read_note"]};
+        try { await harness(body=>{
+            if(parentRequest(body)) return body.messages.at(-1).role === "tool" ? {content:"DONE"} : {tools:[nativeTask()]};
+            const names=body.tools.map(t=>t.function.name);
+            const read=names.find(n=>n.includes('read_note'));
+            expect(read).toBeTruthy();expect(names.some(n=>n.includes('write_note'))).toBe(false);
+            return body.messages.at(-1).role==='tool' ? {content:body.messages.at(-1).content} : {tools:[{name:read,args:{}}]};
+        },async({config,sessionId,createManager})=>{
+            config.boundAgentName='fixture';
+            const manager=createManager();
+            const managed=await manager.getOrCreate(sessionId,config,{turnIndex:0});
+            const result=await managed.runTurn('Read notes using a native task'); expect(result.type).toBe('completed');
+            expect(readFileSync(proof,'utf8')).toBe('read_note\n');
+        },'sync',{workerDefaults:{
+            agentPromptLookup:{fixture:{kind:'app-agent',prompt:'Use native tasks',nativeTaskTools:policy}},
+            baseMcpServers:{notes:{command:process.execPath,args:[new URL('../helpers/native-task-mcp.mjs',import.meta.url).pathname,proof],tools:['read_note','write_note']}}
+        }}); } finally { rmSync(proof,{force:true}); }
+    });
+    it("blocks guessed parent and durable tools from an opted-in native task", {timeout:30_000}, async()=>{
+        let childStage=0, parentStage=0;
+        await harness(body=>{
+            if(parentRequest(body)) {
+                if(parentStage++===0) return {tools:[nativeTask()]};
+                if(parentStage===2) return {tools:[{name:'ps_marker',args:{}}]};
+                return {content:'DONE'};
+            }
+            const names=body.tools.map(t=>t.function.name);
+            expect(names).not.toContain('ps_marker');expect(names).not.toContain('spawn_agent');
+            const name=['ps_marker','spawn_agent','manage_schedule'][childStage++];
+            return name ? {tools:[{name,args:{task:'must not run',command:'must not run'}}]} : {content:'BLOCKED'};
+        },async({config,sessionId,createManager,leaks})=>{
+            config.boundAgentName='fixture';
+            const managed=await createManager().getOrCreate(sessionId,config,{turnIndex:0});
+            const spawned=[];
+            const result=await managed.runTurn('Try hidden tools from native task',{controlToolBridge:{spawnAgent:async args=>{spawned.push(args);throw new Error('unexpected spawn');}}});
+            expect(result.type).toBe('completed');expect(leaks()).toBe(1);expect(spawned).toEqual([]);
+            expect(childStage).toBe(4);
+        },'sync',{workerDefaults:{agentPromptLookup:{fixture:{kind:'app-agent',prompt:'Use native tasks',nativeTaskTools:{'swarm-explore':[]}}}}});
+    });
     it("does not register or prompt for the deferred rubber-duck profile", { timeout: 20_000 }, async () => {
         await harness(body => body.messages.at(-1).role === "tool"
             ? { content: "RUBBER_DUCK_UNAVAILABLE" } : { tools: [nativeTask({ agent_type: "swarm-rubber-duck" })] },
@@ -83,7 +158,8 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    it.each(["cluster", "user"])("applies %s OFF during native work, latches denial across ON, and rebinds warm/cold turns", { timeout: 60_000 }, async scope => {
+    // Six turns with multiple real CLI restarts need a startup budget as well as execution time.
+    it.each(["cluster", "user"])("applies %s OFF during native work, latches denial across ON, and rebinds warm/cold turns", { timeout: 120_000 }, async scope => {
         let phase = "revoke", parentStage = 0, policy, proofNonce = randomUUID();
         await harness(async (body) => {
             if (parentRequest(body)) {
@@ -438,7 +514,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    it("stopping the parent terminates an executing child shell before returning", { timeout: 25_000 }, async () => {
+    it("stopping the parent terminates an executing child shell before returning", { timeout: 40_000 }, async () => {
         let pid;
         try {
             await harness((body, index, home) => {
@@ -449,9 +525,13 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 return body.messages.at(-1).role === "tool" ? { content: "CHILD_DONE" }
                     : { tools: [{ name: "bash", args: { command: `${quote(process.execPath)} -e ${quote(code)}`, description: "Run cancellation fixture", mode: "sync" } }] };
             }, async ({ home, config, sessionId, createManager }) => {
+                // Real CLI/model initialization can take more than six seconds
+                // on a busy host. Wait for actual execution before testing stop;
+                // cancellation and process-exit assertions below are unchanged.
+                config.turnTimeoutMs = 25_000;
                 const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
                 const turn = managed.runTurn("delegate command");
-                const deadline = Date.now() + 6_000;
+                const deadline = Date.now() + 15_000;
                 while (!existsSync(join(home, "child.pid")) && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
                 expect(existsSync(join(home, "child.pid"))).toBe(true);
                 pid = Number(readFileSync(join(home, "child.pid"), "utf8"));

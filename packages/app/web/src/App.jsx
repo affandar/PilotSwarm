@@ -184,49 +184,36 @@ function usePortalPublicConfig() {
 }
 
 function useVisualViewportHeight() {
-    const readHeight = React.useCallback(() => {
+    const readViewport = () => {
         if (typeof window === "undefined") return null;
         const viewport = window.visualViewport;
-        const rawHeight = viewport?.height || window.innerHeight || 0;
-        const offsetTop = viewport?.offsetTop || 0;
-        return Math.round(rawHeight + offsetTop);
-    }, []);
-
-    const [height, setHeight] = React.useState(() => readHeight());
-
+        return {
+            height: Math.round(viewport?.height || window.innerHeight || 0),
+            top: Math.round(viewport?.offsetTop || 0),
+        };
+    };
+    const [viewport, setViewport] = React.useState(readViewport);
     React.useLayoutEffect(() => {
-        if (typeof window === "undefined") return undefined;
-
+        let frame = 0;
         const update = () => {
-            setHeight(readHeight());
-            // iOS Safari pans the page to reveal a focused input above the
-            // on-screen keyboard; the shell absorbs that by sizing itself to
-            // height + offsetTop. But Safari sometimes fails to undo the pan
-            // after the keyboard closes, leaving the app stuck half-scrolled.
-            // When the visual viewport is back to (near) full height, any
-            // remaining window scroll is that stale pan — undo it.
-            const viewport = window.visualViewport;
-            const keyboardClosed = !viewport
-                || (window.innerHeight - viewport.height) < 24;
-            if (keyboardClosed && (window.scrollY || window.scrollX)) {
-                window.scrollTo(0, 0);
-            }
+            frame = 0;
+            const next = readViewport();
+            setViewport(previous => previous?.height === next?.height && previous?.top === next?.top ? previous : next);
         };
-
-        const viewport = window.visualViewport;
+        const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+        const visual = window.visualViewport;
         update();
-        window.addEventListener("resize", update);
-        viewport?.addEventListener("resize", update);
-        viewport?.addEventListener("scroll", update);
-
+        window.addEventListener("resize", schedule);
+        visual?.addEventListener("resize", schedule);
+        visual?.addEventListener("scroll", schedule);
         return () => {
-            window.removeEventListener("resize", update);
-            viewport?.removeEventListener("resize", update);
-            viewport?.removeEventListener("scroll", update);
+            if (frame) cancelAnimationFrame(frame);
+            window.removeEventListener("resize", schedule);
+            visual?.removeEventListener("resize", schedule);
+            visual?.removeEventListener("scroll", schedule);
         };
-    }, [readHeight]);
-
-    return height;
+    }, []);
+    return viewport;
 }
 
 function derivePortalStatusText(state) {
@@ -933,7 +920,7 @@ function CanvasShareView({ token }) {
 export default function App() {
     const publicConfig = usePortalPublicConfig();
     const auth = usePortalAuth(publicConfig.config?.auth || null);
-    const appHeight = useVisualViewportHeight();
+    const appViewport = useVisualViewportHeight();
 
     // Stash only while the sign-in gate is up — a signed-in load consumes the
     // URL param directly, and stashing then would leave a stale id behind.
@@ -941,8 +928,8 @@ export default function App() {
     React.useEffect(() => {
         if (showSignInGate) { stashDeepLinkTarget(); }
     }, [showSignInGate]);
-    const shellStyle = appHeight
-        ? { "--ps-app-height": `${appHeight}px` }
+    const shellStyle = appViewport
+        ? { "--ps-app-height": `${appViewport.height}px`, "--ps-app-top": `${appViewport.top}px` }
         : undefined;
 
     // "Anyone with link": the token IS the identity. Render the read-only

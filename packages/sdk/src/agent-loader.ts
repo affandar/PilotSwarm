@@ -1,3 +1,4 @@
+import { NATIVE_TASK_NAMES, validateNativeTaskTools, type NativeTaskTools } from "./native-task-policy.js";
 /**
  * Agent loader — reads .agent.md files with YAML frontmatter from disk.
  *
@@ -92,6 +93,8 @@ export interface AgentConfig {
      * them.
      */
     inheritDefaultMcpServers?: boolean;
+    /** Explicit per-native-task external tool allowlists (schemaVersion 4). */
+    nativeTaskTools?: NativeTaskTools;
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -157,20 +160,25 @@ export interface AgentConfig {
 }
 
 export interface AgentDefinitionIssue {
-    code: "initial_required_tool_schema" | "initial_required_tool_not_declared";
+    code: "initial_required_tool_schema" | "initial_required_tool_not_declared" | "native_task_policy";
     message: string;
 }
 
 export function validateAgentDefinition(
-    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool">,
+    agent: Pick<AgentConfig, "schemaVersion" | "tools" | "initialRequiredTool" | "nativeTaskTools">,
 ): AgentDefinitionIssue[] {
     const requiredTool = typeof agent.initialRequiredTool === "string"
         ? agent.initialRequiredTool.trim()
         : "";
-    if (!requiredTool) return [];
-
     const issues: AgentDefinitionIssue[] = [];
-    if (agent.schemaVersion !== 3) {
+    if (agent.nativeTaskTools !== undefined) {
+        try {
+            if (agent.schemaVersion !== 4) throw new Error("nativeTaskTools requires schemaVersion 4");
+            validateNativeTaskTools(agent.nativeTaskTools);
+        } catch (error: any) { issues.push({code: "native_task_policy", message: error.message}); }
+    }
+    if (!requiredTool) return issues;
+    if (![3, 4].includes(agent.schemaVersion ?? 1)) {
         issues.push({
             code: "initial_required_tool_schema",
             message: "initialRequiredTool requires schemaVersion 3 so older workers skip rather than silently ignore the contract",
@@ -220,10 +228,10 @@ const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "d
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
+    meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
     body: string;
 } {
-    const meta: { name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
+    const meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -236,6 +244,33 @@ function parseAgentFrontmatter(content: string): {
 
     const yamlBlock = content.slice(4, endIdx); // skip opening "---\n"
     const lines = yamlBlock.split("\n");
+    // Parse only the explicitly supported nested mapping; reject malformed policy.
+    const nativeIndex = lines.findIndex(line => /^nativeTaskTools:/.test(line));
+    if (nativeIndex >= 0) {
+        if (lines.filter(line => /^nativeTaskTools:/.test(line)).length !== 1) throw new Error("Duplicate nativeTaskTools declaration");
+        if (lines[nativeIndex].trim() !== "nativeTaskTools:") throw new Error("nativeTaskTools requires an indented task mapping");
+        const policy: Record<string, string[]> = {};
+        let task: string | undefined;
+        let end = nativeIndex + 1;
+        for (; end < lines.length && !/^[^\s#]/.test(lines[end]); end++) {
+            const line = lines[end];
+            if (!line.trim() || line.trim().startsWith("#")) continue;
+            const key = /^  ([\w-]+):\s*(\[.*\])?\s*$/.exec(line);
+            if (key) {
+                task = key[1];
+                if (!(NATIVE_TASK_NAMES as readonly string[]).includes(task)) throw new Error(`Unknown native task: ${task}`);
+                if (Object.hasOwn(policy, task)) throw new Error(`Duplicate native task: ${task}`);
+                policy[task] = key[2] ? key[2].slice(1,-1).split(",").map(t => t.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean) : [];
+            } else {
+                const item = /^    - ([\w./-]+)\s*$/.exec(line);
+                if (!item || !task) throw new Error("Malformed nativeTaskTools entry");
+                policy[task].push(item[1]);
+            }
+        }
+        validateNativeTaskTools(policy);
+        meta.nativeTaskTools = policy;
+        lines.splice(nativeIndex, end-nativeIndex);
+    }
     let currentKey: string | null = null;
     let multilineValue: string[] | null = null;
     let currentBlockStyle: string | null = null;
@@ -421,8 +456,8 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 continue;
             }
 
-            if (meta.schemaVersion !== undefined && ![1, 2, 3].includes(meta.schemaVersion)) {
-                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, or 3`);
+            if (meta.schemaVersion !== undefined && ![1, 2, 3, 4].includes(meta.schemaVersion)) {
+                console.warn(`[agent-loader] Skipping ${entry.name}: unsupported schemaVersion ${meta.schemaVersion}; expected schemaVersion 1, 2, 3, or 4`);
                 continue;
             }
 
@@ -444,6 +479,7 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 skills: meta.skills && meta.skills.length > 0 ? meta.skills : undefined,
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
+                nativeTaskTools: meta.nativeTaskTools,
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- SDK: schemaVersion 4 agent definitions can explicitly allowlist application and MCP tools for each native task profile, preserving parent grants and blocking durable orchestration. Runtime attribution and duplicate-call protection cover native application callbacks.
+- Portal: follow Safari's visual viewport height and pan independently; remove the hidden session row during composer keyboard takeover so chat fills the available area.
+- Tests: focused native policy, actual SDK/CLI callback/MCP integration, and Chromium/WebKit keyboard geometry coverage.
+
 ## 0.5.68 — 2026-09-12
 
 Expose Agent Smith's tool bundle to the opt-in Generic Superagent identity.

@@ -91,7 +91,7 @@ tools:
     assert.deepEqual(agent.tools, ["bash"]);
 });
 
-test("schemaVersions 2 and 3 load; schemaVersion 4 is skipped", () => {
+test("schemaVersions 2, 3 and 4 load; unknown versions are skipped", () => {
     const dir = makeTmpDir("ps-agent-mcp-");
     writeAgent(dir, "v2.agent.md", `
 schemaVersion: 2
@@ -108,8 +108,13 @@ schemaVersion: 4
 version: 1.0.0
 name: v4
 `);
+    writeAgent(dir, "future.agent.md", `
+schemaVersion: 5
+version: 1.0.0
+name: future
+`);
     const agents = loadAgentFiles(dir);
-    assert.deepEqual(agents.map((a) => a.name), ["v2", "v3"]);
+    assert.deepEqual(agents.map((a) => a.name), ["v2", "v3", "v4"]);
 });
 
 // ─── 2 + 3. Worker-side catalog resolution ──────────────────────
@@ -209,10 +214,12 @@ test("same-name static namespaces retain their own prompt, declarations and MCP 
     const pluginB = makeTmpDir("ps-mcp-plugin-b-");
     fs.mkdirSync(path.join(pluginB, "agents"));
     writeAgent(path.join(pluginB, "agents"), "withref.agent.md", `
-schemaVersion: 2
+schemaVersion: 4
 version: 2.0.0
 name: withref
 tools: [security_tool]
+nativeTaskTools:
+  swarm-explore: [security_tool]
 `, "SECURITY SECOND NAMESPACE");
     const worker = buildWorker([pluginA, pluginB]);
     const namespaceA = path.basename(pluginA);
@@ -224,6 +231,8 @@ tools: [security_tool]
     assert.match(lookup[keyB].prompt, /SECURITY SECOND NAMESPACE/);
     assert.deepEqual(lookup[keyB].toolNames, ["security_tool"]);
     assert.equal(lookup[keyB].descriptor.layerId, keyB);
+    assert.deepEqual(lookup[keyB].nativeTaskTools, {"swarm-explore": ["security_tool"]});
+    assert.equal(lookup[keyA].nativeTaskTools, undefined);
     assert.equal(lookup.withref.prompt, lookup[keyA].prompt, "legacy bare prompt retains first static definition");
     assert.deepEqual(Object.keys(maps.withref), ["jira"], "bare MCP follows the same static default as its prompt");
     assert.deepEqual(Object.keys(maps[keyA]), ["jira"]);
@@ -234,10 +243,12 @@ tools: [security_tool]
     assert.equal(second.mcpServers, undefined);
 
     writeAgent(path.join(pluginB, "agents"), "withref.agent.md", `
-schemaVersion: 2
+schemaVersion: 4
 version: 2.1.0
 name: withref
 tools: [security_tool_v2]
+nativeTaskTools:
+  swarm-explore: []
 mcpServers: [github]
 `, "SECURITY SECOND NAMESPACE V2");
     worker._resetLoadedPluginState();
@@ -247,6 +258,7 @@ mcpServers: [github]
     assert.match(lookup[keyB].prompt, /SECURITY SECOND NAMESPACE V2/);
     assert.deepEqual(lookup[keyB].toolNames, ["security_tool_v2"]);
     assert.equal(lookup[keyB].descriptor.version, "2.1.0");
+    assert.deepEqual(lookup[keyB].nativeTaskTools, {"swarm-explore": []});
     assert.deepEqual(Object.keys(maps[keyB]), ["github"]);
     assert.deepEqual(Object.keys(maps[keyA]), ["jira"]);
     assert.deepEqual(Object.keys(maps.withref), ["jira"]);

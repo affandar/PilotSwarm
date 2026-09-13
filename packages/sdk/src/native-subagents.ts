@@ -1,3 +1,4 @@
+import type { NativeTaskAccess } from "./native-task-policy.js";
 import type { CopilotSession, CustomAgentConfig, SessionHooks, Tool } from "@github/copilot-sdk";
 
 export type NativeSubagentMode = "off" | "sync";
@@ -70,27 +71,48 @@ swarm-explore and swarm-task inherit the parent model, reasoning effort, and con
 Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.
 `;
 
-export function nativeSubagentGuidance(): string { return NATIVE_SUBAGENT_GUIDANCE; }
+export function nativeSubagentGuidance(access?: NativeTaskAccess): string {
+    if (!access) return NATIVE_SUBAGENT_GUIDANCE;
+    return `## Native local delegation
+For substantial bounded investigations, use task(agent_type="swarm-explore", mode="sync").
+For bounded commands or builds, use task(agent_type="swarm-task", mode="sync").
+Native tasks inherit the parent model and reasoning settings: omit overrides. Supply the objective,
+relevant agent/skill excerpts, exact scope, repository/worktree identifiers, and expected evidence.
+Tasks can use local CLI tools plus their exact external-tool allowlist:
+${JSON.stringify(access.tools)}
+Repository-cache files live remotely: use the allowlisted repository tools rather than assuming
+those paths exist locally. Tools outside the allowlist stay with the parent. Task execution is
+synchronous; do not create durable sessions, schedule work, or detach commands. Follow the bound
+agent's policy for whether the user must explicitly request durable delegation.`;
+}
 
-export function nativeSubagentDefinitions(model: string): CustomAgentConfig[] {
+export function nativeSubagentDefinitions(model: string, access?: NativeTaskAccess): CustomAgentConfig[] {
     return [
         { name: "swarm-explore", description: "Explore the local workspace and return concise source-backed findings.",
             prompt: "Investigate the delegated question in the local workspace. Return concise findings with file references. Do not edit files. If you need user input or durable tools, report that to the parent. Complete the assigned investigation and return.", },
         { name: "swarm-task", description: "Run local tests, builds, and commands; summarize success and include failure details.",
             prompt: "Perform the delegated commands in the local workspace. Return a concise outcome; include actionable error details on failure. Await your commands; do not detach processes or schedule later work. If you need user input or durable tools, report that to the parent.", },
-    ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS], infer: true }));
+    ].map(agent => ({ ...agent, model, tools: [...NATIVE_SUBAGENT_TOOLS, ...(access?.tools[agent.name as "swarm-explore" | "swarm-task"] ?? [])],
+        ...(access ? { mcpServers: access.mcpServers[agent.name as "swarm-explore" | "swarm-task"],
+            prompt: agent.prompt + " You may also use the explicitly listed external tools, under the parent's existing permissions. Repository-cache paths are remote; use the supplied repository tools. Return findings to the parent; do not create sessions, schedule work or launch detached processes." } : {}), infer: true }));
 }
 
 /** Native execution remains in the CLI. Compose policy around the native tool. */
-export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true): SessionHooks {
+export function nativeSubagentHooks(model: string, hooks?: SessionHooks, canAdmit: () => boolean = () => true, access?: NativeTaskAccess): SessionHooks {
     return {
         ...hooks,
+        onPreMcpToolCall: async (input, invocation) => {
+            if (input.sessionId !== invocation.sessionId && !access?.allows(input.sessionId, `${input.serverName}/${input.toolName}`)) {
+                throw new Error("Native task MCP tool is not allowlisted");
+            }
+            return hooks?.onPreMcpToolCall?.(input, invocation);
+        },
         onPreToolUse: async (input, invocation) => {
             const previous = await hooks?.onPreToolUse?.(input, invocation);
             if (previous?.permissionDecision === "deny") return previous;
             const deny = (reason: string) => ({ ...previous, permissionDecision: "deny" as const, permissionDecisionReason: reason });
             const isChild = Boolean(input.sessionId && input.sessionId !== invocation.sessionId);
-            if (isChild && !childTools.has(input.toolName)) {
+            if (isChild && !childTools.has(input.toolName) && !access?.allowsHook(input.sessionId, input.toolName)) {
                 return deny("Native workers can use only local CLI tools. Return this request to your PilotSwarm parent.");
             }
             if (NATIVE_EXCLUDED_TOOLS.includes(input.toolName)) {
@@ -169,13 +191,14 @@ export async function settleNativeSubagents(session: CopilotSession, { timeoutMs
 /** Defense in depth if a CLI tool name collides with an external tool name.
  * Apply both at declaration time and when per-turn handlers are refreshed.
  */
-export function guardNativeExternalTools(tools: Tool<any>[], parentSessionId: string): Tool<any>[] {
+export function guardNativeExternalTools(tools: Tool<any>[], parentSessionId: string, access?: NativeTaskAccess): Tool<any>[] {
     return tools.map(tool => {
         const handler = tool.handler;
         if (!handler) return tool;
         return {
             ...tool,
             handler: (args, invocation) => {
+                if (access) return access.invoke(tool, args, invocation, parentSessionId);
                 if (invocation.sessionId !== parentSessionId) {
                     throw new Error("Native workers cannot invoke PilotSwarm external tools; return the request to the parent.");
                 }
