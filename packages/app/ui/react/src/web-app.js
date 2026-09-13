@@ -14702,7 +14702,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
-    const profileSettingsSaveInFlightRef = React.useRef(false);
+    const profileSettingsSaveInFlightRef = React.useRef(0);
+    const profileSettingsEditRevisionRef = React.useRef(0);
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
@@ -14829,7 +14830,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
             profileSettingsPollTimerRef.current = null;
         }
         profileSettingsPollInFlightRef.current = false;
-        profileSettingsSaveInFlightRef.current = false;
+        profileSettingsSaveInFlightRef.current = 0;
 
         const transport = controller.transport;
         if (typeof transport?.getCurrentUserProfile !== "function"
@@ -14843,6 +14844,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         const pollProfileSettings = async () => {
             if (!active || profileSettingsPollInFlightRef.current) return;
             profileSettingsPollInFlightRef.current = true;
+            const editRevision = profileSettingsEditRevisionRef.current;
             try {
                 const profile = await transport.getCurrentUserProfile();
                 if (!active) return;
@@ -14892,7 +14894,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
                     && lastProfileSettingsJsonRef.current != null
                     && currentSettingsBeforeApplyJson !== lastProfileSettingsJsonRef.current;
-                const hasPendingLocalWrite = Boolean(profileSettingsSaveTimerRef.current)
+                const hasPendingLocalWrite = editRevision !== profileSettingsEditRevisionRef.current
+                    || Boolean(profileSettingsSaveTimerRef.current)
                     || profileSettingsSaveInFlightRef.current
                     || hasUnpersistedLocalChange
                     || controller.getState().ui.moaDirty === true;
@@ -14968,12 +14971,13 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
+        profileSettingsEditRevisionRef.current += 1;
         if (profileSettingsSaveTimerRef.current) {
             clearTimeout(profileSettingsSaveTimerRef.current);
         }
         profileSettingsSaveTimerRef.current = setTimeout(() => {
             profileSettingsSaveTimerRef.current = null;
-            profileSettingsSaveInFlightRef.current = true;
+            profileSettingsSaveInFlightRef.current += 1;
             const moaRevision = controller.getState().ui.moaRevision;
             controller.dispatch({ type: "ui/moaSaveStatus", status: "saving" });
             saveProfileSettings(controller, settings)
@@ -14983,7 +14987,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
                     controller.dispatch({ type: "ui/moaSaveStatus", status: "error" });
                 })
                 .finally(() => {
-                    profileSettingsSaveInFlightRef.current = false;
+                    profileSettingsSaveInFlightRef.current = Math.max(0, profileSettingsSaveInFlightRef.current - 1);
                 });
         }, 400);
         return undefined;

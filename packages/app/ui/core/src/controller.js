@@ -2530,13 +2530,16 @@ export class PilotSwarmUiController {
         }
         await this.refreshSessions();
         this.catalogTimer = setInterval(() => {
+            // Do not queue more catalog traffic behind a slow periodic read.
+            if (this.catalogPollInFlight) return;
+            this.catalogPollInFlight = true;
             this.refreshSessions().catch((error) => {
                 this.dispatch({
                     type: "connection/error",
                     error: error?.message || String(error),
                     statusText: SESSION_REFRESH_FAILED_STATUS,
                 });
-            });
+            }).finally(() => { this.catalogPollInFlight = false; });
         }, 4000);
     }
 
@@ -2628,6 +2631,16 @@ export class PilotSwarmUiController {
         const recoveringConnection = !preRefreshState.connection.connected || Boolean(preRefreshState.connection.error);
         const shouldClearRefreshFailureBanner = preRefreshState.ui.statusText === SESSION_REFRESH_FAILED_STATUS;
         const previousActive = this.getState().sessions.activeSessionId;
+        const previousNavigationGeneration = this.navigationGeneration;
+        // The folder catalog is independent of the session pages: overlap its RTT.
+        const groupRowsPromise = typeof this.transport.listSessionGroups === "function"
+            ? Promise.resolve().then(() => this.transport.listSessionGroups())
+                .then(groups => (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean))
+                .catch(error => {
+                    console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the known folders: ${error?.message || error}`);
+                    return null;
+                })
+            : Promise.resolve(null);
         let sessions = (await loadSessionCatalogPageWindow(this.transport)).map(normalizeSessionListRow);
         // Folders are NOT merged into the session payload any more: they live
         // in their own state slice, so a session refresh cannot drop them. A
@@ -2641,15 +2654,7 @@ export class PilotSwarmUiController {
         // state alone is judge which folders are still claimed, since the store
         // still holds the PREVIOUS membership at this point; the incoming rows
         // ride along on the action for exactly that.
-        let pendingGroupRows = null;
-        if (typeof this.transport.listSessionGroups === "function") {
-            try {
-                const groups = await this.transport.listSessionGroups();
-                pendingGroupRows = (Array.isArray(groups) ? groups : []).map(sessionGroupToRow).filter(Boolean);
-            } catch (error) {
-                console.warn(`[PilotSwarmUi] session-group fetch failed, keeping the known folders: ${error?.message || error}`);
-            }
-        }
+        const pendingGroupRows = await groupRowsPromise;
         // A pending deep-link target may be readable but absent from the
         // paged catalog window — fetch it explicitly. A definitive failure
         // (unknown or unshared: identical 404 shapes) fails the intent; the
@@ -2753,6 +2758,8 @@ export class PilotSwarmUiController {
             if (!existingHistory?.events?.length) {
                 await this.ensureSessionHistory(selected, { force: true }).catch(() => {});
             }
+            if (this.getState().sessions.activeSessionId !== selected
+                || this.navigationGeneration !== previousNavigationGeneration) return;
             // Boot-restore can hydrate the selection through THIS branch
             // instead of loadSession (whether the profile poll beats the first
             // sessions refresh is a race), so the canvas snapshot must be
@@ -2954,7 +2961,27 @@ export class PilotSwarmUiController {
         return history;
     }
 
-    async ensureSessionHistory(sessionId, { force = false } = {}) {
+    async ensureSessionHistory(sessionId, options = {}) {
+        if (!sessionId) return null;
+        if (this.sessionHistoryLoads.has(sessionId)) return this.sessionHistoryLoads.get(sessionId);
+        const existing = this.getState().history.bySessionId.get(sessionId);
+        if (!options.force && existing?.events && existing?.loadState !== "failed") return existing;
+        this.dispatch({ type: "history/loadState", sessionId, loadState: "loading" });
+        const pending = this.loadSessionHistory(sessionId, { ...options, force: true });
+        this.sessionHistoryLoads.set(sessionId, pending);
+        try {
+            const result = await pending;
+            this.dispatch({ type: "history/loadState", sessionId, loadState: "loaded" });
+            return result;
+        } catch (error) {
+            this.dispatch({ type: "history/loadState", sessionId, loadState: "failed" });
+            throw error;
+        } finally {
+            if (this.sessionHistoryLoads.get(sessionId) === pending) this.sessionHistoryLoads.delete(sessionId);
+        }
+    }
+
+    async loadSessionHistory(sessionId, { force = false } = {}) {
         if (!sessionId) return null;
         const existingHistory = this.getState().history.bySessionId.get(sessionId);
         const requestedLimit = Math.min(
@@ -2966,9 +2993,6 @@ export class PilotSwarmUiController {
         );
         if (!force && existingHistory?.events) {
             return existingHistory;
-        }
-        if (!force && this.sessionHistoryLoads.has(sessionId)) {
-            return this.sessionHistoryLoads.get(sessionId);
         }
 
         // Re-entry catch-up: when the expanded window is already in memory,
@@ -3052,12 +3076,7 @@ export class PilotSwarmUiController {
                 });
             }
             return history;
-        })()
-            .finally(() => {
-                this.sessionHistoryLoads.delete(sessionId);
-            });
-
-        this.sessionHistoryLoads.set(sessionId, loadPromise);
+        })();
         return loadPromise;
     }
 
@@ -5727,6 +5746,7 @@ export class PilotSwarmUiController {
 
     async loadSession(sessionId) {
         if (!sessionId) return;
+        const navigationGeneration = this.navigationGeneration = (this.navigationGeneration || 0) + 1;
         const active = this.getState().sessions.activeSessionId;
         if (active !== sessionId) {
             if (this.getState().ui.promptEdit) {
@@ -5742,10 +5762,13 @@ export class PilotSwarmUiController {
             this.detachActiveSession();
             return;
         }
-        await this.ensureSessionHistory(sessionId, { force: true });
-        if (this.getState().sessions.activeSessionId !== sessionId) return;
-        await this.syncSessionDetail(sessionId).catch(() => {});
-        if (this.getState().sessions.activeSessionId !== sessionId) return;
+        // Independent reads share one network-latency window. Cached chat stays visible.
+        await Promise.all([
+            this.ensureSessionHistory(sessionId, { force: true }),
+            this.syncSessionDetail(sessionId).catch(() => {}),
+        ]);
+        if (this.navigationGeneration !== navigationGeneration
+            || this.getState().sessions.activeSessionId !== sessionId) return;
         this.attachActiveSession(sessionId);
         this.ensureInspectorData().catch(() => {});
         // Canvas snapshot rides the selection burst. Invalidate-then-fetch on

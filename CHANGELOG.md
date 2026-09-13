@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.67 — 2026-09-12
+
+Reliable session switching and fewer network waits on slow connections.
+
+- Keep session selection local after navigation, reject saved-profile reads that span local edits, and track all queued preference saves.
+- Prevent background refreshes and outdated navigation attempts from attaching the wrong session's live updates.
+- Fetch history and details concurrently, overlap session and folder catalogs, share in-flight history reads, and avoid overlapping periodic catalog polls.
+- Show explicit loading and retry messages while conversation history is unavailable.
+- Include the consumer-owned external Vitest suite support already on main.
+- Validation: UX coverage and focused delayed-response regressions; release build and package validation. Full integration suites were intentionally not run for this release.
+
 ## 0.5.66 — 2026-09-11
 
 Fast browser-side session search across the workspace and Master of Agents.

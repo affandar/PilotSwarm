@@ -1073,8 +1073,11 @@ function baseReducer(state, action) {
                 state.sessions.navigationIntent
                 && state.sessions.navigationIntent.status !== "failed",
             );
+            // Saved selection is a boot preference. Once this tab navigates,
+            // a slow profile read (or another device) must not navigate it back.
             const hasActive = Object.prototype.hasOwnProperty.call(settings, "activeSessionId")
-                && !navigationIntentLatched;
+                && !navigationIntentLatched
+                && !state.sessions.localSelectionMade;
             const hasLoadedSessions = Object.keys(state.sessions.byId || {}).length > 0;
             const nextLayout = hasLayout
                 ? {
@@ -1889,7 +1892,7 @@ function baseReducer(state, action) {
         }
 
         case "sessions/selected": {
-            state = { ...state, sessions: { ...state.sessions, listDeselected: false } };
+            state = { ...state, sessions: { ...state.sessions, listDeselected: false, localSelectionMade: true } };
             // Per-session chat scroll memory: stash both the outgoing offset
             // and whether it follows the bottom. A paused reading position
             // stays paused as new messages arrive and across session switches.
@@ -2190,6 +2193,17 @@ function baseReducer(state, action) {
                     selectMode: false,
                 },
             };
+        }
+
+        case "history/loadState": {
+            // A gone-session response may already have evicted this entry.
+            if (!state.sessions.byId[action.sessionId]) return state;
+            const bySessionId = cloneHistoryMap(state.history.bySessionId);
+            bySessionId.set(action.sessionId, {
+                ...bySessionId.get(action.sessionId),
+                loadState: action.loadState,
+            });
+            return { ...state, history: { ...state.history, bySessionId } };
         }
 
         case "history/set": {

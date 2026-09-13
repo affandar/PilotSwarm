@@ -2028,6 +2028,16 @@ export function selectActiveChat(state) {
     }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
+    if (!chat.length && ["loading", "failed"].includes(history?.loadState)) {
+        return [{
+            id: `history-load:${sessionId}:${history.loadState}`,
+            role: "system",
+            noChrome: true,
+            text: history.loadState === "loading"
+                ? "Loading conversation…"
+                : "Could not load this conversation. Select the session again to retry.",
+        }];
+    }
     const events = history?.events || [];
     const pendingQuestionMessage = session?.pendingQuestion?.question
         && !chatAlreadyContainsPendingQuestion(chat, session.pendingQuestion.question)
