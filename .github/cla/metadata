@@ -1,0 +1,23 @@
+{
+  "name": {
+    "title": "Full legal name",
+    "type": "string",
+    "githubKey": "name",
+    "required": true
+  },
+  "capacity": {
+    "title": "Signing capacity",
+    "type": {
+      "enum": [
+        "I own the rights and am contributing on my own behalf.",
+        "I have permission and authority to sign on behalf of my employer."
+      ]
+    },
+    "required": true
+  },
+  "employer": {
+    "title": "Employer legal name (required when signing for an employer; otherwise enter Not applicable)",
+    "type": "string",
+    "required": true
+  }
+}

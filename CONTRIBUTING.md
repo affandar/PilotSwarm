@@ -204,3 +204,26 @@ Helpful issue reports include:
 
 By contributing, you agree that your contributions will be licensed under the
 [MIT License](LICENSE).
+
+### Contributor License Agreement
+
+Contributors must also accept the [PilotSwarm Contributor License Agreement
+(CLA)](CLA.md) before their contributions are merged. The agreement grants rights
+to Affan Dar, the project maintainer, while contributors retain their copyright.
+It includes copyright and patent licenses, permission to sublicense, and provision
+for a future project steward. This is separate from the Microsoft CLA.
+
+To sign, follow the CLA Assistant link on your pull request and accept the displayed
+agreement using your own GitHub account. Existing contributors can also use the
+[PilotSwarm signing page](https://cla-assistant.io/affandar/PilotSwarm).
+Signing version 1.0 covers your authorized past and future PilotSwarm contributions.
+An updated agreement may require a new acceptance.
+
+If you contribute for an employer, obtain the required permission and signing
+authority first. Employment at Microsoft or a signature on another project's CLA
+does not exempt you from this agreement. Each human contributor must be covered,
+including coauthors; opening a PR for someone else does not sign for them.
+
+CLA Assistant is being connected as part of this rollout. If the signing page or
+check is unavailable, contact the maintainer on your PR and wait for verification
+before merging. A missing check is not evidence of acceptance.
