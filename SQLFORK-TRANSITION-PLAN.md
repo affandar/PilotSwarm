@@ -1,9 +1,13 @@
 # PilotSwarm-SQL-staging → Transition Plan
 
-> **Status:** Draft · **Owner:** @andrewkcchung · **Scope:** this fork only
+> **Status:** In progress · **Owner:** @andrewkcchung · **Scope:** this fork only
 > **This file is a fork-only artifact.** It must not be part of any PR to
 > `affandar/PilotSwarm`. Delete it (or move it to the SQL-internal repo) once every
 > capability it holds has landed upstream or moved to the SQL-internal repo.
+>
+> **Maintenance rule:** this is a current-state plan, not an execution log. Update it in place;
+> completed work should remove or collapse content so the document shrinks with the remaining
+> fork delta. Git history is the record of prior states and completed actions.
 
 ## Table of contents
 
@@ -73,45 +77,36 @@ the fork, it is deleted. This is capability routing, not a commit-by-commit burn
 ## 3. Current state (as of this draft)
 
 > **Original divergence point:** [`eaabdbf9`](https://github.com/affandar/PilotSwarm/commit/eaabdbf9dbf5801b77ac9eef7cd36d2e6baa41c0)
-> on `affandar/PilotSwarm`, retained as the frozen `upstream-base` marker. The successful
-> 2026-09-08 integration advanced the current merge-base to `6df642ef`; future merges continue
-> advancing it.
+> on `affandar/PilotSwarm`, retained as the frozen `upstream-base` marker. `ghe/oss/main`
+> identifies the current last-integrated upstream baseline and advances with each validated merge.
 
 
 | Ref | Tip (code) | Relationship to `oss/main` | Role |
 | --- | --- | :---: | --- |
-| `ghe/oss/main` | `6df642ef` | baseline | last-integrated public upstream |
-| `feature/aks-git-repo-worker` | `b964eeaf` | 199 ahead / 0 behind | current internal fork tip |
-| `origin/main` | `855aadca` | 4 ahead / 0 behind | current public upstream |
-| `ghe/oss/head` | `855aadca` | 4 ahead / 0 behind | GHE mirror of current public upstream |
+| `ghe/oss/main` | `69dfbae4` | baseline | last-integrated public upstream |
+| `feature/aks-git-repo-worker` | `7f9eb2a8` | 202 ahead / 0 behind | current internal fork tip |
 
-> Snapshot taken **2026-09-11** after fetching both remotes. The comparison dashboards below are
-> authoritative as the refs advance: refresh `oss/head` continuously, but advance `oss/main`
-> only after its upstream commit has been merged, validated, and published in the fork.
+> Moving upstream refs are resolved when running the comparison dashboards rather than recorded
+> here.
 
 ```
    🌐 affandar/PilotSwarm   (upstream · main = the continuous horizontal trunk)
-   Snapshot captured 2026-09-11
 
-   …──o──o──o── … ──●──o──o──o──●   855aadca (2026-09-11)  ← origin/main
-                    │ 6df642ef (2026-09-07) = current merge base
+   …──o──o──o── … ──●────────[0..n upstream commits]────────► origin/main / oss/head
+                    │ 69dfbae4 (2026-09-12) = current merge base / oss/main
                     │
-                    └──o──o──o── … ──o──►   b964eeaf   ← feature/aks-git-repo-worker   🔒 ghe
-                          fork delta from oss/main: +199 · 0 behind
+                    └──o──o──o── … ──o──►   7f9eb2a8 (2026-09-12)   ← feature/aks-git-repo-worker   🔒 ghe
+                          fork delta from oss/main: +202 · 0 behind
 
    (original divergence eaabdbf9 sits far to the left, frozen as upstream-base; each merge advances
     the merge-base to the newest integrated upstream tip, while origin/main may move ahead again)
 ```
 
-- **Last merged from** `origin/main` **`6df642ef`** on **2026-09-08**. At the
-  **2026-09-11** snapshot, public upstream is at **`855aadca`**, so the fork is **4 commits behind**.
-  (Original divergence was at **`eaabdbf9`**, still frozen as the `upstream-base` tag.)
-
-- The fork-side divergence (`git diff ghe/oss/main...feature/aks-git-repo-worker`) at that snapshot =
-  **318 files / +62,717 / −4,063 / 199 commits** on top of the last-integrated baseline.
+- The fork-side divergence (`git diff ghe/oss/main...feature/aks-git-repo-worker`) for this baseline =
+  **320 files / +62,714 / −4,039 / 202 commits** on top of the last-integrated baseline.
   This is the scope to route — each capability lands upstream or moves internal, not a
   commit-by-commit burndown.
-- **All 199** commits above `oss/main` are internal-only on `ghe`; upstream `affandar` carries no
+- **All 202** commits above `oss/main` are internal-only on `ghe`; upstream `affandar` carries no
   divergent refs.
 
 The internal staging repository maintains two OSS mirror refs for these comparisons:
@@ -250,11 +245,13 @@ The functionality below is intended as generic PilotSwarm runtime and is the sub
 this fork contributes back to `affandar/PilotSwarm`; the residual source-specific assumptions
 identified after the theme list must be neutralized before contribution. Listed as themes, not
 commits. This audit uses the exact last-integrated-baseline comparison
-`git diff ghe/oss/main...HEAD` (`6df642ef` → `b964eeaf`): **318 files, +62,717 / −4,063,
-199 commits above the baseline**. All 12 themes below remain present in that fork delta;
-recent work improved the PilotSwarm/SQLmort ownership seam but did not yet land these themes
-in public upstream. The separate four-commit `oss/main...oss/head` range is upstream lag, not
-part of the fork-contribution inventory.
+`git diff ghe/oss/main...HEAD`
+([`69dfbae4`](https://github.com/affandar/PilotSwarm/commit/69dfbae4f249169f389ff2a7d2617f0baf7c4bd3)
+→ [`7f9eb2a8`](https://msft.ghe.com/azure-data/PilotSwarm-SQL-staging/commit/7f9eb2a85400b6ac32928f6c74b26ccfa620a813)):
+**320 files, +62,714 / −4,039,
+202 commits above the baseline**. The themes below remain present in the fork delta. Upstream
+commits after `oss/main` are lag to reconcile, not part of the
+fork-contribution inventory.
 
 1. **Git workspace durability + repository-worker fleet** — node-local git-cache mirrors,
    git-repo-worker DaemonSets, hostPath enlistment persistence, bundle/patch/metadata
@@ -266,7 +263,8 @@ part of the fork-contribution inventory.
    normalized remote-provider dispatch, and E2E harness. *Concrete source providers are external
    modules owned by their domain or integration package.*
    - **Nearly upstream-ready:** replace the `ado_wiql` and WIQL sample data in JobGenerator
-     controller/provider and SDK transport tests with a synthetic provider ID and neutral payload.
+     controller/provider and SDK transport tests with a synthetic provider ID and neutral payload,
+     then upstream the remaining JobGenerator/provider test phase with this lifecycle capability.
 3. **Durable orchestration primitives** — keyed system waits, observed-condition waits,
    external-operation gates, durable response persistence, versioned orchestration snapshots,
    and bootstrap-turn folding.
@@ -294,17 +292,13 @@ part of the fork-contribution inventory.
 9. **Devbox worker identity and authentication** — silent caller-token refresh, canonical
    worker identity across restarts, Azure CLI baked into the Windows base for popup-free auth,
    and signed-in Copilot-user model access.
-10. **External acceptance-suite runner** — repeatable `--external-test-dir` phases,
-    lightweight `--external-only` execution, file filtering, fail-fast option validation,
-    isolated Vitest configuration for consumer repositories, and consolidated pass/fail
-    summaries with targeted rerun commands.
-11. **Deployment-framework extensions for standalone services** — the manifest-driven Bicep,
+10. **Deployment-framework extensions for standalone services** — the manifest-driven Bicep,
     Flux, and Kustomize deployment model already exists upstream. The fork extends it with
     standalone and instance-scoped services, service-owned environment configuration, structured
     GitOps overlays and replacements, an explicit render stage, Deployment/DaemonSet rollout
     support, prerequisite checks, and exact-image verification. The concrete git-cache,
     git-repo-worker, and MCP deployment definitions remain part of themes 1 and 5.
-12. **Runtime reliability and operability** — Postgres pool self-heal, duroxide pool/acquire
+11. **Runtime reliability and operability** — Postgres pool self-heal, duroxide pool/acquire
     resiliency, jittered retry backoff, orchestration lease/timeout tuning, session-poison
     diagnostics, blob/DB managed-identity decoupling, WAF fixes, and generic support for
     governance-restricted subscriptions.
@@ -501,7 +495,7 @@ backfill.
 > scan**, not one inferred from a clean tip.
 
 ### Phase 3 — Upstream the platform, theme by theme (slow track, external pace)
-- Slice the fork-vs-upstream logical diff into the 12 capability themes of §6A.
+- Slice the fork-vs-upstream logical diff into the remaining capability themes of §6A.
 - For each theme, in dependency order:
   - Cut a clean PR branch from **current `origin/main`** via **path-scoped assembly** (bring the
     theme's final file state, commit clean) — not a replay of entangled history.
@@ -511,45 +505,43 @@ backfill.
     divergent → resolve take-upstream);
     reconcile if upstream modified or independently built it.
 - Recommended merge train — themes are inventory units, not necessarily one PR each:
-  1. **(10) External acceptance-suite runner** — land first: it is isolated, useful to every
-     later contribution, and only changes two files.
-  2. **(12) Runtime reliability and operability** — send each independently reproducible fix as
+  1. **(11) Runtime reliability and operability** — send each independently reproducible fix as
      its own small PR rather than one omnibus reliability change; merge these opportunistically
      throughout the train.
-  3. **(2a) Provider ABI, host, loader, and remote dispatch** — land the clean external-provider
+  2. **(2a) Provider ABI, host, loader, and remote dispatch** — land the clean external-provider
      seam before the larger lifecycle system. This is a high-value boundary and does not require
      the domain providers.
-  4. **(5a) MCP adapter host, HTTP transport, and synthetic REST example** — an isolated package
+  3. **(5a) MCP adapter host, HTTP transport, and synthetic REST example** — an isolated package
      with a domain-neutral demonstration. Treat the public-sample Kusto adapter as a separate,
      optional Tier 3 review.
-  5. **(11) Deployment-framework extensions** — contribute only the incremental standalone,
+  4. **(10) Deployment-framework extensions** — contribute only the incremental standalone,
      instance, render, DaemonSet, prerequisite, and image-verification support. Then attach the
      concrete deployment definitions to their owning theme rather than creating a deployment
      mega-PR.
-  6. **(8) Worker routing and hardening foundations** — split hooks/config discovery, registry
+  5. **(8) Worker routing and hardening foundations** — split hooks/config discovery, registry
      provenance/routing, and cleanup into small PRs. These unlock the repository-worker fleet
      without forcing reviewers to accept the entire worker delta at once.
-  7. **(1) Git workspace durability and repository-worker fleet** — this is a comparatively
-     isolated, material diff reduction once themes 8 and 11 provide the generic worker and deploy
+  6. **(1) Git workspace durability and repository-worker fleet** — this is a comparatively
+     isolated, material diff reduction once themes 8 and 10 provide the generic worker and deploy
      foundations.
-  8. **(6a) Independent worker/portal observability slices** — land worker utilization, queued
+  7. **(6a) Independent worker/portal observability slices** — land worker utilization, queued
      bands, swimlanes, history hydration, and navigation as their backing APIs become available;
      do not wait for the full JobGenerator UI. The portal is the largest path-level delta, so
      draining independent slices here materially shrinks the fork.
-  9. **(9) Devbox worker identity and authentication** — keep this separate because Windows
+  8. **(9) Devbox worker identity and authentication** — keep this separate because Windows
      packaging and signed-in model access need focused review despite the relatively bounded
      surface.
-  10. **(4) Delegated identity, MCP configuration, and plugin loading** — split by contract,
+  9. **(4) Delegated identity, MCP configuration, and plugin loading** — split by contract,
       token delivery, MCP loading, and external plugin loading. This is reusable but
       authentication-sensitive, so it follows the simpler seams that establish its consumers.
-  11. **(3) Durable orchestration primitives** — begin upstream design reconciliation
+  10. **(3) Durable orchestration primitives** — begin upstream design reconciliation
       immediately, but expect it to merge later because upstream already has a competing
       `orchestration_1_0_68/69` implementation.
-  12. **(2b) JobGenerator lifecycle and durable materialization** — land after the orchestration
-      contract is settled; the provider seam from step 3 keeps this PR focused on lifecycle.
-  13. **(7) Optional public Azure DevOps integration** — add the public observer only after the
+  11. **(2b) JobGenerator lifecycle and durable materialization** — land after the orchestration
+      contract is settled; the provider seam from step 2 keeps this PR focused on lifecycle.
+  12. **(7) Optional public Azure DevOps integration** — add the public observer only after the
       generic observed-condition contract exists upstream.
-  14. **(6b) JobGenerator and durable-wait portal surfaces** — finish the dependent UI after its
+  13. **(6b) JobGenerator and durable-wait portal surfaces** — finish the dependent UI after its
       APIs and lifecycle semantics are stable.
 - For any theme too entangled to lift — notably **(3)**, where upstream already added a parallel
   `orchestration_1_0_68/69` — use **Strategy B (clean-room on upstream's version)** instead of lifting.
@@ -993,9 +985,8 @@ roll, uncordon) is the simpler bulletproof alternative when a short fleet downti
   - [ ] (7) Optional public Azure DevOps integration
   - [ ] (8) Worker routing and platform hardening
   - [ ] (9) Devbox worker identity and authentication
-  - [ ] (10) External acceptance-suite runner
-  - [ ] (11) Deployment-framework extensions for standalone services
-  - [ ] (12) Runtime reliability and operability
+  - [ ] (10) Deployment-framework extensions for standalone services
+  - [ ] (11) Runtime reliability and operability
 - [ ] New generic platform work is authored upstream-first (inflow stopped) and the
       fork's logical diff vs upstream is empty.
 - [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQL-staging` deleted; this file removed.
