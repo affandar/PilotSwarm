@@ -9,6 +9,8 @@
 - Portal: open active and failed tasks, collapse successful tasks unless inspected, and keep nested activity usable on mobile.
 - Validation: 803 shared UI checks, 31 focused native-history checks, and 9 browser UX checks covering ownership, parallel calls, completion, failure, reload, mobile geometry, and existing tool disclosures. Portal production build passes.
 
+- Release validation: production build, all three package checks, and 286 browser UX tests passed. The full baseline SDK gate covered 214 files / 2,014 cases (1,996 passes, 17 optional/environment skips, one lease-expiry timeout); the unchanged handoff suite passed all four cases in three consecutive sequential reruns. The clean HorizonDB gate passed all 149 provider tests and 2,010 SDK cases, with four optional/environment skips. Shared UI, deployment scripts, SDK unit, TUI/web, and MCP checks passed. The native-task browser fixture waits for completed replay and mobile remount before interacting; no production deadlines changed.
+
 ## 0.5.69 — 2026-09-12
 
 - SDK: schemaVersion 4 agent definitions explicitly allowlist application, synchronous framework, and MCP tools per native task profile. Parent grants and existing resource permissions remain authoritative. Native tasks can perform authorized synchronous writes; durable orchestration, session control, and detached-work tools remain unavailable. Runtime attribution and duplicate-call protection cover native application callbacks.
