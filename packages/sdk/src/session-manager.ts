@@ -1843,7 +1843,7 @@ export class SessionManager {
         // in managed-session.ts runTurn — hard exclusion beats instructions.
         const isServiceSession = effectiveSerializableConfig.agentIdentity === "regen-distiller";
         const featureTools = this.sessionCatalog?.features
-            && ["resourcemgr", "pilotswarm", "agent-manager"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            && ["resourcemgr", "pilotswarm", "agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
             && (await this._resolveFeatureViewer(sessionId)).isAdmin
             ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
         // Handler refresh alone cannot change the CLI's tool declarations.

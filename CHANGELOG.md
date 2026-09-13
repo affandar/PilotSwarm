@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.68 — 2026-09-12
+
+Expose Agent Smith's tool bundle to the opt-in Generic Superagent identity.
+
+- Give Generic Superagent the same diagnostic, package inspection, authoring, publication, and session-management tools as Agent Manager, using the existing per-invocation owner/admin authorization checks.
+- Expose the same admin-only feature tools when its owner is an administrator.
+- Existing agent identities, authorization rules, native task behavior, and default tool bundles remain unchanged.
+- Includes v0.5.67's UX improvements. No additional test suites were run for this scoped follow-up; release builds and package checks were performed.
+
 ## 0.5.67 — 2026-09-12
 
 Reliable session switching and fewer network waits on slow connections.

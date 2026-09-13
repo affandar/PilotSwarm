@@ -49,13 +49,14 @@ function toolNamesFor(agentIdentity) {
 
 test("holdsManagerBundle matches exactly the manager ids", () => {
     assert.equal(holdsManagerBundle("agent-manager"), true);
+    assert.equal(holdsManagerBundle("generic-superagent"), true);
     assert.equal(holdsManagerBundle("agent-tuner"), true);
     for (const other of ["default", "generic-crawler", "sweeper", "resourcemgr", "", null, undefined]) {
         assert.equal(holdsManagerBundle(other), false, `${other} must not hold the bundle`);
     }
     // Guard the list itself: silently growing it widens who can delete
     // sessions fleet-wide.
-    assert.deepEqual([...MANAGER_AGENT_IDS].sort(), ["agent-manager", "agent-tuner"]);
+    assert.deepEqual([...MANAGER_AGENT_IDS].sort(), ["agent-manager", "agent-tuner", "generic-superagent"]);
 });
 
 test("an ordinary agent gets NONE of the manager tools", () => {

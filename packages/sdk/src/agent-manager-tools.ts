@@ -55,7 +55,7 @@ export const STAGING_ARTIFACT = "agent-package-staging.json";
  * refused), so a package declaring this id gains nothing its owner did not
  * already have.
  */
-export const MANAGER_AGENT_IDS = new Set(["agent-tuner", "agent-manager"]);
+export const MANAGER_AGENT_IDS = new Set(["agent-tuner", "agent-manager", "generic-superagent"]);
 
 /**
  * May the calling principal act on `target`?
