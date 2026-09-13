@@ -7,6 +7,8 @@
 - Portal: follow Safari's visual viewport height and pan independently; remove the hidden session row during composer keyboard takeover so chat fills the available area.
 - Tests: native policy, actual SDK/CLI callback/MCP integration, and Chromium/WebKit keyboard geometry coverage. Verify external-suite execution independently of compact reporter formatting. Real CLI correctness fixtures allow bounded cold-start/resume time without changing production deadlines; stale portal/API fixtures follow the current navigation and module-loading contracts.
 
+- Validation: full baseline gate executed (214 integration files / 2,014 cases), plus all 282 browser UX tests. The initial integration run had 1,985 passes and 12 failures; corrected stale fixtures and bounded CLI fixture budgets, then reran failing cases. Unchanged delegation, recovery, state and crash cases passed repeated sequential checks after parallel-run timing failures. All 18 native SDK/CLI cases pass, including external writes, MCP narrowing, warm/cold policy changes and durable-tool denials. The baseline retained its 17 standard optional/environment-gated skips; no HorizonDB overlay was run. Production timeouts were not changed.
+
 ## 0.5.68 — 2026-09-12
 
 Expose Agent Smith's tool bundle to the opt-in Generic Superagent identity.
