@@ -35,7 +35,13 @@ project is archived and is not used here.
 
 - Proposed Gist: <https://gist.github.com/affandar/e55e6c48caadf3392811ccca48b05be9>
 - Gist revision: `a699621c9157e843c414ce5b3d5ce6db1de032ad`.
-- Repository linked: pending GitHub sign-in and CLA Assistant authorization.
+- Repository linked: GitHub OAuth authorized and `affandar/PilotSwarm` appears in
+  the CLA Assistant dashboard with the intended Gist (2026-09-13 UTC).
+- Activation blocker: after linking and requesting a PR recheck, GitHub's hooks
+  API still returns no webhook, PR #78 has no CLA status, and the signing page
+  stays on a loading indicator without showing the agreement/version. Dashboard
+  linkage alone is not evidence that the bot is operational. Retry/repair the
+  hosted integration before enabling enforcement or soliciting signatures.
 - Observed status context / source: pending first live check.
 - Unsigned-to-signed test: pending an actual contributor's acceptance.
 - Required merge check: pending verified integration.
