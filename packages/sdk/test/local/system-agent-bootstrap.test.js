@@ -67,7 +67,7 @@ describe("System agent bootstrap payload", () => {
 
     it("resolves the deployment turn timeout with explicit option precedence", () => {
         assertEqual(DEFAULT_TURN_TIMEOUT_MS, 20 * 60_000, "SDK turn timeout should default to 20 minutes");
-        assertEqual(resolveWorkerTurnTimeoutMs(undefined, "1200000"), 1_200_000, "deployment env should configure the timeout");
+        assertEqual(resolveWorkerTurnTimeoutMs(undefined, "2700000"), 45 * 60_000, "deployment env should configure a 45-minute timeout");
         assertEqual(resolveWorkerTurnTimeoutMs(900_000, "1200000"), 900_000, "explicit worker option should win");
         assertEqual(resolveWorkerTurnTimeoutMs(undefined, "0"), 0, "deployment env should support disabling the cap");
         assertEqual(resolveWorkerTurnTimeoutMs(undefined, "invalid"), DEFAULT_TURN_TIMEOUT_MS, "invalid env should use the SDK default");
