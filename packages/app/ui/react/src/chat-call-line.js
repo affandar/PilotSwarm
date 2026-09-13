@@ -15,4 +15,3 @@ export function ChatCallLine({ line }) {
         line.time ? React.createElement("div", { className: "ps-chat-call-time" }, line.time) : null,
         React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
 }
-
