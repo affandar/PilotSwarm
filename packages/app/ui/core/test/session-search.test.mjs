@@ -119,3 +119,25 @@ test("selector searches effective parent ownership and live summaries", () => {
     ]);
     assert.deepEqual(search(state, "author:affan filesystem").rows.map((row) => row.sessionId), ["parent", "child"]);
 });
+
+test("large-list search does not enumerate the catalog for every rendered row", () => {
+    const sessions = Array.from({ length: 1500 }, (_, i) => ({ sessionId: `large-${i}`, title: `Project ${i}`,
+        status: "idle", owner: owner("Ada", "ada@example.com") }));
+    const state = loadedState(sessions);
+    let enumerations = 0;
+    state.sessions.byId = new Proxy(state.sessions.byId, { ownKeys(target) { enumerations++; return Reflect.ownKeys(target); } });
+    assert.equal(search(state, "project").rows.length, 1500);
+    assert.ok(enumerations < 20, `catalog enumerated ${enumerations} times`);
+    enumerations = 0;
+    assert.equal(search(state, "proj").rows.length, 1500);
+    assert.ok(enumerations < 5, `unchanged catalog enumerated ${enumerations} times`);
+});
+
+test("search cache invalidates when a catalog entry changes without a new flat list", () => {
+    const state = loadedState([{ sessionId: "one", title: "Alpha project", status: "idle" }]);
+    assert.equal(search(state, "alpha").rows.length, 1);
+    const changed = { ...state, sessions: { ...state.sessions,
+        byId: { ...state.sessions.byId, one: { ...state.sessions.byId.one, title: "Beta project" } } } };
+    assert.equal(search(changed, "alpha").rows.length, 0);
+    assert.equal(search(changed, "beta").rows.length, 1);
+});

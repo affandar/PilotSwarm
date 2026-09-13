@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Portal: keep session-search typing local and coalesce filtering after a 150 ms pause; apply popup query/selection props immediately instead of waiting for a controller event. Cache catalog-wide owner decoration, the expanded search tree, and normalized documents to avoid repeated scans per rendered row and keystroke.
+- Search validation: 805 shared UI tests and five browser checks, including 1,500 sessions with 4× CPU throttling, paused background ticks, clearing pending edits, and composition input. A local 1,500-session selector benchmark fell from roughly 650 ms to 8–20 ms per query.
+
 - Portal: nest native task tool calls under their owning task, with Explore/Task labels, status, and expandable arguments/results. Correlate runtime IDs across live updates and replay, remove duplicate parent disclosures, and retain normal parent calls separately.
 - Portal: open active and failed tasks, collapse successful tasks unless inspected, and keep nested activity usable on mobile.
 - Validation: 803 shared UI checks, 31 focused native-history checks, and 9 browser UX checks covering ownership, parallel calls, completion, failure, reload, mobile geometry, and existing tool disclosures. Portal production build passes.
