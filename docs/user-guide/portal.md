@@ -33,6 +33,16 @@ keeps its expansion state. The same previews work in ordinary chat and MoA.
 The Activity pane still contains the full event stream, including diagnostic
 notices for turns that finish without a reply.
 
+Native task activity appears inside its owning **Explore** or **Task** card.
+Expand a tool call there to inspect its arguments and result. Running and failed
+tasks open automatically; successful tasks collapse unless you have inspected
+them. Each task keeps its own activity when several tasks run at once, including
+after reloading the conversation.
+
+Use **Find a session…** in the Sessions pane or workspace session picker to
+filter the catalog. Text appears immediately, and results update after a short
+typing pause. Clearing the field restores the full list.
+
 ## Layout overview
 
 When the portal opens you see three panes:

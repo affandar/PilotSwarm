@@ -107,10 +107,14 @@ test("parallel native calls nest once under their owner, keep parent calls separ
     await expect(second).toHaveAttribute("data-status", "completed", { timeout: 20000 });
     await expect(second).toHaveAttribute("open", ""); // Preserve the result being inspected.
     await page.reload();
+    await expect(second).toHaveAttribute("data-status", "completed");
     await expect(second).not.toHaveAttribute("open", "");
     await second.locator(":scope > summary").click();
     await expect(second.locator(".ps-chat-call")).toHaveCount(1);
     await page.setViewportSize({ width: 390, height: 844 });
+    // The mobile workspace remounts chat; wait for that tree before opening
+    // its disclosure, rather than clicking the outgoing desktop instance.
+    await expect(page.locator(".ps-mobile-workspace")).toBeVisible();
     await expect(second).toBeVisible();
     if (await second.getAttribute("open") === null) await second.locator(":scope > summary").click();
     await expect(second.locator(".ps-native-task-calls")).toBeVisible();
