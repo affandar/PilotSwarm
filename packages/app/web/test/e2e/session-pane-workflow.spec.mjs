@@ -46,9 +46,18 @@ async function mode(page, value) {
 test('per-chat is default, sends stay with the pane, and both drafts survive shared-mode changes', async ({ page }) => {
     const f = await fixture(page); await open(page);
     const a = panel(page, 'a').locator('textarea'), b = panel(page, 'b').locator('textarea');
-    await expect(a).toBeVisible(); await expect(b).toBeVisible();
+    await expect(a).toBeVisible(); await expect(b).toBeHidden();
+    await expect(page.locator('.ps-moa-pane-composer:visible')).toHaveCount(1);
     await expect(page.locator('.ps-moa-composer-strip')).toHaveCount(0);
-    await a.fill('draft one'); await b.fill('draft two');
+    await a.fill('draft one');
+    const inactiveHeight = await panel(page, 'b').locator('.ps-moa-live').evaluate(el => el.getBoundingClientRect().height);
+    await panel(page, 'b').locator('header').first().click();
+    await expect(a).toBeHidden(); await expect(b).toBeVisible();
+    expect(await panel(page, 'b').locator('.ps-moa-live').evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(inactiveHeight);
+    await b.fill('draft two');
+    const geometry = await b.evaluate(el => ({ font: getComputedStyle(el).fontSize, transcriptFont: getComputedStyle(el.closest('[data-moa-panel]').querySelector('.ps-scroll-panel')).fontSize, height: el.getBoundingClientRect().height, footer: el.closest('footer').getBoundingClientRect().height }));
+    expect(geometry.font).toBe(geometry.transcriptFont);
+    expect(geometry.height).toBeLessThanOrEqual(32); expect(geometry.footer).toBeLessThanOrEqual(42);
     await expect(a).toHaveValue('draft one'); await expect(b).toHaveValue('draft two');
     await page.screenshot({ path: '/tmp/pane-composers-desktop.png' });
     await mode(page, 'shared');
@@ -58,11 +67,14 @@ test('per-chat is default, sends stay with the pane, and both drafts survive sha
     await expect(shared).toHaveValue('draft one');
     await mode(page, 'per-chat');
     await expect(a).toHaveValue('draft one'); await expect(b).toHaveValue('draft two');
+    await panel(page, 'b').locator('header').first().click();
     await b.press('Enter');
     await expect.poll(() => f.sends.length).toBe(1);
     expect(f.sends[0].sessionId).toBe(sid(2));
     expect(f.sends[0].prompt).toBe('draft two');
     await expect(a).toHaveValue('draft one');
+    await b.press('Tab');
+    await expect(a).toBeFocused(); await expect(b).toBeHidden();
     await a.press('Enter');
     await expect.poll(() => f.sends.length).toBe(2);
     expect(f.sends[1].sessionId).toBe(sid(1));

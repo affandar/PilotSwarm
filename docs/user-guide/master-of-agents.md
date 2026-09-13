@@ -42,7 +42,8 @@ model/agent creation flow, including when the list is filtered or empty.
 Creating fills that panel and keeps the default workspace’s selection.
 Cancelling returns to the picker; failed creation leaves the panel intact.
 
-Each panel has its own message box by default, including in zen. Send, Stop,
+In per-chat mode, only the focused panel shows its message box, including in zen.
+Click a panel to reveal its compact composer. Send, Stop,
 attachments, and drafts belong to that panel's session. **Dashboard options →
 Message boxes → Shared below all panes** restores the full-width composer for
 the focused panel. This preference applies to all your dashboards and survives
@@ -51,7 +52,7 @@ stays inside the chat panel. Read-only sessions keep their normal restrictions.
 
 **Tab** moves to the next panel clockwise; **Shift+Tab** moves in reverse.
 Keyboard panel navigation focuses the selected session’s message box.
-Click a message box to write to that session. Drafts stay with their sessions.
+Click a panel, then its message box to write to that session. Drafts stay with their sessions when focus changes.
 Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
 native. Empty or read-only panels cannot accept prompts. Toolbar controls
 and dialogs retain their normal keyboard navigation.

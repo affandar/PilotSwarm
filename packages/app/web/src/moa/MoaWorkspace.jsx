@@ -435,7 +435,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
         </div>
         {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && visible && <ModalLayer controller={ready} />}
-        {ready && visible && perChat && <footer className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
+        {ready && visible && perChat && <footer hidden={!focused || actionsOpen} className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
             <ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact autoFocus={false} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>
         </footer>}
         {ready && focused && !actionsOpen && !perChat && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} autoFocus={canFocusMoaComposer} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
@@ -608,7 +608,13 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         setFocus(next.id);
         if (!mobile) {
             const panel = layoutRef.current?.querySelector(`[data-moa-panel="${next.id}"]`);
-            (value.composerMode !== "shared" ? panel?.querySelector("textarea") || panel : next.id === selected ? composerHost?.querySelector("textarea") || panel : panel)?.focus({ preventScroll: true });
+            if (value.composerMode !== "shared") {
+                panel?.focus({ preventScroll: true });
+                // Focus changes reveal the pane composer on the next render.
+                requestAnimationFrame(() => {
+                    if (panel?.isConnected && panel.classList.contains("is-focused") && document.activeElement === panel) panel.querySelector(".ps-moa-pane-composer:not([hidden]) textarea")?.focus({ preventScroll: true });
+                });
+            } else (next.id === selected ? composerHost?.querySelector("textarea") || panel : panel)?.focus({ preventScroll: true });
         }
 
     };
