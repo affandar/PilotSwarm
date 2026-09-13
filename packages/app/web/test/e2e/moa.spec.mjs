@@ -64,7 +64,8 @@ test("focus owns the sole composer, preserves drafts, and sends only to its sess
     await expect.poll(() => f.sends.length).toBe(1);
     expect(f.sends[0].sessionId).toBe(sid(2));
     expect(f.sends[0].prompt).toContain("message for second agent");
-    await expect(b.locator(".ps-panel-bottom-sticky")).toContainText("Working");
+    await expect(b.locator("header").first().getByLabel("Session status")).toContainText("Working");
+    await expect(b.locator(".ps-panel-bottom-sticky")).toHaveCount(0);
     await expect(page.locator(".ps-moa-composer-strip .ps-panel-bottom-sticky")).toHaveCount(0);
     await a.locator("header").first().click();
     await expect(composer(page)).toHaveValue("draft for first agent");

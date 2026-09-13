@@ -47,14 +47,16 @@ test('per-chat is default, sends stay with the pane, and both drafts survive sha
     const f = await fixture(page); await open(page);
     const a = panel(page, 'a').locator('textarea'), b = panel(page, 'b').locator('textarea');
     await expect(a).toBeVisible(); await expect(b).toBeHidden();
+    await expect(a).toBeFocused();
     await expect(page.locator('.ps-moa-pane-composer:visible')).toHaveCount(1);
     await expect(page.locator('.ps-moa-composer-strip')).toHaveCount(0);
     await a.fill('draft one');
     const inactiveHeight = await panel(page, 'b').locator('.ps-moa-live').evaluate(el => el.getBoundingClientRect().height);
     await panel(page, 'b').locator('header').first().click();
     await expect(a).toBeHidden(); await expect(b).toBeVisible();
+    await expect(b).toBeFocused();
     expect(await panel(page, 'b').locator('.ps-moa-live').evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(inactiveHeight);
-    await b.fill('draft two');
+    await page.keyboard.type('draft two');
     const geometry = await b.evaluate(el => ({ font: getComputedStyle(el).fontSize, transcriptFont: getComputedStyle(el.closest('[data-moa-panel]').querySelector('.ps-scroll-panel')).fontSize, height: el.getBoundingClientRect().height, footer: el.closest('footer').getBoundingClientRect().height }));
     expect(geometry.font).toBe(geometry.transcriptFont);
     expect(geometry.height).toBeLessThanOrEqual(32); expect(geometry.footer).toBeLessThanOrEqual(42);
@@ -188,5 +190,52 @@ test('a delayed artifact click cannot replace a more recently opened pane sessio
         await expect(page.getByRole('region', { name: 'Artifact: changes.csv', exact: true })).toBeVisible();
         await expect(page.locator('.ps-chat-panel:visible')).toContainText('Session 2');
         expect(f.errors).toEqual([]);
+    } finally { release(); }
+});
+
+
+test('desktop panes show activity in their titles without a status footer or height changes', async ({ page }) => {
+    const f = await fixture(page);
+    let running = false, reads = 0;
+    await page.route('**/api/v1/sessions/*', async route => {
+        if (!/\/sessions\/[^/]+$/.test(new URL(route.request().url()).pathname)) return route.fallback();
+        const response = await (await route.fetch()).json();
+        response.result = { ...response.result, status: running ? 'running' : 'idle', statusVersion: running ? 101 : 100, updatedAt: Date.now() };
+        reads++;
+        return route.fulfill({ json: response });
+    });
+    await open(page);
+    const a = panel(page, 'a'), b = panel(page, 'b');
+    await expect(a.getByLabel('Session status')).toBeVisible();
+    await expect(b.getByLabel('Session status')).toBeVisible();
+    await expect(page.locator('.ps-moa-panel .ps-panel-bottom-sticky')).toHaveCount(0);
+    const height = await a.locator('header').first().evaluate(el => el.getBoundingClientRect().height);
+    // Refresh the status through the real background polling path.
+    running = true;
+    await page.clock.install();
+    const before = reads;
+    await page.clock.fastForward(4100);
+    await expect.poll(() => reads).toBeGreaterThan(before);
+    await expect(a.getByLabel('Session status')).toContainText('Working');
+    expect(await a.locator('header').first().evaluate(el => el.getBoundingClientRect().height)).toBe(height);
+    await expect(page.locator('.ps-moa-panel .ps-panel-bottom-sticky')).toHaveCount(0);
+    expect(f.errors).toEqual([]);
+});
+
+
+test('a per-chat composer finishing startup preserves keyboard resize focus', async ({ page }) => {
+    await fixture(page);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route(`**/api/v1/sessions/${sid(1)}`, async route => { await gate; await route.fallback(); });
+    try {
+        await open(page);
+        const seam = page.getByRole('separator', { name: 'Resize MoA panels' });
+        await seam.focus();
+        release();
+        await expect(panel(page, 'a').locator('textarea')).toBeVisible();
+        await expect(seam).toBeFocused();
+        await seam.press('ArrowRight');
+        await expect(seam).toHaveAttribute('aria-valuenow', '52');
     } finally { release(); }
 });

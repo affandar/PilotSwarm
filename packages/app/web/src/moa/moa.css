@@ -246,3 +246,10 @@
 .ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer :is(.ps-send-button, .ps-stop-button, .ps-attach-button) {
   min-height: 30px; min-width: 30px; padding: 0 6px; font-size: var(--ps-font-size-dense);
 }
+
+/* Keep pane activity on the existing title row, with full details on hover. */
+.ps-moa-panel > header > .ps-mobile-session-status {
+  flex: 0 1 40%; max-width: 40%; height: auto;
+  font-size: var(--ps-font-size-dense); line-height: var(--ps-line-height-dense);
+}
+.ps-moa-panel > header > .ps-moa-panel-title { min-width: 3em; }

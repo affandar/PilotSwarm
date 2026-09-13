@@ -43,16 +43,15 @@ Creating fills that panel and keeps the default workspace’s selection.
 Cancelling returns to the picker; failed creation leaves the panel intact.
 
 In per-chat mode, only the focused panel shows its message box, including in zen.
-Click a panel to reveal its compact composer. Send, Stop,
+Click a panel to reveal its compact composer. On desktop, it receives keyboard focus so you can type immediately. Send, Stop,
 attachments, and drafts belong to that panel's session. **Dashboard options →
 Message boxes → Shared below all panes** restores the full-width composer for
 the focused panel. This preference applies to all your dashboards and survives
-reloads. Changing it preserves session drafts. Working and queued-message status
-stays inside the chat panel. Read-only sessions keep their normal restrictions.
+reloads. Changing it preserves session drafts. Working, elapsed time, and queue status appear in the pane title bar. Read-only sessions keep their normal restrictions.
 
 **Tab** moves to the next panel clockwise; **Shift+Tab** moves in reverse.
 Keyboard panel navigation focuses the selected session’s message box.
-Click a panel, then its message box to write to that session. Drafts stay with their sessions when focus changes.
+Select a panel to write to that session. Drafts stay with their sessions when focus changes.
 Arrow keys and Ctrl+Arrow never change panel selection; composer editing stays
 native. Empty or read-only panels cannot accept prompts. Toolbar controls
 and dialogs retain their normal keyboard navigation.

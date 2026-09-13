@@ -28,6 +28,7 @@ function createRefreshScheduler(limit = 2) {
 }
 // A composer becoming ready must not steal a keyboard resize in progress.
 const canFocusMoaComposer = () => !document.activeElement?.closest?.(".ps-moa-divider, .ps-moa-dashboard-tabs");
+const canFocusPaneComposer = () => canFocusMoaComposer() && !document.activeElement?.closest?.(".ps-moa-dialog, .ps-modal-backdrop, [data-moa-panel] button, [data-moa-panel] select, [data-moa-panel] input, [data-moa-panel] iframe, [data-moa-panel] [contenteditable=true]");
 const sameDraft = (a, b) => a?.prompt === b?.prompt && (a?.attachments || []).length === (b?.attachments || []).length && (a?.attachments || []).every((item, i) => item === b.attachments[i]);
 function publishDraft(store, key, draft) {
     if (sameDraft(store.get(key), draft)) return;
@@ -428,15 +429,15 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
         observer.observe(ref.current); return () => observer.disconnect();
     }, [ready]);
     return <>
-        <header>{header.title}{error && ready && <button className="ps-moa-stale" title={error} onClick={() => setRetry(n => n + 1)}>Cached · Retry</button>}{header.actions}</header>
+        <header>{header.title}{ready && !mobile && <SessionHeaderStatus controller={ready} />}{error && ready && <button className="ps-moa-stale" title={error} onClick={() => setRetry(n => n + 1)}>Cached · Retry</button>}{header.actions}</header>
         {ready && <SessionPane controller={ready} actionsOnly actionsHost={controlsHost} onAction={onControlAction} onDialogChange={setActionsOpen} />}
         <div ref={ref} className="ps-moa-live">
-            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader={mobile} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
+            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
         {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && visible && <ModalLayer controller={ready} />}
         {ready && visible && perChat && <footer hidden={!focused || actionsOpen} className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
-            <ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact autoFocus={false} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>
+            <ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact autoFocus={focused && !actionsOpen ? canFocusPaneComposer : false} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>
         </footer>}
         {ready && focused && !actionsOpen && !perChat && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} autoFocus={canFocusMoaComposer} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
     </>;
