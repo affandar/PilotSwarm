@@ -15,6 +15,7 @@ async function fixture(page, { moa = {version: 2, tree, aspectRatio: 2}, width =
     let settings = { moa, themeId, touchScale, touchScaleMobile: false };
     const sends = [], mutations = [], errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    settings.moa = { ...settings.moa, composerMode: "shared" };
     await page.route('**/api/v1/**', async route => {
         const request = route.request(), path = new URL(request.url()).pathname;
         const answer = result => route.fulfill({ json: {ok: true, result} });

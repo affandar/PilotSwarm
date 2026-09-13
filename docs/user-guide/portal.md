@@ -21,7 +21,8 @@ loads. For local development, sign-in is normally bypassed.
 
 For several sessions at once, open the
 [Master of Agents workspace](./master-of-agents.md). It saves up to five personal
-chat/canvas dashboards and uses a single composer for the focused panel. Desktop
+chat/canvas dashboards. Each panel has its own message box by default.
+**Dashboard options → Message boxes** can restore one shared box below all panes. Desktop
 tabs collapse into a picker when the header gets narrow.
 On phones it presents one panel at a time with a geometry-preserving minimap
 and swipe navigation.
@@ -42,6 +43,15 @@ after reloading the conversation.
 Use **Find a session…** in the Sessions pane or workspace session picker to
 filter the catalog. Text appears immediately, and results update after a short
 typing pause. Clearing the field restores the full list.
+
+The sort selector above search offers **Recently used**, **Recently updated**,
+and **Saved** on desktop, mobile, and in the session picker. Recently used tracks
+sessions you open, focus in MoA, or message. Recently updated uses session update
+times. Choosing a mode applies that order once. Live activity keeps the positions
+stable; press the adjacent **Refresh session order** button to fetch and sort again.
+Folders, pinned sections, and child sessions keep their structure. **Saved** restores
+your manual arrangement and enables drag ordering. The selected mode and usage
+history are saved in your profile; new sessions append until you refresh.
 
 ## Layout overview
 

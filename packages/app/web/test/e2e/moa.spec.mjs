@@ -17,6 +17,7 @@ async function fixture(page, slots = [], hash = "") {
     let settings = { themeId: "terminal-green", moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
     const sends = [], writes = [], errors = [];
     page.on("pageerror", error => errors.push(error.message));
+    settings.moa = { ...settings.moa, composerMode: "shared" };
     await page.route("**/api/v1/**", async route => {
         const request = route.request(), url = new URL(request.url());
         const answer = result => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
@@ -389,7 +390,7 @@ test("legacy workspace migrates into one dashboard with responsive controls", as
     }
     await panel(page, "panel-1").getByRole("button", { name: "Split right", exact: true }).click();
     await expect.poll(() => f.settings().moa.version).toBe(3);
-    expect(Object.keys(f.settings().moa).sort()).toEqual(["activeDashboardId", "dashboards", "version"]);
+    expect(Object.keys(f.settings().moa).sort()).toEqual(["activeDashboardId", "composerMode", "dashboards", "version"]);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.reload(); await open(page);
     await expect(page.locator("[data-moa-panel]")).toHaveCount(3);

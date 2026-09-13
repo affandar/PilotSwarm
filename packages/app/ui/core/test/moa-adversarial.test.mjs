@@ -10,7 +10,7 @@ const chat = (id = "p1", sessionId = "session-1") => ({ id, type: "chat", sessio
 const canvas = (id = "p2", slot = 2) => ({ id, type: "canvas", sessionId: "session-1", slot });
 const split = (first = chat(), second = canvas()) => ({ id: "split", type: "split", direction: "row", ratio: 37, first, second });
 const layout = (tree = split()) => ({ name: "Operations", tree });
-const profile = (tree, name = "MoA 1") => ({ version: 3, activeDashboardId: "moa-1", dashboards: [{id: "moa-1", name, tree, focusedPanelId: moaLeaves(tree)[0]?.id || null}] });
+const profile = (tree, name = "MoA 1") => ({ version: 3, composerMode: "per-chat", activeDashboardId: "moa-1", dashboards: [{id: "moa-1", name, tree, focusedPanelId: moaLeaves(tree)[0]?.id || null}] });
 test("malformed profiles recover one empty personal workspace", () => {
     for (const bad of [null, undefined, [], false, "garbage", { version: 2, tree: { type: "chat" } }]) {
         assert.deepEqual(normalizeMoa(bad), profile(null));
@@ -177,4 +177,13 @@ test("single-dashboard migration preserves a cleared view and saved desktop aspe
     assert.equal(activeMoaDashboard(migrated).aspectRatio, 2.13);
     assert.deepEqual(activeMoaDashboard(migrated).tree, split());
     assert.equal(activeMoaDashboard(normalizeMoa({ version: 2, tree: null, slots: [layout()] })).tree, null);
+});
+
+
+test("per-chat composers are the default and shared mode survives dashboard edits", () => {
+    assert.equal(normalizeMoa(null).composerMode, "per-chat");
+    assert.equal(normalizeMoa({ composerMode: "invalid" }).composerMode, "per-chat");
+    const value = normalizeMoa({ ...profile(split()), composerMode: "shared" });
+    assert.equal(updateMoaDashboard(value, "moa-1", { name: "Renamed" }).composerMode, "shared");
+    assert.equal(normalizeMoa(JSON.parse(JSON.stringify(value))).composerMode, "shared");
 });

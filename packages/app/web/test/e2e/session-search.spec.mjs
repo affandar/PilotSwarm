@@ -17,7 +17,7 @@ test("workspace search is fixed below the list, ranked, and restores scroll on c
     const list = pane.locator(".ps-session-list");
     const search = pane.getByRole("textbox", { name: "Find a session" });
     await expect(search).toBeVisible();
-    await expect(pane.locator(".ps-session-list + .ps-session-search")).toHaveCount(1);
+    await expect(pane.locator(".ps-session-list + .ps-session-sort-controls + .ps-session-search")).toHaveCount(1);
 
     await list.evaluate((node) => { node.scrollTop = 260; });
     const savedScroll = await list.evaluate((node) => node.scrollTop);
@@ -45,7 +45,7 @@ test("MoA picker search updates without waiting for background controller ticks"
     await page.getByRole("button", { name: "Add first MoA panel" }).click();
     const picker = page.getByRole("dialog", { name: "Sessions", exact: true });
     const search = picker.getByRole("textbox", { name: "Find a session" });
-    await expect(picker.locator(".ps-session-list + .ps-session-search")).toHaveCount(1);
+    await expect(picker.locator(".ps-session-list + .ps-session-sort-controls + .ps-session-search")).toHaveCount(1);
     await page.evaluate(() => window.pauseBackgroundIntervals());
     await search.fill("author:test@example.com 23");
     await expect(picker.locator('.ps-session-list-button[data-session-id^="111111123-"]')).toBeVisible({ timeout: 750 });

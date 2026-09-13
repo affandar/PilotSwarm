@@ -9613,3 +9613,14 @@ textarea.ps-link-input {
   .ps-session-pane > .ps-panel-header .ps-panel-actions { min-width: 0; max-width: 100%; flex: 0 1 auto; flex-wrap: wrap; }
   .ps-session-pane > .ps-panel-header .ps-mini-button { min-width: 32px; padding-inline: 6px; flex-shrink: 0; }
 }
+
+.ps-session-sort-controls { display: flex; flex: 0 0 auto; gap: 6px; padding: 4px 10px; align-items: center; border-top: 1px solid var(--ps-border); }
+.ps-session-sort-controls select { min-width: 0; flex: 1; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; font: inherit; font-size: var(--ps-font-size-dense); padding: 4px 6px; }
+.ps-session-sort-controls button { flex: 0 0 auto; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; font: inherit; padding: 2px 10px; }
+@media (max-width: 920px) { .ps-session-sort-controls select, .ps-session-sort-controls button { min-height: 36px; } }
+
+/* The collapsed phone search button shares the sort row's right edge. */
+.ps-mobile-session-pane:has(.ps-session-search:not(.is-open)) .ps-session-sort-controls { padding-right: 54px; }
+.ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 10px; }
+
+@media (max-width: 920px) { .ps-session-sort-controls select { font-size: 16px; } }

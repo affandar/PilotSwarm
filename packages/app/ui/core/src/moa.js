@@ -42,7 +42,7 @@ export function normalizeMoa(value) {
             return safeLayout(dashboard, key, `MoA ${index + 1}`);
         });
         if (!dashboards.length) dashboards.push(safeLayout(null));
-        return { version: 3, activeDashboardId: dashboards.some(d => d.id === value.activeDashboardId) ? value.activeDashboardId : dashboards[0].id, dashboards };
+        return { version: 3, composerMode: value?.composerMode === "shared" ? "shared" : "per-chat", activeDashboardId: dashboards.some(d => d.id === value.activeDashboardId) ? value.activeDashboardId : dashboards[0].id, dashboards };
     }
     let source = value;
     if (!(value?.version === 2 || (object(value) && Object.hasOwn(value, "tree")))) {
@@ -51,7 +51,7 @@ export function normalizeMoa(value) {
         const active = Number.isInteger(value?.activeSlot) ? Math.max(0, Math.min(4, value.activeSlot)) : 0;
         source = safeLayout(slots[active]).tree ? slots[active] : slots.find(slot => safeLayout(slot).tree);
     }
-    return { version: 3, activeDashboardId: "moa-1", dashboards: [safeLayout(source)] };
+    return { version: 3, composerMode: value?.composerMode === "shared" ? "shared" : "per-chat", activeDashboardId: "moa-1", dashboards: [safeLayout(source)] };
 }
 export const activeMoaDashboard = value => value.dashboards.find(d => d.id === value.activeDashboardId) || value.dashboards[0];
 export function updateMoaDashboard(value, dashboardId, patch) {

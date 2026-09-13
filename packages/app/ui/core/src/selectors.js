@@ -1332,7 +1332,7 @@ function sessionSearchOwner(session, byId) {
 
 function sessionSearchIndex(state) {
     const byId = state.sessions?.byId || {};
-    const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, state.sessions?.manualOrder];
+    const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder)];
     const cached = sessionSearchIndexCache.get(byId);
     if (cached && sameRowDeps(cached.deps, deps)) return cached;
     const expanded = buildSessionTree(
@@ -1340,7 +1340,7 @@ function sessionSearchIndex(state) {
         new Set(),
         state.sessions?.orderById,
         state.sessions?.pinnedIds,
-        state.sessions?.manualOrder,
+        (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder),
     );
     const parentById = new Map();
     const entryById = new Map();
@@ -1371,7 +1371,7 @@ function buildSearchedSessionFlat(state, query) {
     if (!query) return existingFlat;
     const cached = searchedSessionFlatCache.get(existingFlat);
     const deps = [state.sessions?.byId, state.sessions?.ownerFilter, state.auth, state.sessions?.orderById,
-        state.sessions?.pinnedIds, state.sessions?.manualOrder, state.sessions?.filterExceptionId];
+        state.sessions?.pinnedIds, (state.sessions?.sortMode && state.sessions.sortMode !== "saved" ? state.sessions.sortSnapshot : state.sessions?.manualOrder), state.sessions?.filterExceptionId];
     if (cached?.query === query && sameRowDeps(cached.deps, deps)) return cached.result;
 
     const byId = state.sessions?.byId || {};

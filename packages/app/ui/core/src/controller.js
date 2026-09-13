@@ -7545,6 +7545,7 @@ export class PilotSwarmUiController {
         force = true,
         fullscreen = false,
         pane = false,
+        preserveSession = false,
     } = {}) {
         const resolvedSessionId = sessionId || this.getState().sessions.activeSessionId;
         const name = String(filename || "").trim();
@@ -7558,7 +7559,7 @@ export class PilotSwarmUiController {
             restoreArtifactId: this.getState().files.selectedArtifactId || null,
         });
 
-        if (this.getState().sessions.activeSessionId !== resolvedSessionId) {
+        if (!preserveSession && this.getState().sessions.activeSessionId !== resolvedSessionId) {
             await this.loadSession(resolvedSessionId).catch(() => null);
         }
         // The reader REPLACES the inspector, so it has no business changing
@@ -8996,6 +8997,7 @@ export class PilotSwarmUiController {
             return;
         }
 
+        this.dispatch({ type: "sessions/used", sessionId });
         const activePendingQuestion = activeSession?.pendingQuestion || null;
         const answeringPendingQuestion = Boolean(activePendingQuestion?.question);
         const promptEdit = this.getPromptEditSessionMatch(sessionId);
