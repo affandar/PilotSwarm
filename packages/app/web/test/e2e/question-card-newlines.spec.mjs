@@ -11,7 +11,7 @@ test("question card lays out escaped paragraphs and keeps literal code/path text
     await page.route(`**/sessions/${sessionId}`, async route => {
         const response = await route.fetch();
         const body = await response.json();
-        body.result = { ...body.result, status: "input_required", pendingQuestion: {
+        body.result = { ...body.result, status: "input_required", statusVersion: 1, updatedAt: Date.now(), pendingQuestion: {
             question, choices: ["Default backfill", "Custom window"], allowFreeform: true,
         } };
         await route.fulfill({ response, json: body });

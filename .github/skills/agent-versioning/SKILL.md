@@ -20,7 +20,7 @@ description: Example agent.
 ---
 ```
 
-- `schemaVersion` is the PilotSwarm agent schema version. Use `1` until the schema changes.
+- `schemaVersion` is the PilotSwarm agent schema version. Use `1` by default, `3` for `initialRequiredTool`, and `4` for per-profile `nativeTaskTools` allowlists. See `docs/developer/native-task-tools.md`; never auto-inherit all parent tools into a native task.
 - `version` is a string. PilotSwarm-authored agents use SemVer. App authors may use any non-empty string, but SemVer is recommended.
 
 ## When To Bump `version`

@@ -2048,7 +2048,7 @@ body.is-resizing-pane-y iframe {
   padding: 0 8px;
   border: 1px solid var(--ps-border-strong);
   border-radius: 4px;
-  background: var(--ps-input-background, var(--ps-surface));
+  background: var(--ps-surface);
   color: var(--ps-foreground);
 }
 

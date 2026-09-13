@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.69 — 2026-09-12
 
-- SDK: schemaVersion 4 agent definitions can explicitly allowlist application and MCP tools for each native task profile, preserving parent grants and blocking durable orchestration. Runtime attribution and duplicate-call protection cover native application callbacks.
+- SDK: schemaVersion 4 agent definitions explicitly allowlist application, synchronous framework, and MCP tools per native task profile. Parent grants and existing resource permissions remain authoritative. Native tasks can perform authorized synchronous writes; durable orchestration, session control, and detached-work tools remain unavailable. Runtime attribution and duplicate-call protection cover native application callbacks.
+- Portal: retain the normal desktop/mobile splash while history loads, with “Loading conversation…” beneath the artwork.
 - Portal: follow Safari's visual viewport height and pan independently; remove the hidden session row during composer keyboard takeover so chat fills the available area.
-- Tests: focused native policy, actual SDK/CLI callback/MCP integration, and Chromium/WebKit keyboard geometry coverage.
+- Tests: native policy, actual SDK/CLI callback/MCP integration, and Chromium/WebKit keyboard geometry coverage. Verify external-suite execution independently of compact reporter formatting. Real CLI correctness fixtures allow bounded cold-start/resume time without changing production deadlines; stale portal/API fixtures follow the current navigation and module-loading contracts.
 
 ## 0.5.68 — 2026-09-12
 

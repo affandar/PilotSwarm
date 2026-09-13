@@ -316,7 +316,7 @@ When you change a PilotSwarm-authored `.agent.md` prompt, tool expectation, work
 - minor for new capabilities, tools, examples, or backwards-compatible workflow guidance
 - major for changed role semantics, removed expectations, or incompatible output/contract changes
 
-When changing builder templates that create or edit app agents, update both the template agents and their skills so generated app `.agent.md` files include `schemaVersion: 1` by default and a `version`, and so edits to existing agent files bump the version string according to the app's chosen versioning style. Use `schemaVersion: 3` only when the agent declares `initialRequiredTool`; that tool must also appear in `tools`.
+When changing builder templates that create or edit app agents, update both the template agents and their skills so generated app `.agent.md` files include `schemaVersion: 1` by default and a `version`, and so edits to existing agent files bump the version string according to the app's chosen versioning style. Use `schemaVersion: 3` only when the agent declares `initialRequiredTool`; that tool must also appear in `tools`. Use `schemaVersion: 4` for exact per-profile `nativeTaskTools` allowlists; see `docs/developer/native-task-tools.md` for the parent-permission and durable-tool boundaries.
 
 ## Significant Feature Rollouts
 

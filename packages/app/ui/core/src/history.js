@@ -1540,7 +1540,7 @@ export function appendEventToHistory(history, event) {
     return next;
 }
 
-export function createSplashCard(branding, session = null) {
+export function createSplashCard(branding, session = null, { loading = false } = {}) {
     const sessionSplash = typeof session?.splash === "string" && session.splash.trim()
         ? session.splash
         : null;
@@ -1555,7 +1555,9 @@ export function createSplashCard(branding, session = null) {
     const title = session?.isSystem
         ? canonicalSystemTitle(session, branding?.title || "PilotSwarm")
         : (session?.title || branding?.title || "PilotSwarm");
-    const hint = "{gray-fg}Start interacting with this session to replace the splash screen.{/gray-fg}";
+    const hint = loading
+        ? "{gray-fg}Loading conversation…{/gray-fg}"
+        : "{gray-fg}Start interacting with this session to replace the splash screen.{/gray-fg}";
     return [{
         id: `splash:${title}`,
         role: "system",

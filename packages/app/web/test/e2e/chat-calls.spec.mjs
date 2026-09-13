@@ -56,13 +56,17 @@ test('live calls retain their disclosure through updates and reload with no empt
     const runs=page.locator('.ps-activity-run');
     await expect(runs).toHaveCount(2);
     await expect(runs.nth(0).locator(':scope > summary')).toContainText('1 tool call');
-    await expect(runs.nth(1).locator(':scope > summary')).toContainText('2 activities');
+    await expect(runs.nth(1).locator(':scope > summary')).toContainText('2 agent activities');
+    // Intermediate assistant updates are collapsed until explicitly opened.
+    await page.locator('.ps-assistant-preview > summary').click();
     await expect(page.getByText('The first inspection is complete. I am starting the independent review.')).toHaveCount(1);
     await expect(page.locator('.ps-chat-card').filter({hasText:'No response was returned'})).toHaveCount(0);
     await page.reload();
     await expect(page.locator('.ps-chat-call')).toHaveCount(3);
     await expect(page.locator('.ps-activity-run')).toHaveCount(2);
     await expect(row.locator('summary')).toContainText('Done');
+    // Completed activity groups are collapsed after a fresh page load.
+    await runs.nth(0).locator(':scope > summary').click();
     await row.locator('summary').click();
     await expect(row.locator('pre')).toContainText('<script>');
     expect(f.errors).toEqual([]);

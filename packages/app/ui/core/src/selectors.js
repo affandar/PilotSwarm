@@ -2028,6 +2028,10 @@ export function selectActiveChat(state) {
     }
     const history = state.history.bySessionId.get(sessionId);
     const chat = history?.chat || [];
+    if (!chat.length && history?.loadState === "loading") {
+        const splash = createSplashCard(state.branding, session, { loading: true });
+        if (splash.length) return splash;
+    }
     if (!chat.length && ["loading", "failed"].includes(history?.loadState)) {
         return [{
             id: `history-load:${sessionId}:${history.loadState}`,

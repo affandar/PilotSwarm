@@ -9,17 +9,26 @@ const start = (access, id, task) => access.observe({type:"subagent.started",agen
 const make = () => new NativeTaskAccess({"swarm-explore":["repo_read", "notes/read"],"swarm-task":["repo_write"]},
     [{name:"repo_read"},{name:"repo_write"}],new Set(),{notes:{command:"fixture",tools:["read"]}});
 describe("native task capability policy", () => {
-    it.each([{explore:["read"]},{"swarm-explore":["*"]},{"swarm-explore":["notes/*"]},{"swarm-explore":["spawn_agent"]},{"swarm-task":["create_agent_session"]},{"swarm-task":["repo_cache_run"]},{"swarm-task":["remote/spawn_agent"]},{"swarm-task":["remote/create_session"]}])("rejects unsafe/malformed declarations %j", policy => {
+    it.each([{explore:["read"]},{"swarm-explore":["*"]},{"swarm-explore":["notes/*"]},{"swarm-explore":["spawn_agent"]},{"swarm-task":["create_agent_session"]},{"swarm-task":["start_pod_process"]},{"swarm-task":["remote/spawn_agent"]},{"swarm-task":["remote/create_session"]}])("rejects unsafe/malformed declarations %j", policy => {
         expect(()=>validateNativeTaskTools(policy)).toThrow();
+    });
+    it("admits explicitly granted synchronous writes and commands while denying every durable control", () => {
+        const names=["repo_cache_run","github_repo_rest","ado_rest","exec_in_pod","store_fact","stage_agent_package_edit","publish_agent_package"];
+        const access=new NativeTaskAccess({"swarm-task":names},names.map(name=>({name})),new Set(["store_fact","stage_agent_package_edit","publish_agent_package"]),{});
+        expect(access.tools["swarm-task"]).toEqual(names);
+        for (const name of ["wait","wait_on_worker","cron","cron_at","report_cycle","ask_user","spawn_agent","message_agent","wait_for_agents","complete_agent","cancel_agent","delete_agent","regenerate_context","regenerate_agent","set_session_model","create_agent_session","message_agent_session","manage_agent_session","manage_embedder","start_pod_process"]) {
+            expect(()=>validateNativeTaskTools({"swarm-task":[name]})).toThrow();
+            expect(()=>validateNativeTaskTools({"swarm-task":[`remote/${name}`]})).toThrow();
+        }
     });
     it("does not serialize runtime grants or MCP connection secrets",()=>{
         const access=make();
         expect(JSON.stringify({nativeTaskAccess:access})).toBe("{}");
     });
     it("intersects with parent tools and MCP scope, excluding framework controls", () => {
-        const access = new NativeTaskAccess({"swarm-explore":["available","missing","store_fact","read_agent_package_file","notes/read","notes/write","private/read"]},
-            [{name:"available"},{name:"store_fact"},{name:"read_agent_package_file"}],new Set(["store_fact","read_agent_package_file"]),{notes:{tools:["read"]}});
-        expect(access.tools['swarm-explore']).toEqual(["available","read_agent_package_file","notes/read"]);
+        const access = new NativeTaskAccess({"swarm-explore":["available","missing","future_framework_control","store_fact","read_agent_package_file","notes/read","notes/write","private/read"]},
+            [{name:"available"},{name:"future_framework_control"},{name:"store_fact"},{name:"read_agent_package_file"}],new Set(["future_framework_control","store_fact","read_agent_package_file"]),{notes:{tools:["read"]}});
+        expect(access.tools['swarm-explore']).toEqual(["available","store_fact","read_agent_package_file","notes/read"]);
         expect(access.mcpServers['swarm-explore'].notes.tools).toEqual(["read"]);
     });
     it("separates simultaneous child profiles and expires access on completion", async () => {

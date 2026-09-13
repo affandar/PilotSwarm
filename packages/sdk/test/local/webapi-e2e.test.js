@@ -14,10 +14,14 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
+import { createRequire } from "node:module";
 import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { assert, assertEqual, assertIncludes, assertIncludesAny, assertNotNull } from "../helpers/assertions.js";
 import { PilotSwarmClient, PilotSwarmManagementClient, createWebFactStore, isEnhancedFactStore } from "pilotswarm-sdk";
-import { ApiClient, ApiError, HttpApiTransport } from "pilotswarm-sdk/api";
+// The built SDK loads this entry through native Node ESM. Use the same module
+// instance here: Vitest can otherwise transform the workspace subpath again,
+// yielding a second ApiError constructor and false instanceof failures.
+const { ApiClient, ApiError, HttpApiTransport } = createRequire(import.meta.url)("../../api/index.js");
 
 const TIMEOUT = 180_000;
 

@@ -44,8 +44,9 @@ async function harness(respond, run, mode = "sync", options = {}) {
     let manager;
     const config = { model: `fixture:${MODEL}`, workingDirectory: home };
     const policy = await createFeaturePolicy();
+    // Real CLI startup/resume is part of these correctness checks, not a ten-second latency SLA.
     const createManager = (nativeMode = mode) => {
-        manager = new SessionManager(undefined, null, { ...options.workerDefaults, nativeSubagents: nativeMode, modelProviders: registry, turnTimeoutMs: config.turnTimeoutMs ?? 10_000 }, join(home, "session-state"));
+        manager = new SessionManager(undefined, null, { ...options.workerDefaults, nativeSubagents: nativeMode, modelProviders: registry, turnTimeoutMs: config.turnTimeoutMs ?? 30_000 }, join(home, "session-state"));
         manager.setFeatureFlagCache(policy.cache);
         manager.setFactStore(facts);
         manager.setConfig(sessionId, { ...config, tools: [...(options.tools ?? []), {
@@ -90,7 +91,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 profile=turn===1?"swarm-task":"swarm-explore";
                 if(turn===2){await manager.shutdown();manager=createManager();}
                 const managed=await manager.getOrCreate(sessionId,config,{turnIndex:turn});
-                const result=await managed.runTurn("Investigate through allowed tools"); expect(result.type).toBe("completed");
+                const result=await managed.runTurn("Investigate through allowed tools"); expect(result.type, JSON.stringify(result)).toBe("completed");
                 expect(calls).toHaveLength(Math.min(turn+1,3));
                 if(revoked) continue;
                 expect(calls[turn].invocation.durableSessionId).toBe(sessionId);
@@ -140,7 +141,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             expect(childStage).toBe(4);
         },'sync',{workerDefaults:{agentPromptLookup:{fixture:{kind:'app-agent',prompt:'Use native tasks',nativeTaskTools:{'swarm-explore':[]}}}}});
     });
-    it("does not register or prompt for the deferred rubber-duck profile", { timeout: 20_000 }, async () => {
+    it("does not register or prompt for the deferred rubber-duck profile", { timeout: 60_000 }, async () => {
         await harness(body => body.messages.at(-1).role === "tool"
             ? { content: "RUBBER_DUCK_UNAVAILABLE" } : { tools: [nativeTask({ agent_type: "swarm-rubber-duck" })] },
         async ({ config, sessionId, createManager, server }) => {
@@ -210,7 +211,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 managed = await manager.getOrCreate(sessionId, config, { turnIndex: turn });
                 const turnEvents = [];
                 const result = await managed.runTurn(`Policy transition turn ${turn}`, { onEvent: event => turnEvents.push(event) });
-                expect(result.type).toBe("completed");
+                expect(result.type, JSON.stringify(result)).toBe("completed");
                 const parent = server.requests.slice(start).find(parentRequest);
                 expect(parent.tools.some(t => t.function?.name === "task")).toBe(phase === "enabled");
                 expect(systemPrompt(parent).includes("## Native local delegation")).toBe(phase === "enabled");
@@ -256,7 +257,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
             const events = [];
             const result = await managed.runTurn("Create proof, delegate two workers, and independently verify their changes", { onEvent: event => events.push(event) });
-            expect(result.type).toBe("completed");
+            expect(result.type, JSON.stringify(result)).toBe("completed");
             const proof = JSON.parse(readFileSync(join(home, "shared-proof.json"), "utf8"));
             const observed = JSON.parse(readFileSync(join(home, "native-observation.json"), "utf8"));
             const verified = JSON.parse(readFileSync(join(home, "parent-verification.json"), "utf8"));
@@ -285,7 +286,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             expect(leaks()).toBe(0);
         });
     });
-    it("executes native view on the same worker, accounts usage, and survives warm/cold resume", { timeout: 40_000 }, async () => {
+    it("executes native view on the same worker, accounts usage, and survives warm/cold resume", { timeout: 120_000 }, async () => {
         await harness((body, index, home) => {
             if (index > 20) throw new Error("Unexpected tool loop");
             if (parentRequest(body)) return body.messages.at(-1).role === "tool"
@@ -295,6 +296,8 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 : { tools: [{ name: "view", args: { path: join(home, "fixture.txt") } }] };
         }, async ({ home, server, config, sessionId, createManager, leaks }) => {
             writeFileSync(join(home, "fixture.txt"), "local-native-proof-739");
+            // Cold CLI resume can exceed ten seconds under the full integration gate.
+            config.turnTimeoutMs = 30_000;
             config.systemMessage = { content: "RUNTIME_CONTEXT" };
             config.turnSystemPrompt = "TURN_NOTE_IN_USER_PROMPT";
             config.systemContextInPrompt = true;
@@ -305,7 +308,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                 const managed = await manager.getOrCreate(sessionId, config, { turnIndex: turn });
                 const events = [];
                 const result = await managed.runTurn(`Delegate inspection, turn ${turn}`, { onEvent: e => events.push(e) });
-                expect(result.type).toBe("completed");
+                expect(result.type, JSON.stringify(result)).toBe("completed");
                 expect(result.content).toContain("PARENT: CHILD:");
                 expect(result.content).toContain("local-native-proof-739");
                 expect(events.filter(e => e.eventType === "assistant.message" && e.data.content).every(e => e.data.content.startsWith("PARENT:"))).toBe(true);
@@ -389,7 +392,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
 
     it.each([
         { agent_type: "general-purpose" }, { mode: "background" }, { model: "foreign-model" },
-    ])("runtime rejects a parent bypass %j before starting a child", { timeout: 20_000 }, async overrides => {
+    ])("runtime rejects a parent bypass %j before starting a child", { timeout: 60_000 }, async overrides => {
         await harness(body => body.messages.at(-1).role === "tool" ? { content: "HANDLED_DENIAL" } : { tools: [nativeTask(overrides)] },
             async ({ config, sessionId, createManager, server }) => {
                 const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
@@ -400,7 +403,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             });
     });
 
-    it("a fabricated external tool call from the child cannot invoke the parent's handler", { timeout: 20_000 }, async () => {
+    it("a fabricated external tool call from the child cannot invoke the parent's handler", { timeout: 60_000 }, async () => {
         await harness(body => {
             if (parentRequest(body)) return body.messages.at(-1).role === "tool" ? { content: "PARENT_DONE" } : { tools: [nativeTask()] };
             return body.messages.at(-1).role === "tool" ? { content: "CHILD_DENIED" } : { tools: [{ name: "ps_marker", args: {} }] };
@@ -412,8 +415,9 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    it("keeps task disabled by default", { timeout: 20_000 }, async () => {
+    it("keeps task disabled by default", { timeout: 60_000 }, async () => {
         await harness(() => ({ content: "NO_DELEGATION" }), async ({ config, sessionId, createManager, server }) => {
+            config.turnTimeoutMs = 30_000;
             const managed = await createManager().getOrCreate(sessionId, config, { turnIndex: 0 });
             expect((await managed.runTurn("hello")).content).toBe("NO_DELEGATION");
             expect(server.requests[0].tools.map(t => t.function?.name)).not.toContain("task");
@@ -421,12 +425,14 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         }, "off");
     });
 
-    it("OFF preserves durable delegation and excludes native tools, profiles, and guidance across warm/cold resume", { timeout: 30_000 }, async () => {
+    it("OFF preserves durable delegation and excludes native tools, profiles, and guidance across warm/cold resume", { timeout: 120_000 }, async () => {
         const spawned = [];
         await harness(body => body.messages.at(-1).role === "tool"
             ? { content: "DURABLE_SPAWN_FINISHED" }
             : { tools: [{ name: "spawn_agent", args: { task: "Inspect durable child fixture" } }] },
         async ({ config, sessionId, createManager, server }) => {
+            // Three turns and two CLI startups need their own bounded turn budget.
+            config.turnTimeoutMs = 30_000;
             let manager = createManager();
             for (let turn = 0; turn < 3; turn++) {
                 if (turn === 2) { await manager.shutdown(); manager = createManager(); }
@@ -438,7 +444,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
                     onEvent: event => events.push(event),
                     controlToolBridge: { spawnAgent: async args => { spawned.push(args); return JSON.stringify({ sessionId: childId, status: "running" }); } },
                 });
-                expect(result.type).toBe("completed");
+                expect(result.type, JSON.stringify(result)).toBe("completed");
                 expect(spawned.at(-1)).toEqual({ task: "Inspect durable child fixture" });
                 const execution = events.find(event => event.eventType === "tool.execution_complete" && event.data.toolName === "spawn_agent");
                 expect(execution?.data.success).toBe(true);
@@ -487,7 +493,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
             const requestStart = server.requests.length;
             const secondEvents = [];
             const result = await managed.runTurn("Try delegation after OFF", { onEvent: event => secondEvents.push(event) });
-            expect(result.type).toBe("completed");
+            expect(result.type, JSON.stringify(result)).toBe("completed");
             expect(secondEvents.some(event => event.eventType === "subagent.started")).toBe(false);
             expect((await managed.getCopilotSession().rpc.tasks.list()).tasks.filter(task => task.type === "agent")).toEqual([]);
             const agentNames = (await managed.getCopilotSession().rpc.agent.list()).agents.map(agent => agent.name);
@@ -504,7 +510,7 @@ describe("native subagents (real Copilot SDK/CLI, scripted local inference)", ()
         });
     });
 
-    it("parent external tools still execute through the guarded per-turn handler map", { timeout: 20_000 }, async () => {
+    it("parent external tools still execute through the guarded per-turn handler map", { timeout: 60_000 }, async () => {
         await harness(body => body.messages.at(-1).role === "tool"
             ? { content: "PARENT_TOOL_OK" } : { tools: [{ name: "ps_marker", args: {} }] },
         async ({ config, sessionId, createManager, leaks }) => {
