@@ -37,11 +37,11 @@ project is archived and is not used here.
 - Gist revision: `a699621c9157e843c414ce5b3d5ce6db1de032ad`.
 - Repository linked: GitHub OAuth authorized and `affandar/PilotSwarm` appears in
   the CLA Assistant dashboard with the intended Gist (2026-09-13 UTC).
-- Activation blocker: after linking and requesting a PR recheck, GitHub's hooks
-  API still returns no webhook, PR #78 has no CLA status, and the signing page
-  stays on a loading indicator without showing the agreement/version. Dashboard
-  linkage alone is not evidence that the bot is operational. Retry/repair the
-  hosted integration before enabling enforcement or soliciting signatures.
+- Signing page: agreement version 1.0 and all three custom fields verified live.
+- Webhook: `678432092`, active for `pull_request` and `merge_group`, TLS verification
+  enabled. Created through GitHub's API after the hosted setup saved the repository
+  link without creating a webhook. Its URL and events follow the hosted service's
+  published implementation: `https://cla-assistant.io/github/webhook/PilotSwarm`.
 - Observed status context / source: pending first live check.
 - Unsigned-to-signed test: pending an actual contributor's acceptance.
 - Required merge check: pending verified integration.
