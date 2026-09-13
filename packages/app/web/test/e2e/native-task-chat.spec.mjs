@@ -39,7 +39,9 @@ test("native task updates in place, preserves disclosure, and retains cancellati
     const row = page.locator('.ps-native-task[data-task-id="call-1"]');
     await expect(row).toHaveCount(1);
     await expect(row).toHaveAttribute("data-status", "running");
-    await row.locator("summary").click();
+    await expect(row).toHaveAttribute("open", "");
+    await row.locator(":scope > summary").click();
+    await row.locator(":scope > summary").click();
     await expect(row).toHaveAttribute("open", "");
     await expect(row.locator(".ps-native-task-scope")).toContainText("Same worker");
     fixture.events.push(fixture.event(7, "subagent.completed", { ...fixture.task, cancelled: true, durationMs: 632570, totalToolCalls: 115 }));
@@ -48,7 +50,7 @@ test("native task updates in place, preserves disclosure, and retains cancellati
     await expect(row).toHaveAttribute("data-status", "cancelled", { timeout: 20000 });
     await expect(row).toHaveAttribute("open", "");
     await expect(row.locator(".ps-native-task-meta")).toContainText("115 calls");
-    await expect(page.locator(".ps-native-tasks")).toHaveCount(1);
+    await expect(page.locator("section.ps-native-tasks")).toHaveCount(1);
     await expect(page.locator("body")).not.toContainText("background_tasks_changed");
     await page.reload();
     await expect(row).toHaveAttribute("data-status", "cancelled");
@@ -77,4 +79,65 @@ test("a warning stays above the successful follow-up and native rows fit mobile"
     const group = page.locator(".ps-native-tasks");
     await expect(group).toBeVisible();
     expect(await group.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+});
+
+test("parallel native calls nest once under their owner, keep parent calls separate, and survive reload", async ({ page }) => {
+    const fixture = fixtureEvents();
+    fixture.events.push(
+        fixture.event(7, "subagent.started", { ...fixture.task, toolCallId: "call-2", nativeAgentId: "agent-2", arguments: { description: "Inspect volume configuration", agent_type: "swarm-task" } }),
+        fixture.event(8, "tool.execution_start", { toolName: "repo_cache_fetch", toolCallId: "fetch-2", arguments: { repo: "pilotswarm" } }),
+        fixture.event(9, "native.tool.execution_start", { toolName: "repo_cache_fetch", toolCallId: "fetch-2", parentToolCallId: "call-2", nativeAgentId: "agent-2", arguments: { repo: "pilotswarm" } }),
+        fixture.event(10, "tool.execution_complete", { toolName: "repo_cache_fetch", toolCallId: "fetch-2", success: true, result: "Fetched main" }),
+        fixture.event(11, "tool.execution_start", { toolName: "repo_cache_fetch", toolCallId: "parent-fetch", arguments: { repo: "waldemort" } }),
+    );
+    await mount(page, fixture);
+    const first = page.locator('.ps-native-task[data-task-id="call-1"]');
+    const second = page.locator('.ps-native-task[data-task-id="call-2"]');
+    await expect(first.locator(".ps-chat-call")).toHaveCount(1);
+    await expect(first.locator(".ps-chat-call-summary")).toContainText("view");
+    await expect(second.locator(".ps-chat-call")).toHaveCount(1);
+    await expect(second.locator(".ps-chat-call-summary")).toContainText("repo_cache_fetch");
+    await expect(second.locator(".ps-native-task-profile")).toHaveText("Task");
+    await expect(page.locator(".ps-activity-run .ps-chat-call")).toHaveCount(1);
+    await expect(page.locator(".ps-activity-run .ps-chat-call-summary")).toContainText("waldemort");
+    await page.screenshot({ path: test.info().outputPath("nested-native-desktop.png") });
+    await second.locator(".ps-chat-call-summary").click();
+    await expect(second.locator(".ps-chat-call-payload")).toContainText("Fetched main");
+    fixture.events.push(fixture.event(12, "subagent.completed", { ...fixture.task, toolCallId: "call-2", nativeAgentId: "agent-2" }));
+    await expect(second).toHaveAttribute("data-status", "completed", { timeout: 20000 });
+    await expect(second).toHaveAttribute("open", ""); // Preserve the result being inspected.
+    await page.reload();
+    await expect(second).toHaveAttribute("data-status", "completed");
+    await expect(second).not.toHaveAttribute("open", "");
+    await second.locator(":scope > summary").click();
+    await expect(second.locator(".ps-chat-call")).toHaveCount(1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    // The mobile workspace remounts chat; wait for that tree before opening
+    // its disclosure, rather than clicking the outgoing desktop instance.
+    await expect(page.locator(".ps-mobile-workspace")).toBeVisible();
+    await expect(second).toBeVisible();
+    if (await second.getAttribute("open") === null) await second.locator(":scope > summary").click();
+    await expect(second.locator(".ps-native-task-calls")).toBeVisible();
+    expect(await second.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("nested-native-mobile.png") });
+});
+
+test("uninspected success collapses while a failed task expands with its failed call", async ({ page }) => {
+    const fixture = fixtureEvents();
+    await mount(page, fixture);
+    const row = page.locator('.ps-native-task[data-task-id="call-1"]');
+    await expect(row).toHaveAttribute("open", "");
+    fixture.events.push(fixture.event(7, "subagent.completed", fixture.task));
+    await expect(row).toHaveAttribute("data-status", "completed", { timeout: 20000 });
+    await expect(row).not.toHaveAttribute("open", "");
+    fixture.events.push(
+        fixture.event(8, "subagent.started", { ...fixture.task, toolCallId: "failed-task", nativeAgentId: "failed-agent" }),
+        fixture.event(9, "native.tool.execution_complete", { toolName: "view", toolCallId: "failed-read", parentToolCallId: "failed-task", nativeAgentId: "failed-agent", success: false, error: "File not found" }),
+        fixture.event(10, "subagent.failed", { toolCallId: "failed-task", nativeAgentId: "failed-agent", error: "Cannot read configuration" }),
+    );
+    const failed = page.locator('.ps-native-task[data-task-id="failed-task"]');
+    await expect(failed).toHaveAttribute("data-status", "failed", { timeout: 20000 });
+    await expect(failed).toHaveAttribute("open", "");
+    await expect(failed.locator(".ps-chat-call-status")).toHaveText("Failed");
+    await expect(failed.locator(".ps-native-task-result")).toHaveText("Cannot read configuration");
 });

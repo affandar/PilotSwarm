@@ -3,7 +3,7 @@ import { isCanvasActionContent, parseCanvasActionContent } from "./canvas-action
 import { formatCompactionActivityRuns } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
-import { appendNativeTaskEvent } from "./native-tasks.js";
+import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 
@@ -21,6 +21,7 @@ export const HISTORY_EVENT_LIMIT_STEPS = [
 // load transcript pages instead of raw-stream pages.
 export const CHAT_HISTORY_EVENT_TYPES = [
     ...CHAT_CALL_EVENT_TYPES,
+    ...CHAT_CALL_EVENT_TYPES.filter(type => type !== "session.agent_spawned").map(type => `native.${type}`),
     "user.message",
     "assistant.message",
     // Needed to distinguish interim assistant output from the final answer
@@ -137,6 +138,7 @@ function appendSessionWarning(chat, event) {
 
 const parentChatCallTypes = new Set(CHAT_CALL_EVENT_TYPES);
 function appendParentChatCall(chat, event) {
+    if (appendNativeTaskCall(chat, event)) return;
     if (!parentChatCallTypes.has(event?.eventType)) return;
     const data = event?.data || {};
     // Native tasks have their own abridged disclosure. Generic call cards

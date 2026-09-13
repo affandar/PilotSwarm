@@ -1,3 +1,5 @@
+import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+
 // Native Copilot work is local to one parent turn. Durable spawn_agent
 // sessions deliberately do not enter this projection.
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
@@ -61,6 +63,7 @@ function updateTask(chat, patch, event, { authoritative = false } = {}) {
         if (previous?.inferredTerminal) next.error = patch.error || "";
     }
     next.title = clip(next.title, 160) || "Native task";
+    if (next.title === "Native task" && previous?.title) next.title = previous.title;
     next.preview = clip(next.preview);
     next.result = clip(next.result, 4000);
     next.error = clip(next.error, 1000);
@@ -87,6 +90,47 @@ function updateTask(chat, patch, event, { authoritative = false } = {}) {
             createdAt: next.startedAt, tasks: [next],
         });
     }
+}
+
+// Correlate by runtime identity, never by tool name or arrival time. External
+// callbacks may arrive before the child event; move that existing disclosure
+// under its owner as soon as the explicit relationship becomes available.
+export function appendNativeTaskCall(chat, event) {
+    const type = (event?.eventType || "").replace(/^native\./, "");
+    if (!CHAT_CALL_EVENT_TYPES.includes(type) || type === "session.agent_spawned") return false;
+    const data = event.data || {};
+    const explicit = Boolean(data.nativeAgentId || data.parentToolCallId || event.eventType.startsWith("native."));
+    const keys = [data.toolCallId && `call:${data.toolCallId}`, data.requestId && `request:${data.requestId}`].filter(Boolean);
+    let match = explicit ? findTask(chat, { toolCallId: data.parentToolCallId, agentId: data.nativeAgentId }) : null;
+    const namespace = `${event.sessionId}:${data.durableSessionId || ""}`;
+    if (!match && !explicit) {
+        for (let g = chat.length - 1; g >= 0 && !match; g--) {
+            if (chat[g].kind !== "native-task-group") continue;
+            const t = chat[g].tasks.findIndex(task => task.calls?.some(call => call.namespace === namespace
+                && call.callKeys.some(key => keys.includes(key))));
+            if (t >= 0) match = { groupIndex: g, taskIndex: t };
+        }
+    }
+    if (!match && explicit && (data.parentToolCallId || data.nativeAgentId)) {
+        updateTask(chat, { toolCallId: data.parentToolCallId, agentId: data.nativeAgentId, status: "running" }, event);
+        match = findTask(chat, { toolCallId: data.parentToolCallId, agentId: data.nativeAgentId });
+    }
+    if (!match) return explicit; // Unknown child activity must not impersonate the parent.
+    const group = chat[match.groupIndex];
+    const task = group.tasks[match.taskIndex];
+    const calls = [...(task.calls || [])];
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const call = chat[i];
+        if (call.kind !== "chat-call" || call.namespace !== namespace || !call.callKeys.some(key => keys.includes(key))) continue;
+        if (!calls.some(item => item.callKeys.some(key => call.callKeys.includes(key)))) calls.push(call);
+        chat.splice(i, 1);
+    }
+    appendChatCall(calls, { ...event, eventType: type });
+    const tasks = [...group.tasks];
+    tasks[match.taskIndex] = { ...task, calls, toolCalls: Math.max(task.toolCalls || 0, calls.length) };
+    // Removing a parent disclosure can shift the group's index.
+    chat[chat.indexOf(group)] = { ...group, tasks };
+    return true;
 }
 
 export function appendNativeTaskEvent(chat, event) {
@@ -119,7 +163,7 @@ export function appendNativeTaskEvent(chat, event) {
     const previous = found ? chat[found.groupIndex].tasks[found.taskIndex] : null;
     if (!previous && !lifecycle && !taskTool) return;
     if (!previous || taskTool || type === "subagent.started") Object.assign(patch, {
-        title: args.description || data.agentDisplayName || args.name || data.agentName || "Native task",
+        title: args.description || args.name || (previous?.title !== "Native task" ? previous?.title : null) || data.agentDisplayName || "Native task",
         profile: args.agent_type || data.agentName || data.agentType,
         model: data.model,
     });
@@ -145,7 +189,7 @@ export function appendNativeTaskEvent(chat, event) {
     } else if (type === "native.tool.execution_start") {
         const ids = previous.toolCallIds || [];
         patch.toolCallIds = data.toolCallId && !ids.includes(data.toolCallId) ? [...ids, data.toolCallId].slice(-500) : ids;
-        patch.toolCalls = (previous.toolCalls || 0) + (patch.toolCallIds !== ids ? 1 : 0);
+        patch.toolCalls = Math.max(previous.toolCalls || 0, patch.toolCallIds.length);
         patch.preview = args.description || (data.toolName ? `Using ${data.toolName}` : "Working");
     } else if (type === "native.assistant.message") {
         // Do not expose reasoning, tool arguments, or the whole child transcript.

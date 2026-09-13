@@ -638,11 +638,20 @@ function distinctHumanOwnerCount(state, stopAt = Infinity) {
     return owners.size;
 }
 
+const sessionOwnerDecorationCache = new WeakMap();
 function shouldDecorateSessionOwners(state) {
     // One rule: the chip earns its place when the list holds more than one
     // distinct human owner. Otherwise it is noise on every row — you are
     // always "you".
-    return distinctHumanOwnerCount(state, 2) > 1;
+    const byId = state?.sessions?.byId;
+    if (!byId) return false;
+    const filter = state.sessions.ownerFilter;
+    const auth = state.auth;
+    const cached = sessionOwnerDecorationCache.get(byId);
+    if (cached && cached.filter === filter && cached.auth === auth) return cached.value;
+    const value = distinctHumanOwnerCount(state, 2) > 1;
+    sessionOwnerDecorationCache.set(byId, { filter, auth, value });
+    return value;
 }
 
 function groupMemberSessions(group, byId = {}) {
@@ -1293,6 +1302,7 @@ function matchesSearchQuery(value, query) {
 }
 
 const searchedSessionFlatCache = new WeakMap();
+const sessionSearchIndexCache = new WeakMap();
 
 function sessionGroupTitle(session, byId) {
     if (session?.isGroup) return session.title || "";
@@ -1320,14 +1330,11 @@ function sessionSearchOwner(session, byId) {
     return null;
 }
 
-function buildSearchedSessionFlat(state, query) {
-    const existingFlat = Array.isArray(state.sessions?.flat) ? state.sessions.flat : [];
-    if (!query) return existingFlat;
-    const cached = searchedSessionFlatCache.get(existingFlat);
-    if (cached?.query === query) return cached.result;
-
+function sessionSearchIndex(state) {
     const byId = state.sessions?.byId || {};
-    const parsed = parseSessionSearchQuery(query);
+    const deps = [state.sessions?.orderById, state.sessions?.pinnedIds, state.sessions?.manualOrder];
+    const cached = sessionSearchIndexCache.get(byId);
+    if (cached && sameRowDeps(cached.deps, deps)) return cached;
     const expanded = buildSessionTree(
         Object.values(byId),
         new Set(),
@@ -1348,16 +1355,34 @@ function buildSearchedSessionFlat(state, query) {
         baseIndex.set(entry.sessionId, index);
     }
 
+    const documents = new Map(expanded.map(entry => {
+        const session = byId[entry.sessionId] || entry.standIn;
+        return [entry.sessionId, buildSessionSearchDocument(session, {
+            owner: sessionSearchOwner(session, byId), groupTitle: sessionGroupTitle(session, byId),
+        })];
+    }));
+    const index = { deps, expanded, parentById, entryById, baseIndex, documents };
+    sessionSearchIndexCache.set(byId, index);
+    return index;
+}
+
+function buildSearchedSessionFlat(state, query) {
+    const existingFlat = Array.isArray(state.sessions?.flat) ? state.sessions.flat : [];
+    if (!query) return existingFlat;
+    const cached = searchedSessionFlatCache.get(existingFlat);
+    const deps = [state.sessions?.byId, state.sessions?.ownerFilter, state.auth, state.sessions?.orderById,
+        state.sessions?.pinnedIds, state.sessions?.manualOrder, state.sessions?.filterExceptionId];
+    if (cached?.query === query && sameRowDeps(cached.deps, deps)) return cached.result;
+
+    const byId = state.sessions?.byId || {};
+    const parsed = parseSessionSearchQuery(query);
+    const { expanded, parentById, entryById, baseIndex, documents } = sessionSearchIndex(state);
+
     const directScores = new Map();
     for (const entry of expanded) {
         const session = byId[entry.sessionId] || entry.standIn;
         if (!session || !matchesOwnerFilter(session, state.sessions?.ownerFilter, state.auth || {}, byId)) continue;
-        const owner = sessionSearchOwner(session, byId);
-        const document = buildSessionSearchDocument(session, {
-            owner,
-            groupTitle: sessionGroupTitle(session, byId),
-        });
-        const score = scoreSessionSearchDocument(document, parsed);
+        const score = scoreSessionSearchDocument(documents.get(entry.sessionId), parsed);
         if (score > 0) directScores.set(entry.sessionId, score);
     }
     const matchedIds = new Set(directScores.keys());
@@ -1414,7 +1439,7 @@ function buildSearchedSessionFlat(state, query) {
     // A user can type an unbounded number of distinct queries while the
     // catalog array keeps the same identity. Keep only the latest result for
     // that catalog rather than retaining every intermediate keystroke.
-    searchedSessionFlatCache.set(existingFlat, { query, result });
+    searchedSessionFlatCache.set(existingFlat, { query, deps, result });
     return result;
 }
 

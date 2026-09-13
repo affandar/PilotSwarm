@@ -1,3 +1,4 @@
+import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
@@ -1380,21 +1381,6 @@ function SystemNoticeLine({ line, theme }) {
             : null);
 }
 
-function ChatCallLine({ line }) {
-    const [open, setOpen] = React.useState(false);
-    return React.createElement("details", {
-        className: "ps-system-notice ps-chat-call",
-        "data-call-id": line.callKey,
-        onToggle: event => setOpen(event.currentTarget.open),
-    },
-    React.createElement("summary", { className: "ps-system-notice-summary ps-chat-call-summary" },
-        React.createElement("span", { className: "ps-chat-call-tag" }, line.category || "Tool"),
-        React.createElement("span", { className: "ps-system-notice-summary-text" }, line.text),
-        line.status ? React.createElement("span", { className: `ps-chat-call-status${line.status === "Failed" ? " is-failed" : ""}` }, line.status) : null),
-    open ? React.createElement("div", { className: "ps-system-notice-body" },
-        line.time ? React.createElement("div", { className: "ps-chat-call-time" }, line.time) : null,
-        React.createElement("pre", { className: "ps-chat-call-payload" }, line.body)) : null);
-}
 
 function ChatActivityRun({ calls }) {
     const latest = calls[calls.length - 1] || {};
@@ -5053,8 +5039,28 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, listRef = null }) {
+const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, listRef = null }) {
+    // Keep typing local: expensive list filtering and external-store updates
+    // must never be part of the input's immediate render path.
+    const [draft, setDraft] = React.useState(query);
     const [mobileOpen, setMobileOpen] = React.useState(Boolean(query));
+    const timer = React.useRef(null);
+    const published = React.useRef(query);
+    const composing = React.useRef(false);
+    const onQueryRef = React.useRef(onQuery);
+    onQueryRef.current = onQuery;
+    const cancel = () => { clearTimeout(timer.current); timer.current = null; };
+    const publish = value => { cancel(); published.current = value; onQueryRef.current?.(value); };
+    const schedule = value => {
+        cancel();
+        if (!composing.current) timer.current = setTimeout(() => publish(value), 150);
+    };
+    React.useEffect(() => () => clearTimeout(timer.current), []);
+    React.useEffect(() => {
+        // An acknowledgement of our prior edit must not erase newer typing.
+        if (query === published.current) return;
+        cancel(); published.current = query; setDraft(query);
+    }, [query]);
     const inputRef = React.useRef(null);
     React.useEffect(() => {
         if (query) setMobileOpen(true);
@@ -5064,12 +5070,11 @@ function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = fa
         requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
     };
     const closeOrClear = () => {
-        if (query) onQuery?.("");
+        if (draft || query) { setDraft(""); publish(""); }
         else setMobileOpen(false);
     };
-    const resultLabel = query
-        ? `${matchCount} ${matchCount === 1 ? "match" : "matches"}`
-        : "";
+    const resultLabel = draft !== query ? "Searching…" : draft
+        ? `${matchCount} ${matchCount === 1 ? "match" : "matches"}` : "";
     return React.createElement("div", {
         className: `ps-session-search${mobileOpen ? " is-open" : ""}`,
         "data-session-search": "true",
@@ -5089,8 +5094,10 @@ function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = fa
             inputMode: "search",
             "aria-label": "Find a session",
             placeholder: "Find a session…",
-            value: query,
-            onChange: (event) => onQuery?.(event.target.value),
+            value: draft,
+            onChange: event => { const value = event.target.value; setDraft(value); schedule(value); },
+            onCompositionStart: () => { composing.current = true; cancel(); },
+            onCompositionEnd: event => { composing.current = false; schedule(event.currentTarget.value); },
             onKeyDown: (event) => {
                 if (event.key === "Escape") {
                     event.preventDefault();
@@ -5098,10 +5105,9 @@ function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = fa
                     return;
                 }
                 if (event.key !== "ArrowDown") return;
-                const first = listRef?.current?.querySelector?.(".ps-session-list-button");
-                if (!first) return;
                 event.preventDefault();
-                first.focus({ preventScroll: true });
+                if (draft !== query) publish(draft);
+                requestAnimationFrame(() => listRef?.current?.querySelector?.(".ps-session-list-button")?.focus({ preventScroll: true }));
             },
         }),
         resultLabel ? React.createElement("span", {
@@ -5109,14 +5115,16 @@ function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = fa
             role: "status",
             "aria-live": "polite",
         }, resultLabel) : null,
-        (query || mobile) ? React.createElement("button", {
+        (draft || mobile) ? React.createElement("button", {
             type: "button",
             className: "ps-session-search-clear",
-            "aria-label": query ? "Clear session search" : "Close session search",
-            title: query ? "Clear" : "Close",
+            "aria-label": draft ? "Clear session search" : "Close session search",
+            title: draft ? "Clear" : "Close",
             onClick: closeOrClear,
         }, "×") : null));
-}
+});
+
+const EMPTY_PICKER_SELECTION = Object.freeze([]);
 
 function SessionPane({ controller, actions = null, panelClassName = "", structuredRows = false, showDetailBox = null, selection = null, actionsOnly = false, actionsHost = null, onAction = null, onDialogChange = null }) {
     // Mobile keeps its inline detail line and normally gets no detail box — a
@@ -5142,25 +5150,25 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         (state) => Boolean(state.ui.sessionDetailCollapsed),
     );
     const sessionButtonRefs = React.useRef(new Map());
-    const viewState = useControllerSelector(controller, (state) => ({
+    const controllerViewState = useControllerSelector(controller, (state) => ({
         branding: state.branding,
-        activeSessionId: selection ? selection.sessionId : state.sessions.activeSessionId,
+        activeSessionId: state.sessions.activeSessionId,
         sessionsById: state.sessions.byId,
         sessionsFlat: state.sessions.flat,
-        filterQuery: selection ? selection.query || "" : state.sessions.filterQuery || "",
+        filterQuery: state.sessions.filterQuery || "",
         ownerFilter: state.sessions.ownerFilter,
         pinnedIds: state.sessions.pinnedIds,
         manualOrder: state.sessions.manualOrder,
-        selectedIds: selection ? [] : state.sessions.selectedIds,
-        selectMode: selection ? false : state.sessions.selectMode,
+        selectedIds: state.sessions.selectedIds,
+        selectMode: state.sessions.selectMode,
         auth: state.auth,
         connectionMode: state.connection?.mode || "local",
         modalOpen: Boolean(state.ui.modal),
-        focused: selection ? true : state.ui.focusRegion === "sessions",
+        focused: state.ui.focusRegion === "sessions",
         // Clicking empty space clears the list highlight; the row VM reads it,
         // so the reconstruction below must carry it or the click does nothing
         // visible (the same omission that blinded the Node Map).
-        listDeselected: selection ? !selection.sessionId : Boolean(state.sessions.listDeselected),
+        listDeselected: Boolean(state.sessions.listDeselected),
         // The canvas markers read these. This synthetic state is exactly the
         // trap the branding comment below describes: omit a slice here and
         // every row computes as if it were empty — the markers were null on
@@ -5173,6 +5181,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         // "waiting".
         budgetPaused: state.budget?.paused,
     }), shallowEqualObject);
+    // Picker state is local React state, not controller state. Reading these
+    // props inside the subscription selector delays changes until the next
+    // unrelated store notification (sometimes seconds later).
+    const viewState = selection ? { ...controllerViewState,
+        activeSessionId: selection.sessionId, filterQuery: selection.query || "",
+        selectedIds: EMPTY_PICKER_SELECTION, selectMode: false, focused: true,
+        listDeselected: !selection.sessionId,
+    } : controllerViewState;
     const computedRows = React.useMemo(() => selectSessionRows({
         sessions: {
             activeSessionId: viewState.activeSessionId,
