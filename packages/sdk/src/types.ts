@@ -241,6 +241,8 @@ export interface SerializableSessionConfig {
 export interface ManagedSessionConfig extends SerializableSessionConfig {
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
+    /** Runtime-only exact native child capability map. */
+    nativeTaskAccess?: import("./native-task-policy.js").NativeTaskAccess;
     /** Memory-only owner policy; never serialize or reconfigure cleanup mid-turn. */
     nativeFeatureAllowed?: () => boolean;
     /** Internal feature tool declaration fingerprint; never a durable setting. */
@@ -1013,6 +1015,8 @@ export interface PilotSwarmWorkerOptions {
         prompt: string;
         tools?: string[] | null;
         skills?: string[];
+        nativeTaskTools?: import("./native-task-policy.js").NativeTaskTools;
+        schemaVersion?: number;
     }>;
 
     /**

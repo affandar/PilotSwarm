@@ -1768,6 +1768,7 @@ export class PilotSwarmWorker {
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
                 toolNames: [...(agent.tools ?? [])],
+                nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
                 ...(agent.packageId ? {

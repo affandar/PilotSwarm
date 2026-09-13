@@ -1,3 +1,4 @@
+import { NativeTaskAccess, type NativeTaskTools } from "./native-task-policy.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
@@ -117,6 +118,7 @@ export interface AgentCopyEntry {
     prompt: string;
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
+    nativeTaskTools?: NativeTaskTools;
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
@@ -1465,6 +1467,7 @@ export class SessionManager {
             if (boundAgentCopy) boundAgentCopy = {
                 ...boundAgentCopy,
                 ...(boundAgentCopy.toolNames ? { toolNames: [...boundAgentCopy.toolNames] } : {}),
+                ...(boundAgentCopy.nativeTaskTools ? { nativeTaskTools: structuredClone(boundAgentCopy.nativeTaskTools) } : {}),
                 ...(boundAgentCopy.descriptor ? { descriptor: { ...boundAgentCopy.descriptor } } : {}),
             };
             if (boundAgentCopy?.toolNames && effectiveSerializableConfig.boundAgentName
@@ -1884,6 +1887,12 @@ export class SessionManager {
             ...unlessService(featureTools),
         ];
         config.tools = persistentSessionTools;
+        const nativeTaskAccess = nativeEnabled && boundAgentCopy?.nativeTaskTools
+            ? new NativeTaskAccess(boundAgentCopy.nativeTaskTools, allTools,
+                new Set([...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools].map(t => t.name)),
+                effectiveMcpServers)
+            : undefined;
+        config.nativeTaskAccess = nativeTaskAccess;
 
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null);
@@ -1908,7 +1917,7 @@ export class SessionManager {
             // refreshes the client-side handler map). Pinned so tool search
             // cannot defer PilotSwarm tools out of the prompt — see
             // tool-pinning.ts for the why and the phase-2 opt-out path.
-            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId) : allTools),
+            tools: pinToolsNeverDefer(nativeEnabled ? guardNativeExternalTools(allTools, sessionId, nativeTaskAccess) : allTools),
             model: sdkModelName,
             // Tell the runtime what a BYOK model can do.
             //
@@ -1942,7 +1951,7 @@ export class SessionManager {
             // controlled exclusively via COPILOT_HOME, set on the spawned CLI in ensureClient().
             workingDirectory: config.workingDirectory,
             hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
-                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
+                () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false, nativeTaskAccess) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
@@ -1959,7 +1968,7 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
             ...(nativeEnabled ? {
-                customAgents: nativeSubagentDefinitions(sdkModelName),
+                customAgents: nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
@@ -2000,6 +2009,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             } else {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
+                config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
                 return existing;
             }
@@ -2109,6 +2119,7 @@ export class SessionManager {
             }
         }
 
+        if (nativeTaskAccess) copilotSession.on(event => nativeTaskAccess.observe(event));
         const managed = new ManagedSession(sessionId, copilotSession, config);
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
@@ -2771,7 +2782,7 @@ export class SessionManager {
                     // The SDK ignores sibling `content` when `action` is a
                     // transform callback. Include worker guidance in the actual
                     // rendered section, using the current session policy.
-                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance() : undefined,
+                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance(latest.nativeTaskAccess) : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);

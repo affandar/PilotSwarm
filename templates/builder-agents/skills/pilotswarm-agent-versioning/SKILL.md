@@ -22,7 +22,7 @@ description: Example agent.
 
 - `schemaVersion` is the PilotSwarm agent schema version. Use `1` by default.
 	Use `3` only when the agent declares `initialRequiredTool`; that tool must
-	also appear in `tools`.
+	also appear in `tools`. Use `4` when declaring `nativeTaskTools`: exact application or `server/tool` names under `swarm-explore` and/or `swarm-task`. Parent permissions still apply; durable orchestration and session-control tools cannot be delegated.
 - `version` is a string. SemVer is recommended because it is easy for operators and agents to compare, but app authors may use another non-empty label.
 
 ## Creating Agents

@@ -158,7 +158,9 @@ test('a late history load cannot leave a hidden cached dashboard subscribed', as
     const started = new Promise(resolve => { firstStarted = resolve; });
     let alphaHistoryGets = 0;
     const sockets = new Map();
+    const connections = new Set();
     await page.routeWebSocket('**/api/v1/ws', ws => {
+        connections.add(ws);
         ws.onMessage(raw => {
             const message = JSON.parse(raw);
             if (message.type === 'subscribeLive') sockets.set(message.sessionId, ws);
@@ -179,16 +181,19 @@ test('a late history load cannot leave a hidden cached dashboard subscribed', as
         await choose(page, 'Beta');
         await expect(composer(page)).toBeVisible();
         await choose(page, 'Alpha');
-        await expect.poll(() => alphaHistoryGets).toBeGreaterThanOrEqual(2);
-        await expect(composer(page)).toBeVisible();
-        await expect.poll(() => sockets.has(sid(1))).toBe(true);
+        // Re-entry shares the in-flight read instead of starting a second one.
+        expect(alphaHistoryGets).toBe(1);
+        await expect(workspace(page)).toHaveAttribute('data-dashboard-id', 'alpha');
         await choose(page, 'Beta');
         await expect(composer(page)).toBeVisible();
+        const historyResponse = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/management/sessions/${sid(1)}/events`);
         releaseFirst();
+        await historyResponse;
         await page.waitForTimeout(250);
 
         const marker = 'HIDDEN_CACHE_MUST_IGNORE_THIS';
-        sockets.get(sid(1)).send(JSON.stringify({ type: 'sessionEvent', sessionId: sid(1), event: {
+        expect(sockets.has(sid(1))).toBe(false);
+        for (const socket of connections) socket.send(JSON.stringify({ type: 'sessionEvent', sessionId: sid(1), event: {
             sessionId: sid(1), seq: 1_000_000, eventType: 'assistant.message', createdAt: Date.now(),
             data: { messageId: 'hidden-cache-event', content: marker },
         } }));

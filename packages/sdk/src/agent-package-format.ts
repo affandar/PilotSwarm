@@ -797,9 +797,9 @@ export async function validateAgentPackageDir(
                 try { raw = fs.readFileSync(path.join(agentsDir, f), "utf8"); } catch { /* fallthrough */ }
                 const schemaMatch = /(?:^|\n)schemaVersion:\s*(\S+)/.exec(raw);
                 const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-                if (schemaMatch && !["1", "2", "3"].includes(schemaMatch[1])) {
+                if (schemaMatch && !["1", "2", "3", "4"].includes(schemaMatch[1])) {
                     err(errors, "unsupported_agent_schema_version",
-                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, or 3)`, `agents/${f}`);
+                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, 3, or 4)`, `agents/${f}`);
                 } else if (!body) {
                     err(errors, "empty_agent_body",
                         `agents/${f}: the markdown body is empty — it becomes the agent's prompt and cannot be blank`, `agents/${f}`);

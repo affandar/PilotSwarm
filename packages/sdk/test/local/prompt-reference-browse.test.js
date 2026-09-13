@@ -62,7 +62,7 @@ describe("prompt reference browsing", () => {
         assertEqual(state.sessions.ownerFilter.ownerKeys[0], "github\u0001alice", "persisted owner filters should restore owner keys");
     });
 
-    it("resets the active session to the first visible row when a query hides the current selection", () => {
+    it("keeps the active conversation when a search query hides its row", () => {
         const { store } = createController();
         seedSessions(store, [
             {
@@ -85,8 +85,8 @@ describe("prompt reference browsing", () => {
 
         assertEqual(
             store.getState().sessions.activeSessionId,
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
-            "filtering should move selection to the first visible session when the previous one disappears",
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+            "typing in search must not navigate away from the active conversation",
         );
     });
 

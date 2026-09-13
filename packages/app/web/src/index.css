@@ -179,6 +179,12 @@ button {
 
 .portal-app-shell,
 .portal-gate {
+  /* Follow Safari's visible rectangle when focus pans the layout viewport.
+     The pan is a position, not extra height to reserve above the chat. */
+  position: fixed;
+  top: var(--ps-app-top, 0px);
+  left: 0;
+  right: 0;
   min-height: var(--ps-app-height, 100%);
   height: var(--ps-app-height, 100%);
   display: flex;
@@ -899,15 +905,13 @@ body.ps-kb-takeover .ps-toolbar.is-mobile {
   display: none;
 }
 
-body.ps-kb-takeover .ps-mobile-session-pane {
-  max-height: 0;
-  min-height: 0;
-  opacity: 0;
-  margin: 0;
-  padding: 0;
-  border-width: 0;
-  overflow: hidden;
-  pointer-events: none;
+body.ps-kb-takeover .ps-mobile-workspace:has(.ps-mobile-chat-pane) {
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+}
+
+body.ps-kb-takeover .ps-mobile-workspace:has(.ps-mobile-chat-pane) > .ps-mobile-session-pane {
+  display: none;
 }
 
 body.ps-kb-takeover .ps-prompt-shell.is-mobile .ps-prompt-input {
@@ -2044,7 +2048,7 @@ body.is-resizing-pane-y iframe {
   padding: 0 8px;
   border: 1px solid var(--ps-border-strong);
   border-radius: 4px;
-  background: var(--ps-input-background, var(--ps-surface));
+  background: var(--ps-surface);
   color: var(--ps-foreground);
 }
 

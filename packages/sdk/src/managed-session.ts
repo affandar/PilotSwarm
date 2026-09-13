@@ -2667,7 +2667,7 @@ export class ManagedSession {
         // ships it unchanged in dist/session.js — cast until a public
         // handler-refresh API exists.
         (this.copilotSession as any).registerTools(this.config.nativeSubagents === "sync"
-            ? guardNativeExternalTools(allTools, this.copilotSession.sessionId) : allTools);
+            ? guardNativeExternalTools(allTools, this.copilotSession.sessionId, this.config.nativeTaskAccess) : allTools);
 
         // Collect the final assistant content and all events via on()
         let finalContent: string | undefined;
@@ -3359,6 +3359,8 @@ export class ManagedSession {
     /**
      * Update configuration for the next turn.
      */
+    getNativeTaskAccess() { return this.config.nativeTaskAccess; }
+
     updateConfig(config: Partial<ManagedSessionConfig>): void {
         if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
         if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;

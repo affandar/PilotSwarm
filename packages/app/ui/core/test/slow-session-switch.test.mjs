@@ -72,7 +72,7 @@ test('folder and session catalogs start concurrently',async()=>{
  gate.resolve([]);await pending;
 });
 
-test('a loading history has loading copy; failure has retry copy; loaded empty history can show splash',async()=>{
+test('a loading history without splash has loading copy; failure has retry copy',async()=>{
  const gate=deferred();const {controller,store}=setup({getSessionEvents:()=>gate.promise});
  store.dispatch({type:'sessions/selected',sessionId:'a'});
  const pending=controller.ensureSessionHistory('a',{force:true});
@@ -83,3 +83,28 @@ test('a loading history has loading copy; failure has retry copy; loaded empty h
  await assert.rejects(controller.ensureSessionHistory('a',{force:true}));
  assert.match(selectActiveChat(store.getState())[0].text,/again to retry/);
 });
+
+for (const sessionSplash of [false, true]) {
+ test(`loading preserves ${sessionSplash ? 'session' : 'branding'} splash variants with a loading footer`,()=>{
+  const state=createInitialState();
+  state.branding={title:'Portal',splash:'DEFAULT ART',splashMobile:'MOBILE DEFAULT ART'};
+  state.sessions.activeSessionId='a';
+  state.sessions.byId.a={sessionId:'a',title:'Agent',...(sessionSplash?{splash:'AGENT ART',splashMobile:'MOBILE AGENT ART'}:{})};
+  const history={chat:[],events:[],loadState:'loading'};
+  state.history.bySessionId.set('a',history);
+  const [card]=selectActiveChat(state);
+  assert.equal(card.splash,true);
+  assert.match(card.text,new RegExp(`^${sessionSplash?'AGENT':'DEFAULT'} ART`));
+  assert.match(card.mobileText,new RegExp(`^MOBILE ${sessionSplash?'AGENT':'DEFAULT'} ART`));
+  for(const text of [card.text,card.mobileText]) {
+   assert.match(text,/Loading conversation…\{\/gray-fg\}$/);
+   assert.doesNotMatch(text,/Start interacting/);
+  }
+  history.loadState='loaded';
+  assert.match(selectActiveChat(state)[0].text,/Start interacting/);
+  assert.doesNotMatch(selectActiveChat(state)[0].text,/Loading conversation/);
+  history.chat=[{id:'reply',role:'assistant',text:'Cached conversation'}];
+  history.loadState='loading';
+  assert.equal(selectActiveChat(state)[0].text,'Cached conversation');
+ });
+}

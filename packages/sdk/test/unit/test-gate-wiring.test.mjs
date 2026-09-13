@@ -15,10 +15,11 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const SCRIPT = fileURLToPath(new URL("../../../../scripts/run-tests.sh", import.meta.url));
@@ -204,21 +205,18 @@ test("external Vitest directories are explicit, optional test phases", () => {
 });
 
 test("external-only executes a caller-owned Vitest suite", () => {
-    const output = execFileSync(
-        bashExecutable(),
-        [
-            SCRIPT,
-            "--external-only",
-            `--external-test-dir=${EXTERNAL_FIXTURE}`,
-            "--external-test-filter=consumer-smoke",
-        ],
-        {
+    const dir = mkdtempSync(join(tmpdir(), "external-suite-proof-"));
+    const proof = join(dir, "executed");
+    try {
+        const output = execFileSync(bashExecutable(), [SCRIPT, "--external-only",
+            `--external-test-dir=${EXTERNAL_FIXTURE}`, "--external-test-filter=consumer-smoke"], {
             cwd: REPO_ROOT,
             encoding: "utf8",
-            env: { ...process.env, PS_TEST_MAX_WORKERS: "1" },
-        },
-    );
-
-    assert.match(output, /consumer-smoke\.test\.mjs/);
-    assert.match(output, /Overall result: PASS/);
+            env: { ...process.env, PS_TEST_MAX_WORKERS: "1", EXTERNAL_CONSUMER_PROOF: proof },
+        });
+        assert.equal(readFileSync(proof, "utf8"), "consumer-smoke executed");
+        assert.match(output, /Overall result: PASS/);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
 });
