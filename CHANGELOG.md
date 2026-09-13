@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Portal: nest native task tool calls under their owning task, with Explore/Task labels, status, and expandable arguments/results. Correlate runtime IDs across live updates and replay, remove duplicate parent disclosures, and retain normal parent calls separately.
+- Portal: open active and failed tasks, collapse successful tasks unless inspected, and keep nested activity usable on mobile.
+- Validation: 803 shared UI checks, 31 focused native-history checks, and 9 browser UX checks covering ownership, parallel calls, completion, failure, reload, mobile geometry, and existing tool disclosures. Portal production build passes.
+
 ## 0.5.69 — 2026-09-12
 
 - SDK: schemaVersion 4 agent definitions explicitly allowlist application, synchronous framework, and MCP tools per native task profile. Parent grants and existing resource permissions remain authoritative. Native tasks can perform authorized synchronous writes; durable orchestration, session control, and detached-work tools remain unavailable. Runtime attribution and duplicate-call protection cover native application callbacks.

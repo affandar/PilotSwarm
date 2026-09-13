@@ -86,17 +86,24 @@
 .ps-native-task-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin-top: 5px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
 .ps-native-task-meta { display: flex; flex-direction: column; gap: 5px; color: var(--ps-muted); text-align: right; font-size: var(--ps-font-size-dense); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ps-native-task-chevron { color: var(--ps-muted); }
-.ps-native-task[open] .ps-native-task-chevron { transform: rotate(90deg); }
+.ps-native-task[open] > summary .ps-native-task-chevron { transform: rotate(90deg); }
 .ps-native-task-detail { padding: 0 14px 14px 40px; font-size: var(--ps-font-size-dense); }
 .ps-native-task-scope { color: var(--ps-muted); overflow-wrap: anywhere; margin-bottom: 10px; }
 .ps-native-task-result { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ps-native-task-profile { display: inline-block; margin-right: 8px; padding: 1px 6px; border: 1px solid var(--ps-border); border-radius: 4px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); font-weight: 400; }
+.ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain; min-width: 0; }
+.ps-native-task-calls .ps-chat-call { margin: 0; border-radius: 0; }
+.ps-native-task-calls .ps-chat-call-summary { min-width: 0; }
+.ps-native-task-calls .ps-system-notice-summary-text { overflow-wrap: anywhere; min-width: 0; }
+.ps-native-task-calls + .ps-native-task-result { margin-top: 12px; }
+
 .ps-native-task-activity { margin: 12px 0 0; padding-left: 18px; color: var(--ps-muted); overflow-wrap: anywhere; }
 .ps-native-tasks-more { color: var(--ps-foreground); background: transparent; border: 0; border-top: 1px solid var(--ps-border); padding: 9px 13px; font: inherit; cursor: pointer; width: 100%; text-align: left; }
 @media (max-width: 600px) {
   .ps-native-task > summary { grid-template-columns: 16px minmax(0, 1fr) 12px; gap: 7px; padding: 11px 10px; }
   .ps-native-task-meta { grid-column: 2; grid-row: 2; flex-direction: row; flex-wrap: wrap; text-align: left; }
   .ps-native-task-chevron { grid-column: 3; grid-row: 1; }
-  .ps-native-task-detail { padding-left: 33px; }
+  .ps-native-task-detail { padding-left: 12px; }
   .ps-native-tasks-count { margin-left: 0; }
 }
 @media (pointer: coarse) { .ps-native-task > summary, .ps-native-tasks-more { min-height: 44px; } }

@@ -149,3 +149,53 @@ test("a reconnect rejects an old retained owner using the newer durable task sum
     assert.equal(tasks(reconnected)[0].telemetryStale, true);
     assert.equal(reconnected.nativeTaskSnapshot, undefined);
 });
+
+test("native calls migrate from parent callbacks and remain owned through completion and replay", () => {
+    const data = { toolCallId: "read-1", toolName: "repo_cache_fetch", arguments: { repo: "pilotswarm" } };
+    const events = [...initial,
+        ev(6, "tool.execution_start", data),
+        ev(7, "native.tool.execution_start", { ...data, nativeAgentId: "agent-1", parentToolCallId: "call-1" }),
+        ev(8, "tool.execution_complete", { ...data, success: true, result: "Fetched main" }),
+        ev(9, "native.tool.execution_complete", { ...data, nativeAgentId: "agent-1", parentToolCallId: "call-1", success: true, result: "Fetched main" })];
+    const history = buildHistoryModel(events);
+    let live = buildHistoryModel([]);
+    for (const event of events) live = appendEventToHistory(live, event);
+    assert.deepEqual(live.chat, history.chat);
+    assert.equal(history.chat.filter(m => m.kind === "chat-call").length, 0);
+    assert.equal(tasks(history)[0].calls.length, 1);
+    assert.equal(tasks(history)[0].calls[0].status, "Done");
+    assert.equal(tasks(history)[0].calls[0].result, "Fetched main");
+    assert.equal(tasks(history)[0].toolCalls, 1);
+    assert.ok(CHAT_HISTORY_EVENT_TYPES.includes("native.tool.execution_start"));
+    assert.ok(CHAT_HISTORY_EVENT_TYPES.includes("native.tool.execution_complete"));
+});
+
+test("parallel tasks and parent using the same tool are separated by identity", () => {
+    const history = buildHistoryModel([...initial,
+        ev(6, "subagent.started", { ...child, toolCallId: "call-2", nativeAgentId: "agent-2" }),
+        ev(7, "native.tool.execution_start", { toolName: "view", toolCallId: "read-1", nativeAgentId: "agent-1" }),
+        ev(8, "native.tool.execution_start", { toolName: "view", toolCallId: "read-2", parentToolCallId: "call-2" }),
+        ev(9, "tool.execution_start", { toolName: "view", toolCallId: "parent-read" }),
+        ev(10, "native.tool.execution_complete", { toolCallId: "read-2", parentToolCallId: "call-2", success: false, error: "Missing file" })]);
+    assert.deepEqual(tasks(history).map(task => task.calls.map(call => call.callKeys[0])), [["call:read-1"], ["call:read-2"]]);
+    assert.equal(tasks(history)[1].calls[0].status, "Failed");
+    assert.equal(tasks(history)[0].calls[0].status, "Called");
+    assert.equal(history.chat.filter(m => m.kind === "chat-call")[0].callKeys[0], "call:parent-read");
+});
+
+test("a child event before its lifecycle keeps one task and snapshots retain nested calls", () => {
+    const history = buildHistoryModel([
+        ev(1, "native.tool.execution_start", { toolName: "view", toolCallId: "read-1", nativeAgentId: "agent-1", parentToolCallId: "call-1" }),
+        ev(2, "subagent.started", child),
+    ]);
+    assert.equal(tasks(history).length, 1);
+    assert.equal(tasks(history)[0].title, "Map runtime boundaries");
+    const updated = applyNativeTaskSnapshot(history, snapshot(2), { sessionId: "s1", seq: 12 });
+    assert.equal(tasks(updated)[0].calls.length, 1);
+    assert.equal(tasks(history)[0].calls[0].status, "Called", "snapshots must not mutate the prior projection");
+});
+
+test("unknown child activity cannot appear as a main-agent call", () => {
+    const history = buildHistoryModel([ev(1, "native.tool.execution_start", { toolName: "view", toolCallId: "unknown" })]);
+    assert.equal(history.chat.length, 0);
+});
