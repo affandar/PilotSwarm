@@ -44,6 +44,7 @@ import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
+import { resolveWorkerRuntimeProvenance } from "./worker-provenance.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
@@ -1488,6 +1489,14 @@ export class PilotSwarmWorker {
         try {
             bundledApplicationVersion = explicitString(require("../../app/package.json").version);
         } catch { /* SDK-only installations do not have a sibling app package. */ }
+        const runtimeProvenance = resolveWorkerRuntimeProvenance({
+            ...configuredProvenance,
+            applicationVersion: explicitString(
+                configuredProvenance.applicationVersion,
+                process.env.PILOTSWARM_APPLICATION_VERSION,
+                bundledApplicationVersion,
+            ) ?? undefined,
+        }, sdkVersion);
         const hostname = os.hostname();
         const processStartedAt = new Date(
             Date.now() - Math.round(process.uptime() * 1000),
@@ -1496,19 +1505,9 @@ export class PilotSwarmWorker {
             configuredProvenance.displayName,
             process.env.PILOTSWARM_WORKER_DISPLAY_NAME,
         );
-        const applicationVersion = explicitString(
-            configuredProvenance.applicationVersion,
-            process.env.PILOTSWARM_APPLICATION_VERSION,
-            bundledApplicationVersion,
-        );
-        const sourceCommit = explicitString(
-            configuredProvenance.sourceCommit,
-            process.env.PILOTSWARM_SOURCE_COMMIT,
-        );
-        const buildId = explicitString(
-            configuredProvenance.buildId,
-            process.env.PILOTSWARM_BUILD_ID,
-        );
+        const applicationVersion = runtimeProvenance.applicationVersion ?? null;
+        const sourceCommit = runtimeProvenance.sourceCommit ?? null;
+        const buildId = runtimeProvenance.buildId ?? null;
         const imageRef = explicitString(
             configuredProvenance.imageRef,
             process.env.PILOTSWARM_IMAGE_REF,
@@ -1559,7 +1558,7 @@ export class PilotSwarmWorker {
                 displayName,
                 hostname,
                 processStartedAt,
-                sdkVersion,
+                ...runtimeProvenance,
                 applicationVersion,
                 sourceCommit,
                 buildId,
