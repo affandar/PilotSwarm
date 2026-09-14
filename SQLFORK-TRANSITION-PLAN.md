@@ -56,9 +56,11 @@ it holds **only the SQL-specific pieces** — the thin slice of proprietary IP t
 go upstream — composed on top of the public platform. Reconciliation splits the fork's tangled
 diff into those two homes: platform → organic PR upstream, SQL-specific → `sqlmort`.
 
-The end state: **every change in this fork is either (a) landed in public PilotSwarm via
-an organic PR, or (b) moved to the SQL-internal repo.** Once nothing of value lives only in
-the fork, it is deleted. This is capability routing, not a commit-by-commit burndown.
+The end state: **every logical change in this fork is either (a) landed in public PilotSwarm via
+an organic PR, (b) moved to an explicitly owned SQL-internal or external integration package, or
+(c) deleted because it is a workaround, unsafe shortcut, obsolete duplicate, or compatibility
+layer with no durable platform contract.** Once nothing of value lives only in the fork, the fork
+is deleted. This is capability disposition, not a commit-by-commit burndown.
 
 ## 2. Goals
 
@@ -198,8 +200,9 @@ The current SQL-owned surfaces include:
   request/response mapping, stable domain identity rules, tests, composition images, and
   operational documentation.
 - SQL-specific Kusto MCP composition: concrete cluster/database values, service routing,
-  fleet registration, delegated-access policy, acceptance scenarios, and runbooks. The reusable
-  MCP adapter host and its public-sample Kusto reference implementation remain platform code.
+  fleet registration, delegated-access policy, acceptance scenarios, and runbooks. Only the
+  reusable MCP adapter host remains a platform candidate; the public-sample Kusto adapter stays
+  externally owned or is deleted.
 - SQL scenario lifecycles, prompts, fixtures, and policy such as IncidentFix, Flakebuster,
   repository-to-audience mappings, and SQL repository/fleet names.
 - SQL deployment composition: repository-specific Windows worker images, concrete identities,
@@ -224,16 +227,19 @@ The platform owns contracts and mechanisms that do not enumerate or interpret SQ
 - Generic extension-test infrastructure that runs consumer-owned acceptance suites without
   moving those suites into the platform repository.
 
-### 🟢 Tier 3 — Generic fixtures and public integrations → **platform repo**
+### 🟢 Tier 3 — Generic fixtures and public integrations → **platform or external integration repo**
 Optional public integrations, reference adapters, sample providers, tests, and documentation may
-remain when they use public interfaces and domain-neutral examples. Current examples include the
-generic ADO PR observer and the Kusto adapter configured against the public sample cluster.
+remain when they use public interfaces and domain-neutral examples. The current generic ADO PR
+observer is a candidate because its approval-condition contract is consumed by the platform UI.
 
 A concrete connector is not automatically internal merely because it targets ADO or Kusto: a
 genuinely reusable, publicly supportable connector may be upstreamed as an optional integration.
 The current ADO WIQL, IcM, and Kusto JobGenerator plugins remain in `sqlmort` because their
 implementation, policy, deployment, and acceptance ownership is SQL-specific. Internal names and
 environment values must be replaced with neutral placeholders before any public contribution.
+The public-sample Kusto MCP adapter is not required by another platform contribution, so keep it
+in an explicitly owned integration package or delete it rather than treating it as mandatory
+upstream work.
 
 **Bottom line:** the routing unit is an owned capability, not a count of files containing
 private constants. Every fork-only surface must be either domain-neutral platform code or moved
@@ -275,7 +281,7 @@ fork-contribution inventory.
    and parse JSONC `mcp.json`.
 5. **MCP-over-HTTP compatibility adapter + deployment** — generic adapter host, HTTP MCP
    transport, delegated-only authentication, safe request correlation, synthetic REST example,
-   instance-scoped Bicep/Flux/Kustomize deployment, and the public-sample Kusto reference adapter.
+   and instance-scoped Bicep/Flux/Kustomize deployment.
 6. **Portal, job, and worker observability** — durable job-transition timelines, worker-utilization
    visualization, live swimlane spans, queued bands, per-condition PR-gate rows, tree keyboard
    navigation, repo picker, and "load older" history hydration.
@@ -303,10 +309,6 @@ fork-contribution inventory.
     diagnostics, blob/DB managed-identity decoupling, WAF fixes, and generic support for
     governance-restricted subscriptions.
 
-The Kusto code under theme 5 is intentionally retained as the approved Tier 3 reference adapter:
-its defaults and tests use the public `help.kusto.windows.net` `Samples` database, while concrete
-SQLmort clusters, registrations, topology, and acceptance policy remain outside the platform tree.
-
 ## 6B. Reverse-direction audit: generic platform assets currently in `sqlmort`
 
 Section 6A addresses **false inclusion**: SQL-owned IP present in the fork that must not reach
@@ -328,18 +330,21 @@ candidates remain, in recommended execution order:
    TypeScript structural compatibility, so this is not an immediate runtime blocker, but it is
    required to prevent silent ABI drift and complete the ownership seam.
 
-2. **Upstream the generic TypeScript PilotSwarm compatibility layer.** SQLmort callers use the
-   published `pilotswarm-sdk`, while six platform-neutral gaps remain isolated under
+2. **Upstream the missing generic TypeScript SDK capabilities.** SQLmort callers use the
+   published `pilotswarm-sdk`, while five platform-neutral gaps remain isolated under
    `Clients/sdk/typescript/src/upstream-candidates/`:
    - `api-auth.ts`
    - `delegated-auth.ts`
    - `job-generators.ts`
    - `model-catalog.ts`
    - `session-events.ts`
-   - `web-client.ts`
 
    Move these capabilities upstream using existing PilotSwarm TypeScript SDK idioms, then
    delete the SQLmort compatibility implementations.
+
+   `web-client.ts` is a downstream convenience wrapper around those APIs, including a raw REST
+   escape hatch for fields absent from the published SDK. Migrate its callers to the accepted
+   public surfaces and delete the wrapper; do not upstream the wrapper itself.
 
    Keep SQL-specific repository-to-audience mappings, service audiences, token policy, and
    other domain behavior under `Clients/sdk/typescript/src/sql-domain/`.
@@ -351,7 +356,7 @@ SQL fleet topology and layered Windows tooling; domain prompts, work-item fixtur
 acceptance playlists, and runbooks; and private repository-to-audience mappings.
 
 **Recommended sequence:** first expose and consume the canonical provider contract, then move
-the six neutral client SDK modules. Each move must leave SQLmort with only a thin domain
+the five neutral client SDK modules and retire the local web-client wrapper. Each move must leave SQLmort with only a thin domain
 composition layer and must not make PilotSwarm depend on `sqlmort`.
 
 ## 7. Strategy A — Reconcile the existing fork (default)
@@ -496,7 +501,12 @@ backfill.
 
 ### Phase 3 — Upstream the platform, theme by theme (slow track, external pace)
 - Slice the fork-vs-upstream logical diff into the remaining capability themes of §6A.
-- For each theme, in dependency order:
+- Execute the current topologically sorted contribution sequence in
+  [`UPSTREAM-CONTRIBUTION-SEQUENCE.md`](UPSTREAM-CONTRIBUTION-SEQUENCE.md). That document is the
+  single source of truth for the exact commit units, dependency blockers, proposed commit
+  messages, relative risk, existing test coverage, readiness limitations, migration lane, and
+  parallel workstreams.
+- For each contribution item, in dependency order:
   - Cut a clean PR branch from **current `origin/main`** via **path-scoped assembly** (bring the
     theme's final file state, commit clean) — not a replay of entangled history.
   - Open the PR into `affandar/main` from a GitHub fork of `affandar` (a **contribution remote**,
@@ -504,47 +514,15 @@ backfill.
   - On merge, the next fork merge **drains** that theme (byte-identical → auto-converges;
     divergent → resolve take-upstream);
     reconcile if upstream modified or independently built it.
-- Recommended merge train — themes are inventory units, not necessarily one PR each:
-  1. **(11) Runtime reliability and operability** — send each independently reproducible fix as
-     its own small PR rather than one omnibus reliability change; merge these opportunistically
-     throughout the train.
-  2. **(2a) Provider ABI, host, loader, and remote dispatch** — land the clean external-provider
-     seam before the larger lifecycle system. This is a high-value boundary and does not require
-     the domain providers.
-  3. **(5a) MCP adapter host, HTTP transport, and synthetic REST example** — an isolated package
-     with a domain-neutral demonstration. Treat the public-sample Kusto adapter as a separate,
-     optional Tier 3 review.
-  4. **(10) Deployment-framework extensions** — contribute only the incremental standalone,
-     instance, render, DaemonSet, prerequisite, and image-verification support. Then attach the
-     concrete deployment definitions to their owning theme rather than creating a deployment
-     mega-PR.
-  5. **(8) Worker routing and hardening foundations** — split hooks/config discovery, registry
-     provenance/routing, and cleanup into small PRs. These unlock the repository-worker fleet
-     without forcing reviewers to accept the entire worker delta at once.
-  6. **(1) Git workspace durability and repository-worker fleet** — this is a comparatively
-     isolated, material diff reduction once themes 8 and 10 provide the generic worker and deploy
-     foundations.
-  7. **(6a) Independent worker/portal observability slices** — land worker utilization, queued
-     bands, swimlanes, history hydration, and navigation as their backing APIs become available;
-     do not wait for the full JobGenerator UI. The portal is the largest path-level delta, so
-     draining independent slices here materially shrinks the fork.
-  8. **(9) Devbox worker identity and authentication** — keep this separate because Windows
-     packaging and signed-in model access need focused review despite the relatively bounded
-     surface.
-  9. **(4) Delegated identity, MCP configuration, and plugin loading** — split by contract,
-      token delivery, MCP loading, and external plugin loading. This is reusable but
-      authentication-sensitive, so it follows the simpler seams that establish its consumers.
-  10. **(3) Durable orchestration primitives** — begin upstream design reconciliation
-      immediately, but expect it to merge later because upstream already has a competing
-      `orchestration_1_0_68/69` implementation.
-  11. **(2b) JobGenerator lifecycle and durable materialization** — land after the orchestration
-      contract is settled; the provider seam from step 2 keeps this PR focused on lifecycle.
-  12. **(7) Optional public Azure DevOps integration** — add the public observer only after the
-      generic observed-condition contract exists upstream.
-  13. **(6b) JobGenerator and durable-wait portal surfaces** — finish the dependent UI after its
-      APIs and lifecycle semantics are stable.
-- For any theme too entangled to lift — notably **(3)**, where upstream already added a parallel
-  `orchestration_1_0_68/69` — use **Strategy B (clean-room on upstream's version)** instead of lifting.
+- Keep the contribution-sequence document current-state only: after each upstream merge, follow
+  the §11 merge protocol, prove the logical delta drained, remove the completed item, and
+  recalculate newly unblocked downstream items. It must converge to zero rather than retain
+  execution history.
+- Do not force every candidate upstream. Remove a sequence item when upstream already provides
+  the behavior, the durable owner is an external/domain package, or the fork implementation is a
+  workaround, unsafe shortcut, duplicate, or obsolete compatibility layer that should be deleted.
+- For any item too entangled to lift safely, use **Strategy B (clean-room against current
+  upstream)** as directed by the item's readiness limitations.
 
 **Upstream PR review synchronization (minimize the follow-on merge conflict).** The reviewed
 upstream tree is authoritative. Review comments often move it away from the fork snapshot used to
@@ -633,9 +611,8 @@ tree delta** is.
 
 **Cadence.** Merge little and often — weekly, and immediately after each of your upstream PRs
 **lands in `origin/main`** (not when you open it). Frequent small merges keep each conflict
-surface tiny and let drained themes converge promptly; a long gap lets the conflict surface
-balloon (a +46 gap already yields ~36 conflicting files, including the `orchestration_1_0_68/69`
-add/add).
+surface tiny and let drained themes converge promptly; a long gap lets conflicts accumulate,
+especially in migration registries and frozen orchestration versions.
 
 **One-time setup.**
 - `git config rerere.enabled true` — records each conflict resolution and auto-reapplies it if the
@@ -737,16 +714,15 @@ merge is undone with a plain `git reset --hard HEAD^1` (before pushing) or `git 
      landed with review edits / squash / your synthesis gap, you get a conflict → **resolve to
      upstream's version** so your redundant copy is dropped and the delta shrinks. Do **not** keep
      yours "to be safe" — that is exactly what stops the delta from shrinking.
-   - **Parallel implementation** (e.g. `orchestration_1_0_68/69`) → if the two sides implement the
-     *same* behavior, adopt upstream's and delete the fork's divergent copy (the Strategy-B reconcile
-     flagged in Open decisions). **But if the fork's copy layered fork-only behavior on top — e.g.
-     owner-affinity routing minted as `orchestration_1_0_69` — this is a *version-number collision
-     carrying a feature*, not a pure parallel impl.** Treat it exactly like a migration-version
-     collision: re-mint the fork behavior on a *new* version number after upstream's head (freeze the
-     current live orchestration, apply the fork delta, bump `DURABLE_SESSION_LATEST_VERSION`, register
-     it). **Never** resolve it by adopting upstream's version and dropping the fork feature — that
-     silently deletes shipped behavior (this is precisely how owner-affinity was lost on the
-     2026-09-07 crank). See the no-defer invariant below.
+   - **Parallel implementation** (for example, independently added frozen orchestration versions)
+     → if the two sides implement the *same* behavior, adopt upstream's and delete the fork's
+     divergent copy. **But if the fork's copy layered fork-only behavior under a version number
+     now claimed by upstream, this is a version-number collision carrying a feature, not a pure
+     parallel implementation.** Treat it exactly like a migration-version collision: re-mint the
+     fork behavior on a new version after upstream's head, freeze the current live orchestration,
+     apply the fork delta, bump `DURABLE_SESSION_LATEST_VERSION`, and register both. **Never**
+     resolve it by adopting upstream's version and dropping the fork feature; that silently
+     deletes shipped behavior. See the no-defer invariant below.
    - **Migration version collision** (both sides define the same `cms-migrations.ts` version `NNNN`
      — *seen on the day-1 crank: upstream `0045 session_canvases` vs. fork `0045 session_git_state_pinning`*)
      → keep both and **renumber the fork block** to sit *after* upstream's new head. This has a
@@ -972,31 +948,22 @@ roll, uncordon) is the simpler bulletproof alternative when a short fleet downti
       DsMainDev, and the concrete ACR reference are already neutralized; the remaining
       `ado_wiql`/WIQL test fixtures and WIQL/KQL portal rendering are tracked in §6A.
       Approved Tier 3 public integrations remain benign.
-- [ ] All §6A platform capabilities landed upstream as organic, themed PRs (Tier 1 excluded):
-  - [ ] (1) Git workspace durability + repository-worker fleet
-  - [ ] (2) Job Generator lifecycle + external provider platform *(generic runner/module ABI
-        implemented; ADO WIQL, IcM, and Kusto providers live in SQLmort sibling plugins;
-        neutralize the remaining `ado_wiql`/WIQL test fixtures)*
-  - [ ] (3) Durable orchestration primitives *(reconcile vs. upstream `orchestration_1_0_68/69`)*
-  - [ ] (4) Delegated identity, MCP configuration, and plugin loading
-  - [ ] (5) MCP-over-HTTP compatibility adapter + deployment
-  - [ ] (6) Portal, job, and worker observability *(remove hard-coded WIQL/KQL source-config
-        rendering in favor of provider metadata or generic rendering)*
-  - [ ] (7) Optional public Azure DevOps integration
-  - [ ] (8) Worker routing and platform hardening
-  - [ ] (9) Devbox worker identity and authentication
-  - [ ] (10) Deployment-framework extensions for standalone services
-  - [ ] (11) Runtime reliability and operability
+- [ ] All §6A platform candidates resolved: reusable capabilities landed upstream as organic,
+      dependency-ordered PRs; externally owned integrations moved to their durable package; and
+      workarounds, unsafe shortcuts, duplicates, and obsolete compatibility layers deleted
+      (Tier 1 remains excluded). The exact remaining candidate sequence is maintained in
+      [`UPSTREAM-CONTRIBUTION-SEQUENCE.md`](UPSTREAM-CONTRIBUTION-SEQUENCE.md).
 - [ ] New generic platform work is authored upstream-first (inflow stopped) and the
       fork's logical diff vs upstream is empty.
 - [ ] Deploy core repinned fork → upstream; `PilotSwarm-SQL-staging` deleted; this file removed.
 
 ## 13. Open decisions
 
-1. **Theme 3 orchestration versioning** — upstream independently added `orchestration_1_0_68/69`,
-   so this is a *reconcile two implementations* problem, not an add. Decide per subsystem: adopt
-   upstream's version (clean-room, Strategy B) vs. push ours. First conflict every fork merge
-   hits, so decide early. *(The one known Strategy-B candidate; default stays A per §9.)*
+1. **Theme 3 orchestration versioning** — define the exact replay-affecting capability set for
+   the next upstream orchestration version, freeze the then-current upstream handler, and prove
+   predecessor replay plus continue-as-new before activation. Track the current dependency set
+   and readiness gate in
+   [`UPSTREAM-CONTRIBUTION-SEQUENCE.md` U63](UPSTREAM-CONTRIBUTION-SEQUENCE.md#u63).
 2. **Deployment handoff completion** — the generic-vs-domain deploy-layer split is settled:
    PilotSwarm owns deployment mechanics and SQLmort owns values, image composition, topology, and
    policy. Complete the remaining cutover needed for SQLmort to become the canonical
@@ -1004,6 +971,6 @@ roll, uncordon) is the simpler bulletproof alternative when a short fleet downti
 3. **Merge cadence** — pin the trigger/frequency (e.g., weekly + on each upstream theme merge).
 4. **Provider contract distribution** — choose a stable package/export shape and versioning
    policy for external provider authors, then migrate SQLmort off its three structural mirrors.
-5. **TypeScript SDK ownership** — migrate SQLmort's generic compatibility candidates into the
-   published PilotSwarm TypeScript SDK, preserve compatibility for current SQLmort callers, and
+5. **TypeScript SDK ownership** — migrate SQLmort's five generic capability candidates into the
+   published PilotSwarm TypeScript SDK, adapt callers away from the local web-client wrapper, and
    keep SQL-owned audience mappings isolated in SQLmort.

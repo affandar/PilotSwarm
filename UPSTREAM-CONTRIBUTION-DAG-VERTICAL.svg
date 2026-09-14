@@ -1,0 +1,472 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1548" height="1480" viewBox="0 0 1548 1480" role="img" aria-labelledby="title desc">
+  <title id="title">PilotSwarm upstream contribution dependency DAG, vertical layout</title>
+  <desc id="desc">69 numbered candidate contribution nodes and 92 dependency edges arranged from top to bottom by dependency depth, colored green for low risk, amber for medium risk, and red for high risk.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-opacity="0.18"/></filter>
+  </defs>
+  <rect width="1548" height="1480" fill="#ffffff"/>
+  <text x="24" y="32" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="700" fill="#0f172a">Upstream contribution dependency DAG - vertical</text>
+  <text x="24" y="55" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#475569">Dependency depth flows from top to bottom. Select a node to open its candidate plan entry.</text>
+  <circle cx="24" cy="82" r="8" fill="#bbf7d0" stroke="#15803d" stroke-width="1.5"/>
+  <text x="38" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">Low risk</text>
+  <circle cx="124" cy="82" r="8" fill="#fde68a" stroke="#b45309" stroke-width="1.5"/>
+  <text x="138" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">Medium risk</text>
+  <circle cx="224" cy="82" r="8" fill="#fecaca" stroke="#b91c1c" stroke-width="1.5"/>
+  <text x="238" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">High risk</text>
+  <text x="18" y="134" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D0</text>
+  <text x="18" y="239" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D1</text>
+  <text x="18" y="344" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D2</text>
+  <text x="18" y="449" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D3</text>
+  <text x="18" y="554" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D4</text>
+  <text x="18" y="659" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D5</text>
+  <text x="18" y="764" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D6</text>
+  <text x="18" y="869" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D7</text>
+  <text x="18" y="974" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D8</text>
+  <text x="18" y="1079" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D9</text>
+  <text x="18" y="1184" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D10</text>
+  <text x="18" y="1289" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D11</text>
+  <text x="18" y="1394" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D12</text>
+  <g fill="none" stroke="#64748b" stroke-width="1.15" stroke-opacity="0.52" marker-end="url(#arrow)">
+    <path d="M 84.5 149 C 84.5 182.5, 115.8 182.5, 115.8 216"/>
+    <path d="M 84.5 149 C 84.5 182.5, 247.5 182.5, 247.5 216"/>
+    <path d="M 911.9 149 C 911.9 182.5, 379.1 182.5, 379.1 216"/>
+    <path d="M 567.1 149 C 567.1 182.5, 510.7 182.5, 510.7 216"/>
+    <path d="M 843.0 149 C 843.0 182.5, 510.7 182.5, 510.7 216"/>
+    <path d="M 429.2 149 C 429.2 182.5, 642.4 182.5, 642.4 216"/>
+    <path d="M 1049.8 149 C 1049.8 235, 105.7 235, 105.7 321"/>
+    <path d="M 642.4 254 C 642.4 287.5, 105.7 287.5, 105.7 321"/>
+    <path d="M 1118.8 149 C 1118.8 182.5, 774 182.5, 774 216"/>
+    <path d="M 911.9 149 C 911.9 235, 217.1 235, 217.1 321"/>
+    <path d="M 379.1 254 C 379.1 287.5, 217.1 287.5, 217.1 321"/>
+    <path d="M 498.2 149 C 498.2 287.5, 153.4 287.5, 153.4 426"/>
+    <path d="M 642.4 254 C 642.4 340, 153.4 340, 153.4 426"/>
+    <path d="M 217.1 359 C 217.1 392.5, 153.4 392.5, 153.4 426"/>
+    <path d="M 1118.8 149 C 1118.8 182.5, 905.6 182.5, 905.6 216"/>
+    <path d="M 636.1 149 C 636.1 182.5, 1037.3 182.5, 1037.3 216"/>
+    <path d="M 379.1 254 C 379.1 287.5, 328.5 287.5, 328.5 321"/>
+    <path d="M 379.1 254 C 379.1 287.5, 439.8 287.5, 439.8 321"/>
+    <path d="M 636.1 149 C 636.1 182.5, 1168.9 182.5, 1168.9 216"/>
+    <path d="M 379.1 254 C 379.1 287.5, 551.2 287.5, 551.2 321"/>
+    <path d="M 429.2 149 C 429.2 235, 662.6 235, 662.6 321"/>
+    <path d="M 567.1 149 C 567.1 235, 662.6 235, 662.6 321"/>
+    <path d="M 510.7 254 C 510.7 287.5, 662.6 287.5, 662.6 321"/>
+    <path d="M 510.7 254 C 510.7 287.5, 774 287.5, 774 321"/>
+    <path d="M 642.4 254 C 642.4 287.5, 774 287.5, 774 321"/>
+    <path d="M 905.6 254 C 905.6 287.5, 885.4 287.5, 885.4 321"/>
+    <path d="M 510.7 254 C 510.7 340, 360.3 340, 360.3 426"/>
+    <path d="M 905.6 254 C 905.6 340, 360.3 340, 360.3 426"/>
+    <path d="M 662.6 359 C 662.6 392.5, 360.3 392.5, 360.3 426"/>
+    <path d="M 1037.3 254 C 1037.3 287.5, 996.8 287.5, 996.8 321"/>
+    <path d="M 980.9 149 C 980.9 182.5, 1300.5 182.5, 1300.5 216"/>
+    <path d="M 636.1 149 C 636.1 235, 1108.2 235, 1108.2 321"/>
+    <path d="M 1300.5 254 C 1300.5 287.5, 1108.2 287.5, 1108.2 321"/>
+    <path d="M 1108.2 359 C 1108.2 392.5, 567.1 392.5, 567.1 426"/>
+    <path d="M 1108.2 359 C 1108.2 392.5, 774 392.5, 774 426"/>
+    <path d="M 774 254 C 774 287.5, 1219.5 287.5, 1219.5 321"/>
+    <path d="M 567.1 149 C 567.1 182.5, 1432.2 182.5, 1432.2 216"/>
+    <path d="M 1300.5 254 C 1300.5 287.5, 1330.9 287.5, 1330.9 321"/>
+    <path d="M 774 254 C 774 340, 980.9 340, 980.9 426"/>
+    <path d="M 1330.9 359 C 1330.9 392.5, 980.9 392.5, 980.9 426"/>
+    <path d="M 980.9 149 C 980.9 340, 291.3 340, 291.3 531"/>
+    <path d="M 1118.8 149 C 1118.8 340, 291.3 340, 291.3 531"/>
+    <path d="M 1330.9 359 C 1330.9 445, 291.3 445, 291.3 531"/>
+    <path d="M 980.9 464 C 980.9 497.5, 291.3 497.5, 291.3 531"/>
+    <path d="M 217.1 359 C 217.1 497.5, 412 497.5, 412 636"/>
+    <path d="M 551.2 359 C 551.2 497.5, 412 497.5, 412 636"/>
+    <path d="M 291.3 569 C 291.3 602.5, 412 602.5, 412 636"/>
+    <path d="M 996.8 359 C 996.8 392.5, 1187.7 392.5, 1187.7 426"/>
+    <path d="M 1108.2 359 C 1108.2 392.5, 1187.7 392.5, 1187.7 426"/>
+    <path d="M 1108.2 359 C 1108.2 445, 774 445, 774 531"/>
+    <path d="M 567.1 464 C 567.1 497.5, 774 497.5, 774 531"/>
+    <path d="M 1432.2 254 C 1432.2 287.5, 1442.3 287.5, 1442.3 321"/>
+    <path d="M 551.2 359 C 551.2 392.5, 1394.6 392.5, 1394.6 426"/>
+    <path d="M 1432.2 254 C 1432.2 340, 1394.6 340, 1394.6 426"/>
+    <path d="M 1168.9 254 C 1168.9 392.5, 1256.7 392.5, 1256.7 531"/>
+    <path d="M 774 464 C 774 497.5, 1256.7 497.5, 1256.7 531"/>
+    <path d="M 774 569 C 774 602.5, 1136 602.5, 1136 636"/>
+    <path d="M 1394.6 149 C 1394.6 392.5, 1136 392.5, 1136 636"/>
+    <path d="M 1136 674 C 1136 707.5, 774 707.5, 774 741"/>
+    <path d="M 1118.8 149 C 1118.8 497.5, 774 497.5, 774 846"/>
+    <path d="M 1108.2 359 C 1108.2 602.5, 774 602.5, 774 846"/>
+    <path d="M 774 569 C 774 707.5, 774 707.5, 774 846"/>
+    <path d="M 774 779 C 774 812.5, 774 812.5, 774 846"/>
+    <path d="M 774 254 C 774 602.5, 412 602.5, 412 951"/>
+    <path d="M 1108.2 359 C 1108.2 655, 412 655, 412 951"/>
+    <path d="M 774 884 C 774 917.5, 412 917.5, 412 951"/>
+    <path d="M 1256.7 149 C 1256.7 550, 1136 550, 1136 951"/>
+    <path d="M 774 884 C 774 917.5, 1136 917.5, 1136 951"/>
+    <path d="M 774 779 C 774 917.5, 412 917.5, 412 1056"/>
+    <path d="M 1136 989 C 1136 1022.5, 412 1022.5, 412 1056"/>
+    <path d="M 360.3 464 C 360.3 760, 1136 760, 1136 1056"/>
+    <path d="M 1394.6 149 C 1394.6 602.5, 1136 602.5, 1136 1056"/>
+    <path d="M 774 779 C 774 917.5, 1136 917.5, 1136 1056"/>
+    <path d="M 412 989 C 412 1022.5, 1136 1022.5, 1136 1056"/>
+    <path d="M 1463.5 149 C 1463.5 602.5, 1136 602.5, 1136 1056"/>
+    <path d="M 1187.7 464 C 1187.7 812.5, 774 812.5, 774 1161"/>
+    <path d="M 774 569 C 774 865, 774 865, 774 1161"/>
+    <path d="M 1136 674 C 1136 917.5, 774 917.5, 774 1161"/>
+    <path d="M 774 779 C 774 970, 774 970, 774 1161"/>
+    <path d="M 1136 1094 C 1136 1127.5, 774 1127.5, 774 1161"/>
+    <path d="M 412 989 C 412 1127.5, 231 1127.5, 231 1266"/>
+    <path d="M 774 1199 C 774 1232.5, 231 1232.5, 231 1266"/>
+    <path d="M 774 779 C 774 1022.5, 593 1022.5, 593 1266"/>
+    <path d="M 774 1199 C 774 1232.5, 593 1232.5, 593 1266"/>
+    <path d="M 774 464 C 774 865, 955 865, 955 1266"/>
+    <path d="M 774 1199 C 774 1232.5, 955 1232.5, 955 1266"/>
+    <path d="M 774 779 C 774 1075, 774 1075, 774 1371"/>
+    <path d="M 1136 1094 C 1136 1232.5, 774 1232.5, 774 1371"/>
+    <path d="M 593 1304 C 593 1337.5, 774 1337.5, 774 1371"/>
+    <path d="M 955 1304 C 955 1337.5, 774 1337.5, 774 1371"/>
+    <path d="M 1108.2 359 C 1108.2 812.5, 1317 812.5, 1317 1266"/>
+    <path d="M 774 1199 C 774 1232.5, 1317 1232.5, 1317 1266"/>
+  </g>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u01" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u01">
+      <title>U01: classify transient Postgres failures and jitter retries (Low risk)</title>
+      <circle cx="84.5" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="84.5" y="134" fill="#111827">1</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u02" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u02">
+      <title>U02: add process and session poison diagnostics (Low risk)</title>
+      <circle cx="153.4" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="153.4" y="134" fill="#111827">2</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u03" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u03">
+      <title>U03: log unhandled API failures with request context (Low risk)</title>
+      <circle cx="222.4" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="222.4" y="134" fill="#111827">3</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u04" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u04">
+      <title>U04: separate blob and database managed identities (Medium risk)</title>
+      <circle cx="291.3" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="291.3" y="134" fill="#111827">4</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u05" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u05">
+      <title>U05: make turn inactivity timeouts configurable (Low risk)</title>
+      <circle cx="360.3" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="360.3" y="134" fill="#111827">5</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u06" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u06">
+      <title>U06: parse repository MCP configuration as JSONC (Low risk)</title>
+      <circle cx="429.2" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="429.2" y="134" fill="#111827">6</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u07" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u07">
+      <title>U07: add validated external plugin source specifications (Medium risk)</title>
+      <circle cx="498.2" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="498.2" y="134" fill="#111827">7</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u08" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u08">
+      <title>U08: discover MCP resource audiences from bearer challenges (Medium risk)</title>
+      <circle cx="567.1" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="567.1" y="134" fill="#111827">8</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u09" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u09">
+      <title>U09: publish canonical provider contracts (Low risk)</title>
+      <circle cx="636.1" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="636.1" y="134" fill="#111827">9</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u10" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u10">
+      <title>U10: publish typed runtime model catalog results (Low risk)</title>
+      <circle cx="705.0" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="705.0" y="134" fill="#111827">10</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u11" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u11">
+      <title>U11: add reusable session tool-event tracking (Medium risk)</title>
+      <circle cx="774" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="134" fill="#111827">11</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u12" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u12">
+      <title>U12: export reusable web authentication bootstrap (Medium risk)</title>
+      <circle cx="843.0" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="843.0" y="134" fill="#111827">12</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u13" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u13">
+      <title>U13: support external environments and configurable package registries (Low risk)</title>
+      <circle cx="911.9" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="911.9" y="134" fill="#111827">13</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u14" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u14">
+      <title>U14: add before and after turn lifecycle hooks (Medium risk)</title>
+      <circle cx="980.9" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="980.9" y="134" fill="#111827">14</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u15" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u15">
+      <title>U15: own session workspaces and repository configuration discovery (Medium risk)</title>
+      <circle cx="1049.8" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1049.8" y="134" fill="#111827">15</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u16" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u16">
+      <title>U16: publish runtime provenance and retain package-less workers (Medium risk)</title>
+      <circle cx="1118.8" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1118.8" y="134" fill="#111827">16</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u17" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u17">
+      <title>U17: hydrate older session history on demand (Medium risk)</title>
+      <circle cx="1187.7" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1187.7" y="134" fill="#111827">17</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u18" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u18">
+      <title>U18: add reusable worker-timeline layout helpers (Low risk)</title>
+      <circle cx="1256.7" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1256.7" y="134" fill="#111827">18</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u19" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u19">
+      <title>U19: raise command output capacity for large renders (Low risk)</title>
+      <circle cx="1325.6" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1325.6" y="134" fill="#111827">19</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u20" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u20">
+      <title>U20: make node-postgres pools recover from transient failures (Medium risk)</title>
+      <circle cx="115.8" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="115.8" y="239" fill="#111827">20</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u21" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u21">
+      <title>U21: make duroxide pool acquisition resilient (Medium risk)</title>
+      <circle cx="247.5" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="247.5" y="239" fill="#111827">21</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u22" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u22">
+      <title>U22: add standalone and instance-scoped service manifests (Medium risk)</title>
+      <circle cx="379.1" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="379.1" y="239" fill="#111827">22</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u23" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u23">
+      <title>U23: persist and mint caller tokens by resource audience (High risk)</title>
+      <circle cx="510.7" cy="235" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="510.7" y="239" fill="#111827">23</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u24" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u24">
+      <title>U24: compose fleet-default and agent-bound MCP servers (Medium risk)</title>
+      <circle cx="642.4" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="642.4" y="239" fill="#111827">24</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u25" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u25">
+      <title>U25: bind repository-provided agents in repository workers (Medium risk)</title>
+      <circle cx="105.7" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="105.7" y="344" fill="#111827">25</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u26" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u26">
+      <title>U26: route repository-less sessions and advertise serviceable repositories (Medium risk)</title>
+      <circle cx="774" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="239" fill="#111827">26</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u27" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u27">
+      <title>U27: add Windows worker images with noninteractive Azure CLI (High risk)</title>
+      <circle cx="217.1" cy="340" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="217.1" y="344" fill="#111827">27</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u28" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u28">
+      <title>U28: authenticate repository MCP processes to configured package feeds (High risk)</title>
+      <circle cx="153.4" cy="445" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="153.4" y="449" fill="#111827">28</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u29" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u29">
+      <title>U29: persist worker ownership across restarts (Medium risk)</title>
+      <circle cx="905.6" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="905.6" y="239" fill="#111827">29</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u30" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u30">
+      <title>U30: host and load external provider modules (Medium risk)</title>
+      <circle cx="1037.3" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1037.3" y="239" fill="#111827">30</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u31" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u31">
+      <title>U31: make session creation and pagination WAF-safe (Medium risk)</title>
+      <circle cx="328.5" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="328.5" y="344" fill="#111827">31</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u32" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u32">
+      <title>U32: support governance-restricted Azure subscriptions (Medium risk)</title>
+      <circle cx="439.8" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="439.8" y="344" fill="#111827">32</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u33" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u33">
+      <title>U33: expose provider configuration display metadata (Medium risk)</title>
+      <circle cx="1168.9" cy="235" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1168.9" y="239" fill="#111827">33</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u34" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u34">
+      <title>U34: render, publish, and verify standalone service rollouts (Medium risk)</title>
+      <circle cx="551.2" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="551.2" y="344" fill="#111827">34</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u35" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u35">
+      <title>U35: connect to HTTP MCP servers with delegated caller credentials (High risk)</title>
+      <circle cx="662.6" cy="340" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="662.6" y="344" fill="#111827">35</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u36" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u36">
+      <title>U36: inject delegated credentials into stdio MCP and tool environments (High risk)</title>
+      <circle cx="774" cy="340" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="344" fill="#111827">36</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u37" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u37">
+      <title>U37: use signed-in Copilot credentials for GitHub models (Medium risk)</title>
+      <circle cx="885.4" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="885.4" y="344" fill="#111827">37</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u38" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u38">
+      <title>U38: refresh delegated caller tokens without interaction (High risk)</title>
+      <circle cx="360.3" cy="445" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="360.3" y="449" fill="#111827">38</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u39" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u39">
+      <title>U39: dispatch source evaluation through remote providers (Medium risk)</title>
+      <circle cx="996.8" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="996.8" y="344" fill="#111827">39</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u40" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u40">
+      <title>U40: persist canonical repository state for session resume (High risk)</title>
+      <circle cx="1300.5" cy="235" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1300.5" y="239" fill="#111827">40</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u41" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u41">
+      <title>U41: add generator registration and lifecycle storage APIs (High risk)</title>
+      <circle cx="1108.2" cy="340" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1108.2" y="344" fill="#111827">41</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u42" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u42">
+      <title>U42: load and validate lifecycle state definitions (Medium risk)</title>
+      <circle cx="567.1" cy="445" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="567.1" y="449" fill="#111827">42</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u43" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u43">
+      <title>U43: add JobGenerator registration and hierarchy (Medium risk)</title>
+      <circle cx="774" cy="445" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="449" fill="#111827">43</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u44" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u44">
+      <title>U44: select serviceable repositories when creating sessions (Medium risk)</title>
+      <circle cx="1219.5" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1219.5" y="344" fill="#111827">44</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u45" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u45">
+      <title>U45: add a stateless MCP-over-HTTP adapter host (High risk)</title>
+      <circle cx="1432.2" cy="235" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1432.2" y="239" fill="#111827">45</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u46" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u46">
+      <title>U46: dehydrate and hydrate repository changes across workers (High risk)</title>
+      <circle cx="1330.9" cy="340" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1330.9" y="344" fill="#111827">46</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u47" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u47">
+      <title>U47: reconcile pinned repository refs before each turn (Medium risk)</title>
+      <circle cx="980.9" cy="445" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="980.9" y="449" fill="#111827">47</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u48" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u48">
+      <title>U48: add node-local git cache and repository worker runtimes (High risk)</title>
+      <circle cx="291.3" cy="550" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="291.3" y="554" fill="#111827">48</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u49" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u49">
+      <title>U49: deploy Linux and Windows repository-worker fleets (High risk)</title>
+      <circle cx="412" cy="655" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="412" y="659" fill="#111827">49</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u50" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u50">
+      <title>U50: continuously materialize external provider discoveries (High risk)</title>
+      <circle cx="1187.7" cy="445" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1187.7" y="449" fill="#111827">50</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u51" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u51">
+      <title>U51: persist lifecycle state runs and transition journals (High risk)</title>
+      <circle cx="774" cy="550" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="554" fill="#111827">51</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u52" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u52">
+      <title>U52: add durable keyed system-wait contracts (High risk)</title>
+      <circle cx="1394.6" cy="130" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1394.6" y="134" fill="#111827">52</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u53" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u53">
+      <title>U53: add a synthetic delegated REST example (Medium risk)</title>
+      <circle cx="1442.3" cy="340" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1442.3" y="344" fill="#111827">53</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u54" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u54">
+      <title>U54: deploy instance-scoped MCP adapter services (High risk)</title>
+      <circle cx="1394.6" cy="445" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1394.6" y="449" fill="#111827">54</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u55" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u55">
+      <title>U55: render provider configuration from display metadata (Medium risk)</title>
+      <circle cx="1256.7" cy="550" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1256.7" y="554" fill="#111827">55</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u56" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u56">
+      <title>U56: add durable external-operation gates (High risk)</title>
+      <circle cx="1136" cy="655" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1136" y="659" fill="#111827">56</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u57" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u57">
+      <title>U57: persist and schedule durable job waits (High risk)</title>
+      <circle cx="774" cy="760" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="764" fill="#111827">57</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u58" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u58">
+      <title>U58: expose durable job execution timelines (High risk)</title>
+      <circle cx="774" cy="865" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="869" fill="#111827">58</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u59" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u59">
+      <title>U59: enforce owner-affined worker routing (High risk)</title>
+      <circle cx="412" cy="970" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="412" y="974" fill="#111827">59</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u60" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u60">
+      <title>U60: fold bootstrap turns into durable start input (High risk)</title>
+      <circle cx="1463.5" cy="130" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1463.5" y="134" fill="#111827">60</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u61" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u61">
+      <title>U61: visualize worker utilization and durable job runs (Medium risk)</title>
+      <circle cx="1136" cy="970" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1136" y="974" fill="#111827">61</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u62" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u62">
+      <title>U62: add timeline filtering, queued bands, and live wait spans (Medium risk)</title>
+      <circle cx="412" cy="1075" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="412" y="1079" fill="#111827">62</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u63" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u63">
+      <title>U63: register durable session orchestration 1.0.79 (High risk)</title>
+      <circle cx="1136" cy="1075" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1136" y="1079" fill="#111827">63</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u64" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u64">
+      <title>U64: execute durable lifecycle state transitions (High risk)</title>
+      <circle cx="774" cy="1180" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="1184" fill="#111827">64</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u65" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u65">
+      <title>U65: add owner-managed logical cleanup (High risk)</title>
+      <circle cx="231" cy="1285" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <text x="231" y="1289" fill="#111827">65</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u66" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u66">
+      <title>U66: observe Azure DevOps pull-request gates (Medium risk)</title>
+      <circle cx="593" cy="1285" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="593" y="1289" fill="#111827">66</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u67" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u67">
+      <title>U67: navigate JobGenerator transitions and lifecycle trees (Medium risk)</title>
+      <circle cx="955" cy="1285" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="955" y="1289" fill="#111827">67</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u68" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u68">
+      <title>U68: label durable waits and approval conditions (Medium risk)</title>
+      <circle cx="774" cy="1390" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="774" y="1394" fill="#111827">68</text>
+    </a>
+    <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u69" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u69">
+      <title>U69: add typed JobGenerator client helpers (Medium risk)</title>
+      <circle cx="1317" cy="1285" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
+      <text x="1317" y="1289" fill="#111827">69</text>
+    </a>
+  </g>
+</svg>
