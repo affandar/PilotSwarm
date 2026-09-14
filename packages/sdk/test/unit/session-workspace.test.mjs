@@ -44,6 +44,15 @@ test("caller override wins and is never owned or removed by the manager", (t) =>
     assert.equal(manager.remove("session-123"), false, "managed cleanup cannot touch the override");
 });
 
+test("caller overrides cannot claim paths inside the managed namespace", (t) => {
+    const root = temporaryRoot(t);
+    const manager = new SessionWorkspaceManager(path.join(root, "managed"));
+    assert.throws(
+        () => manager.resolve("session-123", path.join(manager.rootDir, "session-123")),
+        /must be outside the managed root/,
+    );
+});
+
 test("SessionManager passes the managed path to the Copilot boundary and disables implicit discovery", async (t) => {
     const root = temporaryRoot(t);
     const stateRoot = path.join(root, "state");
@@ -107,6 +116,21 @@ test("terminal cleanup reclaims a managed workspace on a cold SessionManager", a
     await manager.destroySession("cold-session");
 
     assert.equal(fs.existsSync(workspace.path), false);
+});
+
+test("cold cleanup preserves an unmarked directory in the managed root", async (t) => {
+    const root = temporaryRoot(t);
+    const workspaceManager = new SessionWorkspaceManager(path.join(root, "workspaces"));
+    const unmarked = path.join(workspaceManager.rootDir, "caller-session");
+    fs.mkdirSync(unmarked);
+    fs.writeFileSync(path.join(unmarked, "caller.txt"), "caller");
+
+    const manager = new SessionManager(undefined, null, {
+        sessionWorkspaceManager: workspaceManager,
+    }, path.join(root, "state"));
+    await manager.destroySession("caller-session");
+
+    assert.equal(fs.existsSync(unmarked), true);
 });
 
 test("SessionManager preserves historical discovery without a workspace manager", async (t) => {

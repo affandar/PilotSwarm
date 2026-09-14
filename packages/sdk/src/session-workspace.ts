@@ -27,6 +27,7 @@ export interface RepositoryConfiguration {
 }
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+const OWNERSHIP_DIRECTORY = ".pilotswarm-workspace-owners";
 
 function validateSessionId(sessionId: string): void {
     if (
@@ -42,11 +43,14 @@ function validateSessionId(sessionId: string): void {
     }
 }
 
-function assertConfined(root: string, candidate: string): void {
+function isConfined(root: string, candidate: string): boolean {
     const relative = path.relative(root, candidate);
-    if (relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))) {
-        return;
-    }
+    return relative === ""
+        || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function assertConfined(root: string, candidate: string): void {
+    if (isConfined(root, candidate)) return;
     throw new Error(`Path escapes configured root: ${candidate}`);
 }
 
@@ -74,6 +78,7 @@ function assertNoSymlink(root: string, candidate: string): void {
  */
 export class SessionWorkspaceManager {
     readonly rootDir: string;
+    private readonly ownershipDir: string;
 
     constructor(rootDir: string) {
         const resolved = path.resolve(rootDir);
@@ -82,11 +87,22 @@ export class SessionWorkspaceManager {
             throw new Error(`Session workspace root must not be a symbolic link: ${resolved}`);
         }
         this.rootDir = fs.realpathSync.native(resolved);
+        this.ownershipDir = path.join(this.rootDir, OWNERSHIP_DIRECTORY);
+        assertConfined(this.rootDir, this.ownershipDir);
+        assertNoSymlink(this.rootDir, this.ownershipDir);
+        fs.mkdirSync(this.ownershipDir, { recursive: true });
+        assertNoSymlink(this.rootDir, this.ownershipDir);
     }
 
     resolve(sessionId: string, callerOverride?: string): SessionWorkspace {
         if (callerOverride) {
-            return { path: path.resolve(callerOverride), ownership: "caller" };
+            const overridePath = path.resolve(callerOverride);
+            if (isConfined(this.rootDir, overridePath)) {
+                throw new Error(
+                    `Caller-owned session workspace must be outside the managed root: ${overridePath}`,
+                );
+            }
+            return { path: overridePath, ownership: "caller" };
         }
 
         validateSessionId(sessionId);
@@ -95,6 +111,12 @@ export class SessionWorkspaceManager {
         assertNoSymlink(this.rootDir, workspacePath);
         fs.mkdirSync(workspacePath, { recursive: true });
         assertNoSymlink(this.rootDir, workspacePath);
+        const markerPath = this.ownershipMarkerPath(sessionId);
+        fs.writeFileSync(markerPath, JSON.stringify({
+            version: 1,
+            sessionId,
+            workspacePath,
+        }));
         return { path: workspacePath, ownership: "platform" };
     }
 
@@ -103,9 +125,53 @@ export class SessionWorkspaceManager {
         const workspacePath = path.join(this.rootDir, sessionId);
         assertConfined(this.rootDir, workspacePath);
         assertNoSymlink(this.rootDir, workspacePath);
-        if (!fs.existsSync(workspacePath)) return false;
+        const markerPath = this.ownershipMarkerPath(sessionId);
+        if (!fs.existsSync(markerPath)) return false;
+        const marker = this.readOwnershipMarker(markerPath);
+        if (
+            marker.version !== 1
+            || marker.sessionId !== sessionId
+            || marker.workspacePath !== workspacePath
+        ) {
+            throw new Error(`Invalid session workspace ownership marker: ${markerPath}`);
+        }
+        if (!fs.existsSync(workspacePath)) {
+            fs.rmSync(markerPath, { force: true });
+            return false;
+        }
         fs.rmSync(workspacePath, { recursive: true, force: true });
+        fs.rmSync(markerPath, { force: true });
         return true;
+    }
+
+    private ownershipMarkerPath(sessionId: string): string {
+        const markerPath = path.join(this.ownershipDir, `${sessionId}.json`);
+        assertConfined(this.ownershipDir, markerPath);
+        assertNoSymlink(this.rootDir, markerPath);
+        return markerPath;
+    }
+
+    private readOwnershipMarker(markerPath: string): {
+        version?: unknown;
+        sessionId?: unknown;
+        workspacePath?: unknown;
+    } {
+        const marker = fs.lstatSync(markerPath);
+        if (!marker.isFile() || marker.isSymbolicLink()) {
+            throw new Error(`Invalid session workspace ownership marker: ${markerPath}`);
+        }
+        try {
+            const parsed = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("marker must be an object");
+            }
+            return parsed;
+        } catch (error) {
+            throw new Error(
+                `Invalid session workspace ownership marker: ${markerPath}`,
+                { cause: error },
+            );
+        }
     }
 }
 
