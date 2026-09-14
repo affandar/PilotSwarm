@@ -36,7 +36,7 @@ import {
     type PendingChildDigest,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
-import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
+import { validClientMessageIds, noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -58,57 +58,6 @@ function writeFifoBucket(ctx: any, index: number, items: any[]): void {
     }
 }
 
-type FifoRejection = {
-    item: any;
-    code: "MESSAGE_TOO_LARGE" | "MESSAGE_QUEUE_FULL";
-    message: string;
-    actualBytes: number;
-    maxBytes: number;
-};
-
-function fifoItemRejection(item: any): FifoRejection | null {
-    const actualBytes = Buffer.byteLength(JSON.stringify([item]), "utf8");
-    return actualBytes > MAX_BUCKET_BYTES ? {
-        item,
-        code: "MESSAGE_TOO_LARGE",
-        message: `Message requires ${actualBytes} serialized UTF-8 bytes; the durable FIFO item limit is ${MAX_BUCKET_BYTES} bytes. Upload large content as an artifact and send a short reference.`,
-        actualBytes,
-        maxBytes: MAX_BUCKET_BYTES,
-    } : null;
-}
-
-function* recordFifoRejection(runtime: DurableSessionRuntime, rejection: FifoRejection): Generator<any, void, any> {
-    const { item, ...error } = rejection;
-    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
-        eventType: "session.message_rejected",
-        data: { ...error, kind: item?.kind, clientMessageIds: validClientMessageIds(item?.clientMessageIds) },
-    }]);
-}
-
-function hasFifoDrainCapacity(runtime: DurableSessionRuntime, stashedCount: number): boolean {
-    let lastBucket = -1;
-    for (let index = FIFO_BUCKET_COUNT - 1; index >= 0; index--) {
-        if (readFifoBucket(runtime.ctx, index).length > 0) {
-            lastBucket = index;
-            break;
-        }
-    }
-    return stashedCount < FIFO_BUCKET_COUNT - lastBucket - 1;
-}
-
-function compactFifoBuckets(runtime: DurableSessionRuntime): void {
-    let writeIndex = 0;
-    for (let readIndex = 0; readIndex < FIFO_BUCKET_COUNT; readIndex++) {
-        const items = readFifoBucket(runtime.ctx, readIndex);
-        if (items.length === 0) continue;
-        if (writeIndex !== readIndex) {
-            writeFifoBucket(runtime.ctx, writeIndex, items);
-            runtime.ctx.clearValue(fifoBucketKey(readIndex));
-        }
-        writeIndex++;
-    }
-}
-
 /**
  * Put an item back at the HEAD of the FIFO.
  *
@@ -121,7 +70,7 @@ function compactFifoBuckets(runtime: DurableSessionRuntime): void {
  * If it no longer fits there (it always should — the bucket only shrank),
  * fall back to append rather than lose it.
  */
-export function* prependToFifo(runtime: DurableSessionRuntime, item: any): Generator<any, void, any> {
+export function prependToFifo(runtime: DurableSessionRuntime, item: any): void {
     const { ctx } = runtime;
     let headIdx = 0;
     for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
@@ -129,52 +78,37 @@ export function* prependToFifo(runtime: DurableSessionRuntime, item: any): Gener
     }
     const bucket = readFifoBucket(ctx, headIdx);
     bucket.unshift(item);
-    if (Buffer.byteLength(JSON.stringify(bucket), "utf8") <= MAX_BUCKET_BYTES) {
+    if (JSON.stringify(bucket).length <= MAX_BUCKET_BYTES) {
         writeFifoBucket(ctx, headIdx, bucket);
         return;
     }
-    if (headIdx > 0 && !fifoItemRejection(item)) {
-        writeFifoBucket(ctx, headIdx - 1, [item]);
-        return;
-    }
     ctx.traceWarn?.(`[fifo] prepend did not fit bucket ${headIdx}; appending instead`);
-    for (const rejection of appendToFifo(runtime, [item])) yield* recordFifoRejection(runtime, rejection);
+    appendToFifo(runtime, [item]);
 }
 
-export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): FifoRejection[] {
+export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): void {
     const { ctx } = runtime;
-    const rejected: FifoRejection[] = [];
     let writeBucketIdx = 0;
     for (let i = FIFO_BUCKET_COUNT - 1; i >= 0; i--) {
         if (readFifoBucket(ctx, i).length > 0) { writeBucketIdx = i; break; }
     }
     for (const item of newItems) {
-        const rejection = fifoItemRejection(item);
-        if (rejection) {
-            rejected.push(rejection);
-            continue;
-        }
         const bucket = readFifoBucket(ctx, writeBucketIdx);
         bucket.push(item);
         const serialized = JSON.stringify(bucket);
-        if (Buffer.byteLength(serialized, "utf8") > MAX_BUCKET_BYTES) {
-            if (writeBucketIdx + 1 >= FIFO_BUCKET_COUNT) {
-                rejected.push({
-                    item,
-                    code: "MESSAGE_QUEUE_FULL",
-                    message: "The durable message buffer is full. Send the request again after pending work completes.",
-                    actualBytes: Buffer.byteLength(serialized, "utf8"),
-                    maxBytes: MAX_BUCKET_BYTES,
-                });
-                continue;
-            }
+        if (serialized.length > MAX_BUCKET_BYTES) {
+            bucket.pop();
+            writeFifoBucket(ctx, writeBucketIdx, bucket);
             writeBucketIdx++;
+            if (writeBucketIdx >= FIFO_BUCKET_COUNT) {
+                ctx.traceInfo(`[fifo] overflow — ${newItems.length} item(s) may rely on carry-forward`);
+                return;
+            }
             writeFifoBucket(ctx, writeBucketIdx, [item]);
         } else {
             writeFifoBucket(ctx, writeBucketIdx, bucket);
         }
     }
-    return rejected;
 }
 
 function popFifoItem(runtime: DurableSessionRuntime): any | null {
@@ -224,15 +158,13 @@ function hasFifoItems(runtime: DurableSessionRuntime): boolean {
     return false;
 }
 
-function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
-    const rejections = appendToFifo(runtime, stash);
-    const rejectedItems = new Set(rejections.map((rejection) => rejection.item));
+function appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): void {
+    appendToFifo(runtime, stash);
     for (const item of stash) {
-        if (item?.kind !== "prompt" || rejectedItems.has(item)) continue;
+        if (item?.kind !== "prompt") continue;
         const ids = validClientMessageIds(item.clientMessageIds);
         touchRecentClientMessageIds(runtime.state, ids);
     }
-    for (const rejection of rejections) yield* recordFifoRejection(runtime, rejection);
 }
 
 function duplicateClientMessageIds(
@@ -337,7 +269,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     const pendingClientMessageIds = new Set<string>();
 
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
-        if (!hasFifoDrainCapacity(runtime, stash.length)) break;
         let msg: any = null;
 
         if (state.legacyPendingMessage !== undefined) {
@@ -446,7 +377,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -483,19 +414,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.answer !== undefined) {
-            const answerItem = { kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) };
-            const rejection = fifoItemRejection(answerItem);
-            if (rejection) {
-                yield* recordFifoRejection(runtime, rejection);
-                continue;
-            }
             const interruptsInputHold = Boolean(state.pendingInputQuestion)
                 && (state.activeTimer?.type === "input-grace" || state.activeTimer?.type === "idle");
             if (interruptsInputHold) {
                 ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
                 state.activeTimer = null;
             }
-            stash.push(answerItem);
+            stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
             if (interruptsInputHold) break;
             continue;
         }
@@ -514,15 +439,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 continue;
             }
 
-            const previousPromptState = {
-                blockedError: state.blockedError,
-                activeTimer: state.activeTimer,
-                interruptedWaitTimer: state.interruptedWaitTimer,
-                interruptedCronTimer: state.interruptedCronTimer,
-                waitingForAgentIds: state.waitingForAgentIds,
-                pendingChildDigest: state.pendingChildDigest,
-                pendingRehydrationMessage: state.pendingRehydrationMessage,
-            };
             let userPrompt = msg.prompt;
             state.blockedError = undefined;
 
@@ -615,7 +531,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
-            const promptItem = {
+            stash.push({
                 kind: "prompt",
                 prompt: userPrompt,
                 bootstrap: Boolean(msg.bootstrap),
@@ -623,14 +539,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
                 ...(incomingAttachments.length > 0 ? { attachments: incomingAttachments } : {}),
-            };
-            const rejection = fifoItemRejection(promptItem);
-            if (rejection) {
-                Object.assign(state, previousPromptState);
-                yield* recordFifoRejection(runtime, rejection);
-                continue;
-            }
-            stash.push(promptItem);
+            });
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
@@ -638,7 +547,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) yield* appendPromptStashToFifo(runtime, stash);
+    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── Pre-dispatch sweep: grab any pending cancel tombstone ──
@@ -649,9 +558,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
     const seenChildUpdates = new Set<string>();
     const pendingClientMessageIds = new Set<string>();
 
-    if (!hasFifoDrainCapacity(runtime, 0)) compactFifoBuckets(runtime);
     for (let i = 0; i < MAX_PREDISPATCH_SWEEP; i++) {
-        if (!hasFifoDrainCapacity(runtime, stash.length)) break;
         const msgTask = ctx.dequeueEvent("messages");
         const timerTask = ctx.scheduleTimer(PREDISPATCH_CANCEL_SWEEP_MS);
         const race: any = yield ctx.race(msgTask, timerTask);
@@ -680,7 +587,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -734,7 +641,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 continue;
             }
             const sweepAttachments = sanitizePromptAttachmentRefs(msg.attachments);
-            const promptItem = {
+            stash.push({
                 kind: "prompt",
                 prompt: msg.prompt,
                 bootstrap: Boolean(msg.bootstrap),
@@ -742,13 +649,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
                 ...(sweepAttachments.length > 0 ? { attachments: sweepAttachments } : {}),
-            };
-            const rejection = fifoItemRejection(promptItem);
-            if (rejection) {
-                yield* recordFifoRejection(runtime, rejection);
-                continue;
-            }
-            stash.push(promptItem);
+            });
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
@@ -756,7 +657,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         ctx.traceInfo(`[predispatch] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) yield* appendPromptStashToFifo(runtime, stash);
+    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── decide: pop and process one item from FIFO ─────────────
@@ -857,7 +758,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     const peek = popFifoItem(runtime);
                     if (!peek) break;
                     if (peek.kind !== "prompt") {
-                        yield* prependToFifo(runtime, peek);
+                        prependToFifo(runtime, peek);
                         break;
                     }
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
@@ -882,7 +783,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     // [kickoff, B, C] queued, appending B left [C, B], and the
                     // person's own two messages ran in the wrong order.
                     if (Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
-                        yield* prependToFifo(runtime, peek);
+                        prependToFifo(runtime, peek);
                         break;
                     }
                     const peekSender = noteMessageSender(runtime, peek.sender);

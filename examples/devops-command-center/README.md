@@ -4,6 +4,11 @@ A sample PilotSwarm application that demonstrates building an agent-powered DevO
 
 All tools return **mock data** — no real cloud APIs are called.
 
+For large incident logs or JSON input, upload an artifact and send a short
+reference. Inline prompt/answer envelopes are limited to 12 KiB of serialized
+UTF-8; `MESSAGE_TOO_LARGE` rejects the request without ending the session.
+See [inline message limits](../../docs/api/clients.md#inline-message-limits).
+
 ## What's Included
 
 ### Agents

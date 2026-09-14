@@ -47,6 +47,7 @@ import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { serializeMessagePayload } from "./message-size.js";
 import type {
     SessionMetricSummary,
     TokensByModelRow,
@@ -2917,6 +2918,14 @@ export class PilotSwarmManagementClient {
         options?: { clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<void> {
         this._ensureStarted();
+        const sender = normalizeMessageSender(options?.sender);
+        const attachments = sanitizePromptAttachmentRefs(options?.attachments);
+        const payload = serializeMessagePayload({
+            prompt,
+            ...(options?.clientMessageIds && options.clientMessageIds.length > 0 ? { clientMessageIds: options.clientMessageIds } : {}),
+            ...(sender ? { sender } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+        });
         const session = await this.getSession(sessionId);
         if (!session) {
             throw new Error(`Session ${sessionId.slice(0, 8)} was not found.`);
@@ -2951,22 +2960,10 @@ export class PilotSwarmManagementClient {
             lastActiveAt: new Date(),
         }).catch(() => {});
 
-        // Optional: only include clientMessageIds in the payload when present so
-        // the JSON shape stays byte-for-byte identical for callers that don't
-        // pass them. This keeps every existing frozen orchestration version
-        // happy on replay.
-        const payload: Record<string, unknown> = { prompt };
-        if (options?.clientMessageIds && options.clientMessageIds.length > 0) {
-            payload.clientMessageIds = options.clientMessageIds;
-        }
-        const sender = normalizeMessageSender(options?.sender);
-        if (sender) payload.sender = sender;
-        const attachments = sanitizePromptAttachmentRefs(options?.attachments);
-        if (attachments.length > 0) payload.attachments = attachments;
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify(payload),
+            payload,
         );
     }
 
@@ -3026,7 +3023,7 @@ export class PilotSwarmManagementClient {
         await this._duroxideClient.enqueueEvent(
             orchId,
             "messages",
-            JSON.stringify(payload),
+            serializeMessagePayload(payload),
         );
     }
 

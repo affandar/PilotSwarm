@@ -1716,7 +1716,7 @@ export class PilotSwarmUiController {
 
     getNavigableOutboxItems(sessionId) {
         return this.getSessionOutbox(sessionId).filter((item) => (
-            item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling"
+            item?.phase === "pending" || item?.phase === "queued" || item?.phase === "cancelling" || item?.phase === "rejected"
         ));
     }
 
@@ -1854,6 +1854,12 @@ export class PilotSwarmUiController {
             this.exitPendingPromptEdit({ restoreDraft: true });
         }
 
+        if (item.phase === "rejected") {
+            this.setSessionOutboxItems(sessionId, items.filter((candidate) => candidate.id !== itemId));
+            this.dispatch({ type: "ui/status", text: "Dismissed rejected prompt" });
+            return true;
+        }
+
         const ids = Array.isArray(item.clientMessageIds) && item.clientMessageIds.length > 0
             ? item.clientMessageIds
             : [item.id];
@@ -1868,7 +1874,11 @@ export class PilotSwarmUiController {
                     this.dispatch({ type: "ui/status", text: "Cancelling queued prompt" });
                 } catch (error) {
                     // Restore the item so the user can retry the cancel.
-                    this.setSessionOutboxItems(sessionId, items);
+                    this.setSessionOutboxItems(sessionId, this.getSessionOutbox(sessionId).map((candidate) => (
+                        candidate.id === itemId && candidate.phase === "cancelling"
+                            ? { ...candidate, phase: "queued" }
+                            : candidate
+                    )));
                     this.dispatch({ type: "ui/status", text: error?.message || String(error) });
                     return false;
                 }
@@ -2208,7 +2218,7 @@ export class PilotSwarmUiController {
             // Promote pending → queued for the merged item.
             const items = this.getSessionOutbox(sessionId);
             const updated = items.map((item) => (
-                item.id === mergedItem.id ? { ...item, phase: "queued" } : item
+                item.id === mergedItem.id && item.phase === "pending" ? { ...item, phase: "queued" } : item
             ));
             this.setSessionOutboxItems(sessionId, updated);
 
@@ -2219,6 +2229,7 @@ export class PilotSwarmUiController {
             const authRefused = error?.code === "FORBIDDEN" || error?.code === "UNAUTHORIZED"
                 || error?.status === 403 || error?.status === 401;
             const items = this.getSessionOutbox(sessionId);
+            if (!items.some((item) => item.id === mergedItem.id && item.phase === "pending")) throw error;
             if (authRefused) {
                 // Authorization refusals are terminal — retrying can't succeed.
                 // Mark the envelope rejected (renders as the red ✗, same as a
@@ -2235,12 +2246,25 @@ export class PilotSwarmUiController {
                         this.setSessionOutboxItems(sessionId, remaining);
                     }
                 }, 6000);
+            } else if (
+                isTerminalSendError(error)
+                || error?.code === "SESSION_TERMINAL"
+                || error?.code === "MESSAGE_TOO_LARGE"
+                || error?.code === "MESSAGE_QUEUE_FULL"
+                || error?.status === 413
+                || error?.statusCode === 413
+            ) {
+                this.setSessionOutboxItems(sessionId, items.map((item) => (
+                    item.id === mergedItem.id
+                        ? { ...item, phase: "rejected", error: error?.message || String(error) }
+                        : item
+                )));
             } else {
                 // Transient failure: preserve the exact attempted envelope.
                 // Re-merging it with fresh messages could make server-side
                 // duplicate suppression drop the fresh content too.
                 const reverted = items.map((item) => (
-                    item.id === mergedItem.id ? { ...mergedItem, phase: "pending", attempted: true } : item
+                    item.id === mergedItem.id && item.phase === "pending" ? { ...mergedItem, phase: "pending", attempted: true } : item
                 ));
                 this.setSessionOutboxItems(sessionId, reverted);
             }
@@ -5795,6 +5819,25 @@ export class PilotSwarmUiController {
      */
     reconcileOutboxAgainstEvent(sessionId, event) {
         if (!sessionId || !event) return;
+        if (event.eventType === "session.message_rejected") {
+            const rejectedIds = new Set(Array.isArray(event.data?.clientMessageIds) ? event.data.clientMessageIds : []);
+            const error = String(event.data?.message || "The runtime rejected this message.");
+            const items = this.getSessionOutbox(sessionId);
+            let matched = false;
+            const updated = items.map((item) => {
+                const ids = item.clientMessageIds?.length ? item.clientMessageIds : [item.id];
+                if (!ids.some((id) => rejectedIds.has(id))) return item;
+                matched = true;
+                return { ...item, phase: "rejected", error };
+            });
+            if (matched) {
+                this.setSessionOutboxItems(sessionId, updated);
+                if (this.getState().sessions.activeSessionId === sessionId) {
+                    this.dispatch({ type: "ui/status", text: error });
+                }
+            }
+            return;
+        }
         if (event.eventType === "user.message" || event.eventType === "system.message") {
             const content = event?.data?.content;
             const clientMessageIds = Array.isArray(event?.data?.clientMessageIds)
@@ -9010,6 +9053,11 @@ export class PilotSwarmUiController {
             if (selectedOutboxItem?.phase === "queued" || selectedOutboxItem?.phase === "cancelling") {
                 this.exitPendingPromptEdit({ restoreDraft: true });
                 return;
+            }
+            if (selectedOutboxItem?.phase === "rejected") {
+                this.setSessionOutboxItems(sessionId, this.getSessionOutbox(sessionId).filter((item) => item.id !== selectedOutboxItem.id));
+                this.queuePromptInOutbox(sessionId, prompt, { attachments: selectedOutboxItem.attachments });
+                this.exitPendingPromptEdit({ restoreDraft: false });
             }
             this.setPrompt("", 0);
             this.setPromptAttachments([]);

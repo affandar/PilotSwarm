@@ -11,9 +11,9 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.56`. Frozen prior versions live as siblings
+The current latest version is `1.0.79`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_55/`) and run
+directories `orchestration_1_0_52/` … `orchestration_1_0_78/`) and run
 unchanged for any in-flight execution that started against them.
 
 ---
@@ -107,7 +107,7 @@ The full type is in [state.ts](../../../packages/sdk/src/orchestration/state.ts)
 
 ```ts
 // index.ts
-function* durableSessionOrchestration_1_0_56(ctx, input) {
+function* durableSessionOrchestration_1_0_79(ctx, input) {
     const runtime = yield* createRuntime(ctx, input, {
         currentVersion: CURRENT_ORCHESTRATION_VERSION,
         latestVersion:  DURABLE_SESSION_LATEST_VERSION,
@@ -221,11 +221,30 @@ After the loop, any items still in the stash are appended to the FIFO via
 ### KV FIFO buckets
 
 `FIFO_BUCKET_COUNT = 20` keys (`fifo.0` … `fifo.19`), each capped at
-`MAX_BUCKET_BYTES = 14 KB`. Items are appended to the highest non-empty bucket;
-when serialized size would exceed the cap, a new bucket is allocated.
+`MAX_BUCKET_BYTES = 14 KiB` of serialized UTF-8 JSON. Since 1.0.79, an item is
+checked on its own before rollover; a new bucket must not inherit an oversized
+item. Oversized prompts/answers produce a durable `session.message_rejected`
+receipt without a KV write or session failure. Rejected prompts do not enter
+the duplicate-suppression receipt set. Timer and buffered-child state remain
+intact when prompt augmentation exceeds the limit.
+
+Items are appended to the highest non-empty bucket; when combined serialized
+size exceeds the cap, a new bucket is allocated. Drain and pre-dispatch sweep
+reserve a bucket per stashed item and stop dequeueing before capacity runs out,
+leaving later work on the durable incoming queue. The defensive append fallback
+reports `MESSAGE_QUEUE_FULL` instead of silently losing work.
+When tail capacity is exhausted, the pre-dispatch sweep compacts non-empty
+buckets toward the head without changing item order. This reuses space freed
+by dispatch before checking for queued cancellation tombstones. The sweep is
+still bounded by capacity and `MAX_PREDISPATCH_SWEEP`; cancellation is best
+effort, not a priority channel or a guarantee against already-dispatched work.
 `popFifoItem` pulls from the lowest non-empty bucket; `popFirstFifoItemMatching`
 takes the first match (used to prioritize interactive prompts/answers ahead of
 queued timer fires).
+
+Public prompt/answer admission is capped at 12 KiB, below the FIFO budget to
+leave room for runtime metadata. See [inline message limits](../../api/clients.md#inline-message-limits).
+1.0.78 is frozen and remains registered; the new protections are in 1.0.79.
 
 ### Prompt timer-interrupt augmentation
 

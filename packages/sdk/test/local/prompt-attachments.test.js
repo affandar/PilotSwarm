@@ -21,6 +21,69 @@ import {
 } from "../../src/types.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { PilotSwarmClient, PilotSwarmSession } from "../../src/client.ts";
+import { PilotSwarmManagementClient } from "../../src/management-client.ts";
+import { MAX_MESSAGE_BYTES, MessageTooLargeError, serializeMessagePayload } from "../../src/message-size.ts";
+
+describe.concurrent("message payload admission", () => {
+    it("measures serialized UTF-8 bytes including escaping and envelope metadata", () => {
+        const overhead = Buffer.byteLength(JSON.stringify({ prompt: "" }), "utf8");
+        const prompt = "a".repeat(MAX_MESSAGE_BYTES - overhead);
+        expect(Buffer.byteLength(serializeMessagePayload({ prompt }), "utf8")).toBe(MAX_MESSAGE_BYTES);
+        expect(() => serializeMessagePayload({ prompt: `${prompt}a` })).toThrow(MessageTooLargeError);
+        expect(() => serializeMessagePayload({ prompt, clientMessageIds: ["extra-metadata"] })).toThrow(MessageTooLargeError);
+        expect(() => serializeMessagePayload({ prompt: String.fromCodePoint(0x1f600).repeat(4000) })).toThrow(MessageTooLargeError);
+        expect(() => serializeMessagePayload({ prompt: String.fromCharCode(0).repeat(3000) })).toThrow(MessageTooLargeError);
+    });
+
+    it.each(["client", "management", "answer", "event"])("rejects an oversized %s request before side effects, then accepts a valid request", async (mode) => {
+        const mutations = [];
+        const enqueued = [];
+        const sessionId = "payload-admission";
+        const duroxideClient = {
+            startOrchestrationVersioned: async () => { mutations.push("start"); },
+            enqueueEvent: async (_instanceId, _queue, payload) => { enqueued.push(payload); },
+        };
+        const client = {
+            sessionId,
+            client: { _getDuroxideClient: () => duroxideClient },
+            duroxideClient,
+            _duroxideClient: duroxideClient,
+            _ensureStarted: () => {},
+            _assertOrchestrationLive: async () => {},
+            _restoreLineageForStart: async () => ({}),
+            getSession: async () => ({ sessionId, status: "idle" }),
+            _catalog: {
+                getSession: async () => ({ sessionId, state: "idle" }),
+                updateSession: async () => { mutations.push("update"); },
+            },
+            config: {},
+            sessionConfigs: new Map(),
+            systemSessions: new Set(),
+            parentSessionIds: new Map(),
+            nestingLevels: new Map(),
+            sessionAgentIds: new Map(),
+            activeOrchestrations: new Map(),
+            _allowedAgentNames: [],
+        };
+        const send = (prompt, options) => mode === "client"
+            ? PilotSwarmClient.prototype._ensureOrchestrationAndSend.call(client, sessionId, prompt, options)
+            : mode === "answer"
+                ? PilotSwarmManagementClient.prototype.sendAnswer.call(client, sessionId, prompt)
+                : mode === "event"
+                    ? PilotSwarmSession.prototype.sendEvent.call(client, "messages", { prompt, ...options })
+                    : PilotSwarmManagementClient.prototype.sendMessage.call(client, sessionId, prompt, options);
+
+        await expect(send("x".repeat(590295))).rejects.toMatchObject({ code: "MESSAGE_TOO_LARGE", status: 413 });
+        expect(mutations).toEqual([]);
+        expect(enqueued).toEqual([]);
+        await send("valid prompt", { clientMessageIds: ["valid-client-id"] });
+        expect(enqueued).toEqual([JSON.stringify(mode === "answer"
+            ? { answer: "valid prompt", wasFreeform: true, expectedQuestion: null }
+            : { prompt: "valid prompt", clientMessageIds: ["valid-client-id"] })]);
+        if (mode === "client" || mode === "management") expect(mutations).toContain("update");
+    });
+});
 
 class FakeCopilotSession {
     catchAllHandlers = [];

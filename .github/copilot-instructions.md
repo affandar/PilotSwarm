@@ -17,6 +17,16 @@ Render raw arguments/results as text. Empty-response diagnostics remain only
 in Activity; do not turn them back into chat warnings. The TUI keeps calls in
 its Activity view.
 
+## Message admission and rejected drafts
+
+Inline prompt/answer envelopes have a 12 KiB serialized UTF-8 limit, including
+metadata and JSON escaping. Keep admission in the SDK send paths, not only the
+browser. FIFO items use a separate 14 KiB budget; orchestration changes require
+versioning. Never silently truncate a prompt to fit KV. Terminal-session and
+oversized-message refusals must stop outbox retries and preserve the draft and
+reason. Reconcile `session.message_rejected` by message IDs in both live and
+bulk history; a late enqueue acknowledgement must not restore queued state.
+
 ## **⚠️ NEVER commit, push, or deploy without explicit user permission. ALWAYS ask first.**
 
 > **MANDATORY:** Do NOT run `git commit`, `git push`, `git tag`, deploy scripts, or any

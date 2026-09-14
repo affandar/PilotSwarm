@@ -58,6 +58,20 @@ await api.call("sendMessage", { sessionId: session.sessionId, prompt: "hello" })
 const page = await api.call("listSessionsPage", { limit: 50 });
 ```
 
+The [inline message limit](./clients.md#inline-message-limits) applies to the
+serialized envelope, including a batch of combined prompts. Treat
+`MESSAGE_TOO_LARGE` / HTTP `413` and terminal-session refusals as permanent
+send failures: stop retries, show the reason, and preserve the draft. Retrying
+a corrected rejection must use new `clientMessageIds`.
+
+Enqueue acknowledgement does not prove execution. Reconcile
+`session.message_rejected` by its exact `clientMessageIds` on both live and
+replayed events; a late HTTP acknowledgement must not overwrite that outcome.
+The shipped portal/TUI keeps these rejected drafts visible with `Not sent`,
+supports recall/edit/resend, and dismisses rejected drafts locally. The portal
+exposes `Recover rejected prompt` in the composer, followed by `Resend prompt`
+or `Dismiss rejected prompt`; the native TUI uses its prompt-navigation keys.
+
 ## 3. Subscribe, reduce, replay
 
 ```js

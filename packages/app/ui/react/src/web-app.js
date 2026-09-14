@@ -9093,7 +9093,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
             canStopTurn: canStopSessionTurn(activeSession),
-            hasOutbox: outbox.length > 0,
+            hasOutbox: outbox.some((item) => item?.phase !== "rejected"),
+            rejectedItemId: outbox.filter((item) => item?.phase === "rejected").at(-1)?.id || null,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -9110,6 +9111,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
     const [dragOver, setDragOver] = React.useState(false);
     const selectedQueued = promptState.selectedOutboxPhase === "queued";
     const selectedCancelling = promptState.selectedOutboxPhase === "cancelling";
+    const selectedRejected = promptState.selectedOutboxPhase === "rejected";
     const selectedReadOnly = selectedQueued || selectedCancelling;
     const placeholder = mobile && !promptState.editingPending ? (promptState.answerMode ? "Answer…" : "Message…") : promptState.answerMode
         ? "Type an answer and press Enter"
@@ -9118,6 +9120,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? "Cancellation requested"
                 : selectedQueued
                     ? "Queued message selected"
+                    : selectedRejected
+                        ? "Edit the rejected message, then resend or dismiss it"
                     : "Edit the pending message, then send or cancel it"
             : promptState.hasOutbox
                 ? "Type a message and press Enter to queue it behind the pending batch"
@@ -9327,6 +9331,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             const promptLabelText = promptState.answerMode ? "answer"
                 : selectedCancelling ? "cancelling"
                 : selectedQueued ? "queued"
+                : selectedRejected ? "rejected"
                 : promptState.editingPending ? "pending"
                 : "you";
             return React.createElement("label", {
@@ -9419,12 +9424,22 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                         onClick: () => attachInputRef.current?.click(),
                     }, "📎"))
                 : null,
+            promptState.rejectedItemId && !promptState.editingPending
+                ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-mini-button",
+                    title: "Recover rejected prompt",
+                    "aria-label": "Recover rejected prompt",
+                    onPointerDown: (event) => event.preventDefault(),
+                    onClick: () => controller.enterPendingPromptEdit(controller.getState().sessions.activeSessionId, promptState.rejectedItemId),
+                }, React.createElement(RestartGlyph))
+                : null,
             promptState.editingPending && !selectedCancelling
                 ? React.createElement("button", {
                     type: "button",
                     className: "ps-mini-button",
-                    title: selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
-                    "aria-label": selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    title: selectedRejected ? "Dismiss rejected prompt" : selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
+                    "aria-label": selectedRejected ? "Dismiss rejected prompt" : selectedQueued ? "Delete selected queued prompt" : "Cancel selected pending prompt",
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: cancelPending,
                 }, selectedQueued ? "Delete" : "Cancel")
@@ -9443,12 +9458,12 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             React.createElement("button", {
                 type: "button",
                 className: `ps-send-button${mobile ? " is-inline" : ""}`,
-                title: promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                title: selectedRejected ? "Resend prompt" : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send all queued prompts"
                     : promptState.hasOutbox
                         ? "Queue prompt behind the pending batch"
                         : "Send prompt",
-                "aria-label": promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
+                "aria-label": selectedRejected ? "Resend prompt" : promptState.editingPending || (promptState.hasPendingOutbox && !promptState.value.trim())
                     ? "Send queued prompts"
                     : promptState.hasOutbox
                         ? "Queue prompt"

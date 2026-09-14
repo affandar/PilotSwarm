@@ -23,6 +23,7 @@ import type {
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { serializeMessagePayload } from "./message-size.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -737,6 +738,18 @@ export class PilotSwarmClient {
         opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
     ): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        const sender = normalizeMessageSender(opts?.sender);
+        const attachments = sanitizePromptAttachmentRefs(opts?.attachments);
+        const payload = serializeMessagePayload({
+            prompt,
+            ...(opts?.bootstrap ? { bootstrap: true } : {}),
+            ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
+            ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
+                ? { clientMessageIds: opts.clientMessageIds }
+                : {}),
+            ...(sender ? { sender } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+        });
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
         const trace = (message: string) => _trace(`[+${Date.now() - startedAt}ms] ${message}`);
@@ -885,22 +898,7 @@ export class PilotSwarmClient {
         await this.duroxideClient.enqueueEvent(
             orchestrationId,
             "messages",
-            JSON.stringify({
-                prompt,
-                ...(opts?.bootstrap ? { bootstrap: true } : {}),
-                ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
-                ...(opts?.clientMessageIds && opts.clientMessageIds.length > 0
-                    ? { clientMessageIds: opts.clientMessageIds }
-                    : {}),
-                ...(() => {
-                    const sender = normalizeMessageSender(opts?.sender);
-                    return sender ? { sender } : {};
-                })(),
-                ...(() => {
-                    const attachments = sanitizePromptAttachmentRefs(opts?.attachments);
-                    return attachments.length > 0 ? { attachments } : {};
-                })(),
-            }),
+            payload,
         );
         trace(`[client] enqueueEvent done (${Date.now() - enqueueAt}ms bootstrap=${opts?.bootstrap === true})`);
         trace("[client] ensureOrchestrationAndSend complete");
@@ -1267,7 +1265,7 @@ export class PilotSwarmClient {
                             await getDuroxideClient().enqueueEvent(
                                 orchestrationId,
                                 "messages",
-                                JSON.stringify(response),
+                                serializeMessagePayload({ ...response }),
                             );
                             continue;
                         }
@@ -1312,7 +1310,7 @@ export class PilotSwarmClient {
                             await getDuroxideClient().enqueueEvent(
                                 orchestrationId,
                                 "messages",
-                                JSON.stringify(responseInput),
+                                serializeMessagePayload({ ...responseInput }),
                             );
                             continue;
                         }
@@ -1458,7 +1456,9 @@ export class PilotSwarmSession {
             await duroxideClient.enqueueEvent(
                 orchestrationId,
                 "messages",
-                JSON.stringify(data),
+                data && typeof data === "object" && ("prompt" in data || "answer" in data)
+                    ? serializeMessagePayload({ ...data })
+                    : JSON.stringify(data),
             );
         }
     }

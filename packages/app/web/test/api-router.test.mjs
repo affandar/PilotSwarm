@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import express from "express";
-import { OPERATIONS } from "pilotswarm-sdk/api";
+import { ApiClient, OPERATIONS } from "pilotswarm-sdk/api";
+import { MessageTooLargeError, PilotSwarmManagementClient } from "pilotswarm-sdk";
 import { createApiRouter } from "../api/router.js";
 import { createJsonRpcError } from "../server.js";
 
@@ -57,6 +58,40 @@ test("every operation in the table is routable and dispatches by name", async ()
         }
         const dispatched = calls.map((call) => call.name);
         assert.deepEqual([...new Set(dispatched)].sort(), OPERATIONS.map((op) => op.name).sort());
+    } finally {
+        await close();
+    }
+});
+
+test("oversized messages return an actionable 413 without enqueueing or changing the session", async () => {
+    const enqueued = [];
+    let updates = 0;
+    const management = {
+        _ensureStarted: () => {},
+        getSession: async () => ({ status: "idle" }),
+        _assertOrchestrationLive: async () => {},
+        _catalog: { updateSession: async () => { updates += 1; } },
+        _duroxideClient: { enqueueEvent: async (_instanceId, _queue, payload) => { enqueued.push(payload); } },
+    };
+    const { baseUrl, close } = await createHarness({
+        callImpl: (name, params) => {
+            assert.equal(name, "sendMessage");
+            return PilotSwarmManagementClient.prototype.sendMessage.call(management, params.sessionId, params.prompt, params.options);
+        },
+    });
+    try {
+        const client = new ApiClient({ apiUrl: baseUrl });
+        await assert.rejects(client.call("sendMessage", { sessionId: "s1", prompt: "x".repeat(590295) }), (error) => {
+            assert.equal(error.status, 413);
+            assert.equal(error.code, "MESSAGE_TOO_LARGE");
+            assert.match(error.message, /Upload large content as an artifact/);
+            return true;
+        });
+        assert.equal(updates, 0);
+        assert.deepEqual(enqueued, []);
+        await client.call("sendMessage", { sessionId: "s1", prompt: "short reference" });
+        assert.equal(updates, 1);
+        assert.deepEqual(enqueued, [JSON.stringify({ prompt: "short reference" })]);
     } finally {
         await close();
     }
@@ -183,6 +218,11 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
 });
 
 test("legacy RPC errors preserve client codes and redact unexpected faults", () => {
+    const tooLarge = createJsonRpcError(new MessageTooLargeError(590295));
+    assert.equal(tooLarge.status, 413);
+    assert.equal(tooLarge.body.error.code, "MESSAGE_TOO_LARGE");
+    assert.match(tooLarge.body.error.message, /Upload large content as an artifact/);
+
     const forbidden = createJsonRpcError(Object.assign(new Error("not yours"), { code: "FORBIDDEN" }));
     assert.equal(forbidden.status, 403);
     assert.deepEqual(forbidden.body.error, { code: "FORBIDDEN", message: "not yours" });

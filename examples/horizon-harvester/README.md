@@ -8,6 +8,11 @@ questions over the result using multi-signal search + graph traversal.
 This is the worked example referenced by the `pilotswarm-knowledge-harvester`
 builder skill.
 
+Keep source documents in the sample's `corpus/*` facts or uploaded artifacts,
+with short references in prompts. Inline prompt/answer envelopes are limited
+to 12 KiB of serialized UTF-8; an oversized request returns `MESSAGE_TOO_LARGE`.
+See [inline message limits](../../docs/api/clients.md#inline-message-limits).
+
 ## What it shows
 
 - **Wiring the providers from env** — the worker and client are configured with
