@@ -2117,47 +2117,27 @@ body.is-resizing-pane-y iframe {
 
 .ps-session-search-trigger { display: none; }
 
-/* In the compact phone split, search is a floating finger target until asked
-   for. Opening it temporarily gives Sessions more height. Sessions-only mode
-   has room and shows the field continuously. */
-.ps-mobile-session-pane .ps-panel-body { position: relative; }
-
-.ps-mobile-session-pane .ps-session-search:not(.is-open) {
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  z-index: 4;
-  padding: 0;
-  border: 0;
-  background: transparent;
+/* Mobile search and sorting expand together in every session-list context. */
+@media (max-width: 920px) {
+  .ps-session-pane .ps-panel-body { position: relative; overflow: hidden; }
+  .ps-session-pane .ps-session-find-controls:not(:has(.ps-session-search.is-open)) { border: 0; }
+  .ps-session-pane .ps-session-find-controls:not(:has(.ps-session-search.is-open)) .ps-session-sort-controls { display: none; }
+  .ps-session-pane .ps-session-search:not(.is-open) {
+    position: absolute; right: 7px; bottom: 7px; z-index: 4;
+    padding: 0; border: 0; background: transparent;
+  }
+  .ps-session-pane .ps-session-search:not(.is-open) .ps-session-search-fields { display: none; }
+  .ps-session-pane .ps-session-search:not(.is-open) .ps-session-search-trigger {
+    width: 44px; height: 44px; display: grid; place-items: center; padding: 10px;
+    border: 1px solid var(--ps-border-strong); border-radius: 50%; background: var(--ps-chrome);
+  }
+  .ps-session-pane .ps-session-search.is-open .ps-session-search-trigger { display: none; }
+  .ps-session-pane .ps-session-search-fields { min-height: 44px; }
+  .ps-session-pane .ps-session-search-fields input { font-size: 16px; width: 0; }
+  .ps-session-pane .ps-session-search-clear { width: 36px; height: 44px; }
+  .ps-session-pane .ps-session-search-count { flex: 0 1 auto; max-width: 36%; overflow: hidden; text-overflow: ellipsis; }
+  .ps-session-pane .ps-session-find-controls:has(.ps-session-search.is-open) .ps-session-search { order: -1; }
 }
-
-.ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-fields { display: none; }
-.ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-trigger {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  padding: 7px;
-  border: 1px solid var(--ps-border-strong);
-  border-radius: 50%;
-  background: var(--ps-chrome);
-  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.28);
-}
-.ps-mobile-session-pane .ps-session-search-trigger .ps-share-glyph { width: 16px; height: 16px; }
-.ps-mobile-session-pane .ps-session-search.is-open .ps-session-search-trigger { display: none; }
-.ps-mobile-session-pane:has(.ps-session-search.is-open) { max-height: min(28vh, 180px); }
-.ps-mobile-session-pane .ps-session-search-fields input { font-size: 16px; }
-
-.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane:has(.ps-session-search) { max-height: none; }
-.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search:not(.is-open) {
-  position: static;
-  padding: 6px 8px;
-  border-top: 1px solid color-mix(in srgb, var(--ps-border-strong) 72%, transparent);
-  background: var(--ps-chrome);
-}
-.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search:not(.is-open) .ps-session-search-fields { display: flex; }
-.ps-mobile-workspace.is-sessions-only .ps-mobile-session-pane .ps-session-search-trigger { display: none; }
 
 /* Session rows never wrap: whenever a row is wider than the pane the list
    scrolls horizontally, at any pane width. (Mobile keeps ellipsis rows.) */
@@ -9631,14 +9611,29 @@ textarea.ps-link-input {
   }
 }
 @media (max-width: 920px) { .ps-session-sort-controls button { width: 44px; height: 44px; } }
-/* Leave room for the collapsed phone search button. */
-.ps-mobile-session-pane:has(.ps-session-search:not(.is-open)) .ps-session-sort-controls { padding-right: 54px; }
-.ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 8px; }
-
-/* Keep enough room for the header, sort controls and a scrollable row even
-   on short phones. Only the list scrolls: focusing a sort button must not
-   scroll the outer body and hide the system rows above it. */
+/* Mobile search lives above the chat in the visible viewport, including while
+   Safari pans and shrinks it for the keyboard. Only result rows scroll. */
+.ps-session-search-overlay {
+  position: fixed; inset: auto; top: calc(var(--ps-app-top, 0px) + 8px); left: 8px;
+  width: calc(100% - 16px); max-width: none;
+  height: calc(var(--ps-app-height, 100dvh) - 16px); max-height: none;
+  margin: 0; padding: 0; border: 0; border-radius: 10px;
+  background: var(--ps-background); color: var(--ps-foreground); overflow: hidden;
+}
+.ps-session-search-overlay::backdrop { background: rgb(0 0 0 / .6); }
+.ps-session-search-overlay[open] { display: flex; }
+.ps-session-search-overlay > .ps-session-pane {
+  width: 100%; height: 100%; max-height: none; min-height: 0; flex: 1;
+}
+.ps-session-search-overlay .ps-session-pane > .ps-panel-header {
+  flex-wrap: nowrap; min-height: 44px; height: auto; flex-basis: auto; padding: 2px 8px;
+}
+.ps-session-search-overlay .ps-session-pane > .ps-panel-header > .ps-panel-title { flex: 1; min-width: 0; }
+.ps-session-search-overlay .ps-session-pane > .ps-panel-header > .ps-panel-header-right { flex: 0 0 auto; width: auto; }
+.ps-session-search-overlay .ps-panel-actions button { min-width: 44px; min-height: 44px; }
+.ps-session-search-overlay .ps-session-find-controls { order: -1; border-top: 0; border-bottom: 1px solid var(--ps-border); }
+.ps-session-search-overlay .ps-session-pane .ps-session-list { flex: 1 1 0; min-height: 0; padding-bottom: calc(4px + var(--ps-list-tail)); }
 @media (max-width: 920px) {
-  .ps-mobile-session-pane { max-height: clamp(148px, 22vh, 160px); }
-  .ps-mobile-session-pane .ps-panel-body { overflow: hidden; }
+  .ps-mobile-session-pane { max-height: min(22vh, 148px); }
+  .ps-session-pane .ps-session-list { padding-bottom: calc(50px + var(--ps-list-tail)); }
 }

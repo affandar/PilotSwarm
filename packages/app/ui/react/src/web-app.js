@@ -4558,27 +4558,25 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
  * fleet. That only holds while every prop is referentially stable — hence the
  * hoisted click handler and ref setter rather than closures built per row.
  */
-/**
- * True when the primary input is a finger. Drag-to-folder is armed on
- * pointerdown and needs `touch-action: none` to receive a move stream — which
- * on a touch screen also means the list can no longer be scrolled by dragging
- * it, so the gesture is withheld there entirely.
- */
-function useCoarsePointer() {
-    const query = "(pointer: coarse)";
+/** Subscribe to viewport or input changes without remounting the pane. */
+function useMediaQuery(query) {
     const read = () => (typeof window !== "undefined" && typeof window.matchMedia === "function"
         ? window.matchMedia(query).matches
         : false);
-    const [coarse, setCoarse] = React.useState(read);
+    const [matches, setMatches] = React.useState(read);
     React.useEffect(() => {
         if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
         const media = window.matchMedia(query);
-        const onChange = (event) => setCoarse(event.matches);
+        const onChange = (event) => setMatches(event.matches);
+        setMatches(media.matches);
         media.addEventListener?.("change", onChange);
         return () => media.removeEventListener?.("change", onChange);
-    }, []);
-    return coarse;
+    }, [query]);
+    return matches;
 }
+
+// Withhold drag-to-folder on touch screens so finger drags can scroll the list.
+function useCoarsePointer() { return useMediaQuery("(pointer: coarse)"); }
 
 const RAIL_ORIGIN_PX = 13;
 const RAIL_STEP_PX = 11;
@@ -5052,11 +5050,10 @@ function useAxisLockedPan(ref, enabled = true) {
     }, [ref, enabled]);
 }
 
-const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, listRef = null }) {
+const SessionSearchControl = React.memo(function SessionSearchControl({ query = "", onQuery, matchCount = 0, mobile = false, expanded = false, onOpen, onClose, triggerRef, listRef = null }) {
     // Keep typing local: expensive list filtering and external-store updates
     // must never be part of the input's immediate render path.
     const [draft, setDraft] = React.useState(query);
-    const [mobileOpen, setMobileOpen] = React.useState(Boolean(query));
     const timer = React.useRef(null);
     const published = React.useRef(query);
     const composing = React.useRef(false);
@@ -5075,29 +5072,24 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
         cancel(); published.current = query; setDraft(query);
     }, [query]);
     const inputRef = React.useRef(null);
-    React.useEffect(() => {
-        if (query) setMobileOpen(true);
-    }, [query]);
-    const open = () => {
-        setMobileOpen(true);
-        requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
-    };
     const closeOrClear = () => {
         if (draft || query) { setDraft(""); publish(""); }
-        else setMobileOpen(false);
+        else onClose?.();
     };
     const resultLabel = draft !== query ? "Searching…" : draft
         ? `${matchCount} ${matchCount === 1 ? "match" : "matches"}` : "";
     return React.createElement("div", {
-        className: `ps-session-search${mobileOpen ? " is-open" : ""}`,
+        className: `ps-session-search${expanded ? " is-open" : ""}`,
         "data-session-search": "true",
     },
     mobile ? React.createElement("button", {
         type: "button",
         className: "ps-session-search-trigger",
+        ref: triggerRef,
+        "aria-expanded": expanded,
         "aria-label": "Search sessions",
         title: "Search sessions",
-        onClick: open,
+        onClick: onOpen,
     }, React.createElement(SearchGlyph)) : null,
     React.createElement("div", { className: "ps-session-search-fields" },
         React.createElement(SearchGlyph),
@@ -5128,7 +5120,7 @@ const SessionSearchControl = React.memo(function SessionSearchControl({ query = 
             role: "status",
             "aria-live": "polite",
         }, resultLabel) : null,
-        (draft || mobile) ? React.createElement("button", {
+        draft ? React.createElement("button", {
             type: "button",
             className: "ps-session-search-clear",
             "aria-label": draft ? "Clear session search" : "Close session search",
@@ -5145,6 +5137,11 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // sessions-ONLY layout is the exception: it has the whole screen and the
     // detail box is the point of asking for it.
     const isMobilePane = String(panelClassName).includes("ps-mobile-session-pane");
+    const compactSearch = useMediaQuery("(max-width: 920px)");
+    const [searchOpen, setSearchOpen] = React.useState(false);
+    const searchOverlay = compactSearch && searchOpen;
+    const searchDialogRef = React.useRef(null);
+    const searchTriggerRef = React.useRef(null);
     // Vertical is the primary scroll axis; sideways takes a deliberate swipe.
     const sessionListRef = React.useRef(null);
     // Selection reverts to plain taps wherever the primary input is a finger:
@@ -5253,6 +5250,35 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         }
         searchEnvRef.current?.setQuery?.(next);
     }, []);
+    const closeSearch = React.useCallback(() => {
+        setSearchOpen(false);
+        setSearchQuery("");
+        requestAnimationFrame(() => searchTriggerRef.current?.focus({ preventScroll: true }));
+    }, [setSearchQuery]);
+    React.useLayoutEffect(() => {
+        const dialog = searchDialogRef.current;
+        if (!searchOverlay || !dialog) return undefined;
+        const viewport = window.visualViewport;
+        const resize = () => {
+            dialog.style.top = `${(viewport?.offsetTop || 0) + 8}px`;
+            dialog.style.left = `${(viewport?.offsetLeft || 0) + 8}px`;
+            dialog.style.width = `${(viewport?.width || window.innerWidth) - 16}px`;
+            dialog.style.height = `${(viewport?.height || window.innerHeight) - 16}px`;
+        };
+        resize();
+        dialog.showModal();
+        dialog.querySelector("input")?.focus({ preventScroll: true });
+        viewport?.addEventListener("resize", resize);
+        viewport?.addEventListener("scroll", resize);
+        window.addEventListener("resize", resize);
+        return () => {
+            viewport?.removeEventListener("resize", resize);
+            viewport?.removeEventListener("scroll", resize);
+            window.removeEventListener("resize", resize);
+            dialog.close();
+        };
+    }, [searchOverlay]);
+    React.useEffect(() => { if (!compactSearch) setSearchOpen(false); }, [compactSearch]);
     React.useLayoutEffect(() => {
         if (viewState.filterQuery || !searchScrollRef.current.restore || !sessionListRef.current) return;
         sessionListRef.current.scrollTop = searchScrollRef.current.top;
@@ -5386,7 +5412,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
     // rows/viewState from a ref that is refreshed on every render instead of
     // closing over them.
     const clickEnv = React.useRef(null);
-    clickEnv.current = { rows, viewState, controller, selection };
+    clickEnv.current = { rows, viewState, controller, selection, searchOverlay, closeSearch };
     // ── Drag sessions into / out of groups ────────────────────────────
     // Pointer-driven so it works from <button> rows, can render a collection
     // ghost for a multi-selection, and can highlight the destination folder.
@@ -5712,6 +5738,15 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
 
     const handleRowClick = React.useCallback((event, row) => {
         const { rows: currentRows, viewState: current, controller: ctl, selection: pick } = clickEnv.current;
+        if (clickEnv.current.searchOverlay && !row.isGroup) {
+            if (pick) pick.onSelect(row.sessionId);
+            else {
+                ctl.setFocus("sessions");
+                ctl.loadSession(row.sessionId).catch(() => {});
+            }
+            clickEnv.current.closeSearch();
+            return;
+        }
         if (pick) {
             if (row.isGroup || (row.hasChildren && row.active)) ctl.dispatch({ type: row.collapsed ? "sessions/expand" : "sessions/collapse", sessionId: row.sessionId });
             if (!row.isGroup) pick.onSelect(row.sessionId);
@@ -5955,14 +5990,12 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                     : "Release to cancel"))
         : null;
 
-    return React.createElement(React.Fragment, null,
-    dragGhost,
-    actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
-        title: [{ text: "Sessions", color: "yellow", bold: true }],
+    const sessionPanel = actionsOnly ? (actionsHost ? createPortal(React.createElement("div", { className: "ps-moa-control-actions", onClick: onAction }, panelActions), actionsHost) : null) : React.createElement(Panel, {
+        title: [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }],
         color: "yellow",
         focused: viewState.focused,
         theme,
-        actions: selection ? React.createElement(React.Fragment, null,
+        actions: searchOverlay ? React.createElement(IconButton, { label: "Close session search", icon: "×", onClick: closeSearch }) : selection ? React.createElement(React.Fragment, null,
             selection.onCreate ? React.createElement(IconButton, {
                 className: "ps-mini-button", icon: React.createElement(PlusGlyph),
                 label: "Create New Session", onClick: selection.onCreate,
@@ -6010,7 +6043,16 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
             }))),
-    React.createElement("div", { className: "ps-session-find-controls" },
+    React.createElement("div", {
+        className: "ps-session-find-controls",
+        onPointerDown: (event) => {
+            // Keep the search keyboard open while tapping sort, refresh, or clear.
+            // Safari otherwise blurs the field without focusing the button.
+            if (compactSearch && event.button === 0 && event.target.closest?.("button")
+                && event.currentTarget.contains(document.activeElement)
+                && document.activeElement?.matches("input")) event.preventDefault();
+        },
+    },
         React.createElement("div", { className: "ps-session-sort-controls" },
             React.createElement("div", { className: "ps-session-sort-modes", role: "group", "aria-label": "Session sort order" },
                 ...[["used", "Recently used", "M12 8v4l3 2", true], ["updated", "Recently updated", "M3 12h4l3-7 4 14 3-7h4"], ["saved", "Saved order", "M6 3h12v18l-6-4-6 4Z"]].map(([mode, label, path, clock]) => React.createElement(IconButton, {
@@ -6030,10 +6072,14 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             query: viewState.filterQuery,
             onQuery: setSearchQuery,
             matchCount: searchMatchCount,
-            mobile: isMobilePane,
+            mobile: compactSearch,
+            expanded: searchOverlay,
+            onOpen: () => setSearchOpen(true),
+            onClose: closeSearch,
+            triggerRef: searchTriggerRef,
             listRef: sessionListRef,
         })),
-    (showDetailBox === null ? !isMobilePane : showDetailBox)
+    !searchOverlay && (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
             session: activeSession,
             childCount: activeRow?.childCount || 0,
@@ -6047,7 +6093,21 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 collapsed: !detailCollapsed,
             }),
         })
-        : null),
+        : null);
+
+    return React.createElement(React.Fragment, null,
+    dragGhost,
+    !searchOverlay ? sessionPanel : null,
+    React.createElement("dialog", {
+        ref: searchDialogRef,
+        className: "ps-session-search-overlay",
+        "aria-label": "Find a session",
+        onCancel: event => { event.preventDefault(); closeSearch(); },
+        onKeyDownCapture: event => {
+            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeSearch(); }
+        },
+        onClick: event => { if (event.target === event.currentTarget) closeSearch(); },
+    }, searchOverlay ? sessionPanel : null),
     (manageOpen && activeSession && !activeSession.isGroup)
         ? React.createElement(SessionModifyModal, {
             controller,
@@ -7225,14 +7285,14 @@ export function evaluateKeyboardTakeover(baseline, viewportWidth, viewportHeight
 }
 
 /**
- * True while the on-screen keyboard is up AND the chat composer summoned it.
+ * True while the on-screen keyboard is up AND a matching control has focus.
  * Both conditions matter: height alone would fire for a modal's text field
  * and collapse the workspace behind the modal; focus alone would fire for
  * hardware keyboards that shrink nothing. State-driven on the keyboard
  * itself, so it reverts the moment the keyboard goes away — including the
  * iOS swipe-dismiss that closes the keyboard without blurring the input.
  */
-function useKeyboardTakeover(enabled) {
+function useKeyboardTakeover(enabled, focusSelector = ".ps-prompt-input") {
     const [takeover, setTakeover] = React.useState(false);
     React.useEffect(() => {
         if (!enabled || typeof window === "undefined" || !window.visualViewport) {
@@ -7244,7 +7304,7 @@ function useKeyboardTakeover(enabled) {
         let frame = 0;
         const evaluate = () => {
             frame = 0;
-            const composerFocused = Boolean(document.activeElement?.classList?.contains("ps-prompt-input"));
+            const composerFocused = Boolean(document.activeElement?.matches?.(focusSelector));
             const next = evaluateKeyboardTakeover(baseline, viewport.width, viewport.height, composerFocused);
             baseline = next.baseline;
             setTakeover(next.takeover);
@@ -7262,7 +7322,7 @@ function useKeyboardTakeover(enabled) {
             window.removeEventListener("focusin", schedule);
             window.removeEventListener("focusout", schedule);
         };
-    }, [enabled]);
+    }, [enabled, focusSelector]);
     return enabled ? takeover : false;
 }
 

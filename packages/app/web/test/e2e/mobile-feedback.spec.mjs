@@ -34,18 +34,18 @@ for (const browserName of ['chromium', 'webkit']) {
  await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
  await page.getByRole('button',{name:'Add first MoA panel'}).click();
  const search=page.getByRole('textbox',{name:'Find a session'});
- await expect(search).not.toBeFocused();
+ await expect(search).toBeHidden();
  await expect(page.locator('.ps-moa-session-picker .ps-session-list-button').first()).toBeVisible();
- await page.setViewportSize({width:390,height:360}); await search.focus();
- await expect.poll(async()=>{const dialog=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();return dialog.y+dialog.height;}).toBeLessThanOrEqual(360);
+ await page.setViewportSize({width:390,height:360}); await page.getByRole('button',{name:'Search sessions',exact:true}).click();
+ await expect.poll(async()=>{const dialog=await page.getByRole('dialog',{name:'Find a session',exact:true}).boundingBox();return dialog.y+dialog.height;}).toBeLessThanOrEqual(360);
  // iOS keeps its layout viewport while the keyboard shrinks/pans only
  // visualViewport. Exercise that event path separately from layout resize.
  await page.setViewportSize({width:390,height:844});
  await page.evaluate(()=>{const v=window.visualViewport;Object.defineProperties(v,{height:{configurable:true,value:360},offsetTop:{configurable:true,value:90}});v.dispatchEvent(new Event('resize'));v.dispatchEvent(new Event('scroll'));});
- await expect.poll(async()=>{const d=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();return d.y+d.height;}).toBeLessThanOrEqual(450);
- const shifted=await page.getByRole('dialog',{name:'Sessions',exact:true}).boundingBox();expect(shifted.y).toBeGreaterThanOrEqual(90);
+ await expect.poll(async()=>{const d=await page.getByRole('dialog',{name:'Find a session',exact:true}).boundingBox();return d.y+d.height;}).toBeLessThanOrEqual(450);
+ const shifted=await page.getByRole('dialog',{name:'Find a session',exact:true}).boundingBox();expect(shifted.y).toBeGreaterThanOrEqual(90);
  const list=await page.locator('.ps-moa-session-picker .ps-session-list').boundingBox();expect(list.height).toBeGreaterThan(60);
- await expect(page.getByRole('button',{name:'Close dialog'})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Close session search'})).toBeVisible();
  await search.fill('Session');
  await expect(page.locator('.ps-moa-session-picker .ps-session-list-button').first()).toBeVisible();
  await page.screenshot({path:`/tmp/mobile-picker-${browserName}-${themeId}.png`});

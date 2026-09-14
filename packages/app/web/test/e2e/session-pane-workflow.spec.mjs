@@ -110,7 +110,8 @@ for (const width of [1600, 390]) test(`artifact opens its owning session outside
 for (const width of [1600, 390]) test(`session sort is available and stable until refresh at ${width}px`, async ({ page }) => {
     const f = await fixture(page, width);
     const select = page.getByRole('group', { name: 'Session sort order', exact: true }).filter({ visible: true });
-    // Mobile split layout includes the same session controls.
+    // Mobile reveals search and sort together on demand.
+    if (width < 921) await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
     await expect(select).toBeVisible();
     await expect(select.getByRole('button')).toHaveCount(3);
     await expect(select.locator('button[aria-pressed=true]')).toHaveCount(1);
@@ -134,6 +135,7 @@ for (const width of [1600, 390]) test(`session sort is available and stable unti
     await select.getByRole('button', { name: 'Recently used', exact: true }).press('Enter');
     await expect(select.getByRole('button', { name: 'Recently used', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await rows.filter({ hasText: 'Session 2' }).click();
+    if (width < 921) await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
     const before = await ids();
     await page.getByRole('button', { name: 'Refresh session order' }).filter({ visible: true }).click();
     await expect.poll(async () => (await ids())[0]).toBe(sid(2));

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.72 — 2026-09-14
+
+- SDK: honor runtime-only tool exclusions when binding sessions and refresh warm bindings when those exclusions change.
+- Mobile: open session search in a viewport-sized overlay from the partial list, full list, or MoA picker. Keep search and sorting above scrollable results and the keyboard; selecting a session closes search.
+
+- Validation: full baseline and HorizonDB gates exercised 2,025 SDK cases each. Baseline has 2,009 passes and 16 optional/environment skips after repairing and rerunning its stale browser contract; HorizonDB has 2,022 passes and three skips, plus all 149 live store tests. Shared unit/UI, deployment and MCP checks passed. All 314 browser UX scenarios pass after updating mobile-picker fixtures for the overlay; release builds and all three package previews passed.
+
 ## 0.5.71 — 2026-09-14
 
 - Portal: add Saved, Recently used, and Recently updated session ordering, with accessible icon controls and explicit refresh. Keep system sessions, pinned sections, folders, and child hierarchies intact; live activity does not reorder existing rows.

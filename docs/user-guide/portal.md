@@ -44,6 +44,14 @@ Use **Find a session…** in the Sessions pane or workspace session picker to
 filter the catalog. Text appears immediately, and results update after a short
 typing pause. Clearing the field restores the full list.
 
+On mobile, tap the search icon inside a visible session list to open a search
+overlay above the chat. Search and sort controls stay at the top while results
+scroll through the remaining space, including above the keyboard. This works
+from the partial list, full list, and MoA session picker. Selecting a session
+closes search and opens that session; in the MoA picker it selects the session
+for the panel. Close or Escape returns without switching chats and clears the
+search filter.
+
 The icon buttons beside search (above it on narrow panes) offer **Recently used**, **Recently updated**,
 and **Saved order** on desktop, mobile, and in the session picker. The clock, activity pulse, and bookmark icons show these modes; the selected icon is highlighted. Hover or long-press for a label. Recently used tracks
 sessions you open, focus in MoA, or message. Recently updated uses session update

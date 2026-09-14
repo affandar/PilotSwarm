@@ -197,8 +197,11 @@ describe("portal browser contracts", () => {
         // rather than "it didn't render", but it is the same omission.
         assertIncludes(webApp, "manualOrder: rootState.sessions.manualOrder",
             "app-level selector state must carry the manual session order (profile save reads it)");
-        assertIncludes(webApp, "state.manualOrder, state.pinnedIds",
-            "the profile-save effect must re-run when the manual order changes");
+        const profileSaveDependencies = webApp.match(/\}, \[controller, state\.moa, ([^\]]*)\]\);/)?.[1].split(", ") || [];
+        for (const dependency of ["state.manualOrder", "state.pinnedIds", "state.sessionSortMode", "state.sessionUsedAt"]) {
+            assert(profileSaveDependencies.includes(dependency),
+                `the profile-save effect must re-run when ${dependency} changes`);
+        }
         // The startup merge rebuilds the settings object key by key, so a key
         // missing THERE is dropped on load and the save effect then writes the
         // empty value back over the stored one. That is a data-losing failure
@@ -251,7 +254,7 @@ describe("portal browser contracts", () => {
         assertIncludes(webApp, 'label: "Download"', "portal files pane should surface a download affordance directly in the files pane (now an icon button)");
         assertIncludes(webApp, 'viewState.fullscreen ? "Exit fullscreen" : "Fullscreen"', "portal files pane should offer a fullscreen toggle (now an icon button with a tooltip label)");
         assertIncludes(webApp, "ps-workspace-full", "portal should render a dedicated fullscreen files workspace");
-        assertIncludes(webApp, 'title: [{ text: "Sessions", color: "yellow", bold: true }]', "portal should keep the Sessions title data plain while the panel chrome paints the full header strip");
+        assertIncludes(webApp, 'title: [{ text: searchOverlay ? "Find a session" : "Sessions", color: "yellow", bold: true }]', "portal should name the search overlay while keeping the normal Sessions header");
         assertIncludes(webApp, "React.createElement(Line, {", "portal file rows should render through the shared line component");
         assertIncludes(webApp, "view.fullscreen\n        ? previewPane", "portal fullscreen files mode should hide the artifact list");
         assertIncludes(webApp, "MarkdownPreviewPanel", "portal should render markdown previews through a dedicated component");

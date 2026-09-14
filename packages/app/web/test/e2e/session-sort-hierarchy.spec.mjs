@@ -48,6 +48,7 @@ for (const browserName of ['chromium', 'webkit']) test.describe(browserName, () 
             const page = await browser.newPage({ viewport, hasTouch: viewport.width < 921, isMobile: viewport.width < 921 });
             try {
                 const errors = await fixture(page);
+                if (viewport.width < 921) await page.getByRole('button', { name: 'Search sessions', exact: true }).click();
                 const pane = page.locator('.ps-session-pane:visible').first();
                 const rows = pane.locator('.ps-session-list-button');
                 const ids = () => rows.evaluateAll(nodes => nodes.map(node => node.dataset.sessionId));
