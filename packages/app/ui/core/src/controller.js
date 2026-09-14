@@ -2569,7 +2569,7 @@ export class PilotSwarmUiController {
             this._liveTurnIdleTimers?.delete(sessionId);
             const history = this.getState().history.bySessionId.get(sessionId);
             if (history) this.dispatch({ type: "history/set", sessionId, history: {
-                ...history, chat: history.chat.filter((item) => !item.liveTurn),
+                ...history, chat: (history.chat || []).filter((item) => !item.liveTurn),
             } });
         }
         if (this.activeSessionUnsub) {
@@ -2958,6 +2958,9 @@ export class PilotSwarmUiController {
 
     async ensureSessionHistory(sessionId, { force = false } = {}) {
         if (!sessionId) return null;
+        if (this.sessionHistoryLoads.has(sessionId)) {
+            return this.sessionHistoryLoads.get(sessionId);
+        }
         const existingHistory = this.getState().history.bySessionId.get(sessionId);
         const requestedLimit = Math.min(
             HISTORY_REENTRY_MAX_EVENTS,
@@ -2969,10 +2972,6 @@ export class PilotSwarmUiController {
         if (!force && existingHistory?.events) {
             return existingHistory;
         }
-        if (!force && this.sessionHistoryLoads.has(sessionId)) {
-            return this.sessionHistoryLoads.get(sessionId);
-        }
-
         // Re-entry catch-up: when the expanded window is already in memory,
         // fetch only the delta after lastSeq and append — the user's pulled-in
         // older history (and its cursor) survives switching sessions. Fall
