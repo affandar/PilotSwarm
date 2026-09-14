@@ -67,6 +67,16 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export { runWithTurnLifecycleHooks } from "./turn-lifecycle-hooks.js";
+export type {
+    AfterTurnContext,
+    AfterTurnHook,
+    BeforeTurnHook,
+    RunWithTurnLifecycleHooksOptions,
+    TurnLifecycleContext,
+    TurnLifecycleHooks,
+    TurnLifecycleStatus,
+} from "./turn-lifecycle-hooks.js";
 export {
     normalizeStartClientMessageIds,
     normalizeDurableStartTurn,

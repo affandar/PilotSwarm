@@ -957,6 +957,16 @@ export interface PilotSwarmWorkerOptions {
      */
     afterRunTurn?: AfterRunTurnHook;
     /**
+     * Runs once before each complete run-turn activity attempt. A failure
+     * prevents both the specialized preparation hook and the turn body.
+     */
+    beforeTurn?: import("./turn-lifecycle-hooks.js").BeforeTurnHook<SerializableSessionConfig>;
+    /**
+     * Runs once after the complete run-turn activity attempt finishes,
+     * including specialized cleanup. Failures propagate to the runtime.
+     */
+    afterTurn?: import("./turn-lifecycle-hooks.js").AfterTurnHook<SerializableSessionConfig, TurnResult>;
+    /**
      * Activity routing filter (repo and owner affinity). Restricts which
      * duroxide activities this worker will dequeue. A workerOwner scopes each
      * repo/generic tag to that owner before the runtime starts, so repo and
