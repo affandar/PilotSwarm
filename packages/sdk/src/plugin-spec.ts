@@ -496,11 +496,15 @@ function validateLegacyPluginSources(entries: PluginSpecEntry[]): ValidatedPlugi
         const spec = specs[index];
         let key = normalizedPluginSpecKey(spec);
         if (spec.kind === "local") {
-            const resolved = fs.realpathSync(path.resolve(spec.path));
-            if (!fs.statSync(resolved).isDirectory()) {
-                throw new Error(`plugin path is not a directory: ${spec.path}`);
+            const candidate = path.resolve(spec.path);
+            try {
+                if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+                    key = `local:${caseFoldPluginPath(fs.realpathSync(candidate))}`;
+                }
+            } catch {
+                // Filesystem-dependent failures remain per-entry installation
+                // errors so one unavailable local source cannot disable peers.
             }
-            key = `local:${caseFoldPluginPath(resolved)}`;
         }
         const prior = seen.get(key);
         if (prior !== undefined) {

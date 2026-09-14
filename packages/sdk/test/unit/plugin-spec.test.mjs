@@ -169,3 +169,22 @@ test("legacy specs reject duplicate sources and invalid refs before checkout", a
     assert.match(traces.at(-1), /ref is not a valid/);
     assert.equal(fs.existsSync(path.join(root, "ref-cache")), false);
 });
+
+test("an unavailable legacy local source does not disable valid peers", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-spec-isolation-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const valid = path.join(root, "valid");
+    fs.mkdirSync(path.join(valid, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(valid, "agents", "example.agent.md"), "example");
+
+    const result = await installPluginSpecs({
+        spec: `local:${path.join(root, "missing")};local:${valid}`,
+        cacheDir: path.join(root, "cache"),
+    });
+
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results[0].status, "error");
+    assert.match(result.results[0].error, /no such file|cannot find|not found/i);
+    assert.equal(result.results[1].status, "ok");
+    assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
+});
