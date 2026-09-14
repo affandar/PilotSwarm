@@ -953,6 +953,9 @@ function formatActivity(event) {
     // lifecycle belongs in the parent's activity feed.
     if (event.eventType?.startsWith("native.") || event.eventType === "session.background_tasks_changed") return null;
     switch (event.eventType) {
+        case "session.message_rejected":
+            runs = buildLabeledActivityRuns(time, "[message rejected]", "red", String(event.data?.message || "The runtime rejected this message."), "red");
+            break;
         case "subagent.started":
         case "subagent.completed":
         case "subagent.failed": {

@@ -75,6 +75,18 @@ function driveUntilStop(gen, ctx) {
 }
 
 describe("orchestration version upgrades", () => {
+    it("keeps the pre-admission 1.0.78 handler frozen while registering 1.0.79", async () => {
+        const { DURABLE_SESSION_ORCHESTRATION_REGISTRY, DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-registry.ts");
+        const frozen = await import("../../src/orchestration_1_0_78/index.ts");
+        const current = await import("../../src/orchestration/index.ts");
+        expect(frozen.CURRENT_ORCHESTRATION_VERSION).toBe("1.0.78");
+        expect(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find((entry) => entry.version === "1.0.78")?.handler)
+            .toBe(frozen.durableSessionOrchestration_1_0_78);
+        expect(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find((entry) => entry.version === "1.0.79")?.handler)
+            .toBe(current.durableSessionOrchestration_1_0_79);
+        expect(current.CURRENT_ORCHESTRATION_VERSION).toBe(DURABLE_SESSION_LATEST_VERSION);
+    });
+
     beforeEach(() => {
         mockSession = {
             checkpoint: vi.fn(() => ({ effect: "checkpoint" })),

@@ -144,6 +144,7 @@ Do not guess these answers when the user has not provided them. Offer the standa
 
 ## Guardrails
 
+- Inline prompt/answer JSON envelopes are capped at 12 KiB of serialized UTF-8, including metadata and escaping. Handle `MESSAGE_TOO_LARGE` (HTTP 413) as a rejection, preserve the request, and upload large input as an artifact with a short prompt reference. Do not automatically retry the same oversized message. Observe `session.message_rejected` for runtime rejections after enqueue; correlate `clientMessageIds`. See `https://github.com/affandar/pilotswarm/blob/main/docs/api/clients.md#inline-message-limits`.
 - Do not assume the client can execute tools.
 - Do not collapse prompts, worker logic, and app wiring into one file unless the user explicitly wants a tiny demo.
 - Prefer plugin files for prompts and skills even in SDK-first apps.

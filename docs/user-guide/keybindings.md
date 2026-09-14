@@ -125,6 +125,13 @@ Notes:
 - Pressing `↑` at the top prompt boundary recalls the most recent pending item for editing. Pressing `↓` at the bottom boundary moves forward through pending items and eventually returns to the live draft.
 - `Esc` while editing a recalled pending item cancels that item before it becomes durable.
 
+Terminal-session and oversized-message refusals appear as `x` rejected with a
+`Not sent` reason and stop automatic retries. The draft remains in the outbox.
+Recall it with the same prompt-navigation keys, edit it, and send explicitly;
+the corrected request receives a new message ID. Dismissing a rejected draft is
+local only. For large inputs, upload an artifact and send a short reference;
+see [inline message limits](../api/clients.md#inline-message-limits).
+
 ## Modals and Dialogs
 
 | Context | Keys |

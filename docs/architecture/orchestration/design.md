@@ -221,11 +221,25 @@ After the loop, any items still in the stash are appended to the FIFO via
 ### KV FIFO buckets
 
 `FIFO_BUCKET_COUNT = 20` keys (`fifo.0` … `fifo.19`), each capped at
-`MAX_BUCKET_BYTES = 14 KB`. Items are appended to the highest non-empty bucket;
-when serialized size would exceed the cap, a new bucket is allocated.
+`MAX_BUCKET_BYTES = 14 KiB` of serialized UTF-8 JSON. Since 1.0.79, an item is
+checked on its own before rollover; a new bucket must not inherit an oversized
+item. Oversized prompts/answers produce a durable `session.message_rejected`
+receipt without a KV write or session failure. Rejected prompts do not enter
+the duplicate-suppression receipt set. Timer and buffered-child state remain
+intact when prompt augmentation exceeds the limit.
+
+Items are appended to the highest non-empty bucket; when combined serialized
+size exceeds the cap, a new bucket is allocated. Drain and pre-dispatch sweep
+reserve a bucket per stashed item and stop dequeueing before capacity runs out,
+leaving later work on the durable incoming queue. The defensive append fallback
+reports `MESSAGE_QUEUE_FULL` instead of silently losing work.
 `popFifoItem` pulls from the lowest non-empty bucket; `popFirstFifoItemMatching`
 takes the first match (used to prioritize interactive prompts/answers ahead of
 queued timer fires).
+
+Public prompt/answer admission is capped at 12 KiB, below the FIFO budget to
+leave room for runtime metadata. See [inline message limits](../../api/clients.md#inline-message-limits).
+1.0.78 is frozen and remains registered; the new protections are in 1.0.79.
 
 ### Prompt timer-interrupt augmentation
 

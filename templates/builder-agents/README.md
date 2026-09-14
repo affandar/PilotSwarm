@@ -56,6 +56,11 @@ Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval r
 
 Artifact workflows should assume the consolidated `write_artifact` / `read_artifact` / `list_artifacts` surface. Files that already exist on the worker (builds, archives, binaries) upload via `write_artifact({fromFile})` and download via `read_artifact({toFile})` — bytes stream server-side and every result carries a `sha256` plus the `artifact://` link. Reserve inline `content` (with `contentType` + base64 for small binaries) for text the agent is authoring, and explain that the browser portal downloads binary artifacts rather than previewing them inline.
 
+The [inline message limit](../../docs/api/clients.md#inline-message-limits) is
+12 KiB of serialized UTF-8 per prompt/answer envelope, not per model context.
+Scaffolds should handle `MESSAGE_TOO_LARGE` without retrying unchanged input,
+preserve the request, and use artifact references for large documents.
+
 The CLI builder template also assumes runnable scaffolds should:
 
 - generate checked-in launcher and cleanup scripts

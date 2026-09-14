@@ -32,7 +32,12 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {},
         traceInfo: (message) => traces.push(message),
         setCustomStatus: (value) => statuses.push(JSON.parse(value)),
         getValue: (key) => (values.has(key) ? values.get(key) : null),
-        setValue: (key, value) => values.set(key, value),
+        setValue: (key, value) => {
+            if (Buffer.byteLength(value, "utf8") > 16 * 1024) {
+                throw new Error(`KV value for ${key} exceeds 16 KiB`);
+            }
+            values.set(key, value);
+        },
         clearValue: (key) => values.delete(key),
         utcNow: () => ({ effect: "utcNow" }),
         dequeueEvent: () => ({ effect: "dequeueEvent" }),
@@ -109,7 +114,7 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {},
         const handlerName = `durableSessionOrchestration_${String(orchestrationModule.CURRENT_ORCHESTRATION_VERSION || "")
             .replace(/\./g, "_")}`;
         const handler = orchestrationModule[handlerName];
-        const gen = handler(ctx, {
+        let gen = handler(ctx, {
             sessionId: "cancel-session",
             config: {},
             iteration: 0,
@@ -123,12 +128,17 @@ function createHarness({ values = new Map(), messages = [], inputOverrides = {},
             const next = gen.next(input);
             if (next.done) return;
             if (next.value?.effect === "dequeueEvent" && scheduledMessages.length === 0) return;
+            if (next.value?.effect === "continueAsNewVersioned" && scheduledMessages.length > 0) {
+                gen = handler(ctx, next.value.input);
+                input = undefined;
+                continue;
+            }
             input = resolve(next.value);
         }
         throw new Error("Exceeded step limit before idle.");
     }
 
-    return { runUntilIdle, traces, runTurns, statuses, values };
+    return { runUntilIdle, traces, runTurns, statuses, values, ctx };
 }
 
 describe("cancelPendingMessage orchestration", () => {
@@ -154,6 +164,98 @@ describe("cancelPendingMessage orchestration", () => {
             summarizeSession: vi.fn(() => ({ effect: "summarizeSession" })),
             getOrchestrationStats: vi.fn(() => ({ effect: "getOrchestrationStats" })),
         };
+    });
+
+    it.each([
+        { label: "large ASCII", prompt: "x".repeat(590295) },
+        { label: "UTF-8", prompt: String.fromCodePoint(0x1f600).repeat(4000) },
+        { label: "JSON escapes", prompt: String.fromCharCode(0).repeat(3000) },
+    ])("rejects an oversized FIFO message ($label) and still processes a later valid request", async ({ prompt }) => {
+        const harness = createHarness({
+            messages: [
+                { atMs: 0, payload: { prompt, clientMessageIds: ["oversized-message"] } },
+                { atMs: 200, payload: { prompt: "valid follow-up", clientMessageIds: ["valid-message"] } },
+            ],
+        });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["valid follow-up"]);
+        expect(mockManager.recordSessionEvent).toHaveBeenCalledWith("cancel-session", [expect.objectContaining({
+            eventType: "session.message_rejected",
+            data: expect.objectContaining({ code: "MESSAGE_TOO_LARGE", clientMessageIds: ["oversized-message"] }),
+        })]);
+        expect(mockManager.recordSessionEvent.mock.calls.flatMap((call) => call[1]).some((event) =>
+            event.eventType === "session.message_duplicate_suppressed" && event.data.clientMessageIds.includes("oversized-message"),
+        )).toBe(false);
+    });
+
+    it("rejects an oversized pre-dispatch message without preventing valid work", async () => {
+        const harness = createHarness({ messages: [
+            { atMs: 0, payload: { prompt: "first request", clientMessageIds: ["first"] } },
+            { atMs: 50, payload: { prompt: "x".repeat(590295), clientMessageIds: ["too-big-in-sweep"] } },
+            { atMs: 200, payload: { prompt: "next request", clientMessageIds: ["next"] } },
+        ] });
+        await harness.runUntilIdle();
+        expect(harness.runTurns.map((turn) => turn.prompt).join("\n\n")).toBe("first request\n\nnext request");
+        expect(mockManager.recordSessionEvent).toHaveBeenCalledWith("cancel-session", [expect.objectContaining({
+            eventType: "session.message_rejected",
+            data: expect.objectContaining({ code: "MESSAGE_TOO_LARGE", clientMessageIds: ["too-big-in-sweep"] }),
+        })]);
+    });
+
+    it("preserves an interrupted wait when its augmented prompt exceeds the FIFO limit", async () => {
+        const harness = createHarness({
+            inputOverrides: { activeTimerState: { type: "wait", remainingMs: 1000, originalDurationMs: 1000, reason: "x".repeat(2500) } },
+            messages: [{ atMs: 0, payload: { prompt: "p".repeat(12000), clientMessageIds: ["oversized-augmentation"] } }],
+        });
+        await harness.runUntilIdle();
+        expect(harness.runTurns.some((turn) => turn.prompt.includes("p".repeat(12000)))).toBe(false);
+        expect(harness.runTurns.some((turn) => turn.prompt.startsWith("The 1 second wait is now complete."))).toBe(true);
+        expect(mockManager.recordSessionEvent).toHaveBeenCalledWith("cancel-session", [expect.objectContaining({
+            eventType: "session.message_rejected",
+            data: expect.objectContaining({ clientMessageIds: ["oversized-augmentation"] }),
+        })]);
+    });
+
+    it("leaves overflow work on the incoming queue instead of losing messages at the FIFO bucket limit", async () => {
+        const prompts = Array.from({ length: 25 }, (_, index) => `request ${index}: ${"x".repeat(8000)}`);
+        const harness = createHarness({ messages: prompts.map((prompt, index) => ({
+            atMs: 0, payload: { prompt, clientMessageIds: [`capacity-${index}`] },
+        })) });
+        await harness.runUntilIdle();
+        expect(harness.runTurns.map((turn) => turn.prompt).join("\n\n")).toBe(prompts.join("\n\n"));
+        expect(mockManager.recordSessionEvent.mock.calls.flatMap((call) => call[1]).some((event) => event.eventType === "session.message_rejected")).toBe(false);
+    });
+
+    it("accepts an exact-size FIFO item and rejects one extra byte before any write", async () => {
+        const { appendToFifo } = await import("../../src/orchestration/queue.ts");
+        const { MAX_BUCKET_BYTES } = await import("../../src/orchestration/state.ts");
+        const harness = createHarness();
+        const overhead = Buffer.byteLength(JSON.stringify([{ kind: "prompt", prompt: "" }]));
+        const item = { kind: "prompt", prompt: "x".repeat(MAX_BUCKET_BYTES - overhead) };
+        expect(appendToFifo({ ctx: harness.ctx }, [item])).toEqual([]);
+        const before = [...harness.values.entries()];
+        const rejected = appendToFifo({ ctx: harness.ctx }, [{ ...item, prompt: `${item.prompt}x` }]);
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0]).toMatchObject({ code: "MESSAGE_TOO_LARGE", actualBytes: MAX_BUCKET_BYTES + 1, maxBytes: MAX_BUCKET_BYTES });
+        expect([...harness.values.entries()]).toEqual(before);
+    });
+
+    it("rolls FIFO buckets over using serialized UTF-8 bytes and preserves both prompts", async () => {
+        const prompt = String.fromCodePoint(0x1f600).repeat(2100);
+        const harness = createHarness();
+        const { appendToFifo } = await import("../../src/orchestration/queue.ts");
+        expect(appendToFifo({ ctx: harness.ctx }, [
+            { kind: "prompt", prompt: `first ${prompt}`, clientMessageIds: ["unicode-first"] },
+            { kind: "prompt", prompt: `second ${prompt}`, clientMessageIds: ["unicode-second"] },
+        ])).toEqual([]);
+        expect(harness.values.has("fifo.1")).toBe(true);
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt).join("\n\n")).toBe(`first ${prompt}\n\nsecond ${prompt}`);
+        expect(mockManager.recordSessionEvent.mock.calls.flatMap((call) => call[1]).some((event) => event.eventType === "session.message_rejected")).toBe(false);
     });
 
     it.each(["Next question?", "Proceed?"])("does not attribute a second queued answer to the next question: %s", async (nextQuestion) => {

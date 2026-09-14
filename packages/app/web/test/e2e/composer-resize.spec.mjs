@@ -6,6 +6,57 @@ let stub;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
 
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    for (const failure of [
+        { code: "MESSAGE_TOO_LARGE", status: 413, message: "Message exceeds 12288 serialized UTF-8 bytes. Upload large content as an artifact and send a short reference." },
+        { code: "INTERNAL_ERROR", status: 409, message: "Session 11111110 is a terminal orchestration and cannot accept new messages." },
+    ]) {
+        test(`retains rejected drafts without retrying ${failure.status} at ${viewport.width}px`, async ({ page }, testInfo) => {
+            await page.setViewportSize(viewport);
+            const requests = [];
+            await page.routeWebSocket("**/api/v1/ws", () => {});
+            await page.route(`**/sessions/${sessionId}/messages`, async (route) => {
+                requests.push(route.request().postDataJSON());
+                await route.fulfill(requests.length === 1
+                    ? { status: failure.status, json: { ok: false, error: { code: failure.code, message: failure.message } } }
+                    : { json: { ok: true, result: { queued: true } } });
+            });
+            await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+            const input = page.locator(".ps-prompt-input");
+            await expect(input).toBeVisible();
+            const prompt = "Preserve the original diagnostic request for recovery.";
+            await input.fill(prompt);
+            await page.getByRole("button", { name: "Send prompt", exact: true }).click();
+            await expect(input).toHaveValue("");
+            await expect(page.getByText("queued prompts: 1 rejected", { exact: false })).toBeVisible();
+            const reason = page.getByText(`Not sent: ${failure.message}`, { exact: true });
+            await expect(reason).toBeVisible();
+            await expect(page.getByText(prompt, { exact: false }).last()).toBeVisible();
+            await input.press("Enter");
+            expect(requests).toHaveLength(1);
+            const reasonBox = await reason.boundingBox();
+            expect(reasonBox.x).toBeGreaterThanOrEqual(0);
+            expect(reasonBox.x + reasonBox.width).toBeLessThanOrEqual(viewport.width + 1);
+            const screenshotPath = testInfo.outputPath("rejected-draft.png");
+            await page.screenshot({ path: screenshotPath });
+            await testInfo.attach("rejected-draft", { path: screenshotPath, contentType: "image/png" });
+
+            if (failure.status === 413) {
+                await page.getByRole("button", { name: "Recover rejected prompt", exact: true }).click();
+                await expect(input).toHaveValue(prompt);
+                await input.fill("Read the uploaded artifact.");
+                await page.getByRole("button", { name: "Resend prompt", exact: true }).click();
+                await expect(page.getByText("queued prompts: 1 queued", { exact: false })).toBeVisible();
+                expect(requests).toHaveLength(2);
+                expect(requests[0].options.clientMessageIds).toHaveLength(1);
+                expect(requests[1].options.clientMessageIds).toHaveLength(1);
+                expect(requests[1].options.clientMessageIds).not.toEqual(requests[0].options.clientMessageIds);
+                await expect(reason).toHaveCount(0);
+            }
+        });
+    }
+}
+
 for (const browserName of ["chromium", "webkit"]) {
     test.describe(`${browserName} mobile composer`, () => {
         test("send/acknowledgement shrinks the empty input without resize or another keystroke", async () => {

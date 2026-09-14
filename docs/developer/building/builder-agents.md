@@ -101,4 +101,8 @@ Builder templates should assume:
 
 ## Maintenance Rule
 
+SDK builder guidance includes the [inline message limit](../../api/clients.md#inline-message-limits):
+use artifacts for large inputs, preserve rejected requests, and do not retry
+`MESSAGE_TOO_LARGE` or terminal-session refusals unchanged.
+
 When PilotSwarm gains features or changes builder-relevant behavior, update these template agents and skills alongside the docs and examples they reference.

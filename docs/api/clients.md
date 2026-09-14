@@ -28,6 +28,28 @@ your app's shape:
   `packages/sdk/api/src/protocol.js`; the reference doc is generated from
   it, and the portal server's routes are too.
 
+## Inline message limits
+
+Prompts and answers are limited to **12 KiB (12,288 bytes)** for the serialized
+UTF-8 JSON envelope, including message IDs, sender metadata, attachment
+references, and JSON escaping. This is not a model token/context-window limit.
+The SDK exports `MAX_MESSAGE_BYTES` and `MessageTooLargeError`; Web API callers
+receive HTTP `413` with `error.code: "MESSAGE_TOO_LARGE"` and an actionable
+message. Rejection happens before enqueueing or changing the session state.
+
+Upload large JSON, reports, or source documents as artifacts and send a short
+reference. The runtime never truncates a rejected prompt or splits it into
+independently executed requests. A rejected inline message leaves the session
+available for a corrected request.
+
+Orchestration 1.0.79 also validates serialized FIFO items after runtime context
+is added. Messages from older clients or already in the durable queue that
+exceed the 14 KiB FIFO item budget produce `session.message_rejected`, with
+`code`, `message`, `actualBytes`, `maxBytes`, and `clientMessageIds`. This event
+is a rejection receipt, not a successful turn or a failed session. It is
+available through session-event reads and subscriptions. Existing terminal
+sessions are not revived by this protection.
+
 ## Workers are the exception
 
 `PilotSwarmWorker` always connects directly to the datastore (`{ store }`).

@@ -3,6 +3,7 @@ import { PilotSwarmUiController } from "../../../app/ui/core/src/controller.js";
 import { appReducer } from "../../../app/ui/core/src/reducer.js";
 import { createInitialState } from "../../../app/ui/core/src/state.js";
 import { createStore } from "../../../app/ui/core/src/store.js";
+import { selectActivityPane } from "../../../app/ui/core/src/selectors.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 
 function createController(transportOverrides = {}) {
@@ -49,6 +50,51 @@ function seedQueuedOutboxItem(store, controller, sessionId, clientMessageId, tex
 }
 
 describe("outbox bulk reconciliation", () => {
+    it.each(["live", "bulk"])("preserves runtime-rejected drafts through the %s event path", async (path) => {
+        const sessionId = "rejection-session";
+        const clientMessageId = "rejected-message";
+        const event = {
+            seq: 1,
+            eventType: "session.message_rejected",
+            createdAt: new Date().toISOString(),
+            data: { code: "MESSAGE_TOO_LARGE", message: "Upload large content as an artifact.", clientMessageIds: [clientMessageId] },
+        };
+        const { controller, store } = createController({ getSessionEvents: async () => [event] });
+        seedSession(store, sessionId);
+        seedQueuedOutboxItem(store, controller, sessionId, clientMessageId, "preserve the original request");
+
+        if (path === "live") controller.mergeSessionEvent(sessionId, event);
+        else await controller.ensureSessionHistory(sessionId, { force: true });
+
+        const rejected = controller.getSessionOutbox(sessionId);
+        assertEqual(rejected.length, 1, "runtime rejection should retain the draft");
+        assertEqual(rejected[0].phase, "rejected", "both event paths must mark the message rejected");
+        assertEqual(rejected[0].error, event.data.message, "runtime rejection reason should be retained");
+        assertEqual(rejected[0].text, "preserve the original request", "rejected content must remain recoverable");
+        const activityText = JSON.stringify(selectActivityPane(store.getState()).lines);
+        assert(activityText.includes("[message rejected]") && activityText.includes(event.data.message), "Activity should expose a readable rejection after history reload");
+    });
+
+    it("does not overwrite a durable rejection with a late enqueue acknowledgement", async () => {
+        const sessionId = "rejection-before-ack";
+        const { controller, store } = createController({
+            sendMessage: async (_sessionId, _prompt, options) => {
+                controller.reconcileOutboxAgainstEvent(sessionId, {
+                    eventType: "session.message_rejected",
+                    data: { message: "Message exceeds the FIFO limit.", clientMessageIds: options.clientMessageIds },
+                });
+            },
+        });
+        seedSession(store, sessionId);
+        const item = controller.buildOutboxItem("rejected before acknowledgement");
+        controller.setSessionOutboxItems(sessionId, [item]);
+
+        await controller.dispatchPendingOutbox(sessionId);
+
+        assertEqual(controller.getSessionOutbox(sessionId)[0].phase, "rejected", "runtime outcome must win over enqueue acknowledgement");
+        assertEqual(controller.getPendingOutboxItems(sessionId).length, 0, "durably rejected messages must not retry");
+    });
+
     it("ensureSessionHistory removes queued outbox items whose user.message is already in CMS", async () => {
         const sessionId = "11111111-2222-3333-4444-555555555555";
         const cmid = "msg:1777251609189:4h49ly6b";

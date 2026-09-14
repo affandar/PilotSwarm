@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- SDK: reject inline prompt/answer envelopes above 12 KiB of serialized UTF-8 with `MESSAGE_TOO_LARGE` before enqueueing. Use artifact references for large inputs.
+- Runtime: orchestration 1.0.79 validates FIFO items and bucket rollover in UTF-8 bytes, reports oversized messages durably without failing the session, and leaves excess work on the incoming queue. Keep 1.0.78 registered for replay.
+- Portal/TUI: stop retrying terminal-session and oversized-message refusals, retain rejected drafts and reasons for explicit recovery, and reconcile durable rejection receipts across live/history delivery and late enqueue acknowledgements.
+
 ## 0.5.72 — 2026-09-14
 
 - SDK: honor runtime-only tool exclusions when binding sessions and refresh warm bindings when those exclusions change.

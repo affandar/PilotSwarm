@@ -956,6 +956,72 @@ describe("session refresh UI recovery", () => {
         assertIncludes(overlayText, "second request", "outbox overlay should show the second queued prompt");
     });
 
+    it.each([
+        { code: "SESSION_TERMINAL", status: 409, message: "Session is no longer accepting messages." },
+        { code: "MESSAGE_TOO_LARGE", status: 413, message: "Upload large content as an artifact." },
+        { message: "Session 12345678 is a terminal orchestration and cannot accept new messages." },
+        { message: "Session 12345678 is a terminal orchestration instance (Completed) and cannot accept new messages." },
+    ])("rejects permanent outbox errors without scheduling another dispatch: $message", async (failure) => {
+        let sends = 0;
+        let scheduled = 0;
+        const { controller, store } = createController({
+            sendMessage: async () => {
+                sends += 1;
+                throw Object.assign(new Error(failure.message), failure);
+            },
+        });
+        controller.scheduleOutboxDispatch = () => { scheduled += 1; };
+        const sessionId = "permanent-send-error";
+        store.dispatch({ type: "sessions/selected", sessionId });
+        const original = controller.buildOutboxItem("Preserve this request for recovery.", "pending");
+        controller.setSessionOutboxItems(sessionId, [original]);
+
+        let caught;
+        try {
+            await controller.dispatchPendingOutbox(sessionId);
+        } catch (error) {
+            caught = error;
+        }
+
+        assertEqual(caught?.message, failure.message, "dispatch should retain the original rejection");
+        const rejected = controller.getSessionOutbox(sessionId);
+        assertEqual(rejected.length, 1, "rejected prompts must remain recoverable");
+        assertEqual(rejected[0].phase, "rejected", "permanent failures must not remain pending");
+        assertEqual(rejected[0].text, original.text, "rejection must preserve the prompt");
+        assertEqual(rejected[0].error, failure.message, "rejection must retain its actionable reason");
+        assertIncludes(linesText(selectOutboxOverlayLines(store.getState(), 100)), `Not sent: ${failure.message}`, "both hosts should render the rejection reason");
+        assertEqual(scheduled, 0, "permanent failures must not schedule automatic retries");
+        assertEqual(await controller.dispatchPendingOutbox(sessionId), false, "later flushes must not resend rejected prompts");
+        assertEqual(sends, 1, "a permanent failure should only be attempted once");
+    });
+
+    it("recovers a rejected prompt with a fresh message id and dismisses locally", async () => {
+        const sent = [];
+        let cancellations = 0;
+        const { controller, store } = createController({
+            sendMessage: async (_sessionId, prompt, options) => { sent.push({ prompt, options }); },
+            cancelPendingMessage: async () => { cancellations += 1; },
+        });
+        const sessionId = "rejected-recovery";
+        store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId, status: "idle", createdAt: 1, updatedAt: 2 }] });
+        store.dispatch({ type: "sessions/selected", sessionId });
+        const rejected = { ...controller.buildOutboxItem("too large", "pending"), attempted: true, phase: "rejected", error: "Upload an artifact." };
+        controller.setSessionOutboxItems(sessionId, [rejected]);
+
+        assertEqual(controller.enterPendingPromptEdit(sessionId, rejected.id), true, "rejected prompt should be recallable");
+        controller.setPrompt("short artifact reference");
+        await controller.sendPrompt();
+        assertEqual(sent.length, 1, "explicit recovery should send once");
+        assertEqual(sent[0].prompt, "short artifact reference", "recovery should use the edited prompt");
+        assertEqual(sent[0].options.clientMessageIds.includes(rejected.id), false, "recovery must not reuse rejected ids");
+        assertEqual(controller.getSessionOutbox(sessionId)[0].phase, "queued", "recovered request should be acknowledged");
+
+        controller.setSessionOutboxItems(sessionId, [rejected]);
+        assertEqual(await controller.cancelOutboxItem(sessionId, rejected.id), true, "rejected draft should be dismissible");
+        assertEqual(cancellations, 0, "a rejected request needs no durable cancellation");
+        assertEqual(controller.getSessionOutbox(sessionId).length, 0, "dismissal should remove the rejected draft");
+    });
+
     it("retries an attempted envelope without merging a fresh message into it", async () => {
         const sent = [];
         let failFirst = true;

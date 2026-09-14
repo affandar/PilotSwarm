@@ -1785,6 +1785,7 @@ function buildPendingOutboxMessage(sessionId, item) {
         text,
         time: "",
         createdAt: Number(item.createdAt) || Date.now(),
+        rejectionReason: item.phase === "rejected" ? String(item.error || "") : "",
         pendingPhase: item.phase === "cancelling"
             ? "cancelling"
             : item.phase === "rejected"
@@ -2186,7 +2187,7 @@ function describeChatMessageHeader(message, options = {}) {
     //   ○    pending  — client outbox, not yet durable
     //   ✓    queued   — durably enqueued, waiting for orchestration to drain
     //   x    cancelling — durable cancel requested, waiting for runtime outcome
-    //   x    rejected — server refused the send (authz); auto-dropped shortly
+    //   x    rejected — server refused the send
     //   ✓✓   sent     — persisted as user.message in CMS, LLM has it
     //   ✓✓↻  redelivered — the runtime retried the turn and re-delivered this
     //        message to the model; timestamp shows the LATEST delivery
@@ -3597,6 +3598,9 @@ export function selectOutboxOverlayLines(state, maxWidth = 80, options = {}) {
     const buildOptions = options?.tableMode ? { tableMode: options.tableMode } : {};
     for (const [index, message] of messages.entries()) {
         appendChatBlockLines(lines, buildChatMessageLines(message, safeWidth, buildOptions));
+        if (message.rejectionReason) {
+            lines.push([{ text: `Not sent: ${message.rejectionReason}`, color: "red" }]);
+        }
         const nextMessage = messages[index + 1];
         if (
             nextMessage

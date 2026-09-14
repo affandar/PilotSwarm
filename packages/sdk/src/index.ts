@@ -31,6 +31,7 @@
  */
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
+export { MAX_MESSAGE_BYTES, MessageTooLargeError } from "./message-size.js";
 export type { SessionEventHandler } from "./client.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
