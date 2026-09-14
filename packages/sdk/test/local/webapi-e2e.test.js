@@ -14,14 +14,10 @@
  */
 
 import { describe, it, beforeAll, afterAll } from "vitest";
-import { createRequire } from "node:module";
 import { createTestEnv, preflightChecks } from "../helpers/local-env.js";
 import { assert, assertEqual, assertIncludes, assertIncludesAny, assertNotNull } from "../helpers/assertions.js";
 import { PilotSwarmClient, PilotSwarmManagementClient, createWebFactStore, isEnhancedFactStore } from "pilotswarm-sdk";
-// The built SDK loads this entry through native Node ESM. Use the same module
-// instance here: Vitest can otherwise transform the workspace subpath again,
-// yielding a second ApiError constructor and false instanceof failures.
-const { ApiClient, ApiError, HttpApiTransport } = createRequire(import.meta.url)("../../api/index.js");
+import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 const TIMEOUT = 180_000;
 
@@ -29,6 +25,17 @@ let env;
 let server;
 let apiUrl;
 let mgmt;
+
+function assertStructuredApiError(error, { status, code, message, candidates }) {
+    assert(error instanceof Error, "wire error inherits from Error");
+    assertEqual(error.name, "ApiError", "wire error name");
+    assert(Number.isInteger(error.status), "wire error status is an integer");
+    assert(typeof error.code === "string", "wire error code is a string");
+    assertEqual(error.status, status, "wire error status");
+    assertEqual(error.code, code, "wire error code");
+    assertEqual(JSON.stringify(error.candidates), JSON.stringify(candidates), "wire error candidates");
+    assertEqual(error.message, message, "wire error message");
+}
 
 describe("web api e2e", () => {
     beforeAll(async () => {
@@ -112,6 +119,9 @@ describe("web api e2e", () => {
 
     it("returns structured candidates for ambiguous runtime-provider models", async () => {
         const typeModel = (await mgmt.getModelsByProvider())[0].models[0];
+        const existingCandidates = (await mgmt.listRuntimeModels())
+            .filter((model) => model.modelName === typeModel.modelName)
+            .map((model) => `${model.providerId}:${model.modelName}`);
         const suffix = Date.now().toString(36);
         const names = [`web-amb-a-${suffix}`, `web-amb-b-${suffix}`];
         const credentials = typeModel.providerType === "github"
@@ -133,11 +143,16 @@ describe("web api e2e", () => {
             } catch (caught) {
                 error = caught;
             }
-            assert(error instanceof ApiError, "ambiguous Web create returns ApiError");
-            assertEqual(error.code, "MODEL_AMBIGUOUS", "ambiguity code preserved");
-            for (const name of names) {
-                assert(error.candidates.includes(`${name}:${typeModel.modelName}`), `candidate includes ${name}`);
-            }
+            const candidates = [...new Set([
+                ...existingCandidates,
+                ...names.map((name) => `${name}:${typeModel.modelName}`),
+            ])];
+            assertStructuredApiError(error, {
+                status: 400,
+                code: "MODEL_AMBIGUOUS",
+                candidates,
+                message: `Model "${typeModel.modelName}" is ambiguous. Use one of: ${candidates.join(", ")}.`,
+            });
 
             const legacyResponse = await fetch(`${apiUrl}/api/rpc`, {
                 method: "POST",
@@ -150,9 +165,16 @@ describe("web api e2e", () => {
             assertEqual(legacyResponse.status, 400, "legacy RPC ambiguity is a client error");
             const legacy = await legacyResponse.json();
             assertEqual(legacy.error.code, "MODEL_AMBIGUOUS", "legacy RPC preserves ambiguity code");
-            for (const name of names) {
-                assert(legacy.error.candidates.includes(`${name}:${typeModel.modelName}`), `legacy candidate includes ${name}`);
-            }
+            assertEqual(
+                JSON.stringify(legacy.error.candidates),
+                JSON.stringify(candidates),
+                "legacy RPC preserves the complete ambiguity candidate set",
+            );
+            assertEqual(
+                legacy.error.message,
+                `Model "${typeModel.modelName}" is ambiguous. Use one of: ${candidates.join(", ")}.`,
+                "legacy RPC preserves the complete ambiguity message",
+            );
         } finally {
             await client.stop();
             for (const name of names) await mgmt.deleteMyProvider(null, name);
@@ -168,10 +190,11 @@ describe("web api e2e", () => {
         } catch (caught) {
             error = caught;
         }
-        assert(error instanceof ApiError, "unsafe upload returns ApiError");
-        assertEqual(error.status, 400, "unsafe upload maps to HTTP 400");
-        assertEqual(error.code, "INVALID_REQUEST", "unsafe upload keeps validation code");
-        assertIncludes(error.message, "not a safe relative path", "unsafe upload keeps actionable message");
+        assertStructuredApiError(error, {
+            status: 400,
+            code: "INVALID_REQUEST",
+            message: "upload file path is not a safe relative path: ../escape.md",
+        });
 
         let collision = null;
         try {
@@ -182,9 +205,11 @@ describe("web api e2e", () => {
         } catch (caught) {
             collision = caught;
         }
-        assert(collision instanceof ApiError, "colliding upload returns ApiError");
-        assertEqual(collision.status, 400, "colliding upload maps to HTTP 400");
-        assertIncludes(collision.message, "conflicts with file path", "collision explains the conflicting paths");
+        assertStructuredApiError(collision, {
+            status: 400,
+            code: "INVALID_REQUEST",
+            message: "upload path conflicts with file path: a and a/b",
+        });
     });
 
     it("downloads a full verified agent-package tarball through Web management", async () => {
@@ -508,9 +533,11 @@ describe("web api e2e", () => {
             await api.request("GET", "/api/v1/definitely-not-a-route");
             assert(false, "unknown route should throw");
         } catch (error) {
-            assert(error instanceof ApiError, "ApiError thrown");
-            assertEqual(error.status, 404, "404 for unknown route");
-            assertEqual(error.code, "NOT_FOUND", "NOT_FOUND code");
+            assertStructuredApiError(error, {
+                status: 404,
+                code: "NOT_FOUND",
+                message: "Unknown API route: GET /api/v1/definitely-not-a-route",
+            });
         }
 
         // Malformed cursor → validation error (400).

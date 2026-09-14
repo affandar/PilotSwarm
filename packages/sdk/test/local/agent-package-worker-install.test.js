@@ -121,6 +121,7 @@ describe("agent-package worker install", () => {
             await withClient(env, {
                 workerNodeId: `pkg-worker-${env.runId}`,
                 worker: {
+                    workerPool: "default",
                     modelProvidersPath,
                     agentPackages: { cacheDir, refreshIntervalMs: 0 },
                 },
@@ -202,7 +203,7 @@ describe("agent-package worker install", () => {
                     .find((w) => w.workerNodeId === `pkg-worker-${env.runId}`);
                 assert(me, "worker registered itself in the workers table");
                 assertEqual(me.phase, "ready", "post-start beats advertise ready");
-                assertEqual(me.pool, "default", "default pool outside kubernetes");
+                assertEqual(me.pool, "default", "explicit test worker pool is environment-independent");
                 assert(typeof me.info.sdkVersion === "string" && me.info.sdkVersion.length > 0,
                     "write-once info carries the sdk version");
                 assert(me.info.consumes.includes("agent-packages"), "consumed domains advertised");
