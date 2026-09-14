@@ -80,7 +80,7 @@ wrapper.
 - Remaining candidate contribution units: **69**
 - Candidates that can be initiated now because they have no blockers: **21**
 - Candidates currently blocked by one or more upstream items: **48**
-- Relative-risk distribution: **11 low**, **34 medium**, **24 high**
+- Relative-risk distribution: **11 low**, **35 medium**, **23 high**
 - Outstanding upstream pull requests: **5 / 5**
   ([affandar/PilotSwarm#83](https://github.com/affandar/PilotSwarm/pull/83),
   [affandar/PilotSwarm#84](https://github.com/affandar/PilotSwarm/pull/84),
@@ -320,10 +320,11 @@ Safety comes from existing automated coverage, including packages/sdk/test/unit/
 - Theme / lane: Reliability / 11
 - Blocked by: None
 - Value: Gives operators stable host, PID, runtime-version, and session evidence for poison investigation.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Low
-- Existing coverage: Partial: `packages/sdk/test/unit/diagnostics.test.mjs`
-- Limitations: The diagnostic module is covered, but `scripts/trace-session-tree.mjs` has no direct test. Either add one or leave the script for a separate contribution.
+- Existing coverage: Enough: direct diagnostic tests plus client and management integration tests
+- Limitations: Keep the public contribution to the supported diagnostic module and privacy-safe,
+  bounded process metadata; the untested trace script is excluded.
 - Proposed commit message:
 
 ```text
@@ -340,10 +341,12 @@ Accompany the change with focused tests for the remaining contract and integrati
 - Theme / lane: Reliability / 11
 - Blocked by: None
 - Value: Prevents server-side 5xx causes and stacks from disappearing.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Low
-- Existing coverage: Insufficient
-- Limitations: Add a router test that proves 5xx details are logged server-side without changing the client response.
+- Existing coverage: Enough: router tests prove structured server logging and an unchanged
+  sanitized client response
+- Limitations: Error messages remain server-log data and require normal retention and access
+  controls. Request identifiers and logging failures must not affect the response.
 - Proposed commit message:
 
 ```text
@@ -424,18 +427,22 @@ Safety comes from existing automated coverage, including packages/sdk/test/unit/
 - Theme / lane: Plugins / 4
 - Blocked by: None
 - Value: Adds a generic `PluginSpec` parser and installer for local, GitHub, and Azure DevOps plugin sources.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Partial: `packages/sdk/test/unit/plugin-spec.test.mjs`
-- Limitations: Parser and clone-URL construction are covered; actual fetch/install failure and cleanup behavior need hermetic tests. Preserve explicit errors instead of a broad startup-success fallback.
+- Existing coverage: Enough: `plugin-spec.test.mjs` and `plugin-source-spec.test.mjs` cover
+  validation, per-entry quarantine, relative local repositories, containment, atomic replacement,
+  cleanup, and real Git fetches
+- Limitations: The upstream change must contain only the provider-neutral local/Git contract and
+  injected credential seam. External code loading makes this security-sensitive and requires
+  explicit pre-PR approval.
 - Proposed commit message:
 
 ```text
 feat(sdk): add validated external plugin source specifications
 
-Adds a generic PluginSpec parser and installer for local, GitHub, and provider-specific plugin sources.
-Parser and clone-URL construction are covered; actual fetch/install failure and cleanup behavior need hermetic tests. Preserve explicit errors instead of a broad startup-success fallback.
-Accompany the change with focused tests for the remaining contract and integration gaps before merge.
+Adds a provider-neutral PluginSpec parser and installer for local and Git plugin sources.
+Keeps credentials injected, validates refs and paths, confines checkouts, and preserves valid peers and previous installations when one source fails.
+Safety comes from hermetic validation, containment, failure-isolation, replacement, and synthetic Git tests.
 ```
 
 <a id="u08"></a>
@@ -444,10 +451,14 @@ Accompany the change with focused tests for the remaining contract and integrati
 - Theme / lane: MCP auth / 4
 - Blocked by: None
 - Value: Adds reusable `WWW-Authenticate`, protected-resource metadata, audience normalization, and discovery primitives.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Enough for discovery: `packages/sdk/test/local/mcp-auth-discovery.test.mjs`
-- Limitations: JWT decoding must be documented and enforced as routing-only claim inspection, never token authentication.
+- Existing coverage: Enough: hardened unit and compatibility tests cover challenge grammar,
+  token68, parameterless schemes, redirects, deadlines, response limits, IPv4/IPv6 SSRF, required
+  failure, and optional omission
+- Limitations: JWT decoding remains routing-only claim inspection, never authentication.
+  Authentication and network-boundary behavior make this security-sensitive and require explicit
+  pre-PR approval.
 - Proposed commit message:
 
 ```text
@@ -464,10 +475,13 @@ Safety comes from existing automated coverage, including packages/sdk/test/local
 - Theme / lane: Providers / 2a
 - Blocked by: None
 - Value: Creates one versioned provider ABI so external repositories no longer carry structural copies.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Low
-- Existing coverage: Partial: validation is exercised by `packages/job-generator-provider/test/provider-host.test.mjs`
-- Limitations: Make the package publishable, choose root versus `./contracts` export, and add contract-focused tests that do not require the host.
+- Existing coverage: Enough: standalone contract tests, package build/lint, tarball dry-run, and
+  publishing-workflow coverage
+- Limitations: The root export is the sole public contract; `./contracts` is intentionally
+  unsupported. Package-publishing workflow changes are security-sensitive and require explicit
+  pre-PR approval.
 - Proposed commit message:
 
 ```text
@@ -507,10 +521,13 @@ Accompany the change with focused tests for the remaining contract and integrati
 - Theme / lane: SDK boundary / reverse
 - Blocked by: None
 - Value: Gives clients one deduplicating live-plus-durable tracker for tool starts and completions.
-- Readiness: Not-ready
+- Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Insufficient: SQLmort only tests failure exit-code classification
-- Limitations: Add direct tests for deduplication, start/complete classification, unsubscribe, durable catch-up, and catch-up failure policy. Review whether swallowing durable catch-up errors is appropriate for a general SDK.
+- Existing coverage: Enough: direct tests cover bounded catch-up, event normalization, sequence
+  deduplication, start/complete correlation, unsubscribe/idempotent finish, and explicit catch-up
+  failure propagation
+- Limitations: Preserve bounded durable catch-up and propagate failures rather than returning a
+  success-shaped partial history.
 - Proposed commit message:
 
 ```text
@@ -518,7 +535,7 @@ feat(sdk): add reusable session tool-event tracking
 
 Gives clients one deduplicating live-plus-durable tracker for tool starts and completions.
 Keep the implementation narrowly scoped to the generic upstream surface and its stable public contract.
-Add direct upstream tests that prove the public contract and error paths before merge.
+Safety comes from direct deduplication, correlation, lifecycle, bounded catch-up, and failure-path tests.
 ```
 
 <a id="u12"></a>
@@ -527,18 +544,21 @@ Add direct upstream tests that prove the public contract and error paths before 
 - Theme / lane: SDK boundary / reverse
 - Blocked by: None
 - Value: Exposes the existing no-auth, dev-auth, configured-token, and Entra bootstrap as a supported Node SDK surface.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Partial: `packages/sdk/test/local/webapi-auth.test.js` and SQLmort consumers
-- Limitations: Define browser versus Node support, credential ownership, and token caching. Do not upstream SQL repository-to-audience mappings.
+- Existing coverage: Enough: Node subpath, provider precedence, token caching, refresh coalescing,
+  caller/bootstrap credential ownership, retryable cleanup, and explicit failure tests
+- Limitations: Keep the API Node-only, keep credential ownership explicit, and exclude downstream
+  audience mappings. Authentication and credential lifecycle make this security-sensitive and
+  require explicit pre-PR approval.
 - Proposed commit message:
 
 ```text
 feat(sdk): export reusable web authentication bootstrap
 
 Exposes the existing no-auth, dev-auth, configured-token, and configured identity-provider bootstrap as a supported Node SDK surface.
-Define browser versus Node support, credential ownership, and token caching. Do not upstream downstream repository-to-audience mappings.
-Accompany the change with focused tests for the remaining contract and integration gaps before merge.
+Expose the bootstrap only from the Node subpath with explicit credential ownership and bounded token caching.
+Safety comes from provider-precedence, refresh-coalescing, ownership, cleanup-retry, and failure-path tests.
 ```
 
 <a id="u13"></a>
@@ -569,8 +589,10 @@ Safety comes from existing automated coverage, including deploy/scripts/test/loc
 - Value: Creates the generic extension points needed by repository hydration and other worker-owned preparation/cleanup.
 - Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Partial: exercised by git-workspace tests
-- Limitations: Add focused hook ordering, cancellation, and error-propagation tests so the contract stands independently of git hydration.
+- Existing coverage: Enough: focused tests cover ordering, completion, cancellation, user stop,
+  returned errors, thrown errors, and dual-failure precedence
+- Limitations: Hooks run once per activity attempt, so durable retries invoke them again. Keep the
+  generic lifecycle outside specialized repository hooks.
 - Proposed commit message:
 
 ```text
@@ -578,7 +600,7 @@ feat(worker): add before and after turn lifecycle hooks
 
 Creates the generic extension points needed by repository hydration and other worker-owned preparation/cleanup.
 Keep the implementation narrowly scoped to the generic upstream surface and its stable public contract.
-Accompany the change with focused tests for the remaining contract and integration gaps before merge.
+Safety comes from direct ordering, cancellation, returned/thrown failure, and hook-precedence tests.
 ```
 
 <a id="u15"></a>
@@ -589,16 +611,20 @@ Accompany the change with focused tests for the remaining contract and integrati
 - Value: Makes working-directory, `.github` configuration, skills, and agent discovery platform invariants rather than caller options.
 - Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Enough: `mcp-loader-cwd.test.mjs`, `session-manager-repo-agent-bind.test.mjs`, agent package tests
-- Limitations: Keep filesystem precedence and trust boundaries explicit.
+- Existing coverage: Enough: direct tests cover confinement, case-variant IDs, traversal,
+  symlink/junction rejection, ownership markers, warm/cold cleanup, caller-owned preservation, and
+  opt-in repository configuration discovery
+- Limitations: Platform-owned paths are opaque digest directories and repository-authored
+  configuration remains denied by default. This is git-worker design and requires explicit
+  pre-PR design approval.
 - Proposed commit message:
 
 ```text
 feat(worker): own session workspaces and repository configuration discovery
 
 Makes working-directory, .github configuration, skills, and agent discovery platform invariants rather than caller options.
-Keep filesystem precedence and trust boundaries explicit.
-Safety comes from existing automated coverage, including mcp-loader-cwd.test.mjs, session-manager-repo-agent-bind.test.mjs, agent package tests.
+Keep filesystem ownership, cleanup authority, and repository-configuration trust boundaries explicit.
+Safety comes from direct confinement, ownership, cleanup, case-isolation, and discovery tests.
 ```
 
 <a id="u16"></a>
@@ -610,7 +636,8 @@ Safety comes from existing automated coverage, including mcp-loader-cwd.test.mjs
 - Readiness: Ready
 - Relative risk: Medium
 - Existing coverage: Enough: `worker-registry-heartbeat.test.mjs`, `packages/sdk/test/local/worker-registry.test.js`, UI node-map tests
-- Limitations: Keep build metadata generic and non-secret.
+- Limitations: Keep build metadata generic, non-secret, normalized, and bounded. Preserve the
+  historical `null` wire shape for absent core provenance fields.
 - Proposed commit message:
 
 ```text
@@ -627,18 +654,20 @@ Safety comes from existing automated coverage, including worker-registry-heartbe
 - Theme / lane: Portal / 6
 - Blocked by: None
 - Value: Makes refreshed or long sessions able to reach their first prompt without loading the full history initially.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Medium
-- Existing coverage: Enough in the fork: `live-session-history-hydration.test.mjs`, `load-older-button-visibility.test.mjs`
-- Limitations: Reconcile with the session loading and search changes in upstream releases `0.5.69` and `0.5.70` before assembling the patch.
+- Existing coverage: Enough: race, duplicate-request, navigation, cancellation, paging, and
+  missing-chat fallback tests
+- Limitations: Assemble against current upstream session loading/search behavior and retain
+  native-task, canvas, outbox, model, and context reconciliation.
 - Proposed commit message:
 
 ```text
 feat(portal): hydrate older session history on demand
 
 Makes refreshed or long sessions able to reach their first prompt without loading the full history initially.
-Reconcile with the session loading and search changes in upstream releases 0.5.69 and 0.5.70 before assembling the patch.
-Safety comes from existing automated coverage, including live-session-history-hydration.test.mjs, load-older-button-visibility.test.mjs.
+Reconcile with current upstream session loading and search behavior while preserving all existing state reconciliation.
+Safety comes from race, duplicate-request, navigation, cancellation, paging, and fallback tests.
 ```
 
 <a id="u18"></a>
@@ -1355,19 +1384,21 @@ Safety comes from existing automated coverage, including JobGenerator Postgres i
 - Theme / lane: Orchestration / 3
 - Blocked by: None
 - Value: Adds reusable keyed wait commands, management surfaces, and validation without a domain observer.
-- Readiness: Near-ready
-- Relative risk: High
-- High-risk reason: It defines persisted durable-wait state that must stay inactive until U63, so any handler-boundary mistake risks replay incompatibility.
-- Existing coverage: Enough for validation: `system-wait-tool.test.mjs`, `job-lifecycle-tools.test.mjs`
-- Limitations: Factor the contract/tool/storage portions so this commit does not modify the active orchestration handler. Handler activation belongs only in U63.
+- Readiness: Ready
+- Relative risk: Medium
+- Existing coverage: Enough: contract, validation, idempotency, cancellation, canonical
+  serialization, prototype-safe durable JSON, and active `signal_key` compatibility tests
+- Limitations: The contribution must remain inert: do not modify the active orchestration handler,
+  tool registration, replay versions, or existing `signal_key` behavior. Handler activation
+  belongs only in U63.
 - Proposed commit message:
 
 ```text
 feat(orchestration): add durable keyed system-wait contracts
 
-Adds reusable keyed wait commands, management surfaces, and validation without a domain observer.
-Factor the contract/tool/storage portions so this commit does not modify the active orchestration handler. Handler activation belongs only in U63.
-Safety comes from existing automated coverage, including system-wait-tool.test.mjs, job-lifecycle-tools.test.mjs.
+Adds reusable keyed wait commands, management surfaces, validation, and durable serialization without a domain observer.
+Keeps the contracts inert so the active orchestration handler and replay boundary remain unchanged until U63.
+Safety comes from contract, idempotency, cancellation, serialization, hostile-key, and compatibility tests.
 ```
 
 <a id="u53"></a>
@@ -1528,7 +1559,9 @@ Safety comes from existing automated coverage, including activity-routing.test.m
 - Relative risk: High
 - High-risk reason: Folding bootstrap turns changes durable start-input semantics at the replay boundary and must preserve backward normalization for old sessions.
 - Existing coverage: Enough for the client transformation: `bootstrap-fold-start-input.test.mjs`
-- Limitations: Do not activate the new input semantics in the current handler before U63. Add backward normalization tests for old inputs.
+- Limitations: Pure planning and backward-normalization helpers are available, but the active
+  client and orchestration behavior must remain unchanged before U63. Frozen `1.0.78` and active
+  `1.0.79` stay distinct.
 - Proposed commit message:
 
 ```text

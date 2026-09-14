@@ -386,8 +386,8 @@
       <text x="774" y="554" fill="#111827">51</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u52" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u52">
-      <title>U52: add durable keyed system-wait contracts (High risk)</title>
-      <circle cx="1394.6" cy="130" r="19" fill="#fecaca" stroke="#b91c1c" stroke-width="2" filter="url(#shadow)"/>
+      <title>U52: add durable keyed system-wait contracts (Medium risk)</title>
+      <circle cx="1394.6" cy="130" r="19" fill="#fde68a" stroke="#b45309" stroke-width="2" filter="url(#shadow)"/>
       <text x="1394.6" y="134" fill="#111827">52</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u53" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u53">
