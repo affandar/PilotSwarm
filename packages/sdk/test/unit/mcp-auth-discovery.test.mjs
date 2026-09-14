@@ -114,6 +114,25 @@ test("revalidates redirects and blocks a redirect to a private address", async (
     assert.equal(requests, 1);
 });
 
+test("rejects deprecated IPv6 site-local metadata targets", async () => {
+    for (const [url, addresses] of [
+        ["https://[fec0::1]/metadata", [PUBLIC_ADDRESS]],
+        ["https://metadata.example/path", ["feff::1"]],
+    ]) {
+        let requested = false;
+        await assert.rejects(
+            fetchProtectedResourceMetadata(url, {
+                dependencies: dependencies(async () => {
+                    requested = true;
+                    throw new Error("must not run");
+                }, addresses),
+            }),
+            (error) => error instanceof McpMetadataFetchError && error.code === "SSRF_BLOCKED",
+        );
+        assert.equal(requested, false);
+    }
+});
+
 test("follows bounded HTTPS redirects and returns metadata", async () => {
     const visited = [];
     const body = await fetchProtectedResourceMetadata("https://metadata.example/start", {

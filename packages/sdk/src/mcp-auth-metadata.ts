@@ -108,6 +108,7 @@ function isPublicIp(address: string): boolean {
         || normalized.startsWith("fc")
         || normalized.startsWith("fd")
         || /^fe[89ab]/.test(normalized)
+        || /^fe[c-f]/.test(normalized)
         || normalized.startsWith("ff")
         || normalized.startsWith("::ffff:")
         || normalized.startsWith("2001:db8:")
