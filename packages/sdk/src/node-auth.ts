@@ -161,6 +161,7 @@ function identityBootstrap(
 ): NodeWebAuthBootstrap {
     let cached: AccessToken | null = null;
     let inFlight: Promise<AccessToken> | null = null;
+    let closeInFlight: Promise<void> | null = null;
     let closed = false;
 
     const acquire = async (): Promise<AccessToken> => {
@@ -184,7 +185,7 @@ function identityBootstrap(
         mode: "identity",
         credentialOwnership,
         async getAccessToken() {
-            if (closed) {
+            if (closed || closeInFlight) {
                 throw new NodeWebAuthError("CLOSED", "The Web authentication bootstrap is closed.");
             }
             if (cached && cached.expiresOnTimestamp - refreshSkewMs > now()) {
@@ -192,7 +193,7 @@ function identityBootstrap(
             }
             if (!inFlight) {
                 inFlight = acquire().then((token) => {
-                    if (closed) {
+                    if (closed || closeInFlight) {
                         throw new NodeWebAuthError("CLOSED", "The Web authentication bootstrap is closed.");
                     }
                     cached = token;
@@ -205,10 +206,21 @@ function identityBootstrap(
         },
         async close() {
             if (closed) return;
-            closed = true;
+            if (closeInFlight) return closeInFlight;
             cached = null;
-            if (credentialOwnership === "bootstrap") {
-                await credential.close?.();
+            if (credentialOwnership !== "bootstrap") {
+                closed = true;
+                return;
+            }
+            const attempt = Promise.resolve().then(() => credential.close?.());
+            closeInFlight = attempt;
+            try {
+                await attempt;
+                closed = true;
+            } finally {
+                if (closeInFlight === attempt) {
+                    closeInFlight = null;
+                }
             }
         },
     };

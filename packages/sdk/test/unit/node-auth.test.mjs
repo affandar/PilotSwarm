@@ -184,6 +184,36 @@ test("bootstrap closes only credentials it creates", async () => {
     );
 });
 
+test("failed owned-credential cleanup can be retried", async () => {
+    let closeCalls = 0;
+    const auth = await createNodeWebAuth({
+        apiUrl,
+        api: api({
+            enabled: true,
+            provider: "entra",
+            client: { clientId: "public-client-id" },
+        }),
+        createCredential: () => ({
+            async getToken() {
+                return { token: "owned", expiresOnTimestamp: Date.now() + 60_000 };
+            },
+            async close() {
+                closeCalls++;
+                if (closeCalls === 1) throw new Error("transient close failure");
+            },
+        }),
+    });
+
+    await assert.rejects(auth.close(), /transient close failure/);
+    assert.equal(await auth.getAccessToken(), "owned");
+    await Promise.all([auth.close(), auth.close()]);
+    assert.equal(closeCalls, 2);
+    await assert.rejects(
+        auth.getAccessToken(),
+        (error) => error instanceof NodeWebAuthError && error.code === "CLOSED",
+    );
+});
+
 test("unknown provider fails unless an explicit configured token handles it", async () => {
     await assert.rejects(
         createNodeWebAuth({
