@@ -75,11 +75,14 @@ export async function installPluginSpecs(
     input: string | readonly unknown[],
     options: InstallPluginSpecsOptions,
 ): Promise<InstalledPluginSpec[]> {
-    const specs = parsePluginSpecs(input);
+    const cwd = path.resolve(options.cwd ?? process.cwd());
+    const specs = parsePluginSpecs(input).map((spec): PluginSpec =>
+        spec.kind === "git"
+            ? { ...spec, repository: resolveGitRepository(spec.repository, cwd) }
+            : spec);
     if (specs.length === 0) return [];
 
     const fileSystem = options.fileSystem ?? NODE_FILE_SYSTEM;
-    const cwd = path.resolve(options.cwd ?? process.cwd());
     await fileSystem.mkdir(options.destinationRoot, { recursive: true });
     const destinationRoot = await fileSystem.realpath(options.destinationRoot);
     const git = options.git ?? createGitPluginSourceResolver();
@@ -134,25 +137,62 @@ async function installGitSpec(
         throw new PluginInstallError(index, spec, cause);
     }
     const checkoutDir = path.join(stagingDir, "repository");
+    const backupDir = `${stagingDir}.previous`;
+    let previousMoved = false;
     try {
         await git.checkout(spec, checkoutDir);
         await resolveContainedPluginDir(stagingDir, checkoutDir, spec.path, fileSystem);
-        await fileSystem.rm(destinationDir, { recursive: true, force: true });
+        try {
+            await fileSystem.rename(destinationDir, backupDir);
+            previousMoved = true;
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+        }
         await fileSystem.rename(stagingDir, destinationDir);
-        return {
-            spec,
-            destinationDir,
-            pluginDir: path.join(destinationDir, "repository", ...spec.path.split("/")),
-        };
     } catch (cause) {
-        let cleanupError: unknown;
+        const cleanupErrors: unknown[] = [];
+        if (previousMoved) {
+            try {
+                await fileSystem.rm(destinationDir, { recursive: true, force: true });
+                await fileSystem.rename(backupDir, destinationDir);
+                previousMoved = false;
+            } catch (error) {
+                cleanupErrors.push(error);
+            }
+        }
         try {
             await fileSystem.rm(stagingDir, { recursive: true, force: true });
         } catch (error) {
-            cleanupError = error;
+            cleanupErrors.push(error);
         }
-        throw new PluginInstallError(index, spec, cause, cleanupError);
+        throw new PluginInstallError(
+            index,
+            spec,
+            cause,
+            cleanupErrors.length === 0
+                ? undefined
+                : cleanupErrors.length === 1
+                    ? cleanupErrors[0]
+                    : new AggregateError(cleanupErrors, "Plugin replacement recovery failed"),
+        );
     }
+    if (previousMoved) {
+        try {
+            await fileSystem.rm(backupDir, { recursive: true, force: true });
+        } catch (cleanupError) {
+            throw new PluginInstallError(
+                index,
+                spec,
+                new Error("Plugin replacement succeeded but the previous checkout could not be removed"),
+                cleanupError,
+            );
+        }
+    }
+    return {
+        spec,
+        destinationDir,
+        pluginDir: path.join(destinationDir, "repository", ...spec.path.split("/")),
+    };
 }
 
 async function resolveContainedPluginDir(
@@ -188,4 +228,11 @@ async function resolveDirectory(candidate: string, fileSystem: PluginFileSystem)
 
 function sourceHash(spec: GitPluginSpec): string {
     return createHash("sha256").update(normalizedPluginSpecKey(spec)).digest("hex").slice(0, 16);
+}
+
+function resolveGitRepository(repository: string, cwd: string): string {
+    if (path.isAbsolute(repository) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(repository)) {
+        return repository;
+    }
+    return path.resolve(cwd, repository);
 }

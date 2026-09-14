@@ -213,6 +213,59 @@ test("a failed replacement preserves the last complete checkout", async t => {
     );
 });
 
+test("a failed final promotion restores the previous complete checkout", async t => {
+    const root = tempDir(t);
+    const destinationRoot = path.join(root, "install");
+    const spec = { kind: "git", repository: "synthetic-repo", path: "plugin" };
+    const [first] = await installPluginSpecs([spec], {
+        destinationRoot,
+        git: {
+            async checkout(_spec, destination) {
+                pluginDir(destination);
+            },
+        },
+    });
+    const existing = path.join(first.pluginDir, "agents", "example.agent.md");
+    let promotionFailed = false;
+    const fileSystem = {
+        mkdir: (candidate, options) => fs.promises.mkdir(candidate, options),
+        mkdtemp: (prefix) => fs.promises.mkdtemp(prefix),
+        realpath: (candidate) => fs.promises.realpath(candidate),
+        async rename(from, to) {
+            if (!promotionFailed && from.includes(".plugin-source-") && !from.endsWith(".previous") && to === first.destinationDir) {
+                promotionFailed = true;
+                const error = new Error("synthetic promotion failure");
+                error.code = "EACCES";
+                throw error;
+            }
+            await fs.promises.rename(from, to);
+        },
+        rm: (candidate, options) => fs.promises.rm(candidate, options),
+        stat: (candidate) => fs.promises.stat(candidate),
+    };
+
+    await assert.rejects(
+        installPluginSpecs([spec], {
+            destinationRoot,
+            fileSystem,
+            git: {
+                async checkout(_spec, destination) {
+                    const dir = pluginDir(destination);
+                    fs.writeFileSync(path.join(dir, "agents", "example.agent.md"), "replacement");
+                },
+            },
+        }),
+        /synthetic promotion failure/,
+    );
+
+    assert.equal(fs.readFileSync(existing, "utf8"), "example");
+    assert.equal(fs.existsSync(first.destinationDir), true);
+    assert.deepEqual(
+        fs.readdirSync(destinationRoot).filter(name => name.startsWith(".plugin-source-")),
+        [],
+    );
+});
+
 test("default Git resolver installs a requested commit from a synthetic local repository", async t => {
     const root = tempDir(t);
     const repository = path.join(root, "repository");
@@ -233,9 +286,10 @@ test("default Git resolver installs a requested commit from a synthetic local re
     execFileSync("git", ["-C", working, "push", "--quiet", "origin", "HEAD:main"]);
 
     const [installed] = await installPluginSpecs([
-        { kind: "git", repository, path: "plugins/demo", ref: commit },
-    ], { destinationRoot });
+        { kind: "git", repository: "repository", path: "plugins/demo", ref: commit },
+    ], { cwd: root, destinationRoot });
 
+    assert.equal(installed.spec.repository, repository);
     assert.equal(installed.spec.ref, commit);
     assert.equal(
         fs.readFileSync(path.join(installed.pluginDir, "agents", "example.agent.md"), "utf8"),
