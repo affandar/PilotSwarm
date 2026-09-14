@@ -28,6 +28,7 @@ function createRefreshScheduler(limit = 2) {
 }
 // A composer becoming ready must not steal a keyboard resize in progress.
 const canFocusMoaComposer = () => !document.activeElement?.closest?.(".ps-moa-divider, .ps-moa-dashboard-tabs");
+const canFocusPaneComposer = () => canFocusMoaComposer() && !document.activeElement?.closest?.(".ps-moa-dialog, .ps-modal-backdrop, [data-moa-panel] button, [data-moa-panel] select, [data-moa-panel] input, [data-moa-panel] iframe, [data-moa-panel] [contenteditable=true]");
 const sameDraft = (a, b) => a?.prompt === b?.prompt && (a?.attachments || []).length === (b?.attachments || []).length && (a?.attachments || []).every((item, i) => item === b.attachments[i]);
 function publishDraft(store, key, draft) {
     if (sameDraft(store.get(key), draft)) return;
@@ -188,7 +189,13 @@ export function useMoa(controller) {
     const update = React.useCallback(next => controller.dispatch({ type: "ui/moa", value: next }), [controller]);
     const [mobileZen, setMobileZen] = React.useState(false);
     React.useEffect(() => { if (desktop) setMobileZen(false); }, [desktop]);
-    const open = () => { if (loaded) { setMobileZen(false); setActive(true); setReturnTo(false); } };
+    const open = () => { if (loaded) {
+        if (returnTo) {
+            const state = controller.getState(), sessionId = state.sessions.activeSessionId;
+            if (sessionId) publishDraft(drafts.current, sessionId, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] });
+        }
+        setMobileZen(false); setActive(true); setReturnTo(false);
+    } };
     const leave = () => { setActive(false); setZen(false); };
     const openMobileZen = () => { if (!desktop) { leave(); setMobileZen(true); } };
     return { desktop, loaded, value, update, saveStatus, active, zen: active && zen, setZen, open, leave, returnTo, setReturnTo, drafts, zenDrafts, refreshScheduler, mobileZen: !desktop && mobileZen, openMobileZen, closeMobileZen: () => setMobileZen(false) };
@@ -252,7 +259,7 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     </Modal>;
 }
 
-function LivePanel({ node, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, header, controlsHost, onControlAction, mobileStatusHost }) {
+function LivePanel({ node, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, perChat, onArtifact, header, controlsHost, onControlAction, mobileStatusHost }) {
     const [ready, setReady] = React.useState(null), [error, setError] = React.useState(""), [retry, setRetry] = React.useState(0);
     const resources = React.useRef(null);
     const themeId = useControllerSelector(parent, s => s.ui.themeId);
@@ -362,6 +369,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
                 const sending = draftSends.get(store);
                 if (sending.has(draftKey)) return;
                 sending.add(draftKey);
+                parent.dispatch({ type: "sessions/used", sessionId: node.sessionId });
                 const submitted = { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] };
                 try {
                     pendingSend = cached.send();
@@ -408,6 +416,11 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             ready.setFocus("prompt");
         }
     }, [ready, focused, drafts, draftKey]);
+    React.useEffect(() => {
+        if (!ready) return;
+        ready.openChatArtifact = onArtifact;
+        return () => { delete ready.openChatArtifact; };
+    }, [ready, onArtifact]);
     const ref = React.useRef(null);
     const focusReadOnlyPanel = React.useCallback(() => ref.current?.closest("[data-moa-panel]")?.focus({ preventScroll: true }), []);
     React.useEffect(() => {
@@ -416,14 +429,17 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
         observer.observe(ref.current); return () => observer.disconnect();
     }, [ready]);
     return <>
-        <header>{header.title}{error && ready && <button className="ps-moa-stale" title={error} onClick={() => setRetry(n => n + 1)}>Cached · Retry</button>}{header.actions}</header>
+        <header>{header.title}{ready && !mobile && <SessionHeaderStatus controller={ready} />}{error && ready && <button className="ps-moa-stale" title={error} onClick={() => setRetry(n => n + 1)}>Cached · Retry</button>}{header.actions}</header>
         {ready && <SessionPane controller={ready} actionsOnly actionsHost={controlsHost} onAction={onControlAction} onDialogChange={setActionsOpen} />}
         <div ref={ref} className="ps-moa-live">
-            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader={mobile} /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
+            {ready ? <ControllerContext.Provider value={ready}>{node.type === "chat" ? <ChatPane controller={ready} mobile={mobile} fullWidth showComposer={false} activityInHeader /> : <PinnedCanvas controller={ready} node={node} onPanelKey={onPanelKey} />}</ControllerContext.Provider> : error ? <div className="ps-moa-empty" role="status"><p>{error}</p><IconButton label="Retry" icon="retry" onClick={() => setRetry(n => n + 1)} /></div> : <div className="ps-moa-empty" role="status">Connecting…</div>}
         </div>
         {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && visible && <ModalLayer controller={ready} />}
-        {ready && focused && !actionsOpen && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} autoFocus={canFocusMoaComposer} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
+        {ready && visible && perChat && <footer hidden={!focused || actionsOpen} className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
+            <ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact autoFocus={focused && !actionsOpen ? canFocusPaneComposer : false} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>
+        </footer>}
+        {ready && focused && !actionsOpen && !perChat && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} autoFocus={canFocusMoaComposer} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}
     </>;
 }
 
@@ -520,6 +536,10 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
     const [mobileStatusHost, setMobileStatusHost] = React.useState(null);
     const [composerHost, setComposerHost] = React.useState(null), [creating, setCreating] = React.useState(null);
     const nodes = moaLeaves(layout.tree), selected = nodes.some(n => n.id === focus) ? focus : nodes[0]?.id;
+    const focusedSessionId = nodes.find(node => node.id === selected)?.sessionId;
+    React.useEffect(() => {
+        if (visible && focusedSessionId) controller.dispatch({ type: "sessions/used", sessionId: focusedSessionId });
+    }, [controller, visible, focusedSessionId]);
     const menuRow = menu?.sessionId ? selectSessionRows(state).find(row => row.sessionId === menu.sessionId) : null;
     React.useEffect(() => {
         if (visible && !layout.tree) layoutRef.current?.querySelector(".ps-moa-add")?.focus({ preventScroll: true });
@@ -548,20 +568,32 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         const empty = emptyMoaPanel();
         replace(node.id, { id: crypto.randomUUID(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
     };
-    const zoom = async node => {
+    const navigation = React.useRef(0);
+    React.useEffect(() => { if (!visible) navigation.current++; }, [visible]);
+    const zoom = async (node, artifact = null) => {
+        const request = ++navigation.current;
         setError("");
         try {
             const session = await controller.transport.getSession(node.sessionId);
+            if (request !== navigation.current) return;
             if (!session || session.sessionId !== node.sessionId) throw new Error("Session unavailable.");
             controller.dispatch({ type: "sessions/merged", session });
             controller.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
             await controller.loadSession(node.sessionId);
-            if (node.type === "canvas") {
+            if (request !== navigation.current || controller.getState().sessions.activeSessionId !== node.sessionId) return;
+            const draft = moa.drafts.current.get(node.sessionId);
+            if (draft) restoreDraft(controller, draft);
+            if (node.type === "canvas" && !artifact) {
                 await controller.ensureCanvasSnapshot(node.sessionId);
+                if (request !== navigation.current) return;
                 controller.dispatch({ type: "canvas/flip", sessionId: node.sessionId, slot: node.slot });
                 controller.dispatch({ type: "ui/canvasMaximized", on: true });
             }
             moa.leave(); moa.setReturnTo(true);
+            if (artifact) {
+                controller.dispatch({ type: "ui/canvasMaximized", on: false });
+                await controller.revealArtifact(artifact.sessionId, artifact.filename, mobile ? { fullscreen: true, preserveSession: true } : { pane: true, preserveSession: true });
+            }
         } catch { setError("Could not open this session. It may be unavailable."); }
     };
     React.useEffect(() => {
@@ -577,7 +609,13 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         setFocus(next.id);
         if (!mobile) {
             const panel = layoutRef.current?.querySelector(`[data-moa-panel="${next.id}"]`);
-            (next.id === selected ? composerHost?.querySelector("textarea") || panel : panel)?.focus({ preventScroll: true });
+            if (value.composerMode !== "shared") {
+                panel?.focus({ preventScroll: true });
+                // Focus changes reveal the pane composer on the next render.
+                requestAnimationFrame(() => {
+                    if (panel?.isConnected && panel.classList.contains("is-focused") && document.activeElement === panel) panel.querySelector(".ps-moa-pane-composer:not([hidden]) textarea")?.focus({ preventScroll: true });
+                });
+            } else (next.id === selected ? composerHost?.querySelector("textarea") || panel : panel)?.focus({ preventScroll: true });
         }
 
     };
@@ -595,7 +633,7 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         };
         window.addEventListener("keydown", key, true);
         return () => window.removeEventListener("keydown", key, true);
-    }, [visible, nodes.length, dashboardPicker, dashboardEdit, mapOpen, picker, menu, clearing, creating, selected]);
+    }, [visible, nodes.length, dashboardPicker, dashboardEdit, mapOpen, picker, menu, clearing, creating, selected, value.composerMode, composerHost]);
     // Sandboxed canvases consume pointer events; parent focus is detected when
     // the browser focuses their iframe, without reading the iframe contents.
     React.useEffect(() => {
@@ -611,8 +649,8 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         if (node.type === "split") return <Split key={node.id} node={node} onResize={ratio => replace(node.id, { ...node, ratio })}>{[draw(node.first), draw(node.second)]}</Split>;
         const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
         const active = selected === node.id;
-        return <section key={node.id} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onClickCapture={() => setFocus(node.id)} onFocusCapture={e => { if (e.target.matches?.(":focus-visible")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
+        return <section key={node.id} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={() => setFocus(node.id)} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }
@@ -660,10 +698,10 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         {visible && !mobile && (moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : (headerHost ? createPortal(toolbar, headerHost) : toolbar))}
         {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
         <div {...(mobile ? swipe : {})} ref={layoutRef} id="moa-layout" role="region" aria-label="MoA panels" className="ps-moa-layout">{layout.tree ? (mobile ? nodes.map(draw) : draw(layout.tree)) : <section className="ps-moa-panel ps-moa-initial-panel"><header><span className="ps-moa-panel-title">Empty panel</span>{splitButtons({ id: null, type: "empty" })}</header><div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div></section>}</div>
-        <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
+        {value.composerMode === "shared" && <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
             <span className="ps-moa-composer-target">{nodes.find(n => n.id === selected)?.sessionId ? state.sessions.byId[nodes.find(n => n.id === selected).sessionId]?.title || "Selected session" : "Select a session to write a message"}</span>
             <div ref={setComposerHost} className="ps-moa-composer-host" />
-        </footer>
+        </footer>}
         {visible && mapOpen && <Modal title="Panel map" onClose={() => setMapOpen(false)}>
             <div className="ps-moa-map-body">
                 <div className="ps-moa-map" style={{ "--ps-moa-map-ratio": layout.aspectRatio || 16 / 9 }} aria-label="Desktop panel layout">
@@ -681,6 +719,9 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
             <IconButton label="Add MoA dashboard" icon="add" disabled={value.dashboards.length >= MOA_MAX_DASHBOARDS} onClick={addDashboard} />
         </div></Modal>}
         {visible && dashboardEdit && <Modal title="Dashboard options" onClose={() => setDashboardEdit(null)}><div className="ps-moa-menu">
+            <label>Message boxes<select aria-label="Message boxes" value={value.composerMode} onChange={e => update({ ...value, composerMode: e.target.value })}>
+                <option value="per-chat">Per chat</option><option value="shared">Shared below all panes</option>
+            </select></label>
             <label>Dashboard name<input aria-label="Dashboard name" maxLength={64} value={dashboardEdit.name} onChange={e => setDashboardEdit({ ...dashboardEdit, name: e.target.value })} /></label>
             {dashboardEdit.deleting ? <p role="alert">Delete this dashboard and its layout? Sessions and canvases remain available.</p> : null}
             <div className="ps-moa-row"><IconButton label="Save dashboard name" icon="check" disabled={!dashboardEdit.name.trim()} onClick={() => { update(updateMoaDashboard(value, dashboardEdit.id || layout.id, { name: dashboardEdit.name })); setDashboardEdit(null); }} />

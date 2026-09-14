@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.71 — 2026-09-14
+
+- Portal: add Saved, Recently used, and Recently updated session ordering, with accessible icon controls and explicit refresh. Keep system sessions, pinned sections, folders, and child hierarchies intact; live activity does not reorder existing rows.
+- Portal: default MoA dashboards to a composer in the focused chat pane, retain independent drafts, and offer a shared composer option. Match desktop composer sizing to pane text, focus it when selecting a pane, and display activity in the pane title.
+- Portal: open artifact links from MoA in the owning session's focused workspace with the artifact preview visible.
+- Mobile: reserve space for sort controls in short layouts and scroll only the session list, so focusing a sort button cannot hide the top system rows.
+- Deployment: set the PilotSwarm AKS worker turn timeout to 45 minutes.
+- Validation: 975 unit/UI checks and 302 browser UX tests passed, with three optional skips. Production builds and all three package checks passed; live AKS checks covered desktop, the session picker, and short mobile layouts. SDK/provider integration suites were not rerun for this UX release.
+
 ## 0.5.70 — 2026-09-13
 
 - Portal: keep session-search typing local and coalesce filtering after a 150 ms pause; apply popup query/selection props immediately instead of waiting for a controller event. Cache catalog-wide owner decoration, the expanded search tree, and normalized documents to avoid repeated scans per rendered row and keystroke.

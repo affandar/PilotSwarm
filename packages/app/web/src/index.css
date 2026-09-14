@@ -9613,3 +9613,32 @@ textarea.ps-link-input {
   .ps-session-pane > .ps-panel-header .ps-panel-actions { min-width: 0; max-width: 100%; flex: 0 1 auto; flex-wrap: wrap; }
   .ps-session-pane > .ps-panel-header .ps-mini-button { min-width: 32px; padding-inline: 6px; flex-shrink: 0; }
 }
+
+/* Sorting shares the search row when the pane has room. */
+.ps-session-find-controls { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); }
+.ps-session-sort-controls { display: flex; flex: 0 0 auto; gap: 8px; padding: 4px 8px; align-items: center; }
+.ps-session-sort-modes { display: flex; gap: 3px; }
+.ps-session-sort-controls button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; }
+.ps-session-sort-controls .ps-session-sort-refresh { margin-left: auto; }
+.ps-session-sort-button[aria-pressed="true"] { color: var(--ps-selection-foreground); background: var(--ps-selection-background); box-shadow: inset 0 -2px currentColor; }
+.ps-session-sort-controls button:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+@media (min-width: 921px) {
+  @container session-pane (min-width: 460px) {
+    .ps-session-find-controls { flex-direction: row; align-items: center; gap: 6px; padding: 4px 8px; }
+    .ps-session-find-controls > .ps-session-sort-controls { display: contents; }
+    .ps-session-find-controls > .ps-session-search { order: 1; flex: 1; padding: 0; border: 0; background: transparent; }
+    .ps-session-sort-refresh { order: 2; }
+  }
+}
+@media (max-width: 920px) { .ps-session-sort-controls button { width: 44px; height: 44px; } }
+/* Leave room for the collapsed phone search button. */
+.ps-mobile-session-pane:has(.ps-session-search:not(.is-open)) .ps-session-sort-controls { padding-right: 54px; }
+.ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 8px; }
+
+/* Keep enough room for the header, sort controls and a scrollable row even
+   on short phones. Only the list scrolls: focusing a sort button must not
+   scroll the outer body and hide the system rows above it. */
+@media (max-width: 920px) {
+  .ps-mobile-session-pane { max-height: clamp(148px, 22vh, 160px); }
+  .ps-mobile-session-pane .ps-panel-body { overflow: hidden; }
+}

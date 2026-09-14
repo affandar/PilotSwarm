@@ -55,6 +55,7 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
             { name: "Operations", tree: { id: "split", type: "split", direction: "row", ratio: 66, first: { id: "chat", type: "chat", sessionId }, second: { id: "missing-canvas", type: "canvas", sessionId, slot: 5 } } },
             { name: "Reserve", tree: null },
         ] }) };
+        settings.moa = { ...settings.moa, composerMode: "shared" };
         await page.route("**/api/v1/me/profile**", route => {
             if (route.request().method() === "PATCH") settings = route.request().postDataJSON().settings;
             return route.fulfill({ json: { ok: true, result: { isAdmin: false, profileSettings: settings } } });

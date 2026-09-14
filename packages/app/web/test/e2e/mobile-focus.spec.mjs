@@ -19,6 +19,7 @@ async function setup(page, theme = 'terminal-green', desktop = false) {
     const errors = [], sends = [];
     let settings = { themeId: theme, moa: { version: 2, tree, aspectRatio: 2 } };
     page.on('pageerror', e => errors.push(e.message));
+    settings.moa = { ...settings.moa, composerMode: "shared" };
     await page.route('**/api/v1/**', async route => {
         const req = route.request(), path = new URL(req.url()).pathname;
         const answer = result => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, result }) });

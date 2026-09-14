@@ -229,3 +229,27 @@
 .ps-moa-dashboard-tabs.is-compact .ps-moa-tabs-track { flex: 1; }
 :root[data-ps-theme="win95"] .ps-moa-tab-strip button:not([aria-selected=true]),
 :root[data-ps-theme="win95"] .ps-moa-dashboard-choice { background: var(--w95-face); color: #000; }
+
+.ps-moa-pane-composer { flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); }
+.ps-moa-pane-composer[hidden] { display: none; }
+.ps-moa-pane-composer .ps-chat-composer { margin: 0; padding: 4px 6px; border-top: 0; }
+.ps-moa-workspace.is-mobile .ps-moa-pane-composer { padding-bottom: env(safe-area-inset-bottom); }
+
+/* Pane composers use transcript typography and a single compact row on desktop.
+   Mobile keeps 16px inputs and touch targets to avoid keyboard focus zoom. */
+.ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer .ps-prompt-input {
+  font-size: var(--ps-font-size-dense); line-height: var(--ps-line-height-dense);
+  min-height: 30px; padding: 4px 8px;
+}
+.ps-moa-pane-composer .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
+.ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer .ps-prompt-actions { gap: 4px; }
+.ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer :is(.ps-send-button, .ps-stop-button, .ps-attach-button) {
+  min-height: 30px; min-width: 30px; padding: 0 6px; font-size: var(--ps-font-size-dense);
+}
+
+/* Keep pane activity on the existing title row, with full details on hover. */
+.ps-moa-panel > header > .ps-mobile-session-status {
+  flex: 0 1 40%; max-width: 40%; height: auto;
+  font-size: var(--ps-font-size-dense); line-height: var(--ps-line-height-dense);
+}
+.ps-moa-panel > header > .ps-moa-panel-title { min-width: 3em; }

@@ -21,7 +21,8 @@ loads. For local development, sign-in is normally bypassed.
 
 For several sessions at once, open the
 [Master of Agents workspace](./master-of-agents.md). It saves up to five personal
-chat/canvas dashboards and uses a single composer for the focused panel. Desktop
+chat/canvas dashboards. Each panel has its own message box by default.
+**Dashboard options → Message boxes** can restore one shared box below all panes. Desktop
 tabs collapse into a picker when the header gets narrow.
 On phones it presents one panel at a time with a geometry-preserving minimap
 and swipe navigation.
@@ -42,6 +43,19 @@ after reloading the conversation.
 Use **Find a session…** in the Sessions pane or workspace session picker to
 filter the catalog. Text appears immediately, and results update after a short
 typing pause. Clearing the field restores the full list.
+
+The icon buttons beside search (above it on narrow panes) offer **Recently used**, **Recently updated**,
+and **Saved order** on desktop, mobile, and in the session picker. The clock, activity pulse, and bookmark icons show these modes; the selected icon is highlighted. Hover or long-press for a label. Recently used tracks
+sessions you open, focus in MoA, or message. Recently updated uses session update
+times. Choosing a mode applies that order once. Live activity keeps the positions
+stable; press the adjacent **Refresh session order** button to fetch and sort again.
+Folders, pinned sections, and child sessions keep their structure. **Saved** restores
+your manual arrangement and enables drag ordering. The selected mode and usage
+history are saved in your profile; new sessions append until you refresh.
+System sessions remain at the top. Recency sorts sessions within each folder; it
+does not pull them out into the main list. Folder positions use the folder
+record’s own update time, not the newest activity of its members. Expanding and
+collapsing a folder preserves the current order.
 
 ## Layout overview
 

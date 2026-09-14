@@ -23,8 +23,8 @@ for (const engine of ['chromium','webkit']) {
    await page.locator('.ps-moa-session-picker .ps-session-list-button').nth(1).tap();
    await page.getByRole('button',{name:'Use chat',exact:true}).tap();
    await expect(page.locator('.ps-moa-panel.is-focused')).toHaveAttribute('data-session-id',/\w/);
-   await expect(page.locator('.ps-moa-composer-host textarea')).toBeVisible();
-   await page.locator('.ps-moa-composer-host textarea').fill('Keep this draft');
+   await expect(page.locator('.ps-moa-panel.is-focused .ps-moa-pane-composer textarea')).toBeVisible();
+   await page.locator('.ps-moa-panel.is-focused .ps-moa-pane-composer textarea').fill('Keep this draft');
    await controls.tap();
    await page.getByRole('dialog',{name:'Session control panel',exact:true}).getByRole('button',{name:'Split below',exact:true}).tap();
    await expect(page.getByRole('button',{name:'Choose session or canvas',exact:true})).toBeVisible();
@@ -37,7 +37,7 @@ for (const engine of ['chromium','webkit']) {
    await page.getByRole('button',{name:'Open panel map',exact:true}).tap();
    await expect(page.locator('.ps-moa-map > button')).toHaveCount(2);
    await page.locator('.ps-moa-map > button').nth(1).tap();
-   await expect(page.locator('.ps-moa-composer-host textarea')).toHaveValue('Keep this draft');
+   await expect(page.locator('.ps-moa-panel.is-focused .ps-moa-pane-composer textarea')).toHaveValue('Keep this draft');
    await controls.tap();
    await expect(page.getByRole('button',{name:'Close panel',exact:true})).toHaveAttribute('title','Close this panel. The session stays available.');
    await page.screenshot({path:`/tmp/mobile-panel-controls-${engine}.png`});

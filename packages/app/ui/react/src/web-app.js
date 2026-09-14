@@ -1,3 +1,4 @@
+import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -291,6 +292,8 @@ function clearBrowserPreferenceCache() {
 function normalizeProfileSettings(settings) {
     const candidate = settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
     const normalized = {};
+    if (hasOwn(candidate, "sessionSortMode")) normalized.sessionSortMode = normalizeSessionSortMode(candidate.sessionSortMode);
+    if (hasOwn(candidate, "sessionUsedAt")) normalized.sessionUsedAt = normalizeSessionUsage(candidate.sessionUsedAt);
     if (hasOwn(candidate, "moa")) normalized.moa = normalizeMoa(candidate.moa);
     if (typeof candidate.themeId === "string" && candidate.themeId.trim()) {
         normalized.themeId = candidate.themeId.trim();
@@ -441,7 +444,7 @@ function profileViewState(root) {
     return {
         ...root.ui, ...root.ui.layout,
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
-        manualOrder: root.sessions.manualOrder, collapsedSessionIds: root.sessions.collapsedIds,
+        manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
         activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
     };
 }
@@ -464,6 +467,8 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         },
         pinnedSessionIds: state.pinnedIds,
         sessionOrder: state.manualOrder,
+        sessionSortMode: state.sessionSortMode,
+        sessionUsedAt: state.sessionUsedAt,
         collapsedSessionIds: state.collapsedSessionIds,
         activeSessionId: state.activeSessionId,
         // rightPaneMode describes the DESKTOP right column; a phone has no
@@ -528,6 +533,8 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
         layoutAdjustments: state?.ui?.layout,
         pinnedSessionIds: state?.sessions?.pinnedIds,
         sessionOrder: state?.sessions?.manualOrder,
+        sessionSortMode: state?.sessions?.sortMode,
+        sessionUsedAt: state?.sessions?.usedAt,
         collapsedSessionIds: state?.sessions?.collapsedIds,
         activeSessionId: state?.sessions?.activeSessionId,
         ...(isNarrowViewport()
@@ -575,6 +582,8 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // here is DROPPED at startup — and the save effect then writes the
         // empty value straight back over the stored one. Leaving sessionOrder
         // out made every placement survive exactly until the next reload.
+        sessionSortMode: normalizedRemote.sessionSortMode ?? normalizedDefaults.sessionSortMode,
+        sessionUsedAt: normalizedRemote.sessionUsedAt ?? normalizedDefaults.sessionUsedAt,
         sessionOrder: hasOwn(normalizedRemote, "sessionOrder")
             ? normalizedRemote.sessionOrder
             : normalizedDefaults.sessionOrder,
@@ -2030,6 +2039,10 @@ function ArtifactLink({ artifactRef }) {
  */
 function openArtifactFromChat(controller, sessionId, filename) {
     if (!controller?.revealArtifact) return;
+    if (controller.openChatArtifact) {
+        Promise.resolve(controller.openChatArtifact(sessionId, filename)).catch(() => {});
+        return;
+    }
     const isPhone = typeof window !== "undefined"
         && typeof window.matchMedia === "function"
         && window.matchMedia("(max-width: 920px)").matches;
@@ -5159,6 +5172,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
         ownerFilter: state.sessions.ownerFilter,
         pinnedIds: state.sessions.pinnedIds,
         manualOrder: state.sessions.manualOrder,
+        sortMode: state.sessions.sortMode,
+        sortSnapshot: state.sessions.sortSnapshot,
         selectedIds: state.sessions.selectedIds,
         selectMode: state.sessions.selectMode,
         auth: state.auth,
@@ -5198,6 +5213,8 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             ownerFilter: viewState.ownerFilter,
             pinnedIds: viewState.pinnedIds,
             manualOrder: viewState.manualOrder,
+            sortMode: viewState.sortMode,
+            sortSnapshot: viewState.sortSnapshot,
             selectedIds: viewState.selectedIds,
             selectMode: viewState.selectMode,
             listDeselected: viewState.listDeselected,
@@ -5216,7 +5233,7 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
             prefs: viewState.canvasPrefs,
         },
         budget: { paused: viewState.budgetPaused },
-    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
+    }), [viewState.activeSessionId, viewState.auth, viewState.branding, viewState.budgetPaused, viewState.canvasBySessionId, viewState.canvasPrefs, viewState.connectionMode, viewState.filterQuery, viewState.listDeselected, viewState.ownerFilter, viewState.pinnedIds, viewState.manualOrder, viewState.sortMode, viewState.sortSnapshot, viewState.selectedIds, viewState.selectMode, viewState.sessionsById, viewState.sessionsFlat]);
     // Hold the previous rows when a poll produced identical output.
     const rows = useStableValue(computedRows);
     const searchScrollRef = React.useRef({ top: 0, left: 0, restore: false });
@@ -5991,15 +6008,31 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 setRef: setSessionButtonRef,
                 // Drag-to-folder is a fine-pointer gesture: arming it on
                 // touch hijacks the finger that should be scrolling the list.
-                drag: selection || touchInput ? null : dragHandlers,
+                drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
             }))),
-    React.createElement(SessionSearchControl, {
-        query: viewState.filterQuery,
-        onQuery: setSearchQuery,
-        matchCount: searchMatchCount,
-        mobile: isMobilePane,
-        listRef: sessionListRef,
-    }),
+    React.createElement("div", { className: "ps-session-find-controls" },
+        React.createElement("div", { className: "ps-session-sort-controls" },
+            React.createElement("div", { className: "ps-session-sort-modes", role: "group", "aria-label": "Session sort order" },
+                ...[["used", "Recently used", "M12 8v4l3 2", true], ["updated", "Recently updated", "M3 12h4l3-7 4 14 3-7h4"], ["saved", "Saved order", "M6 3h12v18l-6-4-6 4Z"]].map(([mode, label, path, clock]) => React.createElement(IconButton, {
+                    key: mode, label, className: "ps-session-sort-button", active: (viewState.sortMode || "saved") === mode, pressed: (viewState.sortMode || "saved") === mode,
+                    icon: React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, clock ? React.createElement("circle", { cx: 12, cy: 12, r: 9 }) : null, React.createElement("path", { d: path })),
+                    onClick: () => controller.dispatch({ type: "sessions/sortMode", mode }),
+                }))),
+            React.createElement(IconButton, {
+                label: "Refresh session order", className: "ps-session-sort-refresh",
+                icon: React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, React.createElement("path", { d: "M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7v5" })),
+                onClick: async () => {
+                    try { await controller.refreshSessions(); controller.dispatch({ type: "sessions/refreshSort" }); }
+                    catch { controller.dispatch({ type: "ui/status", text: "Could not refresh sessions. Try again." }); }
+                },
+            })),
+        React.createElement(SessionSearchControl, {
+            query: viewState.filterQuery,
+            onQuery: setSearchQuery,
+            matchCount: searchMatchCount,
+            mobile: isMobilePane,
+            listRef: sessionListRef,
+        })),
     (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
             session: activeSession,
@@ -9381,7 +9414,7 @@ function StatusStrip({ controller }) {
 // (hold ~450ms to see the label, release to dismiss — the long-press does not
 // fire onClick). aria-label carries the meaning for assistive tech.
 const ICON_HOVER_TOOLTIP_MS = 1000;
-function IconButton({ icon, label, onClick, disabled = false, active = false, className = "ps-toolbar-button" }) {
+function IconButton({ icon, label, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
     // The tooltip is portaled to <body> so it escapes the toolbar/pane
     // overflow-clipping and stacking contexts (nested tooltips were hidden
     // behind, or bled through by, the panes). Coordinates are computed from
@@ -9524,6 +9557,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
         onClick: handleClick,
         disabled,
         "aria-label": label,
+        "aria-pressed": pressed,
         onPointerEnter: startHover,
         onPointerLeave: endHover,
         onPointerDown: startPress,
@@ -14666,6 +14700,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         // never persists — the reducer would reorder the list correctly and
         // the placement would vanish on reload.
         manualOrder: rootState.sessions.manualOrder,
+        sessionSortMode: rootState.sessions.sortMode,
+        sessionUsedAt: rootState.sessions.usedAt,
         // Pass the live Set reference here so shallow-equal sees the same
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
@@ -15007,7 +15043,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

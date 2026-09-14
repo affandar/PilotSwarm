@@ -103,7 +103,7 @@ for (const mode of ['zen', 'moa']) for (const themeId of ['terminal-green', 'win
             await expect(footer).toContainText('Working');
             await assertSame(queued);
             await page.screenshot({path:`/tmp/mobile-header-${mode}-${themeId}.png`});
-            const box = await surface.locator(mode==='zen'?'.ps-mobile-zen-composer':'.ps-moa-composer-strip').boundingBox();
+            const box = await surface.locator(mode==='zen'?'.ps-mobile-zen-composer':'.ps-moa-pane-composer').boundingBox();
             expect(Math.abs(box.y-(await geometry()).transcriptBottom)).toBeLessThan(5);
             // Stop remains reachable alongside Send at the narrowest phone and
             // keyboard viewport, and targets the focused session only.

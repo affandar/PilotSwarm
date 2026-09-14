@@ -480,6 +480,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             pinnedIds: normalizeStoredPinnedSessionIds(pinnedSessionIds),
             // Explicit user placement (desktop drag); read by every surface.
             manualOrder: normalizeStoredSessionOrder(sessionOrder),
+            sortMode: "saved",
+            sortSnapshot: [],
+            usedAt: {},
             // Whether a listing of each kind has been processed. "This row is
             // new" is only answerable against a previous listing OF THE SAME
             // KIND — inferring it from byId being non-empty was wrong, because

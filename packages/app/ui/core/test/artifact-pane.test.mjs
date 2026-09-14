@@ -176,3 +176,17 @@ test("revealArtifact without pane keeps the old inspector-focused behavior", asy
     assert.equal(controller.getState().files.paneOpen, false);
     assert.equal(controller.getState().ui.focusRegion, "inspector");
 });
+
+test('a cross-session artifact preview can keep the originating chat and draft selected', async () => {
+    const controller = controllerAt();
+    controller.dispatch({ type: 'ui/prompt', prompt: 'draft for the source chat' });
+    const reads = [];
+    controller.loadSession = async () => assert.fail('opening this artifact must not change the chat');
+    controller.ensureFilesForSession = async id => reads.push(['list', id]);
+    controller.ensureFilePreview = async (id, file) => reads.push(['preview', id, file]);
+    await controller.revealArtifact('another-session', 'report.md', { pane: true, preserveSession: true });
+    assert.equal(controller.getState().sessions.activeSessionId, 's1');
+    assert.equal(controller.getState().ui.prompt, 'draft for the source chat');
+    assert.equal(controller.getState().files.selectedArtifactId, 'another-session/report.md');
+    assert.deepEqual(reads, [['list', 'another-session'], ['preview', 'another-session', 'report.md']]);
+});

@@ -1,3 +1,4 @@
+import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
@@ -846,7 +847,7 @@ export function appReducer(state, action) {
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
     const next = baseReducer(state, action);
     if (next === state) return next;
-    return reconcileSessionView(state, next, action);
+    return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
 }
 
 // Per-session desktop views, kept in step with the ui slice.
@@ -1101,6 +1102,7 @@ function baseReducer(state, action) {
             const nextActiveSessionId = hasActive
                 ? normalizeStoredActiveSessionId(settings.activeSessionId)
                 : state.sessions.activeSessionId;
+            const remoteUsage = normalizeSessionUsage(settings.sessionUsedAt);
             const nextSessions = {
                 ...state.sessions,
                 ...(hasOwnerFilter
@@ -1117,6 +1119,9 @@ function baseReducer(state, action) {
                     : {}),
                 pinnedIds: nextPinnedIds,
                 manualOrder: nextManualOrder,
+                sortMode: Object.hasOwn(settings, "sessionSortMode") ? normalizeSessionSortMode(settings.sessionSortMode) : state.sessions.sortMode,
+                usedAt: Object.fromEntries([...new Set([...Object.keys(remoteUsage), ...Object.keys(state.sessions.usedAt || {})])]
+                    .map(id => [id, Math.max(remoteUsage[id] || 0, state.sessions.usedAt?.[id] || 0)])),
                 collapsedIds: nextCollapsedIds,
                 collapsedIdsExplicit: hasCollapsed ? true : state.sessions.collapsedIdsExplicit,
                 activeSessionId: nextActiveSessionId,
@@ -1891,8 +1896,15 @@ function baseReducer(state, action) {
             };
         }
 
+        case "sessions/sortMode":
+            return { ...state, sessions: { ...state.sessions, sortMode: normalizeSessionSortMode(action.mode) } };
+        case "sessions/refreshSort":
+            return { ...state, sessions: { ...state.sessions } };
+        case "sessions/used":
+            if (!action.sessionId) return state;
+            return { ...state, sessions: { ...state.sessions, usedAt: { ...state.sessions.usedAt, [action.sessionId]: action.at || Date.now() } } };
         case "sessions/selected": {
-            state = { ...state, sessions: { ...state.sessions, listDeselected: false, localSelectionMade: true } };
+            state = { ...state, sessions: { ...state.sessions, listDeselected: false, localSelectionMade: true, usedAt: action.sessionId ? { ...state.sessions.usedAt, [action.sessionId]: Date.now() } : state.sessions.usedAt } };
             // Per-session chat scroll memory: stash both the outgoing offset
             // and whether it follows the bottom. A paused reading position
             // stays paused as new messages arrive and across session switches.

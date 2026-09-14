@@ -26,6 +26,7 @@ async function fixture(page, extra = {}) {
     await page.setViewportSize({ width: 390, height: 844 });
     let settings = { themeId: "terminal-green", moa: { version: 2, tree, aspectRatio: 2 }, ...extra };
     const sends = [];
+    settings.moa = { ...settings.moa, composerMode: "shared" };
     await page.route("**/api/v1/**", route => {
         const request = route.request(), path = new URL(request.url()).pathname;
         const answer = result => route.fulfill({ json: { ok: true, result } });
