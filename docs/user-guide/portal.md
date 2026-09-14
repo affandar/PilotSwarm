@@ -44,8 +44,8 @@ Use **Find a session…** in the Sessions pane or workspace session picker to
 filter the catalog. Text appears immediately, and results update after a short
 typing pause. Clearing the field restores the full list.
 
-The sort selector above search offers **Recently used**, **Recently updated**,
-and **Saved** on desktop, mobile, and in the session picker. Recently used tracks
+The icon buttons beside search (above it on narrow panes) offer **Recently used**, **Recently updated**,
+and **Saved order** on desktop, mobile, and in the session picker. The clock, activity pulse, and bookmark icons show these modes; the selected icon is highlighted. Hover or long-press for a label. Recently used tracks
 sessions you open, focus in MoA, or message. Recently updated uses session update
 times. Choosing a mode applies that order once. Live activity keeps the positions
 stable; press the adjacent **Refresh session order** button to fetch and sort again.

@@ -109,13 +109,17 @@ for (const width of [1600, 390]) test(`artifact opens its owning session outside
 });
 for (const width of [1600, 390]) test(`session sort is available and stable until refresh at ${width}px`, async ({ page }) => {
     const f = await fixture(page, width);
-    const select = page.getByLabel('Session sort order', { exact: true }).filter({ visible: true });
+    const select = page.getByRole('group', { name: 'Session sort order', exact: true }).filter({ visible: true });
     // Mobile split layout includes the same session controls.
     await expect(select).toBeVisible();
+    await expect(select.getByRole('button')).toHaveCount(3);
+    await expect(select.locator('button[aria-pressed=true]')).toHaveCount(1);
+    await expect(select.locator('select')).toHaveCount(0);
     const rows = page.locator('.ps-session-list-button:visible:not([data-group-row])');
     const ids = () => rows.evaluateAll(nodes => nodes.map(n => n.dataset.sessionId));
     await expect.poll(ids).toEqual([sid(3),sid(1),sid(2),sid(0)]);
-    await select.selectOption('updated');
+    await select.getByRole('button', { name: 'Recently updated', exact: true }).click();
+    await expect(select.getByRole('button', { name: 'Recently updated', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect.poll(ids).toEqual([sid(3),sid(2),sid(1),sid(0)]);
     f.makeNewer();
     // Allow a real background catalog refresh; changed row text proves arrival.
@@ -123,9 +127,12 @@ for (const width of [1600, 390]) test(`session sort is available and stable unti
     await expect.poll(ids).toEqual([sid(3),sid(2),sid(1),sid(0)]);
     await page.getByRole('button', { name: 'Refresh session order' }).filter({ visible: true }).click();
     await expect.poll(ids).toEqual([sid(1),sid(3),sid(2),sid(0)]);
-    await select.selectOption('saved');
+    await select.getByRole('button', { name: 'Saved order', exact: true }).click();
+    await expect(select.getByRole('button', { name: 'Saved order', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect.poll(ids).toEqual([sid(3),sid(1),sid(2),sid(0)]);
-    await select.selectOption('used');
+    await select.getByRole('button', { name: 'Recently used', exact: true }).focus();
+    await select.getByRole('button', { name: 'Recently used', exact: true }).press('Enter');
+    await expect(select.getByRole('button', { name: 'Recently used', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await rows.filter({ hasText: 'Session 2' }).click();
     const before = await ids();
     await page.getByRole('button', { name: 'Refresh session order' }).filter({ visible: true }).click();
@@ -162,7 +169,14 @@ test('the MoA session picker has the same saved sort preference and refresh cont
     await page.getByRole('button', { name: 'Replace session or canvas…' }).click();
     const picker = page.getByRole('dialog', { name: 'Sessions', exact: true });
     await expect(picker.getByLabel('Session sort order')).toBeVisible();
-    await picker.getByLabel('Session sort order').selectOption('updated');
+    const bounds = await picker.locator('.ps-session-find-controls').evaluate(el => {
+        const sort = el.querySelector('.ps-session-sort-modes').getBoundingClientRect(), search = el.querySelector('.ps-session-search').getBoundingClientRect(), refresh = el.querySelector('.ps-session-sort-refresh').getBoundingClientRect();
+        return { sortRight: sort.right, searchLeft: search.left, searchRight: search.right, refreshLeft: refresh.left, sortY: sort.y, searchY: search.y };
+    });
+    expect(bounds.sortRight).toBeLessThan(bounds.searchLeft);
+    expect(bounds.searchRight).toBeLessThan(bounds.refreshLeft);
+    expect(Math.abs(bounds.sortY - bounds.searchY)).toBeLessThanOrEqual(2);
+    await picker.getByRole('button', { name: 'Recently updated', exact: true }).click();
     await picker.getByRole('button', { name: 'Refresh session order' }).click();
     const ids = await picker.locator('.ps-session-list-button:not([data-group-row])').evaluateAll(nodes => nodes.map(n => n.dataset.sessionId));
     expect(ids).toEqual([sid(3),sid(2),sid(1),sid(0)]);

@@ -6010,25 +6010,29 @@ function SessionPane({ controller, actions = null, panelClassName = "", structur
                 // touch hijacks the finger that should be scrolling the list.
                 drag: selection || touchInput || viewState.sortMode !== "saved" ? null : dragHandlers,
             }))),
-    React.createElement("div", { className: "ps-session-sort-controls" },
-        React.createElement("select", {
-            "aria-label": "Session sort order", value: viewState.sortMode || "saved",
-            onChange: event => controller.dispatch({ type: "sessions/sortMode", mode: event.target.value }),
-        }, ...[["used", "Recently used"], ["updated", "Recently updated"], ["saved", "Saved"]].map(([value, label]) => React.createElement("option", { key: value, value }, label))),
-        React.createElement("button", {
-            type: "button", "aria-label": "Refresh session order", title: "Refresh sessions and apply the selected order",
-            onClick: async () => {
-                try { await controller.refreshSessions(); controller.dispatch({ type: "sessions/refreshSort" }); }
-                catch { controller.dispatch({ type: "ui/status", text: "Could not refresh sessions. Try again." }); }
-            },
-        }, "↻")),
-    React.createElement(SessionSearchControl, {
-        query: viewState.filterQuery,
-        onQuery: setSearchQuery,
-        matchCount: searchMatchCount,
-        mobile: isMobilePane,
-        listRef: sessionListRef,
-    }),
+    React.createElement("div", { className: "ps-session-find-controls" },
+        React.createElement("div", { className: "ps-session-sort-controls" },
+            React.createElement("div", { className: "ps-session-sort-modes", role: "group", "aria-label": "Session sort order" },
+                ...[["used", "Recently used", "M12 8v4l3 2", true], ["updated", "Recently updated", "M3 12h4l3-7 4 14 3-7h4"], ["saved", "Saved order", "M6 3h12v18l-6-4-6 4Z"]].map(([mode, label, path, clock]) => React.createElement(IconButton, {
+                    key: mode, label, className: "ps-session-sort-button", active: (viewState.sortMode || "saved") === mode, pressed: (viewState.sortMode || "saved") === mode,
+                    icon: React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, clock ? React.createElement("circle", { cx: 12, cy: 12, r: 9 }) : null, React.createElement("path", { d: path })),
+                    onClick: () => controller.dispatch({ type: "sessions/sortMode", mode }),
+                }))),
+            React.createElement(IconButton, {
+                label: "Refresh session order", className: "ps-session-sort-refresh",
+                icon: React.createElement("svg", { viewBox: "0 0 24 24", width: 18, height: 18, fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, React.createElement("path", { d: "M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 7v5" })),
+                onClick: async () => {
+                    try { await controller.refreshSessions(); controller.dispatch({ type: "sessions/refreshSort" }); }
+                    catch { controller.dispatch({ type: "ui/status", text: "Could not refresh sessions. Try again." }); }
+                },
+            })),
+        React.createElement(SessionSearchControl, {
+            query: viewState.filterQuery,
+            onQuery: setSearchQuery,
+            matchCount: searchMatchCount,
+            mobile: isMobilePane,
+            listRef: sessionListRef,
+        })),
     (showDetailBox === null ? !isMobilePane : showDetailBox)
         ? React.createElement(SessionDetailBox, {
             session: activeSession,
@@ -9410,7 +9414,7 @@ function StatusStrip({ controller }) {
 // (hold ~450ms to see the label, release to dismiss — the long-press does not
 // fire onClick). aria-label carries the meaning for assistive tech.
 const ICON_HOVER_TOOLTIP_MS = 1000;
-function IconButton({ icon, label, onClick, disabled = false, active = false, className = "ps-toolbar-button" }) {
+function IconButton({ icon, label, onClick, disabled = false, active = false, pressed = undefined, className = "ps-toolbar-button" }) {
     // The tooltip is portaled to <body> so it escapes the toolbar/pane
     // overflow-clipping and stacking contexts (nested tooltips were hidden
     // behind, or bled through by, the panes). Coordinates are computed from
@@ -9553,6 +9557,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, cl
         onClick: handleClick,
         disabled,
         "aria-label": label,
+        "aria-pressed": pressed,
         onPointerEnter: startHover,
         onPointerLeave: endHover,
         onPointerDown: startPress,

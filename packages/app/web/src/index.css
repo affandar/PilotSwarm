@@ -9614,13 +9614,23 @@ textarea.ps-link-input {
   .ps-session-pane > .ps-panel-header .ps-mini-button { min-width: 32px; padding-inline: 6px; flex-shrink: 0; }
 }
 
-.ps-session-sort-controls { display: flex; flex: 0 0 auto; gap: 6px; padding: 4px 10px; align-items: center; border-top: 1px solid var(--ps-border); }
-.ps-session-sort-controls select { min-width: 0; flex: 1; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; font: inherit; font-size: var(--ps-font-size-dense); padding: 4px 6px; }
-.ps-session-sort-controls button { flex: 0 0 auto; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; font: inherit; padding: 2px 10px; }
-@media (max-width: 920px) { .ps-session-sort-controls select, .ps-session-sort-controls button { min-height: 36px; } }
-
-/* The collapsed phone search button shares the sort row's right edge. */
+/* Sorting shares the search row when the pane has room. */
+.ps-session-find-controls { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; border-top: 1px solid var(--ps-border); }
+.ps-session-sort-controls { display: flex; flex: 0 0 auto; gap: 8px; padding: 4px 8px; align-items: center; }
+.ps-session-sort-modes { display: flex; gap: 3px; }
+.ps-session-sort-controls button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 4px; }
+.ps-session-sort-controls .ps-session-sort-refresh { margin-left: auto; }
+.ps-session-sort-button[aria-pressed="true"] { color: var(--ps-selection-foreground); background: var(--ps-selection-background); box-shadow: inset 0 -2px currentColor; }
+.ps-session-sort-controls button:focus-visible { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+@media (min-width: 921px) {
+  @container session-pane (min-width: 460px) {
+    .ps-session-find-controls { flex-direction: row; align-items: center; gap: 6px; padding: 4px 8px; }
+    .ps-session-find-controls > .ps-session-sort-controls { display: contents; }
+    .ps-session-find-controls > .ps-session-search { order: 1; flex: 1; padding: 0; border: 0; background: transparent; }
+    .ps-session-sort-refresh { order: 2; }
+  }
+}
+@media (max-width: 920px) { .ps-session-sort-controls button { width: 44px; height: 44px; } }
+/* Leave room for the collapsed phone search button. */
 .ps-mobile-session-pane:has(.ps-session-search:not(.is-open)) .ps-session-sort-controls { padding-right: 54px; }
-.ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 10px; }
-
-@media (max-width: 920px) { .ps-session-sort-controls select { font-size: 16px; } }
+.ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 8px; }
