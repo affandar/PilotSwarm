@@ -1900,11 +1900,16 @@ export class SessionManager {
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
         // per-turn runtime context or newly allocated handler function identity.
+        const excludedTools = [...new Set([
+            ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
+            ...(config.excludedTools ?? []),
+        ])];
         const bindingFingerprint = createHash("sha256").update(JSON.stringify({
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
             mcpServers: effectiveMcpServers,
+            excludedTools,
             tools: allTools.map(toolDeclarationForFingerprint),
         })).digest("hex");
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
@@ -1966,7 +1971,7 @@ export class SessionManager {
             includeSubAgentStreamingEvents: false,
             // Native workers are explicitly scoped: built-ins inherit external
             // tools, and loaded PilotSwarm agents expect durable child contracts.
-            excludedTools: nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"],
+            excludedTools,
             ...(nativeEnabled ? {
                 customAgents: nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
                 customAgentsLocalOnly: true,

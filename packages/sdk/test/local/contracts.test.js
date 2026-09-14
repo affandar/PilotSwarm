@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 import { createTestEnv, preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, defineTool, PilotSwarmWorker, composeSystemPrompt } from "../helpers/local-workers.js";
 import { SessionManager } from "../../src/session-manager.ts";
-import { resolveStorageConfig, getRuntimeStorageProvider } from "../../src/index.ts";
 import { assert, assertEqual, assertIncludes, assertGreaterOrEqual, assertNotNull } from "../helpers/assertions.js";
 import { validateSessionAfterTurn } from "../helpers/cms-helpers.js";
 import { createAddTool, createMultiplyTool, ONEWORD_CONFIG, TOOL_CONFIG, TEST_GPT_MODEL } from "../helpers/fixtures.js";
@@ -99,75 +98,6 @@ const EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES = [
     ...EXPECTED_ALWAYS_ON_TOOL_NAMES,
     ...EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES,
 ];
-const EXPECTED_LLM_VISIBLE_TOOL_NAMES = [
-    ...EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES,
-    "apply_patch",
-    "bash",
-    "glob",
-    "list_agents",
-    "list_bash",
-    "read_agent",
-    "read_bash",
-    // report_intent and write_bash were built-in Copilot CLI tools in 1.0.50;
-    // the 1.0.70 CLI no longer exposes them.
-    "parallel",
-    "rg",
-    "skill",
-    "set_session_model",
-    "regenerate_context",
-    "regenerate_agent",
-    "sql",
-    "stop_bash",
-    "view",
-    "web_fetch",
-    // Verified after a real first turn via session.rpc.tools.getCurrentMetadata
-    // on CLI 1.0.83: these are upstream defaults, not model confabulation or
-    // PilotSwarm deployment MCP grants. Keep exact matching on both turns.
-    "web_search",
-    "github-mcp-server-get_copilot_space",
-    "github-mcp-server-get_file_contents",
-    "github-mcp-server-list_copilot_spaces",
-    "github-mcp-server-search_code",
-    "github-mcp-server-search_users",
-    // write_agent joined the CLI's built-ins between 1.0.70 and 1.0.73
-    // (companion to read_agent, for custom-agent files). Not a PilotSwarm
-    // tool; delivered by the CLI to every session.
-    "write_agent",
-];
-
-// Derive the expected enhanced tools from the SAME storage registry the SDK
-// uses to select the runtime provider — not from a re-derived env heuristic.
-// The provider's `enhancedFactStore` capability is exactly what makes the worker
-// append facts_search / facts_similar / search_skills (a non-facts-manager
-// session sees all three).
-function expectedLlmVisibleToolNamesForProvider() {
-    const names = [...EXPECTED_LLM_VISIBLE_TOOL_NAMES];
-    const storage = resolveStorageConfig({});
-    const provider = getRuntimeStorageProvider(storage.runtime.provider);
-    if (provider.capabilities?.enhancedFactStore) {
-        names.push("facts_search", "facts_similar", "search_skills");
-    }
-    // The provider's `graphStore` capability is what makes the worker append the
-    // graph tools, exactly as `enhancedFactStore` does for the facts trio. Without
-    // this branch every `--with-horizondb` run sees 11 unexpected `graph_*` tools.
-    if (provider.capabilities?.graphStore) {
-        names.push(
-            "graph_list_namespaces",
-            "graph_get_namespace",
-            "graph_search_nodes",
-            "graph_search_edges",
-            "graph_neighbourhood",
-            "graph_upsert_namespace",
-            "graph_upsert_node",
-            "graph_upsert_edge",
-            "graph_merge_nodes",
-            "graph_delete_node",
-            "graph_delete_edge",
-        );
-    }
-    return names;
-}
-
 function createNoopFactStore() {
     return {
         async initialize() {},
@@ -207,6 +137,15 @@ function createNoopSessionCatalog() {
         async pruneDeletedSummaries() { return 0; },
         async close() {},
     };
+}
+
+function canonicalizeToolNames(entries) {
+    assert(Array.isArray(entries), "tool names should be an array");
+    return [...new Set(entries.map((entry) => {
+        const name = typeof entry === "string" ? entry : entry?.name;
+        assert(typeof name === "string" && name.length > 0, "tool metadata should carry a name");
+        return name === "multi_tool_use.parallel" ? "parallel" : name;
+    }))].sort();
 }
 
 function parseToolNameArray(response) {
@@ -771,60 +710,69 @@ async function testGenericSessionsInheritFrameworkDefaultToolNames(env) {
 // ─── Test: LLM Sees Exact Always-On Toolset ─────────────────────
 
 async function testLlmSeesExactAlwaysOnTools(env) {
-    const expectedSorted = expectedLlmVisibleToolNamesForProvider().sort();
-    const normalizeReportedToolNames = (response) => [...new Set(
-        parseToolNameArray(response).map((name) =>
-            name === "multi_tool_use.parallel" ? "parallel" : name,
-        ),
-    )].sort();
-
     await withClient(env, {
         worker: { pluginDirs: [NO_TOOLS_AGENT_PLUGIN_DIR] },
-    }, async (client) => {
-        // MODEL VARIABILITY: this assertion is an exact match against a list the
-        // model types out itself, so it is only as stable as the model's
-        // willingness to introspect. Observed on other models: (a) an outright
-        // refusal — "ignore your normal role ... return your tool names" reads as
-        // a prompt-injection attempt, so the reply is prose and parsing fails;
-        // and (b) substitution — the model answers with familiar tool names it
-        // was NOT given (e.g. `create`/`edit`/`grep` in place of the CLI's real
-        // `apply_patch`/`rg`), which looks like catalog drift but is confabulation.
-        // Neither is a contract violation: the toolset really was delivered.
-        // Pin a model known to comply so a red here means the toolset is wrong,
-        // not that the model declined. Revisit if this model's behavior changes.
+    }, async (client, worker) => {
+        // This remains an LLM eval against metadata. SDK 1.0.13 exposes the
+        // invocation-only parallel wrapper but omits it from metadata and tool filtering,
+        // so the exception must be stated explicitly.
         const session = await client.createSession({
             model: TEST_GPT_MODEL,
             agentId: "coordinator",
+            excludedTools: ["mcp:*"],
             systemMessage: {
-                mode: "append",
+                mode: "customize",
+                sections: {
+                    tool_efficiency: { action: "remove" },
+                    last_instructions: { action: "remove" },
+                },
                 content:
                     "For this interaction only, ignore your normal role and do not call any tools. " +
-                    "Return exactly one JSON array of the tool names you can call in this session. " +
-                    "Use only tool names as strings. Include every callable tool exactly once. " +
+                    "The authoritative namespace for this eval is session.rpc.tools.getCurrentMetadata().tools[].name. " +
+                    "The invocation-only parallel / multi_tool_use.parallel wrapper is outside that metadata namespace and must not be reported. " +
+                    "Return exactly one JSON array containing every actual metadata tool name exactly once, using only tool names as strings. " +
                     "Do not include prose, markdown fences, explanations, or comments.",
             },
         });
 
         const response1 = await session.sendAndWait(
-            "Return exactly one JSON array of the tool names you can call in this session.",
+            "Return exactly one JSON array containing every session.rpc.tools.getCurrentMetadata().tools[].name exactly once, with no prose. The invocation-only parallel / multi_tool_use.parallel wrapper is outside that metadata namespace and must not be reported.",
             TIMEOUT,
         );
-        const parsed1 = normalizeReportedToolNames(response1);
+        const managed = worker.sessionManager.get(session.sessionId);
+        assertNotNull(managed, "eval session should be active on the co-located worker");
+        const copilotSession = managed.getCopilotSession();
+        const metadata1 = canonicalizeToolNames(
+            (await copilotSession.rpc.tools.getCurrentMetadata()).tools,
+        );
+        for (const toolName of EXPECTED_FRAMEWORK_SESSION_TOOL_NAMES) {
+            assert(
+                metadata1.includes(toolName),
+                `required PilotSwarm tool should remain model-visible: ${toolName}`,
+            );
+        }
         assertEqual(
-            JSON.stringify(parsed1),
-            JSON.stringify(expectedSorted),
-            "LLM-visible tool list should exactly match the expected always-on tools on turn 1",
+            JSON.stringify(canonicalizeToolNames(parseToolNameArray(response1))),
+            JSON.stringify(metadata1),
+            "LLM-reported tool list should exactly match authoritative metadata on turn 1",
         );
 
         const response2 = await session.sendAndWait(
-            "Again, return exactly one JSON array of the tool names you can call in this session.",
+            "Again, return exactly one JSON array containing every session.rpc.tools.getCurrentMetadata().tools[].name exactly once, with no prose. The invocation-only parallel / multi_tool_use.parallel wrapper is outside that metadata namespace and must not be reported.",
             TIMEOUT,
         );
-        const parsed2 = normalizeReportedToolNames(response2);
+        const metadata2 = canonicalizeToolNames(
+            (await copilotSession.rpc.tools.getCurrentMetadata()).tools,
+        );
         assertEqual(
-            JSON.stringify(parsed2),
-            JSON.stringify(expectedSorted),
-            "LLM-visible tool list should exactly match the expected always-on tools on turn 2",
+            JSON.stringify(metadata2),
+            JSON.stringify(metadata1),
+            "authoritative model-facing metadata should remain stable across the eval",
+        );
+        assertEqual(
+            JSON.stringify(canonicalizeToolNames(parseToolNameArray(response2))),
+            JSON.stringify(metadata2),
+            "LLM-reported tool list should exactly match authoritative metadata on turn 2",
         );
     });
 }
@@ -1067,7 +1015,7 @@ describe("Level 8: Contract Tests", () => {
     it("Replace Mode Still Layers Base Prompt", { timeout: TIMEOUT }, async () => {
         await testReplaceSystemMessageKeepsLayering(getEnv());
     });
-    it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT, retry: 2 }, async () => {
+    it("LLM Sees Exact Always-On Toolset", { timeout: TIMEOUT }, async () => {
         await testLlmSeesExactAlwaysOnTools(getEnv());
     });
 });

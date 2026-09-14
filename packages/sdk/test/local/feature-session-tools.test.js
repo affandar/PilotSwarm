@@ -134,6 +134,26 @@ describe("feature tool session surfaces", () => {
     });
 });
 
+describe("session-scoped Copilot tool exclusions", () => {
+    it("augments defaults and rebinds when the exclusion selectors change", async () => {
+        await fixture(async ({ manager, sessionId, options }) => {
+            const first = await manager.getOrCreate(sessionId, {
+                model: "gpt-5.6-terra",
+                excludedTools: ["mcp:*"],
+            }, { turnIndex: 0 });
+            expect(options[0].excludedTools).toEqual(["task", "mcp:*"]);
+
+            const rebound = await manager.getOrCreate(sessionId, {
+                model: "gpt-5.6-terra",
+                excludedTools: ["mcp:*", "builtin:github"],
+            }, { turnIndex: 1 });
+            expect(rebound).not.toBe(first);
+            expect(first.getCopilotSession().disconnect).toHaveBeenCalledTimes(1);
+            expect(options.at(-1).excludedTools).toEqual(["task", "mcp:*", "builtin:github"]);
+        });
+    });
+});
+
 describe("native owner resolution", () => {
     it.each(["unreadable", "absent", "ownerless"])("fails closed for a %s CMS owner while cluster native policy is ON", async condition => {
         await fixture(async ({ manager, sessionId, options, fail, setRow }) => {

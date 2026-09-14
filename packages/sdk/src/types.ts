@@ -247,6 +247,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     nativeFeatureAllowed?: () => boolean;
     /** Internal feature tool declaration fingerprint; never a durable setting. */
     featureToolFingerprint?: string;
+    /** Internal runtime-only Copilot tool selectors to exclude for this session. */
+    excludedTools?: string[];
     /** Internal hash of resolved provider endpoint/credential; never serialized or exposed. */
     providerFingerprint?: string;
     /** Internal exact model admitted for this turn; a later CMS change aborts before execution. */
