@@ -161,11 +161,16 @@ export function normalizeDurableJsonValue(
             if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) {
                 throw new TypeError(`${label}.${key} must be an enumerable data property`);
             }
-            normalized[key] = normalizeDurableJsonValue(
-                descriptor.value,
-                `${label}.${key}`,
-                ancestors,
-            );
+            Object.defineProperty(normalized, key, {
+                value: normalizeDurableJsonValue(
+                    descriptor.value,
+                    `${label}.${key}`,
+                    ancestors,
+                ),
+                enumerable: true,
+                configurable: true,
+                writable: true,
+            });
         }
         return normalized;
     } finally {

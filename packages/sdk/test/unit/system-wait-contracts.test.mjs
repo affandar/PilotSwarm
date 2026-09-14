@@ -129,6 +129,35 @@ test("signal payloads accept only JSON-safe durable data", () => {
     );
 });
 
+test("durable payloads preserve enumerable __proto__ data without prototype mutation", () => {
+    const payload = JSON.parse('{"__proto__":{"safe":true},"outcome":"ok"}');
+    const normalized = normalizeSystemWaitCommand({
+        type: "signal",
+        waitKey: "operation:42",
+        payload,
+    });
+
+    assert.equal(Object.getPrototypeOf(normalized.payload), Object.prototype);
+    assert.equal(Object.hasOwn(normalized.payload, "__proto__"), true);
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(normalized.payload)),
+        payload,
+    );
+
+    const completed = applySystemWaitCommand(
+        createStoredSystemWait(
+            { waitKey: "operation:42", kind: "signal", reason: "Await result" },
+            new Date("2026-01-01T00:00:00Z"),
+        ),
+        normalized,
+        new Date("2026-01-01T00:01:00Z"),
+    );
+    assert.deepEqual(
+        normalizeStoredSystemWait(serializeStoredSystemWait(completed)),
+        completed,
+    );
+});
+
 test("storage serialization is canonical and tolerates legacy field names and extra fields", () => {
     const normalized = normalizeStoredSystemWait({
         wait_key: "operation:42",
