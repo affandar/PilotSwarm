@@ -78,6 +78,7 @@ test("SessionManager passes the managed path to the Copilot boundary and disable
     );
     assert.equal(configs[0].enableConfigDiscovery, false);
     assert.equal(configs[0].enableSkills, false);
+    fs.writeFileSync(path.join(configs[0].workingDirectory, "managed.txt"), "managed");
 
     const override = path.join(root, "caller-repository");
     await manager.getOrCreate("caller-session", { workingDirectory: override }, { turnIndex: 0 });
@@ -85,6 +86,13 @@ test("SessionManager passes the managed path to the Copilot boundary and disable
     assert.equal(configs[1].enableConfigDiscovery, true);
     assert.equal(configs[1].enableSkills, true);
     assert.equal(fs.existsSync(override), false, "caller retains creation and cleanup ownership");
+
+    fs.mkdirSync(override, { recursive: true });
+    fs.writeFileSync(path.join(override, "caller.txt"), "caller");
+    await manager.destroySession("managed-session");
+    await manager.destroySession("caller-session");
+    assert.equal(fs.existsSync(configs[0].workingDirectory), false, "terminal cleanup reclaims managed workspace");
+    assert.equal(fs.existsSync(override), true, "terminal cleanup preserves caller-owned workspace");
 });
 
 test("SessionManager preserves historical discovery without a workspace manager", async (t) => {
