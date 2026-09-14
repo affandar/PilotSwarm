@@ -74,7 +74,7 @@ export interface WwwAuthenticate {
  * Tolerant of the `Bearer `  prefix and quoted values, per RFC 6750 §3.
   */
 export function parseWwwAuthenticate(headerValue: string): WwwAuthenticate {
-    const value = /^\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s+/.test(headerValue)
+    const value = /^\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+(?=\s|,|$)/.test(headerValue)
         ? headerValue
         : `Bearer ${headerValue}`;
     const challenge = parseAuthenticationChallenges(value)

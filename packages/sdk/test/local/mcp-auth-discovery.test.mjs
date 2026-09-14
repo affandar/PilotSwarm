@@ -35,6 +35,16 @@ t("parse: Microsoft non-standard resource_id/authorization_uri", () => {
     assert.equal(wa.resourceId, "api://myapp");
     assert.equal(wa.authorizationUri, "https://login.microsoftonline.com/tid");
 });
+t("parse: parameterless Bearer challenge has no discoverable audience", () => {
+    const wa = parseWwwAuthenticate("Bearer");
+    assert.equal(wa.resourceMetadata, undefined);
+    assert.equal(wa.scope, undefined);
+    assert.equal(wa.resourceId, undefined);
+});
+t("parse: mixed challenges can begin with a parameterless scheme", () => {
+    const wa = parseWwwAuthenticate('Basic, Bearer scope="api://service/.default"');
+    assert.equal(wa.scope, "api://service/.default");
+});
 
 // --- appIdUriFromScope: real scopes ---
 t("appIdUri: bare GUID .default (ADO first-party)", () => {
