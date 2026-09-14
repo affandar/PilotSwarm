@@ -181,9 +181,9 @@ from this acceptance bar.
     can be contributed under the upstream repository's license and contribution policy. Replace
     or independently implement anything whose ownership or provenance is uncertain.
 20. **Lead with generic platform value.** Start the pull-request description with a concise
-    paragraph describing the reusable capability and the platform problem it solves. Do not add a
-    "why this belongs in PilotSwarm" section or frame the contribution as a justification against
-    one downstream deployment. Call out the specific compatibility, security, lifecycle,
+    `Why` section describing the reusable capability and the platform problem it solves. Do not
+    use a "why this belongs in PilotSwarm" heading or frame the contribution as a justification
+    against one downstream deployment. Call out the specific compatibility, security, lifecycle,
     performance, or portability areas reviewers should scrutinize alongside the exact red/green
     proof required above.
 
@@ -192,7 +192,9 @@ from this acceptance bar.
 Use this structure unless the upstream repository adopts a more specific template:
 
 ```text
-<One concise opening paragraph describing the generic platform value. No heading is needed.>
+## Why
+
+<One concise paragraph describing the generic platform value.>
 
 ## What changed
 
@@ -200,13 +202,22 @@ Use this structure unless the upstream repository adopts a more specific templat
 
 ## Behavioral proof
 
-**Red — test-only patch on `main`:**
+**Command:**
 
-<Exact command and observed pre-change failure>
+<Exact command used for both states>
 
-**Green — this branch:**
+- **Red — test-only patch on `main`:** <Observed pre-change failure>
+- **Green — this branch:** <Observed passing result>
 
-<Exact command and observed passing result>
+If the red and green proof genuinely require different commands, list each command separately and
+explain why. Do not duplicate identical command blocks.
+
+## Risk assessment
+
+**Relative risk: <Low | Medium | High>**
+
+<Concise explanation of the rating, including the affected boundary, compatibility exposure,
+failure modes, and the tests or design constraints that reduce the risk.>
 
 ## Review focus
 
@@ -215,7 +226,8 @@ Use this structure unless the upstream repository adopts a more specific templat
 
 Do not mention the private transition plan, U-item number, SQL-owned scenario, or private-fork
 implementation in the public description. Add separate compatibility or migration sections only
-when they help reviewers evaluate a real public contract change.
+when they help reviewers evaluate a real public contract change. The risk rating is relative to
+the current upstream platform, not to the already-deployed private fork.
 
 ## DAG drain algorithm
 
