@@ -143,6 +143,10 @@ export function loadEnv(envName) {
 
 // ───────────────────────── Subprocess wrapper (FR-011) ─────────────────────────
 
+// Captured render/deploy output can exceed Node's 1 MiB default. Keep the
+// raised capacity finite so a noisy child process cannot grow memory without bound.
+export const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
+
 // Resolve a CLI to an absolute path-or-name suitable for spawnSync without `shell: true`.
 // On Windows, `az` ships as `az.cmd`; `kubectl` and `oras` as `<name>.exe`. We probe PATH
 // for the bare name first, then `<name>.cmd`, then `<name>.exe`. Returns the first hit
@@ -255,7 +259,22 @@ export function redactArgs(args) {
 }
 
 export function run(name, args, opts = {}) {
-  const { capture = false, cwd, env, allowFail = false } = opts;
+  const {
+    capture = false,
+    cwd,
+    env,
+    allowFail = false,
+    maxOutputBytes = MAX_COMMAND_OUTPUT_BYTES,
+  } = opts;
+  if (
+    !Number.isSafeInteger(maxOutputBytes)
+    || maxOutputBytes < 1
+    || maxOutputBytes > MAX_COMMAND_OUTPUT_BYTES
+  ) {
+    throw new RangeError(
+      `maxOutputBytes must be an integer between 1 and ${MAX_COMMAND_OUTPUT_BYTES}`,
+    );
+  }
   const cli = resolveCli(name);
   const isBatch = WINDOWS && /\.(cmd|bat)$/i.test(cli);
 
@@ -281,6 +300,7 @@ export function run(name, args, opts = {}) {
     env: env ?? process.env,
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
     encoding: "utf8",
+    maxBuffer: maxOutputBytes,
     ...spawnOpts,
   });
   if (result.error) {

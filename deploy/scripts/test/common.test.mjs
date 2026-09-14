@@ -1,13 +1,28 @@
-// Unit tests for deploy/scripts/lib/common.mjs. Currently covers redactArgs(),
-// the helper that masks known-sensitive flag values in error messages and logs
-// (FR-007). The patterns are anchored end-of-string so a short-form secret flag
-// (e.g. `-p`) does NOT over-mask a longer flag whose name happens to begin with
-// the same letter (e.g. `--port`, `--profile`).
+// Unit tests for deploy/scripts/lib/common.mjs.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { redactArgs } from "../lib/common.mjs";
+import { redactArgs, run } from "../lib/common.mjs";
+
+test("run captures output that would exceed spawnSync's default buffer with ENOBUFS", () => {
+  const outputBytes = 2 * 1024 * 1024;
+  const result = run(
+    process.execPath,
+    ["-e", `process.stdout.write("x".repeat(${outputBytes}))`],
+    { capture: true },
+  );
+  assert.equal(result.status, 0);
+  assert.equal(Buffer.byteLength(result.stdout), outputBytes);
+  assert.equal(result.stderr, "");
+});
+
+test("run rejects unbounded output capacity", () => {
+  assert.throws(
+    () => run(process.execPath, ["--version"], { capture: true, maxOutputBytes: Infinity }),
+    /maxOutputBytes must be an integer/,
+  );
+});
 
 test("redactArgs masks long-form --password value (space-separated)", () => {
   const out = redactArgs(["az", "login", "--username", "u", "--password", "s3cret"]);
