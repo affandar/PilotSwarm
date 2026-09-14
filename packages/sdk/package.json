@@ -18,6 +18,10 @@
             "types": "./dist/mcp-auth-discovery.d.ts",
             "import": "./dist/mcp-auth-discovery.js"
         },
+        "./mcp-auth": {
+            "types": "./dist/mcp-auth.d.ts",
+            "import": "./dist/mcp-auth.js"
+        },
         "./node-auth": {
             "types": "./dist/node-auth.d.ts",
             "import": "./dist/node-auth.js"

@@ -37,6 +37,22 @@ import {
     isCallerAuthConfigurationError,
     isCallerReauthRequiredError,
 } from "./caller-auth-errors.js";
+import {
+    McpAuthParseError,
+    parseProtectedResourceMetadata,
+    parseWwwAuthenticate as parseAuthenticationChallenges,
+} from "./mcp-auth.js";
+import {
+    McpMetadataFetchError,
+    discoverMcpResourceAudiences,
+    fetchProtectedResourceMetadata,
+} from "./mcp-auth-metadata.js";
+
+export {
+    McpMetadataFetchError,
+    discoverMcpResourceAudiences,
+    fetchProtectedResourceMetadata,
+} from "./mcp-auth-metadata.js";
 
 // ─── WWW-Authenticate (RFC 6750 §3) ─────────────────────────────
 
@@ -58,24 +74,21 @@ export interface WwwAuthenticate {
  * Tolerant of the `Bearer `  prefix and quoted values, per RFC 6750 §3.
   */
 export function parseWwwAuthenticate(headerValue: string): WwwAuthenticate {
-    const out: WwwAuthenticate = {};
-    const s = headerValue.replace(/^Bearer\s+/i, "");
-    for (const rawPart of s.split(",")) {
-        const part = rawPart.trim();
-        const eq = part.indexOf("=");
-        if (eq < 0) continue;
-        const key = part.slice(0, eq).trim().toLowerCase();
-        const val = part.slice(eq + 1).trim().replace(/^"|"$/g, "");
-        switch (key) {
-            case "resource_metadata": out.resourceMetadata = val; break;
-            case "scope": out.scope = val; break;
-            case "resource_id": out.resourceId = val; break;
-            case "authorization_uri": out.authorizationUri = val; break;
-            case "error": out.error = val; break;
-            case "error_description": out.errorDescription = val; break;
-        }
-    }
-    return out;
+    const value = /^\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+\s+/.test(headerValue)
+        ? headerValue
+        : `Bearer ${headerValue}`;
+    const challenge = parseAuthenticationChallenges(value)
+        .find(({ scheme }) => scheme.toLowerCase() === "bearer");
+    if (!challenge) return {};
+    const parameters = challenge.parameters;
+    return {
+        resourceMetadata: parameters.resource_metadata,
+        scope: parameters.scope,
+        resourceId: parameters.resource_id ?? parameters.resource,
+        authorizationUri: parameters.authorization_uri,
+        error: parameters.error,
+        errorDescription: parameters.error_description,
+    };
 }
 
 /** Inputs to {@link buildWwwAuthenticate} — the EMIT side of the RFC 6750
@@ -217,8 +230,10 @@ export function defaultHttpDeps(): HttpDeps {
             return { status: res.status, wwwAuthenticate: res.headers.get("www-authenticate") ?? undefined };
         },
         async getText(url) {
-            const res = await fetch(url, { method: "GET" });
-            return { status: res.status, body: await res.text() };
+            return {
+                status: 200,
+                body: await fetchProtectedResourceMetadata(url),
+            };
         },
     };
 }
@@ -257,29 +272,41 @@ export async function discoverServerAudience(
 
     // Path A — RFC 9728: follow the resource_metadata URL to the PRM document.
     if (wa.resourceMetadata) {
-        if (!/^https:\/\//i.test(wa.resourceMetadata)) {
-            // SSRF guard: never fetch a non-https metadata URL from an attacker-
-            // controllable header.
-            trace(`[mcp-auth] resource_metadata URL is not https, refusing to fetch: ${wa.resourceMetadata}`);
-            return null;
+        let metadataUrl: URL;
+        try {
+            metadataUrl = new URL(wa.resourceMetadata);
+        } catch {
+            throw new McpMetadataFetchError("INVALID_URL", "Protected-resource metadata URL is invalid.");
         }
-        const md = await http.getText(wa.resourceMetadata);
+        if (metadataUrl.protocol !== "https:" || metadataUrl.username || metadataUrl.password) {
+            throw new McpMetadataFetchError(
+                "INVALID_URL",
+                "Protected-resource metadata must use HTTPS without embedded credentials.",
+            );
+        }
+        const md = await http.getText(metadataUrl.href);
         if (md.status < 200 || md.status >= 300) {
             trace(`[mcp-auth] PRM fetch ${wa.resourceMetadata} -> HTTP ${md.status}; cannot discover audience`);
             return null;
         }
-        let prm: ProtectedResourceMetadata;
-        try {
-            const raw = JSON.parse(md.body);
-            prm = {
-                resource: raw.resource,
-                authorizationServers: raw.authorization_servers,
-                scopesSupported: raw.scopes_supported,
-            };
-        } catch (e: any) {
-            trace(`[mcp-auth] PRM parse failed for ${wa.resourceMetadata}: ${e?.message ?? e}`);
-            return null;
+        const parsed = parseProtectedResourceMetadata(md.body);
+        const raw = JSON.parse(md.body) as Record<string, unknown>;
+        const authorizationServers = raw.authorization_servers;
+        if (authorizationServers !== undefined && (
+            !Array.isArray(authorizationServers)
+            || authorizationServers.some((value) => typeof value !== "string" || !value.trim())
+        )) {
+            throw new McpAuthParseError(
+                "Protected-resource metadata authorization_servers must contain only strings.",
+            );
         }
+        const prm: ProtectedResourceMetadata = {
+            resource: parsed.resource,
+            scopesSupported: parsed.scopesSupported,
+            authorizationServers: Array.isArray(authorizationServers)
+                ? authorizationServers.map((value) => String(value).trim())
+                : [],
+        };
         const scope =
             wa.scope ||
             (prm.scopesSupported && prm.scopesSupported.length > 0 ? prm.scopesSupported[0] : undefined) ||
@@ -488,7 +515,11 @@ export async function resolveMcpServerAuth(opts: ResolveMcpAuthOptions): Promise
             discovered = await discoverServerAudience(url, headers, http, trace);
         } catch (e: any) {
             trace(`[mcp-auth] server "${name}": discovery error: ${e?.message ?? e}`);
-            discovered = null;
+            if (isOptionalMcpServer(cfg)) {
+                trace(`[mcp-auth] server "${name}": optional discovery failed; skipping server`);
+                continue;
+            }
+            throw e;
         }
 
         if (!discovered) {
