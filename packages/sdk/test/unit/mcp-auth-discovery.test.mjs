@@ -46,6 +46,26 @@ test("parses multiple challenges and commas inside quoted parameters", () => {
     ]);
 });
 
+test("preserves token68 challenges without blocking bearer discovery", () => {
+    const challenges = parseWwwAuthenticate(
+        'Negotiate YWJjZA==, Bearer scope="api://service/.default"',
+    );
+    assert.deepEqual(challenges, [
+        { scheme: "Negotiate", parameters: {}, token68: "YWJjZA==" },
+        {
+            scheme: "Bearer",
+            parameters: { scope: "api://service/.default" },
+        },
+    ]);
+    assert.deepEqual(bearerChallenges(
+        'Negotiate YWJjZA==, Bearer scope="api://service/.default"',
+    ), [{
+        resourceMetadata: undefined,
+        resource: undefined,
+        scope: "api://service/.default",
+    }]);
+});
+
 test("rejects malformed challenge quoting without partial parsing", () => {
     assert.throws(
         () => parseWwwAuthenticate('Bearer resource_metadata="https://metadata.example/path, scope="x"'),

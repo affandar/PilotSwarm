@@ -9,6 +9,7 @@
 export interface AuthenticationChallenge {
     scheme: string;
     parameters: Readonly<Record<string, string>>;
+    token68?: string;
 }
 
 export interface BearerChallenge {
@@ -37,6 +38,7 @@ export class McpAuthParseError extends Error {
 }
 
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const TOKEN68 = /^[A-Za-z0-9\-._~+/]+={0,}$/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function splitOutsideQuotes(value: string): string[] {
@@ -125,23 +127,38 @@ function startsChallenge(part: string): { scheme: string; remainder: string } | 
  */
 export function parseWwwAuthenticate(headerValues: string | readonly string[]): AuthenticationChallenge[] {
     const values = typeof headerValues === "string" ? [headerValues] : headerValues;
-    const challenges: Array<{ scheme: string; parameters: Record<string, string> }> = [];
+    const challenges: Array<{
+        scheme: string;
+        parameters: Record<string, string>;
+        token68?: string;
+    }> = [];
 
     for (const headerValue of values) {
-        let current: { scheme: string; parameters: Record<string, string> } | null = null;
+        let current: {
+            scheme: string;
+            parameters: Record<string, string>;
+            token68?: string;
+        } | null = null;
         for (const part of splitOutsideQuotes(headerValue)) {
             const beginning = startsChallenge(part);
             if (beginning) {
                 current = { scheme: beginning.scheme, parameters: {} };
                 challenges.push(current);
                 if (beginning.remainder) {
-                    const [name, value] = parseParameter(beginning.remainder);
-                    current.parameters[name] = value;
+                    if (TOKEN68.test(beginning.remainder)) {
+                        current.token68 = beginning.remainder;
+                    } else {
+                        const [name, value] = parseParameter(beginning.remainder);
+                        current.parameters[name] = value;
+                    }
                 }
                 continue;
             }
             if (!current) {
                 throw new McpAuthParseError("WWW-Authenticate parameters appeared before an authentication scheme.");
+            }
+            if (current.token68) {
+                throw new McpAuthParseError("WWW-Authenticate token68 challenge cannot contain parameters.");
             }
             const [name, value] = parseParameter(part);
             current.parameters[name] = value;
