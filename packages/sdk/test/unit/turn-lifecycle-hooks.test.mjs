@@ -29,20 +29,23 @@ test("orders hooks around a successful turn exactly once", async () => {
     ]);
 });
 
-test("reports cancellation to the finally hook", async () => {
-    const seen = [];
-    const cancelled = { type: "cancelled", message: "stopped" };
-    assert.equal(await runWithTurnLifecycleHooks({
-        context,
-        run: () => cancelled,
-        afterTurn: (value) => seen.push(value),
-        isCancelled: (result) => result.type === "cancelled",
-    }), cancelled);
+test("reports cancelled and stopped turn results as cancellation", async () => {
+    for (const result of [
+        { type: "cancelled", message: "cancelled" },
+        { type: "stopped", reason: "stopped" },
+    ]) {
+        const seen = [];
+        assert.equal(await runWithTurnLifecycleHooks({
+            context,
+            run: () => result,
+            afterTurn: (value) => seen.push(value),
+        }), result);
 
-    assert.equal(seen.length, 1);
-    assert.equal(seen[0].status, "cancelled");
-    assert.equal(seen[0].result, cancelled);
-    assert.equal(seen[0].error, undefined);
+        assert.equal(seen.length, 1);
+        assert.equal(seen[0].status, "cancelled");
+        assert.equal(seen[0].result, result);
+        assert.equal(seen[0].error, undefined);
+    }
 });
 
 test("before-hook failure prevents the turn and after-hook", async () => {

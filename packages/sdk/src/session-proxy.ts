@@ -4457,7 +4457,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             trace: (message) => activityCtx.traceInfo(message),
         },
         run: () => runTurnBodyHandler(activityCtx, input),
-        isCancelled: (result) => result.type === "cancelled",
     });
 
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);

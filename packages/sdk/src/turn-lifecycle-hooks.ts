@@ -34,6 +34,12 @@ export interface RunWithTurnLifecycleHooksOptions<Config, Result>
     isCancelled?: (result: Result) => boolean;
 }
 
+function hasCancelledTurnType(result: unknown): boolean {
+    if (!result || typeof result !== "object") return false;
+    const type = (result as { type?: unknown }).type;
+    return type === "cancelled" || type === "stopped";
+}
+
 /**
  * Run one turn attempt with process-local lifecycle hooks.
  *
@@ -54,7 +60,7 @@ export async function runWithTurnLifecycleHooks<Config, Result>(
         afterTurn,
         context,
         run,
-        isCancelled = () => false,
+        isCancelled = hasCancelledTurnType,
     } = options;
 
     await beforeTurn?.(context);
