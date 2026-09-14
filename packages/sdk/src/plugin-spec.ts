@@ -27,9 +27,18 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as https from "node:https";
 import * as path from "node:path";
+import { createGitPluginSourceResolver, type GitPluginSourceResolver } from "./git-plugin-source.js";
+import { installPluginSpecs as installValidatedPluginSpecs } from "./plugin-installer.js";
+import {
+    caseFoldPluginPath,
+    normalizedPluginSpecKey,
+    parsePluginSpecs as parseValidatedPluginSpecs,
+    type PluginSpec as ValidatedPluginSpec,
+} from "./plugin-source-spec.js";
 
 /** Recognized spec scheme prefixes. Adding a scheme is a single-touch change. */
 export const PLUGIN_SPEC_SCHEMES = {
@@ -71,8 +80,6 @@ export interface InstallPluginSpecsResult {
     pluginDirs: string[];
     results: PluginSpecInstallResult[];
 }
-
-const META_FILENAME = ".pilotswarm-plugin-spec.json";
 
 /**
  * Parse a raw `PLUGIN_SPEC` value into structured entries. Malformed entries
@@ -375,24 +382,6 @@ export async function putKeyVaultSecret(opts: {
     }
 }
 
-/** A filesystem-safe cache-dir slug for a repo clone (path is NOT included so
- * multiple subpaths of the same repo/ref share ONE clone). */
-function repoCloneSlug(entry: PluginSpecEntry): string {
-    const base = entry.scheme === "ado-git"
-        ? `ado-${entry.org}-${entry.project}-${entry.repo}`
-        : `gh-${entry.owner}-${entry.repo}`;
-    const withRef = entry.ref ? `${base}@${entry.ref}` : base;
-    return withRef.replace(/[^A-Za-z0-9._@-]+/g, "-").slice(0, 120);
-}
-
-function readMeta(dir: string): { url?: string; ref?: string } | null {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(dir, META_FILENAME), "utf8"));
-    } catch {
-        return null;
-    }
-}
-
 /**
  * Materialize every plugin spec in `opts.spec` into `opts.cacheDir` and return
  * the resolved plugin directories. Per-entry failures are quarantined (that
@@ -408,8 +397,10 @@ export async function installPluginSpecs(opts: {
 }): Promise<InstallPluginSpecsResult> {
     const trace = opts.trace ?? (() => {});
     let entries: PluginSpecEntry[];
+    let validatedEntries: ValidatedPluginSpec[];
     try {
         entries = parsePluginSpec(opts.spec);
+        validatedEntries = validateLegacyPluginSources(entries);
     } catch (error: any) {
         // A malformed deployment value is surfaced but must not crash startup.
         trace(`[plugin-spec] parse error: ${error?.message ?? error}`);
@@ -430,7 +421,7 @@ export async function installPluginSpecs(opts: {
         const result: PluginSpecInstallResult = { entry, dir: null, status: "ok" };
         trace(`[plugin-spec] [${index}/${total}] ${describe(entry)} — starting`);
         try {
-            result.dir = await materializeEntry(entry, opts);
+            result.dir = await materializeEntry(entry, validatedEntries[index - 1], opts);
             const ms = Date.now() - startedAt;
             const { skills, agents } = countPluginContents(result.dir);
             trace(
@@ -460,49 +451,109 @@ export async function installPluginSpecs(opts: {
 
 async function materializeEntry(
     entry: PluginSpecEntry,
+    spec: ValidatedPluginSpec,
     opts: { cacheDir: string; adoPat?: string; githubToken?: string; trace?: (m: string) => void },
 ): Promise<string> {
-    if (entry.scheme === "local") {
-        const abs = path.resolve(entry.path);
-        if (!fs.existsSync(abs)) throw new Error(`local plugin dir not found: ${abs}`);
-        return abs;
+    if (spec.kind === "git") {
+        const cached = resolveCachedPluginDir(spec, opts.cacheDir);
+        if (cached) {
+            opts.trace?.(`[plugin-spec] reusing validated cached checkout at ${cached}`);
+            return cached;
+        }
     }
 
-    const url = entry.scheme === "ado-git"
-        ? adoCloneUrl(entry.org!, entry.project!, entry.repo!)
-        : githubCloneUrl(entry.owner!, entry.repo!);
-
-    const repoDir = path.join(opts.cacheDir, repoCloneSlug(entry));
-
-    // Reuse an existing clone iff its sidecar matches url+ref (fault-isolates
-    // duplicate specs sharing a repo within one run; a fresh pod emptyDir just
-    // clones once). Otherwise (re)clone into place.
-    const meta = readMeta(repoDir);
-    const cloned = meta && meta.url === url && (meta.ref ?? "") === (entry.ref ?? "");
-    if (!cloned) {
-        fs.rmSync(repoDir, { recursive: true, force: true });
-        cloneRepo(url, repoDir, entry.ref, authHeaderFor(entry, opts), opts.trace);
-        fs.writeFileSync(
-            path.join(repoDir, META_FILENAME),
-            JSON.stringify({ url, ref: entry.ref ?? null, clonedAt: new Date().toISOString() }),
-        );
-    } else {
-        opts.trace?.(`[plugin-spec] reusing cached clone at ${repoDir} (url+ref match)`);
-    }
-
-    const pluginDir = path.join(repoDir, entry.path);
-    if (!fs.existsSync(pluginDir)) {
-        throw new Error(`plugin path '${entry.path}' not found in ${url}${entry.ref ? `@${entry.ref}` : ""}`);
-    }
-    // A loadable plugin dir contributes skills and/or agents (plugin.json is
-    // optional). Warn — but do not fail — if neither is present, since the SDK
-    // loader tolerates an empty dir and the operator may be staging content.
-    const hasSkills = fs.existsSync(path.join(pluginDir, "skills"));
-    const hasAgents = fs.existsSync(path.join(pluginDir, "agents"));
+    const [installed] = await installValidatedPluginSpecs([spec], {
+        destinationRoot: opts.cacheDir,
+        cwd: process.cwd(),
+        git: spec.kind === "git" ? createProviderGitResolver(entry, opts) : undefined,
+    });
+    const hasSkills = fs.existsSync(path.join(installed.pluginDir, "skills"));
+    const hasAgents = fs.existsSync(path.join(installed.pluginDir, "agents"));
     if (!hasSkills && !hasAgents) {
-        opts.trace?.(`[plugin-spec] WARN ${pluginDir} has no skills/ or agents/ subdir`);
+        opts.trace?.(`[plugin-spec] WARN ${installed.pluginDir} has no skills/ or agents/ subdir`);
     }
-    return pluginDir;
+    return installed.pluginDir;
+}
+
+function toValidatedPluginSpec(entry: PluginSpecEntry): ValidatedPluginSpec {
+    if (entry.scheme === "local") {
+        return { kind: "local", path: entry.path };
+    }
+    return {
+        kind: "git",
+        repository: entry.scheme === "ado-git"
+            ? adoCloneUrl(entry.org!, entry.project!, entry.repo!)
+            : githubCloneUrl(entry.owner!, entry.repo!),
+        path: entry.path,
+        ...(entry.ref ? { ref: entry.ref } : {}),
+    };
+}
+
+function validateLegacyPluginSources(entries: PluginSpecEntry[]): ValidatedPluginSpec[] {
+    const specs = parseValidatedPluginSpecs(entries.map(toValidatedPluginSpec));
+    const seen = new Map<string, number>();
+    for (let index = 0; index < specs.length; index++) {
+        const spec = specs[index];
+        let key = normalizedPluginSpecKey(spec);
+        if (spec.kind === "local") {
+            const resolved = fs.realpathSync(path.resolve(spec.path));
+            if (!fs.statSync(resolved).isDirectory()) {
+                throw new Error(`plugin path is not a directory: ${spec.path}`);
+            }
+            key = `local:${caseFoldPluginPath(resolved)}`;
+        }
+        const prior = seen.get(key);
+        if (prior !== undefined) {
+            throw new Error(`Plugin source ${index} duplicates source ${prior}`);
+        }
+        seen.set(key, index);
+    }
+    return specs;
+}
+
+function resolveCachedPluginDir(spec: Extract<ValidatedPluginSpec, { kind: "git" }>, cacheDir: string): string | null {
+    const hash = createHash("sha256").update(normalizedPluginSpecKey(spec)).digest("hex").slice(0, 16);
+    const destinationDir = path.join(path.resolve(cacheDir), `git-${hash}`);
+    const pluginDir = path.join(destinationDir, "repository", ...spec.path.split("/"));
+    if (!fs.existsSync(pluginDir)) return null;
+    const destinationRoot = fs.realpathSync(destinationDir);
+    const resolvedPluginDir = fs.realpathSync(pluginDir);
+    const relative = path.relative(destinationRoot, resolvedPluginDir);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error(`cached plugin path escapes its checkout: ${spec.path}`);
+    }
+    if (!fs.statSync(resolvedPluginDir).isDirectory()) {
+        throw new Error(`plugin path is not a directory: ${pluginDir}`);
+    }
+    return resolvedPluginDir;
+}
+
+function createProviderGitResolver(
+    entry: PluginSpecEntry,
+    opts: { adoPat?: string; githubToken?: string },
+): GitPluginSourceResolver {
+    const authHeader = authHeaderFor(entry, opts);
+    return createGitPluginSourceResolver({
+        run: async (command, args, options) => {
+            const env = {
+                ...process.env,
+                ...options?.env,
+                ...(authHeader
+                    ? {
+                        GIT_CONFIG_COUNT: "1",
+                        GIT_CONFIG_KEY_0: "http.extraHeader",
+                        GIT_CONFIG_VALUE_0: authHeader,
+                    }
+                    : {}),
+            };
+            execFileSync(command, [...args], {
+                cwd: options?.cwd,
+                stdio: ["ignore", "pipe", "pipe"],
+                encoding: "utf8",
+                env,
+            });
+        },
+    });
 }
 
 /** Build the redacted Basic/Bearer auth header for a private clone, or null. */
@@ -522,55 +573,6 @@ function authHeaderFor(
         return `AUTHORIZATION: Basic ${b64}`;
     }
     return null;
-}
-
-/**
- * Shallow-clone the repo (optionally at a ref) into `dir`. Auth rides an
- * `http.extraHeader` so the secret never appears in the remote URL. A ref that
- * is a branch/tag is fetched directly; a bare commit SHA falls back to a
- * fetch-by-sha after a default shallow clone.
- */
-function cloneRepo(
-    url: string,
-    dir: string,
-    ref: string | undefined,
-    authHeader: string | null,
-    trace?: (m: string) => void,
-): void {
-    const baseArgs: string[] = [];
-    if (authHeader) baseArgs.push("-c", `http.extraHeader=${authHeader}`);
-
-    const runGit = (args: string[]) => execFileSync("git", [...baseArgs, ...args], {
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8",
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
-
-    trace?.(`[plugin-spec] cloning ${url}${ref ? `@${ref}` : ""} -> ${dir}`);
-    fs.mkdirSync(path.dirname(dir), { recursive: true });
-
-    if (ref) {
-        try {
-            runGit(["clone", "--depth", "1", "--single-branch", "--branch", ref, url, dir]);
-            return;
-        } catch {
-            // ref is likely a commit SHA (not a branch/tag) — fetch it directly.
-            trace?.(`[plugin-spec] '${ref}' is not a branch/tag; fetching by sha`);
-        }
-        fs.rmSync(dir, { recursive: true, force: true });
-        runGit(["clone", "--no-checkout", "--depth", "1", url, dir]);
-        execFileSync("git", [...baseArgs, "-C", dir, "fetch", "--depth", "1", "origin", ref], {
-            stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-        });
-        execFileSync("git", ["-C", dir, "checkout", "--force", "--detach", "FETCH_HEAD"], {
-            stdio: ["ignore", "pipe", "pipe"], encoding: "utf8",
-            env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-        });
-        return;
-    }
-
-    runGit(["clone", "--depth", "1", "--single-branch", url, dir]);
 }
 
 function describe(entry: PluginSpecEntry): string {

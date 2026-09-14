@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { parsePluginSpec, adoCloneUrl, PLUGIN_SPEC_SCHEMES } from "../../dist/plugin-spec.js";
+import {
+    parsePluginSpec,
+    installPluginSpecs,
+    adoCloneUrl,
+    PLUGIN_SPEC_SCHEMES,
+} from "../../dist/plugin-spec.js";
 
 // Characterizes the PLUGIN_SPEC grammar parser and the ADO clone-URL builder.
 // Grammar (';'-delimited entries):
@@ -118,4 +126,46 @@ test("PLUGIN_SPEC_SCHEMES exposes the recognized prefixes", () => {
     assert.equal(PLUGIN_SPEC_SCHEMES.AdoGit, "ado-git:");
     assert.equal(PLUGIN_SPEC_SCHEMES.GitHub, "github:");
     assert.equal(PLUGIN_SPEC_SCHEMES.Local, "local:");
+});
+
+test("legacy local specs install through the validated provider-neutral core", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-spec-legacy-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const plugin = path.join(root, "plugin");
+    fs.mkdirSync(path.join(plugin, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(plugin, "agents", "example.agent.md"), "example");
+
+    const result = await installPluginSpecs({
+        spec: `local:${plugin}`,
+        cacheDir: path.join(root, "cache"),
+    });
+
+    assert.deepEqual(result.pluginDirs, [fs.realpathSync(plugin)]);
+    assert.equal(result.results[0].status, "ok");
+});
+
+test("legacy specs reject duplicate sources and invalid refs before checkout", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-spec-validation-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const plugin = path.join(root, "plugin");
+    fs.mkdirSync(plugin);
+    const traces = [];
+
+    const duplicate = await installPluginSpecs({
+        spec: `local:${plugin};local:${path.join(plugin, ".")}`,
+        cacheDir: path.join(root, "duplicate-cache"),
+        trace: (message) => traces.push(message),
+    });
+    assert.deepEqual(duplicate, { pluginDirs: [], results: [] });
+    assert.match(traces.at(-1), /duplicates source 0/);
+
+    traces.length = 0;
+    const invalidRef = await installPluginSpecs({
+        spec: "github:owner/repository:plugins/demo@-upload-pack=malicious",
+        cacheDir: path.join(root, "ref-cache"),
+        trace: (message) => traces.push(message),
+    });
+    assert.deepEqual(invalidRef, { pluginDirs: [], results: [] });
+    assert.match(traces.at(-1), /ref is not a valid/);
+    assert.equal(fs.existsSync(path.join(root, "ref-cache")), false);
 });
