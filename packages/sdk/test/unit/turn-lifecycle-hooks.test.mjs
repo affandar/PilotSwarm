@@ -48,6 +48,21 @@ test("reports cancelled and stopped turn results as cancellation", async () => {
     }
 });
 
+test("reports returned error results as failed without discarding the result", async () => {
+    const seen = [];
+    const result = { type: "error", message: "turn failed" };
+    assert.equal(await runWithTurnLifecycleHooks({
+        context,
+        run: () => result,
+        afterTurn: (value) => seen.push(value),
+    }), result);
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].status, "failed");
+    assert.equal(seen[0].result, result);
+    assert.equal(seen[0].error, undefined);
+});
+
 test("before-hook failure prevents the turn and after-hook", async () => {
     const beforeError = new Error("before failed");
     let bodyCalls = 0;

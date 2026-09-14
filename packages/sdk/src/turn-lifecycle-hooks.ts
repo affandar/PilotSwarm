@@ -32,12 +32,21 @@ export interface RunWithTurnLifecycleHooksOptions<Config, Result>
     context: TurnLifecycleContext<Config>;
     run: () => Result | Promise<Result>;
     isCancelled?: (result: Result) => boolean;
+    isFailed?: (result: Result) => boolean;
 }
 
 function hasCancelledTurnType(result: unknown): boolean {
     if (!result || typeof result !== "object") return false;
     const type = (result as { type?: unknown }).type;
     return type === "cancelled" || type === "stopped";
+}
+
+function hasFailedTurnType(result: unknown): boolean {
+    return Boolean(
+        result
+        && typeof result === "object"
+        && (result as { type?: unknown }).type === "error",
+    );
 }
 
 /**
@@ -61,6 +70,7 @@ export async function runWithTurnLifecycleHooks<Config, Result>(
         context,
         run,
         isCancelled = hasCancelledTurnType,
+        isFailed = hasFailedTurnType,
     } = options;
 
     await beforeTurn?.(context);
@@ -81,7 +91,9 @@ export async function runWithTurnLifecycleHooks<Config, Result>(
                 ? "failed"
                 : isCancelled(result as Result)
                     ? "cancelled"
-                    : "completed";
+                    : isFailed(result as Result)
+                        ? "failed"
+                        : "completed";
             try {
                 await afterTurn({
                     ...context,
