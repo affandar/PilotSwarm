@@ -30,7 +30,7 @@ import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
-import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import { DEFAULT_TURN_TIMEOUT_MS, DEFAULT_TURN_INACTIVITY_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
@@ -79,6 +79,17 @@ export function resolveWorkerTurnTimeoutMs(
         return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_TIMEOUT_MS;
     }
     return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_TIMEOUT_MS;
+}
+
+/** @internal Resolve the inactivity watchdog: explicit option > deployment env > SDK default. */
+export function resolveWorkerTurnInactivityTimeoutMs(
+    explicitValue: unknown,
+    envValue: unknown = process.env.PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS,
+): number {
+    if (explicitValue !== undefined) {
+        return parseNonNegativeInt(explicitValue) ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
+    }
+    return parseNonNegativeInt(envValue) ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
 }
 
 export { buildSystemAgentBootstrapPayload } from "./system-agents.js";
@@ -273,6 +284,7 @@ export class PilotSwarmWorker {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
+            turnInactivityTimeoutMs: resolveWorkerTurnInactivityTimeoutMs(options.turnInactivityTimeoutMs),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -361,7 +373,7 @@ export class PilotSwarmWorker {
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
-                turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
+                turnInactivityTimeoutMs: this.config.turnInactivityTimeoutMs,
             },
             effectiveSessionStateDir,
         );
