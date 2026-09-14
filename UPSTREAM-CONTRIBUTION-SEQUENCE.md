@@ -180,11 +180,42 @@ from this acceptance bar.
 19. **Verify contribution provenance and licensing.** Include only code and dependencies that
     can be contributed under the upstream repository's license and contribution policy. Replace
     or independently implement anything whose ownership or provenance is uncertain.
-20. **Make the pull request easy for platform owners to evaluate.** The pull-request description
-    must explain why the behavior is universally beneficial to PilotSwarm rather than valuable
-    only to one downstream deployment. It must also call out the specific compatibility,
-    security, lifecycle, performance, or portability areas reviewers should scrutinize, alongside
-    the exact red/green proof required above.
+20. **Lead with generic platform value.** Start the pull-request description with a concise
+    paragraph describing the reusable capability and the platform problem it solves. Do not add a
+    "why this belongs in PilotSwarm" section or frame the contribution as a justification against
+    one downstream deployment. Call out the specific compatibility, security, lifecycle,
+    performance, or portability areas reviewers should scrutinize alongside the exact red/green
+    proof required above.
+
+### Pull-request description template
+
+Use this structure unless the upstream repository adopts a more specific template:
+
+```text
+<One concise opening paragraph describing the generic platform value. No heading is needed.>
+
+## What changed
+
+- <Review-sized behavior and public contract changes>
+
+## Behavioral proof
+
+**Red — test-only patch on `main`:**
+
+<Exact command and observed pre-change failure>
+
+**Green — this branch:**
+
+<Exact command and observed passing result>
+
+## Review focus
+
+- <Compatibility, security, lifecycle, performance, or portability boundaries to scrutinize>
+```
+
+Do not mention the private transition plan, U-item number, SQL-owned scenario, or private-fork
+implementation in the public description. Add separate compatibility or migration sections only
+when they help reviewers evaluate a real public contract change.
 
 ## DAG drain algorithm
 
@@ -202,7 +233,7 @@ cycle until the graph is empty:
    security, compatibility, and operational risk as far as practical. If this work exposes a
    real predecessor, add the missing DAG edge and remove the node from the current eligible set.
 4. **Open review-sized pull requests concurrently.** Every branch must satisfy the contribution
-   principles and carry its own red/green proof, universal-platform value statement, and focused
+   principles and carry its own red/green proof, generic-platform value statement, and focused
    review watchouts. Parallel eligibility does not justify combining independent behaviors into
    one pull request. Keep a hard limit of **five outstanding upstream pull requests** across this
    transition, including draft or otherwise open pull requests. Prepare additional eligible
