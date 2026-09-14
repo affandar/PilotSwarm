@@ -36,7 +36,7 @@ import {
     type PendingChildDigest,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
-import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
+import { validClientMessageIds, noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 

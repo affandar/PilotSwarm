@@ -96,6 +96,19 @@ function hasFifoDrainCapacity(runtime: DurableSessionRuntime, stashedCount: numb
     return stashedCount < FIFO_BUCKET_COUNT - lastBucket - 1;
 }
 
+function compactFifoBuckets(runtime: DurableSessionRuntime): void {
+    let writeIndex = 0;
+    for (let readIndex = 0; readIndex < FIFO_BUCKET_COUNT; readIndex++) {
+        const items = readFifoBucket(runtime.ctx, readIndex);
+        if (items.length === 0) continue;
+        if (writeIndex !== readIndex) {
+            writeFifoBucket(runtime.ctx, writeIndex, items);
+            runtime.ctx.clearValue(fifoBucketKey(readIndex));
+        }
+        writeIndex++;
+    }
+}
+
 /**
  * Put an item back at the HEAD of the FIFO.
  *
@@ -636,6 +649,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
     const seenChildUpdates = new Set<string>();
     const pendingClientMessageIds = new Set<string>();
 
+    if (!hasFifoDrainCapacity(runtime, 0)) compactFifoBuckets(runtime);
     for (let i = 0; i < MAX_PREDISPATCH_SWEEP; i++) {
         if (!hasFifoDrainCapacity(runtime, stash.length)) break;
         const msgTask = ctx.dequeueEvent("messages");
@@ -720,7 +734,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 continue;
             }
             const sweepAttachments = sanitizePromptAttachmentRefs(msg.attachments);
-            stash.push({
+            const promptItem = {
                 kind: "prompt",
                 prompt: msg.prompt,
                 bootstrap: Boolean(msg.bootstrap),
@@ -728,7 +742,13 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
                 ...(sweepAttachments.length > 0 ? { attachments: sweepAttachments } : {}),
-            });
+            };
+            const rejection = fifoItemRejection(promptItem);
+            if (rejection) {
+                yield* recordFifoRejection(runtime, rejection);
+                continue;
+            }
+            stash.push(promptItem);
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }

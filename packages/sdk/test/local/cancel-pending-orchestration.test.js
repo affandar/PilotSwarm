@@ -204,6 +204,21 @@ describe("cancelPendingMessage orchestration", () => {
         })]);
     });
 
+    it("does not reserve a pre-dispatch receipt for a rejected oversized prompt", async () => {
+        const harness = createHarness({ messages: [
+            { atMs: 0, payload: { prompt: "first request", clientMessageIds: ["first"] } },
+            { atMs: 50, payload: { prompt: "x".repeat(590295), clientMessageIds: ["corrected-message"] } },
+            { atMs: 60, payload: { prompt: "corrected request", clientMessageIds: ["corrected-message"] } },
+        ] });
+
+        await harness.runUntilIdle();
+
+        expect(harness.runTurns.map((turn) => turn.prompt).join("\n\n")).toBe("first request\n\ncorrected request");
+        expect(mockManager.recordSessionEvent.mock.calls.flatMap((call) => call[1]).some((event) =>
+            event.eventType === "session.message_duplicate_suppressed" && event.data.clientMessageIds.includes("corrected-message"),
+        )).toBe(false);
+    });
+
     it("preserves an interrupted wait when its augmented prompt exceeds the FIFO limit", async () => {
         const harness = createHarness({
             inputOverrides: { activeTimerState: { type: "wait", remainingMs: 1000, originalDurationMs: 1000, reason: "x".repeat(2500) } },
@@ -226,6 +241,29 @@ describe("cancelPendingMessage orchestration", () => {
         await harness.runUntilIdle();
         expect(harness.runTurns.map((turn) => turn.prompt).join("\n\n")).toBe(prompts.join("\n\n"));
         expect(mockManager.recordSessionEvent.mock.calls.flatMap((call) => call[1]).some((event) => event.eventType === "session.message_rejected")).toBe(false);
+    });
+
+    it("honors a queued cancellation before dispatch when every FIFO bucket is occupied", async () => {
+        const { FIFO_BUCKET_COUNT } = await import("../../src/orchestration/state.ts");
+        const values = new Map(Array.from({ length: FIFO_BUCKET_COUNT }, (_, index) => [
+            `fifo.${index}`,
+            JSON.stringify([{ kind: "prompt", prompt: `request ${index}: ${"x".repeat(8000)}`, clientMessageIds: [`full-${index}`] }]),
+        ]));
+        const harness = createHarness({
+            values,
+            messages: [{ atMs: 0, payload: { cancelPending: ["full-0"] } }],
+        });
+
+        await harness.runUntilIdle();
+
+        const dispatchedRequests = harness.runTurns.flatMap((turn) =>
+            [...turn.prompt.matchAll(/request (\d+):/g)].map((match) => Number(match[1])),
+        );
+        expect(dispatchedRequests).toEqual(Array.from({ length: FIFO_BUCKET_COUNT - 1 }, (_, index) => index + 1));
+        expect(mockManager.recordSessionEvent).toHaveBeenCalledWith("cancel-session", [expect.objectContaining({
+            eventType: "pending_messages.cancelled",
+            data: expect.objectContaining({ clientMessageIds: ["full-0"] }),
+        })]);
     });
 
     it("accepts an exact-size FIFO item and rejects one extra byte before any write", async () => {

@@ -75,7 +75,7 @@ describe("outbox bulk reconciliation", () => {
         assert(activityText.includes("[message rejected]") && activityText.includes(event.data.message), "Activity should expose a readable rejection after history reload");
     });
 
-    it("does not overwrite a durable rejection with a late enqueue acknowledgement", async () => {
+    it.each(["acknowledgement", "transient error", "terminal error"])("does not overwrite a durable rejection with a late enqueue %s", async (outcome) => {
         const sessionId = "rejection-before-ack";
         const { controller, store } = createController({
             sendMessage: async (_sessionId, _prompt, options) => {
@@ -83,16 +83,52 @@ describe("outbox bulk reconciliation", () => {
                     eventType: "session.message_rejected",
                     data: { message: "Message exceeds the FIFO limit.", clientMessageIds: options.clientMessageIds },
                 });
+                if (outcome !== "acknowledgement") {
+                    throw Object.assign(new Error("Late transport failure"), outcome === "terminal error" ? { code: "SESSION_TERMINAL" } : {});
+                }
             },
         });
         seedSession(store, sessionId);
         const item = controller.buildOutboxItem("rejected before acknowledgement");
         controller.setSessionOutboxItems(sessionId, [item]);
 
-        await controller.dispatchPendingOutbox(sessionId);
+        if (outcome === "acknowledgement") await controller.dispatchPendingOutbox(sessionId);
+        else {
+            let caught;
+            try { await controller.dispatchPendingOutbox(sessionId); } catch (error) { caught = error; }
+            assertEqual(caught?.message, "Late transport failure", "the caller should still receive the transport error");
+        }
 
         assertEqual(controller.getSessionOutbox(sessionId)[0].phase, "rejected", "runtime outcome must win over enqueue acknowledgement");
+        assertEqual(controller.getSessionOutbox(sessionId)[0].error, "Message exceeds the FIFO limit.", "late errors must preserve the durable rejection reason");
         assertEqual(controller.getPendingOutboxItems(sessionId).length, 0, "durably rejected messages must not retry");
+    });
+
+    it.each(["session.message_rejected", "user.message", "pending_messages.cancelled"])("preserves %s and newer drafts when cancellation fails late", async (eventType) => {
+        const sessionId = "cancel-before-outcome";
+        const clientMessageId = "cancelled-message";
+        const { controller, store } = createController({
+            cancelPendingMessage: async () => {
+                controller.reconcileOutboxAgainstEvent(sessionId, {
+                    eventType,
+                    data: { message: "Message exceeds the FIFO limit.", clientMessageIds: [clientMessageId] },
+                });
+                controller.queuePromptInOutbox(sessionId, "newer draft");
+                throw new Error("Late cancellation failure");
+            },
+        });
+        seedSession(store, sessionId);
+        seedQueuedOutboxItem(store, controller, sessionId, clientMessageId, "original request");
+
+        assertEqual(await controller.cancelOutboxItem(sessionId, clientMessageId), false, "cancel failure should be reported");
+
+        const items = controller.getSessionOutbox(sessionId);
+        const original = items.find((item) => item.id === clientMessageId);
+        if (eventType === "session.message_rejected") {
+            assertEqual(original?.phase, "rejected", "failed cancel must not undo a durable rejection");
+            assertEqual(original?.error, "Message exceeds the FIFO limit.", "durable reason should survive cancel failure");
+        } else assertEqual(original, undefined, "failed cancel must not restore an acknowledged item");
+        assert(items.some((item) => item.text === "newer draft"), "failed cancel must not remove a newer draft");
     });
 
     it("ensureSessionHistory removes queued outbox items whose user.message is already in CMS", async () => {

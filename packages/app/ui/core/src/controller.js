@@ -1874,7 +1874,11 @@ export class PilotSwarmUiController {
                     this.dispatch({ type: "ui/status", text: "Cancelling queued prompt" });
                 } catch (error) {
                     // Restore the item so the user can retry the cancel.
-                    this.setSessionOutboxItems(sessionId, items);
+                    this.setSessionOutboxItems(sessionId, this.getSessionOutbox(sessionId).map((candidate) => (
+                        candidate.id === itemId && candidate.phase === "cancelling"
+                            ? { ...candidate, phase: "queued" }
+                            : candidate
+                    )));
                     this.dispatch({ type: "ui/status", text: error?.message || String(error) });
                     return false;
                 }
@@ -2225,6 +2229,7 @@ export class PilotSwarmUiController {
             const authRefused = error?.code === "FORBIDDEN" || error?.code === "UNAUTHORIZED"
                 || error?.status === 403 || error?.status === 401;
             const items = this.getSessionOutbox(sessionId);
+            if (!items.some((item) => item.id === mergedItem.id && item.phase === "pending")) throw error;
             if (authRefused) {
                 // Authorization refusals are terminal — retrying can't succeed.
                 // Mark the envelope rejected (renders as the red ✗, same as a

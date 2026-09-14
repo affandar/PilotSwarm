@@ -153,6 +153,8 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 - Admin role is not necessarily a user-resource bypass: honor server-provided `adminScope`/package `canEdit` for session/package actions. `cluster` keeps configuration/accounting and admin system-session access, but other content follows ownership/shares. Show the policy read-only, clear revoked content and reject late responses; never infer authority from hidden buttons alone. See `docs/proposals/cluster-scoped-admin.md`.
 - Outbox items render delivery states next to the user-message label: `○` pending (client only), `✓` queued (durably enqueued), `✓✓` sent (persisted as a transcript `user.message`), and `x` rejected. Terminal-session and oversized-message rejections stop retries and retain the draft with a `Not sent` reason. Rejected drafts can be recalled, edited, and resent with fresh message IDs, or dismissed locally without a runtime cancel. Reconcile `session.message_rejected` through live and bulk event paths; late enqueue acknowledgements must not overwrite a rejection. Activity shows the durable rejection reason. Synchronous sends coalesce into a single durable enqueue; merge boundaries are not user-visible. Keep the glyph mapping in [packages/app/ui/core/src/selectors.js](../../../packages/app/ui/core/src/selectors.js) consistent across portal and TUI.
 
+- Delayed outbox send failures may change only the still-pending attempted item. A failed cancel may restore only its still-cancelling item; never restore a captured whole-outbox snapshot over durable outcomes or newer drafts.
+
 ## Keybinding Rule
 
 When a keybinding changes, update all user-facing surfaces together:
