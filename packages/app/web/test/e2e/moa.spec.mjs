@@ -13,8 +13,8 @@ const layout = (tree, name = "Control room") => ({ name, tree });
 const composer = page => page.locator(".ps-moa-composer-strip textarea");
 const panel = (page, id) => page.locator(`[data-moa-panel="${id}"]`);
 
-async function fixture(page, slots = [], hash = "") {
-    let settings = { themeId: "terminal-green", moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
+async function fixture(page, slots = [], hash = "", themeId = "terminal-green") {
+    let settings = { themeId, moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
     const sends = [], writes = [], errors = [];
     page.on("pageerror", error => errors.push(error.message));
     settings.moa = { ...settings.moa, composerMode: "shared" };
@@ -40,6 +40,46 @@ async function fixture(page, slots = [], hash = "") {
 async function open(page) {
     await page.getByRole("button", { name: "Master of Agents", exact: true }).click();
     await expect(page.getByRole("navigation", { name: "Master of Agents" })).toBeVisible();
+}
+
+for (const theme of ["terminal-green", "winamp", "win95", "ms-dos"]) for (const [session, running] of [[1, false], [2, true]]) {
+    test(`${theme} ${running ? "working" : "idle"}: narrow pane status moves below the title without wrapping action buttons`, async ({ page }) => {
+        await fixture(page, [layout(chat(session))], "", theme);
+        await open(page);
+        const pane = panel(page, `panel-${session}`);
+        const header = pane.locator(":scope > header");
+        const status = header.getByLabel("Session status");
+        await expect(status).toBeVisible();
+        await expect(status).toContainText(running ? "Working" : "Idle");
+        for (const width of [900, 640, 480, 360, 330, 300]) {
+            // Constrain the pane, not the browser: a desktop split can be
+            // narrow while the surrounding workspace remains wide.
+            await pane.evaluate((el, width) => { el.style.flex = "0 0 auto"; el.style.width = `${width}px`; }, width);
+            const boxes = await header.evaluate(el => {
+                const rect = node => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+                return {
+                    header: rect(el), title: rect(el.querySelector(".ps-moa-panel-title")),
+                    status: rect(el.querySelector(".ps-mobile-session-status")),
+                    buttons: [...el.querySelectorAll("button")].filter(b => b.getBoundingClientRect().width).map(rect),
+                };
+            });
+            expect(boxes.buttons).toHaveLength(width > 330 ? 4 : 2);
+            const top = boxes.buttons[0].top;
+            for (const button of boxes.buttons) {
+                expect(Math.abs(button.top - top), `${theme}, ${width}px: buttons stay on one row`).toBeLessThan(1);
+                expect(button.right).toBeLessThanOrEqual(boxes.header.right);
+                expect(button.left).toBeGreaterThanOrEqual(boxes.title.right);
+            }
+            if (width <= 640) {
+                expect(boxes.status.top).toBeGreaterThanOrEqual(Math.max(...boxes.buttons.map(b => b.bottom)));
+                expect(boxes.status.top).toBeGreaterThanOrEqual(boxes.title.bottom);
+            } else {
+                expect(boxes.status.top).toBeLessThan(boxes.buttons[0].bottom);
+            }
+            expect(boxes.status.bottom).toBeLessThanOrEqual(boxes.header.bottom);
+            if (width === 480 && running) await page.screenshot({ path: test.info().outputPath(`${theme}-narrow-header.png`) });
+        }
+    });
 }
 
 test("focus owns the sole composer, preserves drafts, and sends only to its session", async ({ page }) => {
@@ -152,7 +192,7 @@ test("legacy MoA links and stashed imports cannot replace a personal layout", as
     expect(f.errors).toEqual([]);
 });
 
-test("canvas focus binds the shared composer and the pinned slot loads its own document", async ({ page }) => {
+test("canvas focus binds the shared composer and the pinned slot loads its own document", async ({ page, browserName }) => {
     const canvasNode = { id: "canvas-panel", type: "canvas", sessionId: sid(1), slot: 2 };
     const f = await fixture(page, [layout(split(chat(1), canvasNode))]);
     const downloads = [];
@@ -184,7 +224,8 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await expect(c).toHaveClass(/is-focused/);
     await expect(composer(page)).toBeVisible();
     await expect(composer(page)).toHaveValue("draft while canvas open");
-    await inside.press("Control+ArrowLeft");
+    // Check modified arrows without invoking WebKit's back-navigation chord.
+    await inside.press("Control+ArrowDown");
     await expect(c).toHaveClass(/is-focused/);
     await inside.press("Tab");
     await expect(panel(page, "panel-1")).toHaveClass(/is-focused/);
@@ -212,7 +253,8 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await expect(nativeButton).toBeVisible();
     expect(await nativeButton.evaluate(el => el.ownerDocument.compatMode)).toBe("CSS1Compat");
     await nativeButton.click();
-    await nativeButton.press("Tab");
+    // WebKit's default keyboard navigation uses Option+Tab to visit buttons.
+    await nativeButton.press(browserName === "webkit" ? "Alt+Tab" : "Tab");
     await expect(nativeFrame.getByRole("button", { name: "Next native", exact: true })).toBeFocused();
     expect(f.sends).toEqual([]);
     expect(f.errors).toEqual([]);

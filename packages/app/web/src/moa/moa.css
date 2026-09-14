@@ -247,9 +247,15 @@
   min-height: 30px; min-width: 30px; padding: 0 6px; font-size: var(--ps-font-size-dense);
 }
 
-/* Keep pane activity on the existing title row, with full details on hover. */
+/* Keep activity inline on wide panes; give it its own row before the
+   fixed-size pane controls run out of room. Full details remain on hover. */
 .ps-moa-panel > header > .ps-mobile-session-status {
   flex: 0 1 40%; max-width: 40%; height: auto;
   font-size: var(--ps-font-size-dense); line-height: var(--ps-line-height-dense);
 }
 .ps-moa-panel > header > .ps-moa-panel-title { min-width: 3em; }
+@container moa-panel (max-width: 640px) {
+  .ps-moa-panel > header > .ps-mobile-session-status {
+    order: 1; flex: 1 0 100%; max-width: 100%;
+  }
+}

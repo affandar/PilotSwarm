@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.73 — 2026-09-15
+
+- Portal: keep pane action buttons on one row by moving status below the title in narrow panes.
+- Portal: remove per-pane composers from canvases while preserving chat drafts and the optional shared composer.
+- Portal: anchor visible history while older pages load and limit continued wheel/touch momentum at the page boundary to one scroll row.
+- Validation: web/UI unit checks and browser UX tests only; SDK/provider integration suites were intentionally not rerun for this UX release.
+
 ## 0.5.72 — 2026-09-14
 
 - SDK: honor runtime-only tool exclusions when binding sessions and refresh warm bindings when those exclusions change.

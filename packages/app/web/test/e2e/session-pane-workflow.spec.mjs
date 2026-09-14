@@ -6,8 +6,8 @@ const tree = { id: 'split', type: 'split', direction: 'row', ratio: 50,
 let stub, base;
 test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 4, transcriptTurns: 2 }); base = `http://127.0.0.1:${stub.port}`; });
 test.afterAll(async () => { await new Promise(resolve => stub.server.close(resolve)); });
-async function fixture(page, width = 1600) {
-    let settings = { themeId: 'terminal-green', moa: { version: 2, tree }, sessionOrder: [sid(3),sid(1),sid(2),sid(0)] };
+async function fixture(page, width = 1600, paneTree = tree) {
+    let settings = { themeId: 'terminal-green', moa: { version: 2, tree: paneTree }, sessionOrder: [sid(3),sid(1),sid(2),sid(0)] };
     const sends = [], errors = [];
     let newer = false, catalogReads = 0;
     page.on('pageerror', e => errors.push(e.message));
@@ -43,6 +43,51 @@ async function mode(page, value) {
     await page.getByLabel('Message boxes', { exact: true }).selectOption(value);
     await page.getByRole('button', { name: 'Save dashboard name' }).click();
 }
+for (const width of [1600, 390]) test(`canvas panes have no per-chat composer and preserve the chat draft at ${width}px`, async ({ page }) => {
+    const paneTree = { ...tree, second: { id: 'b', type: 'canvas', sessionId: sid(1), slot: 1 } };
+    const f = await fixture(page, width, paneTree);
+    await page.route('**/api/v1/**', route => {
+        const url = new URL(route.request().url());
+        if (url.pathname.endsWith('/events') || (url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated'))) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 3, eventType: 'session.canvas_updated', data: { slot: 1, rev: 1, sizeBytes: 128, name: 'Report' } }] } });
+        }
+        if (url.pathname.includes('/artifacts/canvas.html')) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><button>Inspect report</button>' });
+        return route.fallback();
+    });
+    await open(page);
+    const chat = panel(page, 'a'), canvas = panel(page, 'b');
+    const prompt = chat.locator('textarea');
+    await expect(prompt).toBeVisible();
+    await prompt.fill('Keep this chat draft');
+    if (width < 920) {
+        await page.getByRole('button', { name: 'Open panel map', exact: true }).click();
+        await page.locator('.ps-moa-map-list button').filter({ hasText: 'Canvas 1' }).click();
+    } else {
+        await canvas.locator(':scope > header').click();
+    }
+    await expect(canvas).toHaveClass(/is-focused/);
+    const report = canvas.locator('iframe').first().contentFrame().getByRole('button', { name: 'Inspect report' });
+    await report.click();
+    await expect(canvas.locator('.ps-moa-pane-composer')).toHaveCount(0);
+    await expect(canvas.locator('textarea')).toHaveCount(0);
+    await expect(page.locator('.ps-moa-pane-composer:visible')).toHaveCount(0);
+    await expect(prompt).toBeHidden();
+    // The live canvas occupies all the space below its header, with no
+    // hidden composer footer reserving a strip at the bottom.
+    const gap = await canvas.evaluate(el => el.getBoundingClientRect().bottom - parseFloat(getComputedStyle(el).borderBottomWidth) - el.querySelector('.ps-moa-live').getBoundingClientRect().bottom);
+    expect(Math.abs(gap)).toBeLessThan(1);
+    if (width < 920) {
+        await page.getByRole('button', { name: 'Open panel map', exact: true }).click();
+        await page.locator('.ps-moa-map-list button').filter({ hasText: 'Session 1' }).filter({ hasNotText: 'Canvas' }).click();
+    } else {
+        await report.press('Tab');
+        await expect(prompt).toBeFocused();
+    }
+    await expect(prompt).toBeVisible();
+    await expect(prompt).toHaveValue('Keep this chat draft');
+    expect(f.sends).toEqual([]);
+    expect(f.errors).toEqual([]);
+});
 test('per-chat is default, sends stay with the pane, and both drafts survive shared-mode changes', async ({ page }) => {
     const f = await fixture(page); await open(page);
     const a = panel(page, 'a').locator('textarea'), b = panel(page, 'b').locator('textarea');

@@ -117,13 +117,16 @@ for (const theme of ['terminal-green', 'win95', 'winamp', 'ms-dos']) {
         const a = page.locator('[data-moa-panel="p1"]'), b = page.locator('[data-moa-panel="p2"]');
         await expect(a.locator('header > button:visible')).toHaveCount(4);
         await expect(b.locator('header > button:visible')).toHaveCount(0);
-        const idleHeaderHeight = (await b.locator('header').first().boundingBox()).height;
         const border = await a.evaluate(el => getComputedStyle(el).borderTopColor);
         expect(border).not.toEqual(await b.evaluate(el => getComputedStyle(el).borderTopColor));
         await b.locator('header').first().click();
         await expect(b.locator('header > button:visible')).toHaveCount(4);
         await expect(a.locator('header > button:visible')).toHaveCount(0);
-        expect((await b.locator('header').first().boundingBox()).height).toBe(idleHeaderHeight);
+        const controls = await b.locator('header > button:visible').evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
+        expect(Math.max(...controls) - Math.min(...controls)).toBeLessThan(1);
+        const header = await b.locator('header').first().boundingBox();
+        const status = await b.locator('header > .ps-mobile-session-status').boundingBox();
+        expect(status.y + status.height).toBeLessThanOrEqual(header.y + header.height);
         await page.getByRole('button', { name: 'Enter zen', exact: true }).click();
         const exit = page.getByRole('button', { name: 'Exit zen', exact: true });
         const box = await exit.boundingBox();

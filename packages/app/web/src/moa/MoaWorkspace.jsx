@@ -436,7 +436,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
         </div>
         {ready && mobile && mobileStatusHost && createPortal(<SessionHeaderStatus controller={ready} />, mobileStatusHost)}
         {ready && visible && <ModalLayer controller={ready} />}
-        {ready && visible && perChat && <footer hidden={!focused || actionsOpen} className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
+        {ready && visible && perChat && node.type === "chat" && <footer hidden={!focused || actionsOpen} className="ps-moa-pane-composer" aria-label="Session composer" data-session-id={node.sessionId}>
             <ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact autoFocus={focused && !actionsOpen ? canFocusPaneComposer : false} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>
         </footer>}
         {ready && focused && !actionsOpen && !perChat && composerHost && createPortal(<ControllerContext.Provider value={ready}><SessionComposer controller={ready} mobile={mobile} compact={mobile} autoFocus={canFocusMoaComposer} onReadOnlyFocus={focusReadOnlyPanel} /></ControllerContext.Provider>, composerHost)}

@@ -658,3 +658,9 @@ catalog and the runtime — there's no client-side state worth losing.
 
 For deeper issues see [Architecture](../architecture/system.md) and
 [Orchestration Design](../architecture/orchestration/design.md).
+
+### Compact panes and history scrolling
+
+In MoA, narrow panes place activity status beneath the title so the action buttons stay together. Per-chat message boxes appear only in focused chat panes; canvases use the full pane height. Chat drafts survive switching between panes, and the shared message-box option remains available.
+
+At the top of loaded chat history, scrolling requests older messages. The visible message stays anchored while the request is pending; when the page arrives, the same gesture advances by only one scroll row (16 pixels). Continued wheel or touch momentum cannot sweep through the newly loaded page. A fresh gesture resumes ordinary scrolling.

@@ -38,7 +38,8 @@ test("a session past the auto-expand cap offers a way to load older messages", a
     await expect(button).toBeEnabled();
 });
 
-test("scrolling up pauses bottom follow without disabling backward history paging", async ({ page }) => {
+for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances one row despite aggressive ${gesture} scrolling and preserves the reading anchor`, async ({ page }) => {
+    if (gesture === "touch") await page.setViewportSize({ width: 390, height: 844 });
     const backwardRequests = [];
     const sessionId = "11111110-2222-3333-4444-555555555550";
     const event = (seq, content) => ({
@@ -52,6 +53,8 @@ test("scrolling up pauses bottom follow without disabling backward history pagin
         return event(seq, seq === 702 ? "VISIBLE_ANCHOR_702" : `recent message ${seq}`);
     });
     const older = Array.from({ length: 10 }, (_, i) => event(691 + i, `older message ${691 + i}`));
+    let releasePage;
+    const pageGate = new Promise(resolve => { releasePage = resolve; });
     await page.route(`**/api/v1/management/sessions/${sessionId}/events?*`, async (route) => {
         const url = new URL(route.request().url());
         const types = JSON.parse(url.searchParams.get("eventTypes") || "[]");
@@ -60,6 +63,7 @@ test("scrolling up pauses bottom follow without disabling backward history pagin
     await page.route(`**/api/v1/management/sessions/${sessionId}/events-before*`, async (route) => {
         const url = new URL(route.request().url());
         const types = JSON.parse(url.searchParams.get("eventTypes") || "[]");
+        if (!(types.length === 1 && types[0] === "session.canvas_updated")) await pageGate;
         return route.fulfill({ json: { ok: true, result: types.length === 1 && types[0] === "session.canvas_updated" ? [] : older } });
     });
     page.on("request", (request) => {
@@ -88,11 +92,30 @@ test("scrolling up pauses bottom follow without disabling backward history pagin
     });
     const anchor = viewport.getByText("VISIBLE_ANCHOR_702").first();
     const anchorBefore = await anchor.boundingBox();
-    await page.mouse.wheel(0, -500);
-    await expect.poll(() => backwardRequests.length).toBeGreaterThan(0);
+    const pull = () => gesture === "wheel" ? page.mouse.wheel(0, -10000)
+        : viewport.dispatchEvent("touchmove", { touches: [{ identifier: 1, clientX: 100, clientY: 600 }], cancelable: true });
+    if (gesture === "touch") await viewport.dispatchEvent("touchstart", { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    await pull();
+    await expect.poll(() => backwardRequests.length).toBe(1);
+    for (let i = 0; i < 4; i++) await pull();
+    releasePage();
     await expect(page.getByText("older message 692").first()).toBeAttached();
+    await pull();
+    if (gesture === "touch") {
+        await viewport.dispatchEvent("touchend", { touches: [] });
+        // A fling can emit scroll events even after touchmove has stopped.
+        await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+    }
     const anchorAfter = await anchor.boundingBox();
-    expect(Math.abs(anchorAfter.y - anchorBefore.y), "prepending older history moved the visible reading anchor").toBeLessThan(3);
+    // WebKit rounds scrollTop to whole pixels while text boxes are fractional.
+    expect(Math.abs(anchorAfter.y - anchorBefore.y - 16), "a page boundary advances only one 16px scroll row").toBeLessThan(1);
+    expect(backwardRequests).toHaveLength(1);
+
+    // The page-boundary guard must release for a fresh intentional gesture.
+    await page.waitForTimeout(250);
+    await page.mouse.wheel(0, -40);
+    await expect.poll(async () => (await anchor.boundingBox()).y - anchorAfter.y).toBeCloseTo(40, 0);
+    const resumedAnchorOffset = (await anchor.boundingBox()).y - (await viewport.boundingBox()).y;
 
     const savedTop = await viewport.evaluate((node) => node.scrollTop);
     await page.locator(`.ps-session-list-button[data-session-id="11111111-2222-3333-4444-555555555551"]`).click();
@@ -100,7 +123,8 @@ test("scrolling up pauses bottom follow without disabling backward history pagin
     await expect(page.getByText("VISIBLE_ANCHOR_702").first()).toBeAttached();
     await expect.poll(() => viewport.evaluate((node) => node.scrollTop)).toBeCloseTo(savedTop, 0);
     const anchorAfterRoundTrip = await page.getByText("VISIBLE_ANCHOR_702").first().boundingBox();
-    expect(Math.abs(anchorAfterRoundTrip.y - anchorAfter.y), "switching sessions lost the paused history anchor").toBeLessThan(3);
+    const restoredAnchorOffset = anchorAfterRoundTrip.y - (await viewport.boundingBox()).y;
+    expect(Math.abs(restoredAnchorOffset - resumedAnchorOffset), "switching sessions lost the paused history anchor").toBeLessThan(3);
 });
 
 // The detail box now starts FOLDED to a one-line summary and remembers the
