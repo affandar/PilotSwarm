@@ -68,6 +68,18 @@ export type {
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
 export {
+    normalizeStartClientMessageIds,
+    normalizeDurableStartTurn,
+    prepareDurableStartInput,
+} from "./durable-start-input.js";
+export type {
+    DurableStartTurn,
+    DurableStartTurnRequest,
+    DurableStartInputFields,
+    DurableStartMessage,
+    DurableStartDeliveryPlan,
+} from "./durable-start-input.js";
+export {
     SYSTEM_WAIT_KINDS,
     SYSTEM_WAIT_STATUSES,
     SYSTEM_WAIT_TOOL_CONTRACT,
