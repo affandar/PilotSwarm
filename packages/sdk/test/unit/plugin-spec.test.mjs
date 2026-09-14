@@ -204,11 +204,12 @@ test("a malformed legacy entry does not disable valid peers", async (t) => {
         cacheDir: path.join(root, "cache"),
     });
 
-    assert.equal(result.results.length, 2);
-    assert.equal(result.results[0].entry, null);
-    assert.equal(result.results[0].raw, "unknown:malformed");
-    assert.equal(result.results[0].status, "error");
-    assert.match(result.results[0].error, /unrecognized scheme/);
-    assert.equal(result.results[1].status, "ok");
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].status, "ok");
+    assert.deepEqual(result.parseErrors, [{
+        raw: "unknown:malformed",
+        error: result.parseErrors[0].error,
+    }]);
+    assert.match(result.parseErrors[0].error, /unrecognized scheme/);
     assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
 });

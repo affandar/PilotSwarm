@@ -68,8 +68,7 @@ export interface PluginSpecEntry {
 }
 
 export interface PluginSpecInstallResult {
-    /** Parsed entry, or null when the raw entry itself was malformed. */
-    entry: PluginSpecEntry | null;
+    entry: PluginSpecEntry;
     /** Trimmed deployment entry, retained for diagnostics when parsing fails. */
     raw: string;
     /** Absolute resolved plugin directory (present iff status === "ok"). */
@@ -82,6 +81,8 @@ export interface InstallPluginSpecsResult {
     /** Plugin dirs of every OK entry, in spec order — ready to append to pluginDirs. */
     pluginDirs: string[];
     results: PluginSpecInstallResult[];
+    /** Entries that could not be parsed into the backward-compatible result shape. */
+    parseErrors?: Array<{ raw: string; error: string }>;
 }
 
 /**
@@ -432,6 +433,7 @@ export async function installPluginSpecs(opts: {
         fs.mkdirSync(opts.cacheDir, { recursive: true });
     }
     const results: PluginSpecInstallResult[] = [];
+    const parseErrors: Array<{ raw: string; error: string }> = [];
     const total = prepared.length;
     const runStartedAt = Date.now();
     trace(`[plugin-spec] processing ${total} plugin spec ${total === 1 ? "entry" : "entries"}`);
@@ -440,6 +442,12 @@ export async function installPluginSpecs(opts: {
         const index = offset + 1;
         const item = prepared[offset];
         const startedAt = Date.now();
+        if (!item.entry) {
+            const error = item.error ?? "Plugin entry could not be parsed";
+            trace(`[plugin-spec] [${index}/${total}] FAILED ${item.raw}: ${error} (0ms)`);
+            parseErrors.push({ raw: item.raw, error });
+            continue;
+        }
         const result: PluginSpecInstallResult = {
             entry: item.entry,
             raw: item.raw,
@@ -447,7 +455,7 @@ export async function installPluginSpecs(opts: {
             status: item.error ? "error" : "ok",
             ...(item.error ? { error: item.error } : {}),
         };
-        if (item.error || !item.entry || !item.spec) {
+        if (item.error || !item.spec) {
             trace(`[plugin-spec] [${index}/${total}] FAILED ${item.raw}: ${result.error} (0ms)`);
             results.push(result);
             continue;
@@ -480,6 +488,7 @@ export async function installPluginSpecs(opts: {
     return {
         pluginDirs: results.filter((r) => r.status === "ok" && r.dir).map((r) => r.dir as string),
         results,
+        ...(parseErrors.length > 0 ? { parseErrors } : {}),
     };
 }
 
