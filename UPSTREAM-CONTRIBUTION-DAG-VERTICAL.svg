@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1548" height="1480" viewBox="0 0 1548 1480" role="img" aria-labelledby="title desc">
   <title id="title">PilotSwarm upstream contribution dependency DAG, vertical layout</title>
-  <desc id="desc">69 numbered candidate contribution nodes and 92 dependency edges arranged from top to bottom by dependency depth, colored green for low risk, amber for medium risk, and red for high risk.</desc>
+  <desc id="desc">69 numbered candidate contribution nodes and 92 dependency edges arranged from top to bottom by dependency depth, colored green for low risk, amber for medium risk, and red for high risk. A blue outer ring marks an open upstream pull request.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-opacity="0.18"/></filter>
@@ -15,6 +15,8 @@
   <text x="138" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">Medium risk</text>
   <circle cx="224" cy="82" r="8" fill="#fecaca" stroke="#b91c1c" stroke-width="1.5"/>
   <text x="238" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">High risk</text>
+  <circle cx="336" cy="82" r="9" fill="none" stroke="#2563eb" stroke-width="2"/>
+  <text x="350" y="86" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#334155">Open upstream PR</text>
   <text x="18" y="134" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D0</text>
   <text x="18" y="239" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D1</text>
   <text x="18" y="344" text-anchor="start" font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="600" fill="#64748b">D2</text>
@@ -124,7 +126,8 @@
   </g>
   <g font-family="Segoe UI, Arial, sans-serif" font-size="11" font-weight="700" text-anchor="middle">
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u01" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u01">
-      <title>U01: classify transient Postgres failures and jitter retries (Low risk)</title>
+      <title>U01: classify transient Postgres failures and jitter retries (Low risk; PR #84 open)</title>
+      <circle cx="84.5" cy="130" r="23" fill="none" stroke="#2563eb" stroke-width="2"/>
       <circle cx="84.5" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
       <text x="84.5" y="134" fill="#111827">1</text>
     </a>
@@ -144,7 +147,8 @@
       <text x="291.3" y="134" fill="#111827">4</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u05" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u05">
-      <title>U05: make turn inactivity timeouts configurable (Low risk)</title>
+      <title>U05: make turn inactivity timeouts configurable (Low risk; PR #86 open)</title>
+      <circle cx="360.3" cy="130" r="23" fill="none" stroke="#2563eb" stroke-width="2"/>
       <circle cx="360.3" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
       <text x="360.3" y="134" fill="#111827">5</text>
     </a>
@@ -169,7 +173,8 @@
       <text x="636.1" y="134" fill="#111827">9</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u10" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u10">
-      <title>U10: publish typed runtime model catalog results (Low risk)</title>
+      <title>U10: publish typed runtime model catalog results (Low risk; PR #83 open)</title>
+      <circle cx="705.0" cy="130" r="23" fill="none" stroke="#2563eb" stroke-width="2"/>
       <circle cx="705.0" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
       <text x="705.0" y="134" fill="#111827">10</text>
     </a>
@@ -209,12 +214,14 @@
       <text x="1187.7" y="134" fill="#111827">17</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u18" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u18">
-      <title>U18: add reusable worker-timeline layout helpers (Low risk)</title>
+      <title>U18: add reusable worker-timeline layout helpers (Low risk; PR #87 open)</title>
+      <circle cx="1256.7" cy="130" r="23" fill="none" stroke="#2563eb" stroke-width="2"/>
       <circle cx="1256.7" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
       <text x="1256.7" y="134" fill="#111827">18</text>
     </a>
     <a href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u19" xlink:href="UPSTREAM-CONTRIBUTION-SEQUENCE.md#u19">
-      <title>U19: raise command output capacity for large renders (Low risk)</title>
+      <title>U19: bound captured command output (Low risk; PR #85 open)</title>
+      <circle cx="1325.6" cy="130" r="23" fill="none" stroke="#2563eb" stroke-width="2"/>
       <circle cx="1325.6" cy="130" r="19" fill="#bbf7d0" stroke="#15803d" stroke-width="2" filter="url(#shadow)"/>
       <text x="1325.6" y="134" fill="#111827">19</text>
     </a>

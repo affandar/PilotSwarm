@@ -81,6 +81,12 @@ wrapper.
 - Candidates that can be initiated now because they have no blockers: **21**
 - Candidates currently blocked by one or more upstream items: **48**
 - Relative-risk distribution: **11 low**, **34 medium**, **24 high**
+- Outstanding upstream pull requests: **5 / 5**
+  ([affandar/PilotSwarm#83](https://github.com/affandar/PilotSwarm/pull/83),
+  [affandar/PilotSwarm#84](https://github.com/affandar/PilotSwarm/pull/84),
+  [affandar/PilotSwarm#85](https://github.com/affandar/PilotSwarm/pull/85),
+  [affandar/PilotSwarm#86](https://github.com/affandar/PilotSwarm/pull/86),
+  [affandar/PilotSwarm#87](https://github.com/affandar/PilotSwarm/pull/87))
 
 These are current-state counts derived from the U-items below. Whenever an item is removed or a
 dependency changes, recalculate the counts rather than retaining the previous values as history.
@@ -291,11 +297,13 @@ These branches have no capability blockers and can be prepared immediately in pa
 
 - Theme / lane: Reliability / 11
 - Blocked by: None
+- Upstream PR: [affandar/PilotSwarm#84](https://github.com/affandar/PilotSwarm/pull/84) — open
 - Value: Adds bounded retry categories, structured-code precedence, jitter, saturation handling, and actionable logs.
 - Readiness: Ready
 - Relative risk: Low
 - Existing coverage: Enough: `packages/sdk/test/unit/cms-retry.test.mjs`
-- Limitations: Assemble the final behavior on current upstream; do not cherry-pick `a8b6d5a8`.
+- Limitations: Keep the structured-code allowlist and message fallbacks narrow so deterministic
+  failures are never retried. The public branch is cleanly authored from current upstream.
 - Proposed commit message:
 
 ```text
@@ -373,11 +381,13 @@ Safety comes from existing automated coverage, including packages/sdk/test/unit/
 
 - Theme / lane: Reliability / 11
 - Blocked by: None
+- Upstream PR: [affandar/PilotSwarm#86](https://github.com/affandar/PilotSwarm/pull/86) — open
 - Value: Makes the watchdog reusable across slow tools and different fleet profiles.
 - Readiness: Ready
 - Relative risk: Low
 - Existing coverage: Enough: `packages/sdk/test/unit/worker-turn-inactivity-timeout.test.mjs`
-- Limitations: Upstream the knob, not the private fleet's exact timeout or single-slot defaults.
+- Limitations: The environment is resolved at worker construction, `0` disables the watchdog,
+  and invalid values preserve the established default. No private fleet timeout is proposed.
 - Proposed commit message:
 
 ```text
@@ -473,11 +483,14 @@ Accompany the change with focused tests for the remaining contract and integrati
 
 - Theme / lane: SDK boundary / reverse
 - Blocked by: None
+- Upstream PR: [affandar/PilotSwarm#83](https://github.com/affandar/PilotSwarm/pull/83) — open
 - Value: Replaces `any[]` model-catalog responses with a stable public wire type and validation.
-- Readiness: Near-ready
+- Readiness: Ready
 - Relative risk: Low
-- Existing coverage: Partial: existing PilotSwarm model-catalog tests plus SQLmort usage
-- Limitations: Add direct normalization/type tests upstream. Keep provider names and deployment-specific catalog policy out.
+- Existing coverage: Enough: direct normalization, generated API, package export, and consumer
+  type tests
+- Limitations: Missing model identity now fails explicitly. Keep opaque capability values and
+  provider policy outside the SDK contract.
 - Proposed commit message:
 
 ```text
@@ -633,6 +646,7 @@ Safety comes from existing automated coverage, including live-session-history-hy
 
 - Theme / lane: Portal / 6
 - Blocked by: None
+- Upstream PR: [affandar/PilotSwarm#87](https://github.com/affandar/PilotSwarm/pull/87) — open
 - Value: Isolates visible-span zoom and deterministic lane ordering from the large timeline renderer.
 - Readiness: Ready
 - Relative risk: Low
@@ -653,19 +667,23 @@ Safety comes from existing automated coverage, including worker-timeline-zoom.te
 
 - Theme / lane: Deployment / 11
 - Blocked by: None
-- Value: Prevents `ENOBUFS` when deployment tools emit large manifest or build output.
-- Readiness: Near-ready
+- Upstream PR: [affandar/PilotSwarm#85](https://github.com/affandar/PilotSwarm/pull/85) — open
+- Value: Prevents `ENOBUFS` when deployment tools emit large manifest or build output while
+  retaining a finite per-stream memory bound.
+- Readiness: Ready
 - Relative risk: Low
-- Existing coverage: Insufficient
-- Limitations: Replace the unexplained magic value with a named bound and add a command-runner test that reproduces the failure.
+- Existing coverage: Enough: `deploy/scripts/test/common.test.mjs` reproduces output beyond
+  Node's default buffer and rejects unbounded overrides
+- Limitations: The named 64 MiB capacity applies independently to stdout and stderr; review peak
+  memory when both streams approach the bound.
 - Proposed commit message:
 
 ```text
-fix(deploy): raise command output capacity for large renders
+fix(deploy): bound captured command output
 
-Prevents ENOBUFS when deployment tools emit large manifest or build output.
+Prevents ENOBUFS when deployment tools emit large manifest or build output while retaining a finite per-stream memory bound.
 Keep the implementation narrowly scoped to the generic upstream surface and its stable public contract.
-Add direct upstream tests that prove the public contract and error paths before merge.
+Safety comes from automated coverage that reproduces the default-buffer failure and rejects unbounded overrides.
 ```
 
 
