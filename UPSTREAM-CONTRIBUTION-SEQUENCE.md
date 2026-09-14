@@ -7,6 +7,7 @@
 - [Current queue](#current-queue)
 - [Candidate dependency DAG](#candidate-dependency-dag)
 - [Upstream contribution principles](#upstream-contribution-principles)
+- [DAG drain algorithm](#dag-drain-algorithm)
 - [Ratings](#ratings)
 - [Important sequencing findings](#important-sequencing-findings)
 - [Topologically sorted contribution candidates](#topologically-sorted-contribution-candidates)
@@ -79,7 +80,7 @@ wrapper.
 - Remaining candidate contribution units: **69**
 - Candidates that can be initiated now because they have no blockers: **21**
 - Candidates currently blocked by one or more upstream items: **48**
-- Relative-risk distribution: **10 low**, **35 medium**, **24 high**
+- Relative-risk distribution: **11 low**, **34 medium**, **24 high**
 
 These are current-state counts derived from the U-items below. Whenever an item is removed or a
 dependency changes, recalculate the counts rather than retaining the previous values as history.
@@ -173,6 +174,65 @@ from this acceptance bar.
 19. **Verify contribution provenance and licensing.** Include only code and dependencies that
     can be contributed under the upstream repository's license and contribution policy. Replace
     or independently implement anything whose ownership or provenance is uncertain.
+20. **Make the pull request easy for platform owners to evaluate.** The pull-request description
+    must explain why the behavior is universally beneficial to PilotSwarm rather than valuable
+    only to one downstream deployment. It must also call out the specific compatibility,
+    security, lifecycle, performance, or portability areas reviewers should scrutinize, alongside
+    the exact red/green proof required above.
+
+## DAG drain algorithm
+
+The DAG is an executable convergence algorithm, not only a suggested serial order. Repeat this
+cycle until the graph is empty:
+
+1. **Compute the eligible set.** Select every remaining node whose `Blocked by` set is
+   empty because it never had predecessors or all of its predecessors have merged upstream and
+   been drained from the fork.
+2. **Process independent eligible nodes in parallel.** Create one isolated branch and worktree
+   per candidate from the then-current upstream default branch. Never stack unrelated eligible
+   candidates on one another. A candidate may include only already-merged predecessors.
+3. **Disposition and de-risk each candidate independently.** Confirm that the node still belongs
+   upstream rather than in an external package or deletion. Reduce its implementation, test,
+   security, compatibility, and operational risk as far as practical. If this work exposes a
+   real predecessor, add the missing DAG edge and remove the node from the current eligible set.
+4. **Open review-sized pull requests concurrently.** Every branch must satisfy the contribution
+   principles and carry its own red/green proof, universal-platform value statement, and focused
+   review watchouts. Parallel eligibility does not justify combining independent behaviors into
+   one pull request. Keep a hard limit of **five outstanding upstream pull requests** across this
+   transition, including draft or otherwise open pull requests. Prepare additional eligible
+   branches locally, but do not open them until a slot is available. **High-risk candidates have
+   an additional human approval gate.** The same gate applies to **security-sensitive candidates
+   at any risk level**, including changes involving authentication, authorization, identities,
+   credentials, secret handling, network trust boundaries, or externally loaded code. It also
+   applies to **git-based worker design**, including repository checkout, ref handling,
+   hydration/dehydration, workspace ownership, repository credentials, and worker lifecycle
+   integration. These candidates may be investigated and de-risked in advance, but their upstream
+   pull requests must not be created autonomously. Present the proposed scope, design, diff,
+   tests, title, description, universal-value argument, security analysis, and review watchouts
+   to the transition owner and obtain explicit approval first.
+5. **Let upstream review define the accepted implementation.** Apply feedback on the public
+   contribution branch and keep the corresponding fork behavior aligned with the reviewed
+   public delta. Rebase each still-open independent branch onto current upstream when accepted
+   changes or other merged eligible nodes overlap it.
+6. **Monitor the open eligible set.** Track required checks, requested changes, unresolved review
+   threads, and reviewer inactivity. Human owners may need to request or prompt review, but a
+   blocked pull request does not prevent unrelated eligible pull requests from progressing within
+   the five-PR ceiling. When a pull request merges or closes, refill the available slot with the
+   ready eligible candidate that has the lowest residual risk and least overlap with outstanding
+   reviews; use dependency-unblocking value as the next tie-breaker.
+7. **Drain each merged node immediately.** After a pull request enters the upstream default
+   branch, follow the merge-commit protocol in `SQLFORK-TRANSITION-PLAN.md`. Merge the resulting
+   upstream default branch into the private fork, preserve explicitly retained downstream
+   behavior, and prove that the upstreamed logical delta is absent from the fork-only tree diff.
+8. **Recompute instead of preserving history here.** Remove every drained node, recalculate
+   queue and risk totals, update every affected `Blocked by` set and readiness statement, and
+   regenerate the SVG. The removals expose the next eligible set, which begins the next
+   cycle.
+
+Multiple nodes can therefore be in preparation, review, or merge-drain stages simultaneously.
+The invariant is per-node independence and correct predecessor ancestry, not serial execution.
+Parallel preparation is unbounded by the review ceiling, but the public review queue must never
+contain more than five outstanding transition pull requests.
 
 ## Ratings
 
@@ -192,6 +252,9 @@ Coverage:
 - **Insufficient**: the proposed public contract lacks direct automated coverage.
 
 Risk is relative to upstream PilotSwarm, not to the already deployed private fork.
+Risk, security sensitivity, and git-worker scope also control execution: regardless of readiness
+or current eligibility, every high-risk, security-sensitive, or git-based worker candidate
+requires the explicit pre-PR approval described in the DAG drain algorithm.
 
 ## Important sequencing findings
 
@@ -290,9 +353,11 @@ Add direct upstream tests that prove the public contract and error paths before 
 - Blocked by: None
 - Value: Lets storage and database authentication use independent identities and failure domains.
 - Readiness: Ready
-- Relative risk: Medium
+- Relative risk: Low
 - Existing coverage: Enough: `packages/sdk/test/unit/blob-store-mi-flag.test.mjs`
-- Limitations: Keep identity names and concrete Azure resources out of the public change.
+- Limitations: Keep identity names and concrete Azure resources out of the public change. The
+  fork now covers explicit enablement, explicit disablement, inherited database identity, and
+  configuration-error precedence; retain that matrix in the independently authored public change.
 - Proposed commit message:
 
 ```text
