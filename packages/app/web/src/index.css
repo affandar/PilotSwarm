@@ -9634,3 +9634,11 @@ textarea.ps-link-input {
 /* Leave room for the collapsed phone search button. */
 .ps-mobile-session-pane:has(.ps-session-search:not(.is-open)) .ps-session-sort-controls { padding-right: 54px; }
 .ps-mobile-workspace.is-sessions-only .ps-session-sort-controls { padding-right: 8px; }
+
+/* Keep enough room for the header, sort controls and a scrollable row even
+   on short phones. Only the list scrolls: focusing a sort button must not
+   scroll the outer body and hide the system rows above it. */
+@media (max-width: 920px) {
+  .ps-mobile-session-pane { max-height: clamp(148px, 22vh, 160px); }
+  .ps-mobile-session-pane .ps-panel-body { overflow: hidden; }
+}

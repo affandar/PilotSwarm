@@ -66,3 +66,41 @@ test('restored recency mode waits for the first session catalog after groups loa
     s = apply(s, 'sessions/loaded', { sessions });
     assert.deepEqual(ids(s).filter(id => !id.startsWith('group:')), ['b','c','a']);
 });
+
+for (const mode of ['saved', 'used', 'updated']) test(`${mode}: system hierarchy and folder membership survive sorting, collapse and refresh`, () => {
+    const catalog = [
+        { sessionId: 'root', isSystem: true, agentId: 'pilotswarm', title: 'PilotSwarm', updatedAt: 1 },
+        { sessionId: 'sweeper', isSystem: true, agentId: 'sweeper', parentSessionId: 'root', updatedAt: 9999 },
+        { sessionId: 'facts', isSystem: true, agentId: 'facts-manager', parentSessionId: 'root', updatedAt: 2 },
+        { sessionId: 'group:g', isGroup: true, title: 'First folder', updatedAt: 10 },
+        { sessionId: 'group:h', isGroup: true, title: 'Second folder', updatedAt: 20 },
+        { ...sessions[0], groupId: 'g' }, { ...sessions[1], groupId: 'g' },
+        { sessionId: 'nested', parentSessionId: 'a', updatedAt: 99999 },
+        { ...sessions[2], groupId: 'h' },
+        { sessionId: 'pinned', updatedAt: 1 }, { sessionId: 'loose', updatedAt: 99999 },
+    ];
+    let s = apply(createInitialState(), 'profileSettings/apply', { settings: {
+        sessionOrder: ['group:g', 'group:h', 'a', 'b', 'c'], collapsedSessionIds: [],
+        pinnedSessionIds: ['pinned'], sessionUsedAt: { b: 500, a: 100, c: 900, loose: 1000 },
+    } });
+    s = apply(s, 'sessions/loaded', { sessions: catalog });
+    s = apply(s, 'sessions/sortMode', { mode });
+    const expected = mode === 'updated'
+        ? ['root', 'sweeper', 'facts', 'pinned', 'group:h', 'c', 'group:g', 'b', 'a', 'nested', 'loose']
+        : mode === 'used'
+            ? ['root', 'sweeper', 'facts', 'pinned', 'group:g', 'b', 'a', 'nested', 'group:h', 'c', 'loose']
+            : ['root', 'sweeper', 'facts', 'pinned', 'group:g', 'a', 'nested', 'b', 'group:h', 'c', 'loose'];
+    assert.deepEqual(ids(s), expected);
+    assert.deepEqual(selectSessionRows(s).map(row => row.sessionId), expected);
+    s = apply(s, 'sessions/collapse', { sessionId: 'group:g' });
+    assert.deepEqual(ids(s), expected.filter(id => !['a', 'b', 'nested'].includes(id)));
+    s = apply(s, 'sessions/refreshSort');
+    assert.deepEqual(ids(s), expected.filter(id => !['a', 'b', 'nested'].includes(id)));
+    s = apply(s, 'sessions/expand', { sessionId: 'group:g' });
+    assert.deepEqual(ids(s), expected);
+    s = apply(s, 'sessions/collapse', { sessionId: 'root' });
+    s = apply(s, 'sessions/refreshSort');
+    assert.deepEqual(ids(s), expected.filter(id => !['sweeper', 'facts'].includes(id)));
+    s = apply(s, 'sessions/expand', { sessionId: 'root' });
+    assert.deepEqual(ids(s), expected);
+});
