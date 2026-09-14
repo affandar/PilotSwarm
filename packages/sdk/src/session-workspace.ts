@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 export type SessionWorkspaceOwnership = "platform" | "caller";
 
@@ -41,6 +42,10 @@ function validateSessionId(sessionId: string): void {
     ) {
         throw new Error(`Invalid session workspace id: ${JSON.stringify(sessionId)}`);
     }
+}
+
+function sessionWorkspaceToken(sessionId: string): string {
+    return createHash("sha256").update(sessionId, "utf8").digest("hex").slice(0, 32);
 }
 
 function isConfined(root: string, candidate: string): boolean {
@@ -106,7 +111,7 @@ export class SessionWorkspaceManager {
         }
 
         validateSessionId(sessionId);
-        const workspacePath = path.join(this.rootDir, sessionId);
+        const workspacePath = this.managedWorkspacePath(sessionId);
         assertConfined(this.rootDir, workspacePath);
         assertNoSymlink(this.rootDir, workspacePath);
         fs.mkdirSync(workspacePath, { recursive: true });
@@ -122,7 +127,7 @@ export class SessionWorkspaceManager {
 
     remove(sessionId: string): boolean {
         validateSessionId(sessionId);
-        const workspacePath = path.join(this.rootDir, sessionId);
+        const workspacePath = this.managedWorkspacePath(sessionId);
         assertConfined(this.rootDir, workspacePath);
         assertNoSymlink(this.rootDir, workspacePath);
         const markerPath = this.ownershipMarkerPath(sessionId);
@@ -145,10 +150,14 @@ export class SessionWorkspaceManager {
     }
 
     private ownershipMarkerPath(sessionId: string): string {
-        const markerPath = path.join(this.ownershipDir, `${sessionId}.json`);
+        const markerPath = path.join(this.ownershipDir, `${sessionWorkspaceToken(sessionId)}.json`);
         assertConfined(this.ownershipDir, markerPath);
         assertNoSymlink(this.rootDir, markerPath);
         return markerPath;
+    }
+
+    private managedWorkspacePath(sessionId: string): string {
+        return path.join(this.rootDir, `session-${sessionWorkspaceToken(sessionId)}`);
     }
 
     private readOwnershipMarker(markerPath: string): {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,19 @@ test("managed workspaces are confined, reusable, and platform-owned", (t) => {
     assert.equal(manager.remove("session-123"), true);
     assert.equal(fs.existsSync(first.path), false);
     assert.equal(manager.remove("session-123"), false);
+});
+
+test("case-variant session ids receive distinct managed workspaces", (t) => {
+    const root = temporaryRoot(t);
+    const manager = new SessionWorkspaceManager(path.join(root, "workspaces"));
+    const upper = manager.resolve("Session-ABC");
+    const lower = manager.resolve("session-abc");
+
+    assert.notEqual(upper.path, lower.path);
+    fs.writeFileSync(path.join(upper.path, "upper.txt"), "upper");
+    assert.equal(fs.existsSync(path.join(lower.path, "upper.txt")), false);
+    assert.equal(manager.remove("Session-ABC"), true);
+    assert.equal(fs.existsSync(lower.path), true);
 });
 
 test("caller override wins and is never owned or removed by the manager", (t) => {
@@ -82,8 +96,8 @@ test("SessionManager passes the managed path to the Copilot boundary and disable
 
     await manager.getOrCreate("managed-session", {}, { turnIndex: 0 });
     assert.equal(
-        configs[0].workingDirectory,
-        path.join(workspaceManager.rootDir, "managed-session"),
+        path.dirname(configs[0].workingDirectory),
+        workspaceManager.rootDir,
     );
     assert.equal(configs[0].enableConfigDiscovery, false);
     assert.equal(configs[0].enableSkills, false);
@@ -121,8 +135,17 @@ test("terminal cleanup reclaims a managed workspace on a cold SessionManager", a
 test("cold cleanup preserves an unmarked directory in the managed root", async (t) => {
     const root = temporaryRoot(t);
     const workspaceManager = new SessionWorkspaceManager(path.join(root, "workspaces"));
-    const unmarked = path.join(workspaceManager.rootDir, "caller-session");
-    fs.mkdirSync(unmarked);
+    const resolved = workspaceManager.resolve("caller-session");
+    const [marker] = fs.readdirSync(path.join(
+        workspaceManager.rootDir,
+        ".pilotswarm-workspace-owners",
+    ));
+    fs.rmSync(path.join(
+        workspaceManager.rootDir,
+        ".pilotswarm-workspace-owners",
+        marker,
+    ));
+    const unmarked = resolved.path;
     fs.writeFileSync(path.join(unmarked, "caller.txt"), "caller");
 
     const manager = new SessionManager(undefined, null, {
@@ -176,7 +199,12 @@ test("managed workspaces reject symlink and junction escapes", (t) => {
     fs.mkdirSync(outside);
     fs.mkdirSync(managed);
     try {
-        fs.symlinkSync(outside, path.join(managed, "session-link"), process.platform === "win32" ? "junction" : "dir");
+        const token = createHash("sha256").update("session-link", "utf8").digest("hex").slice(0, 32);
+        fs.symlinkSync(
+            outside,
+            path.join(managed, `session-${token}`),
+            process.platform === "win32" ? "junction" : "dir",
+        );
     } catch (error) {
         if (error?.code === "EPERM" || error?.code === "EACCES") {
             t.skip("creating symlinks is not permitted on this host");
