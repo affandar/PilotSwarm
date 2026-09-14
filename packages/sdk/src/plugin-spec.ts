@@ -68,7 +68,10 @@ export interface PluginSpecEntry {
 }
 
 export interface PluginSpecInstallResult {
-    entry: PluginSpecEntry;
+    /** Parsed entry, or null when the raw entry itself was malformed. */
+    entry: PluginSpecEntry | null;
+    /** Trimmed deployment entry, retained for diagnostics when parsing fails. */
+    raw: string;
     /** Absolute resolved plugin directory (present iff status === "ok"). */
     dir: string | null;
     status: "ok" | "error";
@@ -396,43 +399,74 @@ export async function installPluginSpecs(opts: {
     trace?: (message: string) => void;
 }): Promise<InstallPluginSpecsResult> {
     const trace = opts.trace ?? (() => {});
-    let entries: PluginSpecEntry[];
-    let validatedEntries: ValidatedPluginSpec[];
-    try {
-        entries = parsePluginSpec(opts.spec);
-        validatedEntries = validateLegacyPluginSources(entries);
-    } catch (error: any) {
-        // A malformed deployment value is surfaced but must not crash startup.
-        trace(`[plugin-spec] parse error: ${error?.message ?? error}`);
-        return { pluginDirs: [], results: [] };
-    }
-    if (entries.length === 0) return { pluginDirs: [], results: [] };
+    const rawEntries = (opts.spec ?? "")
+        .split(";")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+    if (rawEntries.length === 0) return { pluginDirs: [], results: [] };
 
-    fs.mkdirSync(opts.cacheDir, { recursive: true });
+    const seen = new Map<string, number>();
+    const prepared = rawEntries.map((raw, index): {
+        raw: string;
+        entry: PluginSpecEntry | null;
+        spec?: ValidatedPluginSpec;
+        error?: string;
+    } => {
+        let entry: PluginSpecEntry | null = null;
+        try {
+            entry = parseOne(raw);
+            const [spec] = parseValidatedPluginSpecs([toValidatedPluginSpec(entry)]);
+            const key = normalizedLegacyPluginSourceKey(spec);
+            const prior = seen.get(key);
+            if (prior !== undefined) {
+                throw new Error(`Plugin source ${index} duplicates source ${prior}`);
+            }
+            seen.set(key, index);
+            return { raw, entry, spec };
+        } catch (error: any) {
+            return { raw, entry, error: String(error?.message ?? error) };
+        }
+    });
+
+    if (prepared.some((item) => item.spec)) {
+        fs.mkdirSync(opts.cacheDir, { recursive: true });
+    }
     const results: PluginSpecInstallResult[] = [];
-    const total = entries.length;
+    const total = prepared.length;
     const runStartedAt = Date.now();
     trace(`[plugin-spec] processing ${total} plugin spec ${total === 1 ? "entry" : "entries"}`);
 
-    let index = 0;
-    for (const entry of entries) {
-        index++;
+    for (let offset = 0; offset < prepared.length; offset++) {
+        const index = offset + 1;
+        const item = prepared[offset];
         const startedAt = Date.now();
-        const result: PluginSpecInstallResult = { entry, dir: null, status: "ok" };
-        trace(`[plugin-spec] [${index}/${total}] ${describe(entry)} — starting`);
+        const result: PluginSpecInstallResult = {
+            entry: item.entry,
+            raw: item.raw,
+            dir: null,
+            status: item.error ? "error" : "ok",
+            ...(item.error ? { error: item.error } : {}),
+        };
+        if (item.error || !item.entry || !item.spec) {
+            trace(`[plugin-spec] [${index}/${total}] FAILED ${item.raw}: ${result.error} (0ms)`);
+            results.push(result);
+            continue;
+        }
+
+        trace(`[plugin-spec] [${index}/${total}] ${describe(item.entry)} — starting`);
         try {
-            result.dir = await materializeEntry(entry, validatedEntries[index - 1], opts);
+            result.dir = await materializeEntry(item.entry, item.spec, opts);
             const ms = Date.now() - startedAt;
             const { skills, agents } = countPluginContents(result.dir);
             trace(
-                `[plugin-spec] [${index}/${total}] OK ${describe(entry)} -> ${result.dir} ` +
+                `[plugin-spec] [${index}/${total}] OK ${describe(item.entry)} -> ${result.dir} ` +
                 `(${skills} skills, ${agents} agents, ${ms}ms)`,
             );
         } catch (error: any) {
             const ms = Date.now() - startedAt;
             result.status = "error";
             result.error = String(error?.message ?? error);
-            trace(`[plugin-spec] [${index}/${total}] FAILED ${describe(entry)}: ${result.error} (${ms}ms)`);
+            trace(`[plugin-spec] [${index}/${total}] FAILED ${describe(item.entry)}: ${result.error} (${ms}ms)`);
         }
         results.push(result);
     }
@@ -489,30 +523,20 @@ function toValidatedPluginSpec(entry: PluginSpecEntry): ValidatedPluginSpec {
     };
 }
 
-function validateLegacyPluginSources(entries: PluginSpecEntry[]): ValidatedPluginSpec[] {
-    const specs = parseValidatedPluginSpecs(entries.map(toValidatedPluginSpec));
-    const seen = new Map<string, number>();
-    for (let index = 0; index < specs.length; index++) {
-        const spec = specs[index];
-        let key = normalizedPluginSpecKey(spec);
-        if (spec.kind === "local") {
-            const candidate = path.resolve(spec.path);
-            try {
-                if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-                    key = `local:${caseFoldPluginPath(fs.realpathSync(candidate))}`;
-                }
-            } catch {
-                // Filesystem-dependent failures remain per-entry installation
-                // errors so one unavailable local source cannot disable peers.
+function normalizedLegacyPluginSourceKey(spec: ValidatedPluginSpec): string {
+    let key = normalizedPluginSpecKey(spec);
+    if (spec.kind === "local") {
+        const candidate = path.resolve(spec.path);
+        try {
+            if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+                key = `local:${caseFoldPluginPath(fs.realpathSync(candidate))}`;
             }
+        } catch {
+            // Filesystem-dependent failures remain per-entry installation
+            // errors so one unavailable local source cannot disable peers.
         }
-        const prior = seen.get(key);
-        if (prior !== undefined) {
-            throw new Error(`Plugin source ${index} duplicates source ${prior}`);
-        }
-        seen.set(key, index);
     }
-    return specs;
+    return key;
 }
 
 function resolveCachedPluginDir(spec: Extract<ValidatedPluginSpec, { kind: "git" }>, cacheDir: string): string | null {

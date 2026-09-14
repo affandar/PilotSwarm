@@ -144,7 +144,7 @@ test("legacy local specs install through the validated provider-neutral core", a
     assert.equal(result.results[0].status, "ok");
 });
 
-test("legacy specs reject duplicate sources and invalid refs before checkout", async (t) => {
+test("legacy specs quarantine duplicate sources and invalid refs before checkout", async (t) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-spec-validation-"));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const plugin = path.join(root, "plugin");
@@ -156,8 +156,9 @@ test("legacy specs reject duplicate sources and invalid refs before checkout", a
         cacheDir: path.join(root, "duplicate-cache"),
         trace: (message) => traces.push(message),
     });
-    assert.deepEqual(duplicate, { pluginDirs: [], results: [] });
-    assert.match(traces.at(-1), /duplicates source 0/);
+    assert.deepEqual(duplicate.pluginDirs, [fs.realpathSync(plugin)]);
+    assert.deepEqual(duplicate.results.map((result) => result.status), ["ok", "error"]);
+    assert.equal(traces.some((message) => /duplicates source 0/.test(message)), true);
 
     traces.length = 0;
     const invalidRef = await installPluginSpecs({
@@ -165,8 +166,11 @@ test("legacy specs reject duplicate sources and invalid refs before checkout", a
         cacheDir: path.join(root, "ref-cache"),
         trace: (message) => traces.push(message),
     });
-    assert.deepEqual(invalidRef, { pluginDirs: [], results: [] });
-    assert.match(traces.at(-1), /ref is not a valid/);
+    assert.deepEqual(invalidRef.pluginDirs, []);
+    assert.equal(invalidRef.results.length, 1);
+    assert.equal(invalidRef.results[0].status, "error");
+    assert.match(invalidRef.results[0].error, /ref is not a valid/);
+    assert.equal(traces.some((message) => /ref is not a valid/.test(message)), true);
     assert.equal(fs.existsSync(path.join(root, "ref-cache")), false);
 });
 
@@ -185,6 +189,26 @@ test("an unavailable legacy local source does not disable valid peers", async (t
     assert.equal(result.results.length, 2);
     assert.equal(result.results[0].status, "error");
     assert.match(result.results[0].error, /no such file|cannot find|not found/i);
+    assert.equal(result.results[1].status, "ok");
+    assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
+});
+
+test("a malformed legacy entry does not disable valid peers", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-spec-parse-isolation-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const valid = path.join(root, "valid");
+    fs.mkdirSync(path.join(valid, "skills"), { recursive: true });
+
+    const result = await installPluginSpecs({
+        spec: `unknown:malformed;local:${valid}`,
+        cacheDir: path.join(root, "cache"),
+    });
+
+    assert.equal(result.results.length, 2);
+    assert.equal(result.results[0].entry, null);
+    assert.equal(result.results[0].raw, "unknown:malformed");
+    assert.equal(result.results[0].status, "error");
+    assert.match(result.results[0].error, /unrecognized scheme/);
     assert.equal(result.results[1].status, "ok");
     assert.deepEqual(result.pluginDirs, [fs.realpathSync(valid)]);
 });
