@@ -67,6 +67,32 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export {
+    SYSTEM_WAIT_KINDS,
+    SYSTEM_WAIT_STATUSES,
+    SYSTEM_WAIT_TOOL_CONTRACT,
+    SYSTEM_WAIT_MANAGEMENT_CONTRACT,
+    normalizeSystemWaitKey,
+    normalizeSystemWaitKind,
+    normalizeSystemWaitRequest,
+    normalizeSystemWaitCommand,
+    normalizeDurableJsonValue,
+    createStoredSystemWait,
+    reuseStoredSystemWait,
+    applySystemWaitCommand,
+    normalizeStoredSystemWait,
+    serializeStoredSystemWait,
+} from "./system-wait-contracts.js";
+export type {
+    SystemWaitKind,
+    SystemWaitStatus,
+    DurableJsonValue,
+    SystemWaitRequest,
+    SystemWaitSignal,
+    SystemWaitCancellation,
+    SystemWaitManagementCommand,
+    StoredSystemWait,
+} from "./system-wait-contracts.js";
 export { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 // Git-workspace dehydrate/hydrate protocol (§8.5) — the worker's
 // beforeRunTurn/afterRunTurn hooks call these to make a session's uncommitted
