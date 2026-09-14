@@ -379,6 +379,24 @@ export type {
 } from "./transcript-selection.js";
 
 export { SessionDumper } from "./session-dumper.js";
+export {
+    DEFAULT_SESSION_TOOL_EVENT_CATCH_UP_LIMIT,
+    MAX_SESSION_TOOL_EVENT_CATCH_UP_LIMIT,
+    classifySessionToolEvent,
+    SessionToolEventLedger,
+    SessionToolEventTracker,
+} from "./session-tool-events.js";
+export type {
+    SessionEventLike,
+    SessionToolCompleteEvent,
+    SessionToolEvent,
+    SessionToolEventBase,
+    SessionToolEventFinishResult,
+    SessionToolEventSource,
+    SessionToolEventTrackerOptions,
+    SessionToolExecution,
+    SessionToolStartEvent,
+} from "./session-tool-events.js";
 
 // ─── Agent packages (docs/proposals/agent-packages.md) ───────────
 export {
