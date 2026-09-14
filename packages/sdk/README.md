@@ -25,6 +25,34 @@ const reply = await session.sendAndWait("hello");
 
 Pass `getAccessToken` for authenticated deployments; use `PilotSwarmManagementClient({ apiUrl, getAccessToken? })` for management operations. Constructing a client directly with `{ store }` is internal (worker/portal-host embedding and testing) — see the [Web API reference](https://github.com/affandar/PilotSwarm/blob/main/docs/api/reference.md).
 
+### Node-only authentication bootstrap
+
+Server-side Node.js applications can discover a deployment's authentication
+mode and build that `getAccessToken` callback:
+
+```ts
+import { createNodeWebAuth } from "pilotswarm-sdk/node-auth";
+
+const auth = await createNodeWebAuth({ apiUrl: process.env.PILOTSWARM_API_URL! });
+const client = new PilotSwarmClient({
+  apiUrl: process.env.PILOTSWARM_API_URL!,
+  getAccessToken: auth.getAccessToken,
+});
+```
+
+The `node-auth` entry point is intentionally not a browser API. The deployment
+selects the provider. For authenticated deployments, an explicit `token`
+option takes precedence over `PILOTSWARM_API_TOKEN`; setting `token` to `null`
+suppresses environment fallback. Dev auth similarly uses explicit `devUser`
+before `PILOTSWARM_DEV_USER`.
+
+For identity auth, pass a caller-owned `TokenCredential`, or let the bootstrap
+own a `DefaultAzureCredential`. Access tokens are cached until shortly before
+expiry and concurrent refreshes are collapsed. Call `auth.close()` when done;
+caller-owned credentials are never closed by the bootstrap. Discovery and
+token-acquisition errors reject with `NodeWebAuthError` rather than silently
+falling back to anonymous access.
+
 Workers are trusted backend components and always attach directly to the store:
 
 ```ts
