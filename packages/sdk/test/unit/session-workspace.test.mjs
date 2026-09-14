@@ -95,6 +95,20 @@ test("SessionManager passes the managed path to the Copilot boundary and disable
     assert.equal(fs.existsSync(override), true, "terminal cleanup preserves caller-owned workspace");
 });
 
+test("terminal cleanup reclaims a managed workspace on a cold SessionManager", async (t) => {
+    const root = temporaryRoot(t);
+    const workspaceManager = new SessionWorkspaceManager(path.join(root, "workspaces"));
+    const workspace = workspaceManager.resolve("cold-session");
+    fs.writeFileSync(path.join(workspace.path, "stale.txt"), "stale");
+
+    const manager = new SessionManager(undefined, null, {
+        sessionWorkspaceManager: workspaceManager,
+    }, path.join(root, "state"));
+    await manager.destroySession("cold-session");
+
+    assert.equal(fs.existsSync(workspace.path), false);
+});
+
 test("SessionManager preserves historical discovery without a workspace manager", async (t) => {
     const root = temporaryRoot(t);
     const manager = new SessionManager(undefined, null, {}, path.join(root, "state"));

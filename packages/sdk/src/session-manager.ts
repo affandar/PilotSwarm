@@ -9,7 +9,7 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
-import type { SessionWorkspaceManager, SessionWorkspaceOwnership } from "./session-workspace.js";
+import type { SessionWorkspaceManager } from "./session-workspace.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -712,8 +712,6 @@ export class SessionManager {
     private sessionLocks = new Map<string, Promise<void>>();
     /** Last local activity per session — feeds the autonomous eviction clock. */
     private sessionLastTouchedAt = new Map<string, number>();
-    /** Cleanup authority for workspaces resolved during this manager lifetime. */
-    private sessionWorkspaceOwnership = new Map<string, SessionWorkspaceOwnership>();
     private readonly adminScope: AdminScope;
 
     constructor(
@@ -1998,9 +1996,6 @@ export class SessionManager {
         const sessionDir = path.join(this.sessionStateDir, sessionId);
         const sessionWorkspace = this.workerDefaults.sessionWorkspaceManager
             ?.resolve(sessionId, config.workingDirectory);
-        if (sessionWorkspace) {
-            this.sessionWorkspaceOwnership.set(sessionId, sessionWorkspace.ownership);
-        }
         const platformOwnedWorkspace = sessionWorkspace?.ownership === "platform";
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
@@ -3036,11 +3031,7 @@ export class SessionManager {
         this._forgetWarmSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.sessionConfigs.delete(sessionId);
-        const workspaceOwnership = this.sessionWorkspaceOwnership.get(sessionId);
-        this.sessionWorkspaceOwnership.delete(sessionId);
-        if (workspaceOwnership === "platform") {
-            this.workerDefaults.sessionWorkspaceManager?.remove(sessionId);
-        }
+        this.workerDefaults.sessionWorkspaceManager?.remove(sessionId);
     }
 
     /**
