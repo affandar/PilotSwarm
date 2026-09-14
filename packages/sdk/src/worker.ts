@@ -45,6 +45,7 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig } from "./types.js";
 import { resolveWorkerRuntimeProvenance } from "./worker-provenance.js";
+import { SessionWorkspaceManager } from "./session-workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
@@ -446,6 +447,9 @@ export class PilotSwarmWorker {
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
                 turnInactivityTimeoutMs: this.config.turnInactivityTimeoutMs,
+                sessionWorkspaceManager: options.sessionWorkspaceRoot
+                    ? new SessionWorkspaceManager(options.sessionWorkspaceRoot)
+                    : undefined,
             },
             effectiveSessionStateDir,
         );

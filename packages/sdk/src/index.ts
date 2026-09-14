@@ -67,6 +67,14 @@ export type {
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
+export { SessionWorkspaceManager, discoverRepositoryConfiguration } from "./session-workspace.js";
+export type {
+    RepositoryConfiguration,
+    RepositoryConfigurationDiscoveryOptions,
+    RepositoryConfigurationTrust,
+    SessionWorkspace,
+    SessionWorkspaceOwnership,
+} from "./session-workspace.js";
 export { runWithTurnLifecycleHooks } from "./turn-lifecycle-hooks.js";
 export type {
     AfterTurnContext,

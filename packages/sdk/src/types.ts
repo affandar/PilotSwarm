@@ -1080,6 +1080,13 @@ export interface PilotSwarmWorkerOptions {
     sessionStateDir?: string;
 
     /**
+     * Opt into platform-owned per-session working directories under this root.
+     * An explicit session `workingDirectory` remains caller-owned and wins.
+     * Undefined preserves the historical SDK/process working-directory path.
+     */
+    sessionWorkspaceRoot?: string;
+
+    /**
      * Optional trace callback for startup diagnostics.
      * If not provided, trace messages are discarded.
      */

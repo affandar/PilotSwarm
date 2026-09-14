@@ -9,6 +9,7 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
+import type { SessionWorkspaceManager } from "./session-workspace.js";
 import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
@@ -414,6 +415,11 @@ export interface WorkerDefaults {
     turnTimeoutMs?: number;
     /** Turn inactivity watchdog in ms. 0 = disabled; undefined = 5-minute default. */
     turnInactivityTimeoutMs?: number;
+    /**
+     * Optional platform-owned workspace allocator. When absent, historical
+     * working-directory and repository-discovery behavior is unchanged.
+     */
+    sessionWorkspaceManager?: SessionWorkspaceManager;
 }
 
 /** Resolve every part of a bound agent using the same authorized package copy. */
@@ -1988,6 +1994,9 @@ export class SessionManager {
         const client = await this.ensureClient(userGithubToken, byokOpenAi);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
+        const sessionWorkspace = this.workerDefaults.sessionWorkspaceManager
+            ?.resolve(sessionId, config.workingDirectory);
+        const platformOwnedWorkspace = sessionWorkspace?.ownership === "platform";
 
         // Merge user tools with system tool definitions (wait, ask_user, sub-agent tools)
         // so the LLM sees them at session creation time.
@@ -2367,14 +2376,14 @@ export class SessionManager {
             // (process.cwd()). The serve harness roots discovery by chdir-ing
             // the worker process into the enlistment checkout — no PilotSwarm
             // option required.
-            workingDirectory: config.workingDirectory,
+            workingDirectory: sessionWorkspace?.path ?? config.workingDirectory,
             // PLACEHOLDER (make generic later): unconditionally enable `.github`
             // config discovery + skill enumeration so a repo-checkout worker
             // surfaces the enlistment's `.github/skills` (and MCP/agents) from the
             // working directory. Today these are hard-wired true; they should
             // become per-session/per-workload config knobs, not blanket defaults.
-            enableConfigDiscovery: true,
-            enableSkills: true,
+            enableConfigDiscovery: !platformOwnedWorkspace,
+            enableSkills: !platformOwnedWorkspace,
             hooks: nativeEnabled ? nativeSubagentHooks(sdkModelName, config.hooks,
                 () => this.sessions.get(sessionId)?.canAdmitNativeTask() ?? false) : config.hooks,
             onPermissionRequest: (config as any).onPermissionRequest ?? approvePermissionForSession,
