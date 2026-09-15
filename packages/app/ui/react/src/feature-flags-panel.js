@@ -103,6 +103,8 @@ function FeatureFlagRow({ flag, mode, busy, saving, controller, workers, workers
             mode !== "cluster" ? h("p", { className: "ps-feature-context" }, `Cluster setting: ${onOff(storedEnabled)}. Personal settings ${storedOverride ? "allowed" : "not allowed"}.`) : null,
             locked ? h("p", { className: "ps-feature-retained" }, `Saved future preference: ${savedChoice === "inherit" ? "Use cluster setting" : onOff(flag.user.enabled)}. This will apply if personal settings are allowed again.`) : null),
         !flag.supported ? h("p", { role: "status" }, "This server does not support changing this feature.") : null,
+        flag.reason === "requires_native_tasks" ? h("p", { className: "ps-feature-blocker", role: "status" },
+            "Base Agent V2 is currently Off because it requires Native Copilot tasks. The Base V2 preference is saved and will apply when native tasks are enabled for the same scope.") : null,
         knownBlocked ? h("p", { className: "ps-feature-blocker", role: "status" }, `The saved setting is On, but none of the ${status.eligible} reporting workers is configured for native tasks. Native tasks cannot run on those workers.`) : null,
         h("div", { className: "ps-feature-editor" }, mode === "cluster" ? [
             h(RadioChoices, { key: "enabled", legend: "Cluster setting", name: `${id}-cluster`, value: String(clusterDraft.enabled), disabled: editDisabled,

@@ -1,6 +1,6 @@
 import type { Pool, PoolClient, QueryResult } from "pg";
-import { FeatureFlagError, isFeatureKey, resolveFeatureDefinition,
-    type FeatureDefinition, type FeatureOwner, type FeatureSetting, type FeatureSnapshot } from "./feature-flags.js";
+import { FeatureFlagError, applyBaseAgentPrerequisite, isFeatureKey, resolveFeatureDefinition,
+    type FeatureDecision, type FeatureDefinition, type FeatureOwner, type FeatureSetting, type FeatureSnapshot } from "./feature-flags.js";
 
 /** Trusted transport/worker identity, never deserialized from a request body. */
 export interface FeatureViewer { principal: FeatureOwner | null; isAdmin: boolean }
@@ -11,7 +11,7 @@ export interface FeatureMutation {
 export interface FeatureView {
     userId: number | null;
     flags: Array<FeatureDefinition & { cluster: FeatureSetting | null; user: FeatureSetting | null;
-        effective: boolean; source: string; userOverrideIgnored: boolean; supported: boolean }>;
+        effective: boolean; source: string; reason?: FeatureDecision["reason"]; userOverrideIgnored: boolean; supported: boolean }>;
 }
 export interface FeatureMutationResult { featureKey: string; scope: "cluster" | "user"; userId: number | null; revision: string; setting: FeatureSetting | null }
 
@@ -73,11 +73,15 @@ export class FeatureStore {
     async read(viewer: FeatureViewer, scope: "cluster" | "user", userId?: number): Promise<FeatureView> {
         if (userId !== undefined && (!Number.isSafeInteger(userId) || userId <= 0)) throw new FeatureFlagError("FEATURE_INVALID", "Invalid user ID");
         const result = await this.call<FeatureSnapshot & { userId: number | null }>("cms_feature_read", [...this.actor(viewer), scope, userId ?? null]);
+        const decisions = new Map(result.definitions.map(definition => [definition.featureKey, resolveFeatureDefinition(definition,
+            result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "cluster"),
+            result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "user"))]));
         return { userId: result.userId, flags: result.definitions.map(definition => {
             const cluster = result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "cluster");
             const user = result.settings.find(setting => setting.featureKey === definition.featureKey && setting.scope === "user");
-            const decision = resolveFeatureDefinition(definition, cluster, user);
+            const decision = applyBaseAgentPrerequisite(definition.featureKey, decisions.get(definition.featureKey)!, decisions.get("copilot.native_tasks"));
             return { ...definition, cluster: cluster ?? null, user: user ?? null, effective: decision.enabled,
+                ...(decision.reason ? { reason: decision.reason } : {}),
                 source: decision.source, supported: isFeatureKey(definition.featureKey),
                 userOverrideIgnored: Boolean(user && !(cluster?.allowUserOverride ?? definition.defaultAllowUserOverride)) };
         }) };

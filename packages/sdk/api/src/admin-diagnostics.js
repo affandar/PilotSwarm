@@ -30,7 +30,7 @@ export function projectAgentWorkerState(row) {
 
 // Keep the browser-safe API independent of the SDK runtime. The diagnostics
 // contract test checks this allowlist against the code-owned feature registry.
-const PUBLIC_FEATURE_KEYS = new Set(["copilot.native_tasks"]);
+const PUBLIC_FEATURE_KEYS = new Set(["copilot.native_tasks", "agents.base_v2"]);
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const isRevision = value => typeof value === "string" && /^[1-9]\d{0,18}$/.test(value)
     && BigInt(value) <= 9223372036854775807n;

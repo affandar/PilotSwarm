@@ -3745,7 +3745,7 @@ export class PilotSwarmUiController {
             : this.clearAdminSystemAgentModel(route.agentId);
     }
 
-    // ── Agent packages (Admin → Agents) ──────────────────────────
+    // ── Packages (Admin → Packages) ──────────────────────────────
 
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
@@ -3978,8 +3978,22 @@ export class PilotSwarmUiController {
                     updated.source = allowUser && updated.user ? "user" : updated.cluster ? "cluster" : "default";
                     updated.userOverrideIgnored = Boolean(updated.user && !allowUser);
                     const data = this.getState().admin.features.data;
+                    const flags = data.flags.map(flag => flag.featureKey === featureKey ? updated : flag);
+                    // Preserve independent saved preferences, but do not display
+                    // Base V2 as active when the native prerequisite is Off.
+                    // Recompute both when either setting changes; the following
+                    // refresh may fail after a successfully saved mutation.
+                    const nativeEnabled = flags.find(flag => flag.featureKey === "copilot.native_tasks")?.effective === true;
+                    const effectiveFlags = flags.map(flag => {
+                        if (flag.featureKey !== "agents.base_v2") return flag;
+                        const { reason: _reason, ...baseFlag } = flag;
+                        const allowPersonal = flag.cluster?.allowUserOverride ?? flag.defaultAllowUserOverride;
+                        const configured = allowPersonal && flag.user ? flag.user.enabled : flag.cluster?.enabled ?? flag.defaultEnabled;
+                        return { ...baseFlag, effective: configured && nativeEnabled,
+                            ...(configured && !nativeEnabled ? { reason: "requires_native_tasks" } : {}) };
+                    });
                     this.dispatch({ type: "admin/features", patch: { data: { ...data,
-                        flags: data.flags.map(flag => flag.featureKey === featureKey ? updated : flag) } } });
+                        flags: effectiveFlags } } });
                 }
                 if (draft && this.getState().admin.features.drafts?.[draftKey] === draft) {
                     const drafts = { ...this.getState().admin.features.drafts };
@@ -4046,7 +4060,7 @@ export class PilotSwarmUiController {
     /** Reload the package list + sources (+ fleet state when permitted). */
     async refreshAdminAgentPackages() {
         if (typeof this.transport.listAgentPackages !== "function") {
-            this.dispatch({ type: "admin/packages/loadFailed", error: "Agent packages are not available on this deployment." });
+            this.dispatch({ type: "admin/packages/loadFailed", error: "Packages are not available on this deployment." });
             return;
         }
         this.dispatch({ type: "admin/packages/loading" });

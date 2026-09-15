@@ -1,12 +1,12 @@
 ---
 name: agent-repair-loop
 description: |
-  The order of operations for changing a live agent safely — diagnose,
+  The order of operations for changing a live package safely — diagnose,
   patch, publish, converge, verify, roll back. Use whenever you are about
   to modify an agent package that something is already running on.
 ---
 
-# Repairing a live agent
+# Repairing a live package
 
 The steps are ordered because each one exists to catch a specific failure.
 
@@ -66,13 +66,22 @@ debugging time.
 Poll `read_agent_package` until `activeVersionId` matches what you published.
 Then proceed. A fixed sleep is not a convergence check.
 
-## 6. Verify in a test session
+## 6. Verify the changed capabilities
 
-Spawn a throwaway session bound to the new version. Confirm it loads and does
-the thing it was supposed to start doing.
+Packages can contain reusable skills, executable tools/MCP integrations, and
+authored agent workflows. Zero-agent packages are valid. Verify the surfaces
+that changed: discover and load skills, activate permitted integrations, and
+check real tool/MCP execution evidence in a representative permissions context.
+Do not add an agent or create a durable session solely to test a skill or tool.
 
-**This step is mandatory when you were spawned by the agent you are
-editing.** In that arrangement you are the child and the thing you are about
+For an authored workflow, also use `create_agent_session` to test a top-level
+session bound to the new version. Do not substitute `spawn_agent`: its child
+preamble differs from the entry point a user runs. Tag the test with `test_of`,
+reuse its key when appropriate, and observe its events and actual outputs.
+Respect the session owner's authorization before messaging or ending it.
+
+**The named-entry-point check is mandatory when you were spawned by the agent
+you are editing.** In that arrangement you are the child and the thing you are about
 to break is your own parent — the argument that "the publisher still runs the
 old version and can pin itself back" does not hold, because the publisher is
 not the victim.

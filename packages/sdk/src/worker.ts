@@ -1,3 +1,4 @@
+import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -244,7 +245,8 @@ export class PilotSwarmWorker {
      * Installed-package dir → owning scope/owner, for agents loaded from
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
-    private _packageDirOwners = new Map<string, { packageId: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _capabilitySources: CapabilitySource[] = [];
+    private _packageDirOwners = new Map<string, { packageId: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -255,6 +257,8 @@ export class PilotSwarmWorker {
     private _agentPackageTools = new Map<string, Tool<any>>();
     /** Per-package tool maps — lets a session prefer ITS package's handler on a name collision. */
     private _agentPackageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
+    /** Package-qualified MCP maps; package names never resolve through the legacy flat catalog. */
+    private _agentPackageMcpServersByPackage = new Map<string, Record<string, any>>();
     /** Last install report — carried in the registry heartbeat's state. */
     private _agentPackagesInstalled: Record<string, { semver: string; sha256: string; status: string; error?: string }> = {};
     /** Worker-registry lifecycle phase (docs/proposals/worker-registry.md). */
@@ -347,6 +351,7 @@ export class PilotSwarmWorker {
                 // The `load_skill` catalog, BY REFERENCE (cleared and refilled
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,
+                getCapabilitySources: () => this._getCapabilitySources(),
                 // Private, per-owner skills, also by reference. A session
                 // gets the ones its OWNER published, and nobody else's — see
                 // SessionManager._skillCatalogForSession (what load_skill
@@ -1077,7 +1082,23 @@ export class PilotSwarmWorker {
      * (registerActivities args) observe the reload. Reassigning any of these
      * would strand a consumer on a stale snapshot — see the field comments.
      */
+    private _getCapabilitySources(): CapabilitySource[] {
+        const sources = this._capabilitySources.map(source => {
+            const tools = source.packageId ? this._agentPackageToolsByPackage.get(source.packageId) ?? new Map() : source.tools;
+            return { ...source, tools, artifacts: [...source.artifacts, ...[...tools.values()].map(tool => ({
+                kind: "tool" as const, name: tool.name, description: tool.description ?? "" }))] };
+        });
+        // Deployment-registered tools already have deployment-wide selectable semantics.
+        const tools = new Map(this.toolRegistry);
+        if (tools.size) sources.push({ id: "static:registered-tools", name: "Deployment tools", source: "static", scope: "shared",
+            revision: capabilityHash([...tools.values()].map(t => ({ name: t.name, description: t.description, parameters: t.parameters }))),
+            tools, mcpServers: {}, artifacts: [...tools.values()].map(t => ({ kind: "tool", name: t.name, description: t.description ?? "" })) });
+        return sources;
+    }
+
     private _resetLoadedPluginState(): void {
+        this._capabilitySources.length = 0;
+        this._agentPackageMcpServersByPackage.clear();
         this._loadedSkillDirs.length = 0;
         this._loadedSkills.clear();
         this._loadedSkillsAll.length = 0;
@@ -1206,7 +1227,7 @@ export class PilotSwarmWorker {
             this._packageDirOwners = new Map(
                 result.packages
                     .filter((p) => p.status === "ok")
-                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, scope: p.scope, owner: p.owner }]),
+                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
             );
 
             // Synchronous swap — no await between reset and reload, so no
@@ -1384,12 +1405,16 @@ export class PilotSwarmWorker {
 
         this._mergeOptedBundledAgents();
 
+        const source: CapabilitySource = { id: "static:inline", name: "Deployment configuration", source: "static", scope: "shared",
+            revision: "", artifacts: [], tools: new Map(), mcpServers: structuredClone(this.config.mcpServers ?? {}) };
+        for (const [name] of Object.entries(source.mcpServers)) source.artifacts.push({ kind: "mcp", name, description: "Deployment MCP server" });
         // ── Tier 5: Direct config (inline options override all) ──────
         if (this.config.skillDirectories?.length) {
             for (const skillsDir of this.config.skillDirectories) {
                 this._loadedSkillDirs.push(skillsDir);
                 for (const skill of loadSkillsSync(skillsDir)) {
-                    this._loadedSkills.set(skill.name, skill);
+                    source.artifacts.push({ kind: "skill", name: skill.name, description: skill.description, body: skill.prompt, tools: skill.toolNames });
+                this._loadedSkills.set(skill.name, skill);
                     this._loadedSkillsAll.push(skill);
                 }
             }
@@ -1400,6 +1425,8 @@ export class PilotSwarmWorker {
                 if (issues.length > 0) {
                     throw new Error(`Invalid custom agent "${agent.name}": ${issues.map((issue) => issue.message).join("; ")}`);
                 }
+                source.artifacts.push({ kind: "agent", name: agent.name, description: agent.description ?? "", body: agent.prompt,
+                    tools: agent.tools ?? undefined, skills: (agent as any).skills });
                 const descriptor = this._buildLayerDescriptor(agent as any, "app", "inline");
                 this._rawLoadedAgents.push({ ...agent, promptLayerKind: "app-agent", layerDescriptor: descriptor } as any);
                 this._agentPromptLookup[agent.name] = {
@@ -1416,6 +1443,8 @@ export class PilotSwarmWorker {
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);
             for (const name of this._directConfigMcpNames) this._deploymentMcpNames.add(name);
         }
+        source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
+        this._capabilitySources.push(source);
         this._appDefaultPrompt = mergePromptSections([
             this._appDefaultPrompt,
             this.config.systemMessage,
@@ -1528,6 +1557,7 @@ export class PilotSwarmWorker {
         const defaults: Record<string, any> = {};
         this._mcpAllowedAgents.clear();
         for (const [name, cfg] of Object.entries(this._loadedMcpServers)) {
+            if (!this._deploymentMcpNames.has(name)) continue;
             if (!cfg || typeof cfg !== "object") continue;
             // `allowedAgents` — a restricted server. Remember who may use it,
             // then strip the field: it must never reach the Copilot CLI.
@@ -1558,7 +1588,12 @@ export class PilotSwarmWorker {
         const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>, agent: McpAllowlistAgent | null = null) => {
             for (const ref of refs ?? []) {
                 if (typeof ref !== "string" || !ref) continue;
-                const server = this._loadedMcpServers[ref];
+                const packageServers = agent?.packageId
+                    ? this._agentPackageMcpServersByPackage.get(agent.packageId)
+                    : undefined;
+                const server = packageServers && Object.hasOwn(packageServers, ref)
+                    ? packageServers[ref]
+                    : this._deploymentMcpNames.has(ref) ? this._loadedMcpServers[ref] : undefined;
                 if (!server) {
                     console.warn(`[PilotSwarmWorker] ${owner}: MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
                     continue;
@@ -1861,6 +1896,10 @@ export class PilotSwarmWorker {
                 descriptor,
             };
             this._rawLoadedAgents.push(agent);
+            this._capabilitySources.push({ id: `static:bundled:${agent.name}`, name: "PilotSwarm bundled workflows", source: "static", scope: "shared",
+                revision: capabilityHash(agent), tools: new Map(), mcpServers: {}, artifacts: [{ kind: "agent", name: agent.name,
+                    description: agent.description ?? "", body: agent.prompt, tools: agent.tools ?? undefined, skills: agent.skills,
+                    mcpServers: agent.mcpServers, initialPrompt: agent.initialPrompt }] });
             appAgentKeys.add(key);
         }
     }
@@ -1881,11 +1920,17 @@ export class PilotSwarmWorker {
             } catch {}
         }
 
+        const provenance = this._packageDirOwners.get(absDir);
+        const source: CapabilitySource = { id: provenance?.packageId ?? `static:${capabilityHash(absDir).slice(0, 20)}`,
+            name: namespace, source: provenance ? "published" : "static", revision: provenance?.revision ?? "",
+            scope: provenance?.scope ?? "shared", owner: provenance?.owner, packageId: provenance?.packageId,
+            artifacts: [], tools: new Map(), mcpServers: {} };
         // Skills
         const skillsDir = path.join(absDir, "skills");
         if (fs.existsSync(skillsDir)) {
             this._loadedSkillDirs.push(skillsDir);
             for (const skill of loadSkillsSync(skillsDir)) {
+                source.artifacts.push({ kind: "skill", name: skill.name, description: skill.description, body: skill.prompt, tools: skill.toolNames });
                 this._loadedSkills.set(skill.name, skill);
                 // Keep every copy with provenance: same-named skills from two
                 // package copies must not collapse before per-agent compose.
@@ -1899,6 +1944,9 @@ export class PilotSwarmWorker {
             const agents = loadAgentFiles(agentsDir);
             for (const agent of agents) {
                 agent.namespace = namespace;
+                if (agent.name !== "default" && !agent.system) source.artifacts.push({ kind: "agent", name: agent.name,
+                    description: agent.description ?? "", body: agent.prompt, skills: agent.skills, tools: agent.tools ?? undefined,
+                    mcpServers: agent.mcpServers, initialPrompt: agent.initialPrompt });
                 const descriptor = this._buildLayerDescriptor(agent, layer, namespace);
                 if (agent.name === "default") {
                     if (layer === "system") {
@@ -1983,11 +2031,23 @@ export class PilotSwarmWorker {
                     console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "allowedAgents" is a deployment-catalog field; ignored.`);
                     delete (cfg as any).allowedAgents;
                 }
+                if (cfg && typeof cfg === "object" && "default" in cfg) {
+                    console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "default" is a deployment-catalog field; ignored.`);
+                    delete (cfg as any).default;
+                }
             } else {
                 this._deploymentMcpNames.add(name);
             }
+            source.mcpServers[name] = structuredClone(cfg);
+            source.artifacts.push({ kind: "mcp", name, description: `MCP server exported by ${namespace}` });
             this._loadedMcpServers[name] = cfg;
         }
+        if (mcpPackageProvenance && Object.keys(source.mcpServers).length > 0) {
+            this._agentPackageMcpServersByPackage.set(mcpPackageProvenance.packageId, source.mcpServers);
+        }
+
+        if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
+        this._capabilitySources.push(source);
 
         // Session policy — last one wins
         const policyPath = path.join(absDir, "session-policy.json");

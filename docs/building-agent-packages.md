@@ -1,34 +1,52 @@
-# Building an Agent Package for PilotSwarm
+# Building a Package for PilotSwarm
 
 > **Point your coding assistant (Copilot / Claude / …) at this file.** It is a
-> complete, self-contained recipe for authoring an agent package that uploads
+> complete, self-contained recipe for authoring a package that uploads
 > to PilotSwarm and passes validation on the first try. Every schema, rule,
 > and error listed here mirrors the actual validator
 > (`packages/sdk/src/agent-package-format.ts`); when in doubt, that file wins.
 
-An **agent package** is a folder of files that teaches a PilotSwarm
-deployment new capabilities — without rebuilding or restarting anything.
-Publish it and every worker in the fleet installs it within ~20 seconds; users
-can immediately create sessions bound to its agents.
+An **agent package** (the existing API and CLI name) is a folder of files that
+teaches a PilotSwarm deployment new capabilities — without rebuilding or
+restarting anything. Publish it and workers install it on their next registry
+poll (~20 seconds). Generic and named sessions can discover its visible
+capabilities; a package that contains agents also supplies named session entry
+points.
 
 A package can ship four kinds of artifact, all optional except the manifest:
 
 | Artifact | What it is | Runs where |
 |---|---|---|
-| **Agents** (`*.agent.md`) | A named persona: prompt + declared tools/skills/MCP servers | Sessions bind to it by name |
-| **Skills** (`SKILL.md` dirs) | Reference text preloaded verbatim into an agent's context | Inlined into the prompt |
+| **Agents** (`*.agent.md`) | Authored workflows: choreography, checks, and expected outputs, with declared skills/tools/MCP | Named session entry points; instructions can also be consulted as reference |
+| **Skills** (`SKILL.md` dirs) | Reusable methods and domain knowledge | Loaded on demand, or preloaded when an agent declares them |
 | **Worker tools** (`worker-module.js`) | Real JavaScript executed server-side on the worker | Worker process |
-| **MCP servers** (`.mcp.json` + sources) | stdio/http MCP servers the agent can call | Spawned per session |
+| **MCP servers** (`.mcp.json` + sources) | Executable integrations over stdio/http | Connected for the session that uses them |
+
+**Zero-agent packages are valid.** Use skills for reusable methods and tools
+or MCP for executable integrations. Add an agent when the capability needs an
+authored workflow, rather than creating a named wrapper around each skill or
+tool. Existing agent packages keep their named entry points.
+
+Sessions use `search_capabilities` to find visible skills, workflows, tools,
+and MCP integrations. They load methods with `load_skill`, consult authored
+workflows with `load_agent_guidelines`, and activate needed permitted
+integrations with `use_package`. Reading instructions does not launch an
+agent, change session identity, grant permissions, or run its `initialPrompt`.
+Before applying another agent's instructions, the session names that agent to
+the user and states any material adaptations. A named session is still useful
+when the user wants that workflow's entry point or an independent durable
+responsibility.
 
 ---
 
-## 1. The shortest valid package
+## 1. A minimal useful package — no agents required
 
 ```
 my-kit/
 ├── plugin.json                  # REQUIRED — the manifest
-└── agents/
-    └── greeter.agent.md         # one agent
+└── skills/
+    └── style-guide/
+        └── SKILL.md            # reusable method; content shown in §4
 ```
 
 `plugin.json` (identity is required; everything else has defaults):
@@ -45,8 +63,8 @@ my-kit/
   underscores, capitals, or leading/trailing hyphen. Unique per
   `(scope, owner)` — **not** deployment-wide, so you and the shared
   deployment can both publish a `triager` (§9). A leading `__` is reserved
-  for the platform and rejected. It becomes the namespace shown next to your
-  agents.
+  for the platform and rejected. It identifies the package in discovery and
+  becomes the namespace shown next to any agents it contains.
 - `version` — **concrete semver** (`1.2.3` or `1.2.3-dev.1`). No ranges, no
   `v` prefix. `name@version` is the immutable identity (see §7).
 - `description` — strongly recommended; listings are blank without it.
@@ -103,8 +121,11 @@ authored it.
 
 ## 3. Agents — `*.agent.md`
 
-YAML frontmatter + markdown body. **The body IS the agent's system prompt**
-and must not be empty.
+Agents are optional. Each is YAML frontmatter + markdown body. **The body IS
+the agent's system prompt** when a session binds to it and must not be empty.
+When loaded as reference, the body is guidance the current session can adapt;
+loading it does not start the workflow. Put reusable methods in skills so they
+can be used without selecting the named entry point.
 
 ```markdown
 ---
@@ -133,7 +154,7 @@ Frontmatter fields:
 |---|---|---|
 | `name` | yes (else derived from filename) | How sessions bind to the agent (`create_session {agent: "greeter"}`). Matched case/punctuation-insensitively. |
 | `description` | recommended | Shown in the agent picker/catalog. |
-| `schemaVersion` | recommended: `2` | `1`, `2`, and `3` are accepted. Use `3` when declaring `initialRequiredTool`. |
+| `schemaVersion` | recommended: `1` | `1`, `2`, `3`, and `4` are accepted. Use at least `2` for `mcpServers`, `3` for `initialRequiredTool`, and `4` for `nativeTaskTools`. |
 | `version` | recommended | Informational agent version. |
 | `title` | optional | Display title. |
 | `tools` | optional | Names of worker tools this agent may call — from this package's worker module or the deployment's built-ins. Omit for prompt-only agents. |
@@ -165,9 +186,12 @@ description: House style for responses.
 
 - The frontmatter `name` is what agents reference in their `skills:` list
   (it may differ from the directory name; the loader keys by frontmatter).
-- The **whole body is inlined into the agent's prompt** at load time as
-  `[PRELOADED SKILL: <name>]` — treat it as always-visible context, not
-  lazily-fetched documentation. Keep it short and load-bearing.
+- A skill is discoverable without any agent declaring it. Give it a clear
+  description so `search_capabilities` can find the method; `load_skill` loads
+  its instructions when needed.
+- When an agent explicitly lists the skill, the **whole body is inlined into
+  that agent's prompt** as `[PRELOADED SKILL: <name>]`. Keep these preloads
+  short; use progressive discovery for methods that are only sometimes needed.
 - Every subdirectory of `skills/` must contain a parseable `SKILL.md`;
   stray directories fail validation.
 
@@ -211,8 +235,11 @@ export default {
   vendored inside the package (discouraged — export plain objects instead).
 - The file must be valid **ES module** syntax; it is compile-checked (never
   executed) at validation.
-- An agent only sees a tool if the tool's `name` appears in the agent's
-  frontmatter `tools:` list.
+- A named agent can declare the tool's `name` in its frontmatter `tools:`
+  list. Generic and named sessions can also discover a package's tools and
+  activate the needed permitted tools with `use_package`; no agent file is
+  required for a tools-only package. Session and deployment restrictions still
+  apply, and loading a skill alone does not attach tools.
 
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 
@@ -238,9 +265,13 @@ export default {
   never at validation.
 - Server JS in `mcp-servers/` is syntax-checked like the worker module, and
   the same no-bare-imports rule applies.
-- Agents opt in by listing the server name under `mcpServers:`, and an agent
-  that does so must declare `schemaVersion: 2` (validator error
+- Named agents opt in by listing the server name under `mcpServers:`, and an
+  agent that does so must declare `schemaVersion: 2` or later (validator error
   `mcp_requires_schema_v2`).
+- Sessions can also discover and activate permitted package MCP integrations
+  with `use_package`. An MCP-only package needs no agent file. Activation
+  remains subject to the session's actual identity and deployment policy;
+  consulting an allowed agent's instructions never acquires its access.
 - A reference to a server the package does not define is a warning
   (`unknown_mcp_server`): it must exist in the deployment catalog, or the
   reference is dropped at load.
@@ -328,7 +359,7 @@ pilotswarm agents validate ./my-kit
    No database credentials: your own sign-in decides what you may publish.
    §11 covers the rest of the lifecycle — updating, inspecting, pinning,
    disabling, deleting — and the ≤ 2 MB upload envelope.
-2. **Portal**: Admin Console → **Agents** → **+ Add package**:
+2. **Portal**: Admin Console → **Packages** → **+ Add package**:
    - **GitHub / Azure DevOps** — paste the browser link to `plugin.json`
      (or the folder containing it); the branch and path are read from the
      link. **Your browser** reads the repo with **your** access — public
@@ -343,7 +374,7 @@ pilotswarm agents validate ./my-kit
 3. **MCP** (for assistants driving PilotSwarm): the `push_agent_package`
    tool takes inline base64 files, ≤ 2 MB total.
 
-**Scopes and namespaces**: `shared` = every user sees and can use the agents;
+**Scopes and namespaces**: `shared` = every user can discover the package;
 `user` = only you. Package identity is `(scope, owner, name)`, so the first
 person to publish `triager` does not own that word for the whole deployment.
 Where both exist, **your own enabled copy shadows the shared one** — which is
@@ -357,9 +388,12 @@ running sessions are never affected by scope changes.
   installs the new version **without restarting** — watch fleet adoption on
   the package detail page ("N/N workers current").
 - A broken package (bad import, runtime throw at load) is **quarantined
-  alone**: its agents disappear, the error lands in the fleet view, and
+  alone**: its capabilities become unavailable, the error lands in the fleet view, and
   every other package keeps working.
-- Users bind to your agent with its name (`create_session {agent: "greeter"}`
+- Users discover and load the package's visible capabilities from generic or
+  named sessions. For a zero-agent package, this is the normal entry point;
+  there is no named agent to add to the agent picker.
+- If the package contains agents, users bind to one by name (`create_session {agent: "greeter"}`
   via MCP, the portal's agent picker, or the TUI). The package name appears
   as the agent's namespace. A bare name resolves to **your own enabled copy
   first, then the shared one**; these forms reach past that default:
@@ -375,8 +409,8 @@ running sessions are never affected by scope changes.
   so `__shared` cannot be minted by a user. A bare two-segment `a:b` keeps its
   long-standing reading as `namespace:agent` first, and is only tried as
   `owner:package` after that.
-- Disabling or deleting a package removes its agents fleet-wide on the next
-  poll; sessions already running fail their next turn's agent resolution.
+- Disabling or deleting a package removes its capabilities fleet-wide on the
+  next poll; sessions bound to its agents fail their next turn's agent resolution.
 - Every publish path — CLI, portal import, portal folder upload, MCP —
   converges on the same mechanism: files are validated, canonically packed,
   and stored as a package artifact. There is no server-side repo polling.
@@ -479,11 +513,13 @@ demo-agent-kit/
 └── README.md                        # shipped via "include"
 ```
 
-A good smoke test for any new package, in a session bound to your agent:
-ask it to use each surface once — a worker tool call, a fact only the skill
-contains, and an MCP tool call — and confirm none of the answers are
-hallucinated (the demo kit's tools return the executing `workerNodeId` for
-exactly this reason).
+A good smoke test exercises the surfaces the package actually contains.
+For a zero-agent package, use a generic session: discover the package, load a
+skill, activate its permitted integrations, and verify real tool/MCP results.
+For an authored agent workflow, also use a session bound to that agent to
+check its entry point and declared configuration. Confirm execution evidence
+rather than accepting a claim that a tool ran (the demo kit's tools return the
+executing `workerNodeId` for exactly this reason).
 
 ### A multi-agent package you can read in this repo
 
@@ -509,8 +545,8 @@ finance-research-lab/
 
 It shows two things a single-agent kit cannot: several agents sharing one
 worker module while each declaring a different subset of its tools, and
-skills scoped to the agents that need them rather than to the package (only
-the valuation-facing agents preload `valuation-methods`). It ships no MCP
+skills preloaded only by the agents that need them (only the valuation-facing
+agents preload `valuation-methods`; other sessions can discover it on demand). It ships no MCP
 server, so it is also the smaller of the two starting points. Its only
 external configuration is `SEC_USER_AGENT`, which the SEC's fair-access
 policy requires of automated callers.
@@ -565,8 +601,9 @@ Before telling the user the package is ready:
 
 - [ ] `plugin.json` has DNS-label `name`, concrete-semver `version`, and a `description`.
 - [ ] Manifest mode: every declared path exists; nothing needed is undeclared. Convention mode: files sit at the fixed paths in §2.
-- [ ] Every `.agent.md` has a non-empty body, `schemaVersion: 2`, and a unique, non-reserved name.
-- [ ] Agent `tools:` names exactly match the worker module's tool `name`s; `skills:` match SKILL.md frontmatter names; `mcpServers:` match `.mcp.json` keys.
+- [ ] Contents match the capability: skills for reusable methods, tools/MCP for executable integrations, agents for authored workflows. Zero agents is valid.
+- [ ] If present, every `.agent.md` has a non-empty body, the schema version its fields require (§3), and a unique, non-reserved name.
+- [ ] If agents are present, their `tools:` names match available tools; `skills:` match SKILL.md frontmatter names; `mcpServers:` match package or permitted deployment catalog keys.
 - [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
 - [ ] Version bumped if this `name@version` was ever published with different content.

@@ -1,4 +1,4 @@
-import { FEATURE_FLAGS, assertResolveOptions, featureOwnerKey, isFeatureKey, resolveFeatureDefinition, unresolvedFeature,
+import { FEATURE_FLAGS, applyBaseAgentPrerequisite, assertResolveOptions, featureOwnerKey, isFeatureKey, resolveFeatureDefinition, unresolvedFeature,
     type FeatureDecision, type FeatureDefinition, type FeatureKey, type FeatureOwner,
     type FeatureSetting, type FeatureSnapshot, type ResolveOptions } from "./feature-flags.js";
 
@@ -34,7 +34,10 @@ export class FeatureFlagCache {
         if (!this.initialized) return unresolvedFeature(key, options, "cache_unavailable", stale);
         const value = this.features.get(key);
         if (!value) return unresolvedFeature(key, options, "catalog_missing", stale);
-        return resolveFeatureDefinition(value.definition, value.cluster, owner ? value.users.get(featureOwnerKey(owner)) : undefined, stale);
+        const decision = resolveFeatureDefinition(value.definition, value.cluster, owner ? value.users.get(featureOwnerKey(owner)) : undefined, stale);
+        return key === "agents.base_v2"
+            ? applyBaseAgentPrerequisite(key, decision, this.resolve("copilot.native_tasks", owner, { fallback: false }))
+            : decision;
     }
     onChange(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     get state() {

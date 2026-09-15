@@ -1,3 +1,4 @@
+import { normalizeCapabilityState, type CapabilityState } from "./capability-catalog.js";
 /**
  * Session Catalog (CMS) — provider-based session metadata store.
  *
@@ -949,6 +950,8 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
+    saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
      * Provider budgets (migrations 0049-0051). Optional, like every other
      * late feature here, so a duck-typed test double need not implement it.
@@ -1975,6 +1978,26 @@ export class PgSessionCatalog implements SessionCatalog {
      * adds nothing to the per-turn hot path. Fails soft on a pre-0072
      * database (probe short-circuits before querying the column).
      */
+    async getSessionCapabilities(sessionId: string): Promise<CapabilityState> {
+        const { rows } = await this.pool.query(`SELECT state FROM "${this.sql.schema}".session_capabilities WHERE session_id = $1`, [sessionId]);
+        return normalizeCapabilityState(rows[0]?.state ?? { revision: 0, selections: [] });
+    }
+    async saveSessionCapabilities(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean> {
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("Invalid expected capability revision");
+        const normalized = normalizeCapabilityState(state);
+        if (normalized.revision !== expectedRevision + 1) throw new Error("Capability state must advance exactly one revision");
+        const { rowCount } = await this.pool.query(`
+            INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
+            SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
+            ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
+            WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+        if (rowCount) return true;
+        if (expectedRevision === 0) return false;
+        const result = await this.pool.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
+            WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+        return result.rowCount === 1;
+    }
+
     async getSessionCreationConfig(sessionId: string): Promise<Record<string, unknown> | null> {
         if (!await this.supportsCreationConfig()) return null;
         const { rows } = await this.pool.query(

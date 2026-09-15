@@ -1,5 +1,16 @@
 # Changelog — agent-manager
 
+## 1.3.0
+
+### Changed
+
+- Author packages around reusable skills, executable tools/MCP integrations,
+  and authored agent workflows. Zero-agent packages need no wrapper agent.
+- Verify the capabilities a package actually contains; test a named entry
+  point only when the package supplies an agent workflow.
+- Explain when a session applies another agent's instructions as reference,
+  without inheriting its identity, startup actions, or permissions.
+
 ## 1.2.0
 
 ### Added

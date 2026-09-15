@@ -14,6 +14,8 @@ const bob = { principal: { provider: "test", subject: "bob" }, isAdmin: false };
 const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
 let catalog, store, aliceId, bobId;
 const input = (expectedRevision = "1", extra = {}) => ({ featureKey: key, expectedRevision, requestId: randomUUID(), enabled: true, ...extra });
+const flag = view => view.flags.find(candidate => candidate.featureKey === key);
+const featureRevision = rows => rows.find(candidate => candidate.featureKey === key);
 
 beforeAll(async () => {
     catalog = await PgSessionCatalog.create(url, schema); await catalog.initialize(); store = catalog.features;
@@ -44,15 +46,15 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         await expect(store.mutate(alice, "user", input(), false, bobId)).rejects.toMatchObject({ status: 403 });
         await expect(store.changes(alice)).rejects.toMatchObject({ status: 403 });
         await store.mutate(alice, "user", input());
-        let mine = (await store.read(alice, "user")).flags[0];
+        let mine = flag(await store.read(alice, "user"));
         expect(mine).toMatchObject({ effective: true, userOverrideIgnored: false, user: { enabled: true } });
         await store.mutate(admin, "cluster", input("2", { enabled: false, allowUserOverride: true }));
-        expect((await store.read(alice, "user")).flags[0].effective).toBe(true);
-        expect((await store.read(bob, "user")).flags[0].effective).toBe(false);
-        expect((await store.read(admin, "user", aliceId)).flags[0].effective).toBe(true);
+        expect(flag(await store.read(alice, "user")).effective).toBe(true);
+        expect(flag(await store.read(bob, "user")).effective).toBe(false);
+        expect(flag(await store.read(admin, "user", aliceId)).effective).toBe(true);
         await store.mutate(admin, "cluster", input("3", { enabled: false, allowUserOverride: false }));
-        expect((await store.read(alice, "user")).flags[0]).toMatchObject({ effective: false, user: { enabled: true }, userOverrideIgnored: true });
-        expect((await store.read(bob, "user")).flags[0].user).toBeNull();
+        expect(flag(await store.read(alice, "user"))).toMatchObject({ effective: false, user: { enabled: true }, userOverrideIgnored: true });
+        expect(flag(await store.read(bob, "user")).user).toBeNull();
     });
     it("serializes concurrent edits and recognizes identical retries", async () => {
         const a = input("1", { allowUserOverride: true }); const b = input("1", { enabled: false, allowUserOverride: false });
@@ -63,7 +65,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         const result = results.find(r => r.status === "fulfilled").value;
         expect(await store.mutate(admin, "cluster", winner)).toEqual(result);
         await expect(store.mutate(admin, "cluster", { ...winner, enabled: !winner.enabled })).rejects.toMatchObject({ status: 409 });
-        expect(await store.revisions()).toEqual([{ featureKey: key, revision: "2" }]);
+        expect(featureRevision(await store.revisions())).toEqual({ featureKey: key, revision: "2" });
         expect(await store.changes(admin)).toHaveLength(1);
     });
     it("coalesces simultaneous identical requests and scopes retry IDs to the actor", async () => {
@@ -96,7 +98,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         const cleared = await store.mutate(alice, "user", unset, true);
         expect(cleared).toMatchObject({ revision: "3", setting: null });
         expect(await store.mutate(alice, "user", unset, true)).toEqual(cleared);
-        expect((await store.read(alice, "user")).flags[0].user).toBeNull();
+        expect(flag(await store.read(alice, "user")).user).toBeNull();
         await pool.query(`DELETE FROM "${schema}".authz_audit WHERE action LIKE 'feature_flag.%'`);
         await expect(store.mutate(alice, "user", original)).rejects.toMatchObject({ status: 409 });
     });
@@ -105,8 +107,8 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         await pool.query(`CREATE TRIGGER reject_feature_audit BEFORE INSERT ON "${schema}".authz_audit FOR EACH ROW EXECUTE FUNCTION "${schema}".reject_feature_audit()`);
         try {
             await expect(store.mutate(alice, "user", input())).rejects.toThrow(/audit unavailable/);
-            expect(await store.revisions()).toEqual([{ featureKey: key, revision: "1" }]);
-            expect((await store.read(alice, "user")).flags[0].user).toBeNull();
+            expect(featureRevision(await store.revisions())).toEqual({ featureKey: key, revision: "1" });
+            expect(flag(await store.read(alice, "user")).user).toBeNull();
         } finally { await pool.query(`DROP TRIGGER reject_feature_audit ON "${schema}".authz_audit`); }
     });
     it("converges real worker caches through user/cluster changes and reset", async () => {
@@ -140,7 +142,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
             [real.principal.provider, real.principal.subject, email, "Real user"]);
         const realId = Number(rows[0].id);
         expect(realId).not.toBe(ghostId);
-        expect((await store.read(real, "user")).flags[0]).toMatchObject({ effective: true,
+        expect(flag(await store.read(real, "user"))).toMatchObject({ effective: true,
             revision: "4", user: { settingId: preference.setting.settingId, userId: realId, revision: "4" } });
         expect((await pool.query(`SELECT user_id FROM "${schema}".users WHERE user_id = $1`, [ghostId])).rows).toEqual([]);
         await Promise.all(caches.map(cache => cache.pollRevisionsAndRefresh()));
@@ -166,7 +168,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
         const cache = new FeatureFlagCache(store); await cache.pollRevisionsAndRefresh();
         await pool.query(`SELECT "${schema}".cms_register_user($1, $2, $3, $4)`,
             [real.principal.provider, real.principal.subject, email, "Real user"]);
-        expect((await store.read(real, "user")).flags[0]).toMatchObject({ effective: false, revision: "5", user: own.setting });
+        expect(flag(await store.read(real, "user"))).toMatchObject({ effective: false, revision: "5", user: own.setting });
         await cache.pollRevisionsAndRefresh();
         expect(cache.resolve(key, ghost.principal, { required: true }).enabled).toBe(false);
         expect(cache.resolve(key, real.principal, { required: true })).toMatchObject({ enabled: false, revision: "5" });
@@ -200,7 +202,7 @@ describe("feature catalog and scoped settings in PostgreSQL", () => {
             expect(blocked).toBe(true);
             await writer.query("COMMIT");
             const { rows } = await registering;
-            expect((await store.read({ principal: real, isAdmin: false }, "user")).flags[0])
+            expect(flag(await store.read({ principal: real, isAdmin: false }, "user")))
                 .toMatchObject({ effective: true, revision: "4", user: { userId: Number(rows[0].id) } });
         } finally {
             await writer.query("ROLLBACK");

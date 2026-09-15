@@ -239,6 +239,10 @@ export interface SerializableSessionConfig {
 
 /** Full config — includes non-serializable fields (tools, hooks). Stays in memory. */
 export interface ManagedSessionConfig extends SerializableSessionConfig {
+    /** Resolved at the turn boundary; never serialized into frozen orchestration inputs. */
+    capabilityServices?: import("./capability-runtime.js").CapabilityServices;
+    capabilityFingerprint?: string;
+    baseAgentPolicy?: import("./base-agent-policy.js").BaseAgentPolicy;
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
     /** Runtime-only exact native child capability map. */

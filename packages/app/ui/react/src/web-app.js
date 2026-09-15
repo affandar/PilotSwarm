@@ -13904,10 +13904,10 @@ function AdminPackageDetailPane({ controller, view }) {
     const detail = packages.detail;
     if (!packages.selectedName) {
         return React.createElement("div", { className: "ps-admin-detail is-empty" },
-            React.createElement("h3", null, "Agents"),
+            React.createElement("h3", null, "Packages"),
             React.createElement("p", { className: "ps-admin-console__hint" },
                 packages.empty
-                    ? "No agent packages yet. Add one from a GitHub/ADO repo, a tarball URL, or upload a folder — or push from a terminal with `pilotswarm agents push ./my-agents`."
+                    ? "No packages yet. Add reusable skills, tools, MCP integrations, or authored agent workflows from a repo or folder — or use `pilotswarm agents push ./my-kit`."
                     : "Select a package from the tree to see its detail, versions, and files."));
     }
     const confirmDelete = () => {
@@ -14349,9 +14349,11 @@ function AdminAddPackageDialog({ controller, dialog }) {
             onSubmit,
         },
             React.createElement("div", { className: "ps-modal-header" },
-                React.createElement("span", null, dialog.updateName ? `Update ${dialog.updateName}` : "Add agent package"),
+                React.createElement("span", null, dialog.updateName ? `Update ${dialog.updateName}` : "Add package"),
                 React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminAddPackage() }, "✕")),
             React.createElement("div", { className: "ps-admin-add__body" },
+                React.createElement("p", { className: "ps-admin-console__hint" },
+                    "Packages can contain reusable skills, tools, MCP integrations, and authored agent workflows. No agent is required."),
                 React.createElement("div", { className: "ps-admin-add__tabs" },
                     kinds.map(([kind, label]) => React.createElement("button", {
                         key: kind,
@@ -14418,7 +14420,7 @@ function AdminAddPackageDialog({ controller, dialog }) {
                             href: guideUrl,
                             target: "_blank",
                             rel: "noreferrer noopener",
-                        }, "How to build an agent package"),
+                        }, "How to build a package"),
                         " — a complete guide you can also hand straight to Claude or Copilot.")
                     : null,
                 React.createElement("p", { className: "ps-admin-console__hint" },

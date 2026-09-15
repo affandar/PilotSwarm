@@ -1,8 +1,8 @@
 /**
  * Agent package format — canonical packing, validation, and identity.
  *
- * An agent package is a plugin directory (plugin.json + agents/ + skills/ +
- * .mcp.json) plus, uniquely, code: tools/worker-module.js and mcp-servers/**.
+ * A package is a plugin directory with plugin.json plus any combination of
+ * agents/, skills/, .mcp.json, tools/worker-module.js, and mcp-servers/**.
  * Every source kind (github/ado/url/upload) normalizes through this module:
  * validate → canonical tar.gz → sha256. The tarball is canonical — packing
  * the same content always yields byte-identical output — because the sha256
@@ -889,7 +889,7 @@ export async function validateAgentPackageDir(
                     }
                     if (cfg.default === true) {
                         err(errors, "mcp_default_forbidden",
-                            `.mcp.json server "${serverName}": "default": true would add it to every agent that inherits the deployment default set — packages grant servers per agent via mcpServers:`, ".mcp.json");
+                            `.mcp.json server "${serverName}": "default": true would add it to every agent that inherits the deployment default set — packages grant servers through named-agent mcpServers declarations or explicit use_package activation`, ".mcp.json");
                     }
                     if ("allowedAgents" in cfg) {
                         err(errors, "mcp_allowed_agents_forbidden",
