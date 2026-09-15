@@ -3067,7 +3067,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/packages/loadFailed": {
-            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: false, error: action.error || "Failed to load agent packages" } } };
+            return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: false, error: action.error || "Failed to load packages" } } };
         }
         case "admin/packages/select": {
             return {

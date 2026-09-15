@@ -1,3 +1,6 @@
+import { CapabilityCatalog, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
+import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, type NativeTaskTools } from "./native-task-policy.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
@@ -20,7 +23,7 @@ import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
 import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
-import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
 
@@ -221,6 +224,7 @@ export function pickAgentCopyByPackageIdForOwner(
 
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
+    getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     nativeSubagents?: "off" | "sync";
@@ -349,7 +353,8 @@ function buildEffectivePromptLayers(
     const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
     const isPilotSwarmSystemAgent = layerKind === "pilotswarm-system-agent";
     const layers: PromptLayerDescriptor[] = [];
-    if (workerDefaults.frameworkBaseDescriptor) layers.push(workerDefaults.frameworkBaseDescriptor);
+    if (workerDefaults.frameworkBaseDescriptor) layers.push({ ...workerDefaults.frameworkBaseDescriptor,
+        ...((config as ManagedSessionConfig).baseAgentPolicy?.version === "v2" ? { name: "default-v2", version: "2.0.0", promptHash: (config as ManagedSessionConfig).baseAgentPolicy!.fingerprint } : {}) });
     if (!isPilotSwarmSystemAgent && workerDefaults.appDefaultDescriptor) layers.push(workerDefaults.appDefaultDescriptor);
     if (boundAgentName) {
         if (boundAgentCopy?.descriptor) layers.push(boundAgentCopy.descriptor);
@@ -1684,7 +1689,7 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package",
     "update_canvas"]);
         const userTools = config.tools ?? [];
         // Canvas tools are ROOT-only, and THIS is the declaration half of that
@@ -1864,12 +1869,88 @@ export class SessionManager {
             && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
+        config.baseAgentPolicy = resolveBaseAgentPolicy(this.featureFlags, nativeOwnerKnown ? nativeOwner : null, nativeEnabled);
         const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
+        const getSources = this.workerDefaults.getCapabilitySources ?? (() => []);
+        const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
+        const originalMcp = { ...effectiveMcpServers };
+        const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools];
+        const capabilityAgent = boundAgentCopy ? { name: config.boundAgentName!, namespace: (boundAgentCopy as any).namespace,
+            packageId: boundAgentCopy.packageId, packageScope: (boundAgentCopy as any).packageScope } : null;
+        const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
+            ? this.sessionCatalog.getSessionCapabilities(sessionId) : { revision: 0, selections: [] };
+        const getOwner = async () => this.sessionCatalog
+            ? resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId)
+            : null;
+        // Preserve the no-catalog scheduling path: getOrCreate historically
+        // reaches the SDK resume call after one lock-acquisition microtask.
+        // Capability persistence exists only with a catalog, so do not add
+        // otherwise-useless async boundaries to standalone managers.
+        const capabilityOwner = this.sessionCatalog ? await getOwner() : null;
+        const desiredCapabilities = this.sessionCatalog?.getSessionCapabilities
+            ? await readState()
+            : { revision: 0, selections: [] };
+        const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
+            : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
+        const attachedTools = attached.tools.map(tool => {
+            const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
+                && getSources().find(src => src.id === sel.sourceId)?.tools.has(tool.name))!;
+            const source = getSources().find(src => src.id === selected.sourceId)!;
+            const revision = source.revision;
+            return { ...tool, handler: async (args: any, invocation: any) => {
+                const owner = await getOwner();
+                const now = await readState();
+                if (!now.selections.some(sel => sel.sourceId === source.id && sel.tools.includes(tool.name))) throw new Error("Package tool selection was removed");
+                const active = bindCapabilities(getSources(), owner, now.selections, originalTools, originalMcp, capabilityAgent);
+                const live = getSources().find(src => src.id === source.id);
+                if (live?.revision !== revision || live.tools.get(tool.name) !== tool
+                    || !active.tools.includes(tool)) throw new Error("Package tool changed or access was revoked; refresh session capabilities");
+                const handler = tool.handler;
+                if (typeof handler !== "function") throw new Error("Package tool handler is unavailable");
+                return handler(args, invocation);
+            } };
+        });
+        Object.assign(effectiveMcpServers, attached.mcpServers);
+        config.capabilityFingerprint = attached.fingerprint;
+        config.capabilityServices = {
+            search: async args => capabilityCatalog.search(await getOwner(), sessionId, args),
+            load: async (ref, kind) => capabilityCatalog.load(await getOwner(), sessionId, ref, kind),
+            list: async () => {
+                const state = await readState();
+                const result = bindCapabilities(getSources(), await getOwner(), state.selections, originalTools, originalMcp, capabilityAgent);
+                return { revision: state.revision, selections: state.selections, unavailable: result.unavailable,
+                    note: "Selections are for this durable session only. Original agent/base tools are unchanged." };
+            },
+            use: async args => {
+                if (isServiceSession || isTunerSession) throw new Error("Package activation is unavailable in this restricted session");
+                if (catalogRow?.parentSessionId) throw new Error("Package activation is available only to the parent session");
+                if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
+                validatePackageRequest(args);
+                const owner = await getOwner();
+                if (!owner) throw new Error("Session owner unavailable; cannot activate packages");
+                const parsed = parseCapabilityRef(args.source_ref);
+                if (parsed.k !== "source") throw new Error("use_package requires a source_ref from search_capabilities");
+                // Removal can clear a revoked or deleted source without restoring its visibility.
+                const state = await readState();
+                const sourceSnapshot = getSources();
+                const next = nextCapabilityState(state, parsed.s, args);
+                // An acknowledged retry succeeds even if the package changed
+                // after the original CAS committed. A different request with
+                // the stale ref must re-discover before it can bind code.
+                if (next.state === state) return { changed: false, revision: state.revision };
+                if (args.action !== "remove") resolveCapabilitySource(sourceSnapshot, owner, args.source_ref);
+                else if (!state.selections.some(sel => sel.sourceId === parsed.s)) throw new Error("Source is not selected in this session");
+                if (args.action !== "remove") bindCapabilities(sourceSnapshot, owner, next.state.selections, originalTools, originalMcp, capabilityAgent, true);
+                if (!await this.sessionCatalog.saveSessionCapabilities(sessionId, state.revision, next.state)) throw new Error("Capability revision conflict; list selections and retry");
+                return { changed: next.changed, revision: next.state.revision };
+            },
+        };
         const persistentSessionTools = [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
+            ...attachedTools,
             ...unlessService(factTools),
             ...unlessService(inspectTools),
             ...unlessService(graphTools),
@@ -1905,6 +1986,8 @@ export class SessionManager {
             ...(config.excludedTools ?? []),
         ])];
         const bindingFingerprint = createHash("sha256").update(JSON.stringify({
+            capabilityFingerprint: config.capabilityFingerprint,
+            baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
@@ -2787,7 +2870,9 @@ export class SessionManager {
                     // The SDK ignores sibling `content` when `action` is a
                     // transform callback. Include worker guidance in the actual
                     // rendered section, using the current session policy.
-                    latest.nativeSubagents === "sync" ? nativeSubagentGuidance(latest.nativeTaskAccess) : undefined,
+                    latest.nativeSubagents === "sync"
+                        ? nativeSubagentGuidance(latest.nativeTaskAccess, latest.baseAgentPolicy?.version)
+                        : undefined,
                 ]);
                 return this._notePromptSection(sessionId, "last_instructions",
                     mergePromptSections([currentContent, overlay]) ?? currentContent);
@@ -3017,7 +3102,7 @@ export class SessionManager {
         sessionOwnerKey: string | null = null,
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
-        const frameworkBase = this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage;
+        const frameworkBase = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);

@@ -1,3 +1,4 @@
+import { baseAgentV2Migration } from "./migrations/base-agent-v2-0079.js";
 /**
  * CMS Migration definitions — ordered SQL migrations for the session catalog.
  *
@@ -399,6 +400,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         },
         { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
         { version: "0078", name: "native_tasks_default_policy", sql: nativeTasksDefaultPolicyMigration(schema) },
+        { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
     ];
 }
 

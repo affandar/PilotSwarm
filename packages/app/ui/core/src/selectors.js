@@ -4520,7 +4520,7 @@ export function selectAdminConsole(state) {
                     ? "Configured (overrides env GITHUB_TOKEN for this user)"
                     : "Not configured (using env GITHUB_TOKEN fallback)");
 
-    // ── Agent packages view-model (Admin → Agents) ───────────────
+    // ── Package view-model (Admin → Packages) ────────────────────
     const pkgState = admin.packages || {};
     const pkgList = Array.isArray(pkgState.list) ? pkgState.list : [];
     const ownsPackage = (pkg) => Boolean(
@@ -4634,7 +4634,7 @@ export function selectAdminConsole(state) {
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
         { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
-        { id: "agents", kind: "section", depth: 0, label: "Agents", selected: section === "packages" && !pkgState.selectedName },
+        { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName },
         { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
         ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
         { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
@@ -4910,7 +4910,7 @@ export function selectAdminConsole(state) {
     const actions = [];
     if (section === "workers") {
         actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
-        actions.push({ id: "showPackages", label: "Agents", key: "a" });
+        actions.push({ id: "showPackages", label: "Packages", key: "a" });
         actions.push({ id: "showProviders", label: "Model Providers", key: "m" });
         actions.push({ id: "close", label: "Close console", key: "Esc" });
         return {
@@ -4999,7 +4999,7 @@ export function selectAdminConsole(state) {
             actions.push({ id: "cycleSystemOverride", label: "Cycle system-agent override", key: "o" });
         }
         actions.push({ id: "refreshProviders", label: "Refresh", key: "r" });
-        actions.push({ id: "showPackages", label: "Agents", key: "a" });
+        actions.push({ id: "showPackages", label: "Packages", key: "a" });
         actions.push({ id: "close", label: "Close console", key: "Esc" });
         return {
             visible: Boolean(admin.visible),
@@ -5049,7 +5049,7 @@ export function selectAdminConsole(state) {
     actions.push({ id: "close", label: "Close console", key: ghcpKey.editing ? "Ctrl+Esc" : "Esc" });
 
     if (section === "ghcp") {
-        actions.splice(actions.length - 1, 0, { id: "showPackages", label: "Agents", key: "a" });
+        actions.splice(actions.length - 1, 0, { id: "showPackages", label: "Packages", key: "a" });
     }
     return {
         visible: Boolean(admin.visible),
@@ -7255,7 +7255,7 @@ export function selectSessionAgentPickerModal(state, maxWidth = 76) {
                 : [[{
                     text: selectedItem.sectionKind === "builtin"
                         ? "Agents baked into this deployment."
-                        : "Agent packages installed on this deployment.",
+                        : "Packages installed on this deployment.",
                     color: "gray",
                 }]]),
             [{ text: "", color: "gray" }],

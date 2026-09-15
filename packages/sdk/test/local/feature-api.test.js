@@ -45,6 +45,7 @@ afterAll(async () => {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await pool.end();
 });
 const change = (revision, extra = {}) => ({ featureKey: key, expectedRevision: revision, requestId: randomUUID(), ...extra });
+const flag = view => view.flags.find(candidate => candidate.featureKey === key);
 
 describe("feature flags through HTTP router, authenticated runtime and real store", () => {
     it("exposes every management/tool operation with an access classification", () => {
@@ -66,27 +67,27 @@ describe("feature flags through HTTP router, authenticated runtime and real stor
         await expect(runtime.call("setClusterFeatureFlag", { ...forged, allowUserOverride: true }, {
             principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },
         })).rejects.toMatchObject({ status: 403 });
-        expect((await clients.alice.call("getMyFeatureFlags")).flags[0]).toMatchObject({ effective: true, user: { userId: aliceId, enabled: true }, userOverrideIgnored: false });
-        expect((await clients.bob.call("getMyFeatureFlags")).flags[0].user).toBeNull();
+        expect(flag(await clients.alice.call("getMyFeatureFlags"))).toMatchObject({ effective: true, user: { userId: aliceId, enabled: true }, userOverrideIgnored: false });
+        expect(flag(await clients.bob.call("getMyFeatureFlags")).user).toBeNull();
         await runtime.call("setMyFeatureFlag", { ...forged, expectedRevision: "2", requestId: randomUUID(), enabled: false }, {
             principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },
         });
-        expect((await clients.alice.call("getMyFeatureFlags")).flags[0].user).toMatchObject({ userId: aliceId, enabled: false });
-        expect((await clients.bob.call("getMyFeatureFlags")).flags[0].user).toBeNull();
+        expect(flag(await clients.alice.call("getMyFeatureFlags")).user).toMatchObject({ userId: aliceId, enabled: false });
+        expect(flag(await clients.bob.call("getMyFeatureFlags")).user).toBeNull();
     });
     it("roundtrips cluster/user changes, reset/unset, revisions and retry envelopes", async () => {
         await clients.alice.call("setMyFeatureFlag", change("1", { enabled: true }));
-        const initial = (await clients.admin.call("listFeatureFlags")).flags[0].revision;
+        const initial = flag(await clients.admin.call("listFeatureFlags")).revision;
         const request = change(initial, { enabled: false, allowUserOverride: true });
         const saved = await clients.admin.call("setClusterFeatureFlag", request);
         expect(await clients.admin.call("setClusterFeatureFlag", request)).toEqual(saved);
-        expect((await clients.alice.call("getMyFeatureFlags")).flags[0].effective).toBe(true);
+        expect(flag(await clients.alice.call("getMyFeatureFlags")).effective).toBe(true);
         await expect(clients.admin.call("setClusterFeatureFlag", change(initial, { enabled: true, allowUserOverride: false }))).rejects.toMatchObject({ status: 409, code: "FEATURE_CONFLICT" });
         const user = await clients.admin.call("setUserFeatureFlag", { ...change(saved.revision, { enabled: false }), userId: String(aliceId) });
-        expect((await clients.admin.call("getUserFeatureFlags", { userId: String(aliceId) })).flags[0].effective).toBe(false);
+        expect(flag(await clients.admin.call("getUserFeatureFlags", { userId: String(aliceId) })).effective).toBe(false);
         const unset = await clients.admin.call("unsetUserFeatureFlag", { ...change(user.revision), userId: String(aliceId) });
         const reset = await clients.admin.call("resetClusterFeatureFlag", change(unset.revision));
-        expect((await clients.admin.call("getClusterFeatureFlags")).flags[0]).toMatchObject({ cluster: null, effective: false, revision: reset.revision });
+        expect(flag(await clients.admin.call("getClusterFeatureFlags"))).toMatchObject({ cluster: null, effective: false, revision: reset.revision });
         const mine = await clients.alice.call("setMyFeatureFlag", change(reset.revision, { enabled: false }));
         await clients.alice.call("unsetMyFeatureFlag", change(mine.revision));
         expect((await clients.admin.call("listFeatureFlagUsers", { query: "alice" })).map(u => u.userId)).toEqual([aliceId]);

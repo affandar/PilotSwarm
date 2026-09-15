@@ -14,6 +14,7 @@ const COPILOT_NATIVE_TOOL_NAMES = [
 // complete dynamic namespace reserved even when a deployment disables a store.
 // The factory coverage test checks this list against all role/capability bundles.
 const SESSION_ATTACHED_TOOL_NAMES = [
+    "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package",
     "bulk_store_facts",
     "context_health",
     "create_agent_session",

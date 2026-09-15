@@ -7,6 +7,13 @@ export const FEATURE_FLAGS = {
         defaultAllowUserOverride: true,
         requiredCapability: "copilot.native_tasks",
     },
+    "agents.base_v2": {
+        displayName: "Base Agent V2",
+        description: "Use the discovery-first base instructions with native tasks. Requires Native Copilot tasks; package tools remain available in either mode.",
+        defaultEnabled: false,
+        defaultAllowUserOverride: true,
+        requiredCapability: "agents.base_v2",
+    },
 } as const;
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
 export type ResolveOptions = { fallback: boolean; required?: never } | { required: true; fallback?: never };
@@ -26,7 +33,7 @@ export interface FeatureSnapshot { definitions: FeatureDefinition[]; settings: F
 export interface FeatureDecision {
     enabled: boolean; source: "cluster" | "user" | "default" | "fallback";
     revision: string | null; stale: boolean;
-    reason?: "unknown_key" | "catalog_missing" | "cache_unavailable";
+    reason?: "unknown_key" | "catalog_missing" | "cache_unavailable" | "requires_native_tasks";
 }
 export class FeatureFlagError extends Error {
     constructor(public readonly code: string, message: string, public readonly status = 400) {
@@ -55,4 +62,10 @@ export function resolveFeatureDefinition(definition: FeatureDefinition, cluster?
     return { enabled: allowOverride && user ? user.enabled : enabled,
         source: allowOverride && user ? "user" : cluster ? "cluster" : "default",
         revision: definition.revision, stale };
+}
+
+/** A narrow prerequisite for the base prompt; saved preferences remain independent. */
+export function applyBaseAgentPrerequisite(key: string, decision: FeatureDecision, native: FeatureDecision | undefined): FeatureDecision {
+    if (key !== "agents.base_v2" || !decision.enabled || native?.enabled === true) return decision;
+    return { ...decision, enabled: false, stale: decision.stale || native?.stale === true, reason: "requires_native_tasks" };
 }

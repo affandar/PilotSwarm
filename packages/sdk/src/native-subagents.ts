@@ -71,11 +71,30 @@ swarm-explore and swarm-task inherit the parent model, reasoning effort, and con
 Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.
 `;
 
-export function nativeSubagentGuidance(access?: NativeTaskAccess): string {
-    if (!access) return NATIVE_SUBAGENT_GUIDANCE;
+export const NATIVE_SUBAGENT_GUIDANCE_V2 = `
+## Native local delegation
+Native task(agent_type="swarm-explore", mode="sync") performs bounded investigation;
+task(agent_type="swarm-task", mode="sync") performs bounded commands or builds.
+Native tasks run on the immediate parent's worker, share its files and turn budget, and return results directly.
+They are not independent durable sessions. Follow the base and selected workflow instructions when choosing direct, native or durable execution.
+Provide the objective, relevant instructions, exact scope, input/artifact locations and expected evidence.
+A durable parent's or sibling's local paths are not this session's files: materialize published artifacts with read_artifact(toFile) first.
+Native workers have local CLI tools only unless an explicit external-tool allowlist is shown.
+Durable child contracts, timers and complete_agent apply only to spawn_agent children.
+Native background mode, nested delegation and scheduling are unavailable.
+Native tasks inherit the parent model, reasoning effort and context tier.
+Omit the model, reasoning_effort, and context_tier arguments; overrides are unavailable.
+`;
+
+export function nativeSubagentGuidance(access?: NativeTaskAccess, version: "v1" | "v2" = "v1"): string {
+    if (!access) return version === "v2" ? NATIVE_SUBAGENT_GUIDANCE_V2 : NATIVE_SUBAGENT_GUIDANCE;
+    const profiles = version === "v2"
+        ? `Available investigation profile: task(agent_type="swarm-explore", mode="sync").
+Available command/build profile: task(agent_type="swarm-task", mode="sync").`
+        : `For substantial bounded investigations, use task(agent_type="swarm-explore", mode="sync").
+For bounded commands or builds, use task(agent_type="swarm-task", mode="sync").`;
     return `## Native local delegation
-For substantial bounded investigations, use task(agent_type="swarm-explore", mode="sync").
-For bounded commands or builds, use task(agent_type="swarm-task", mode="sync").
+${profiles}
 Native tasks inherit the parent model and reasoning settings: omit overrides. Supply the objective,
 relevant agent/skill excerpts, exact scope, repository/worktree identifiers, and expected evidence.
 Tasks can use local CLI tools plus their exact external-tool allowlist:

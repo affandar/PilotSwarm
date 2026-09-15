@@ -1,3 +1,5 @@
+import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-runtime.js";
+import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
@@ -320,7 +322,7 @@ const LOAD_SKILL_TOOL_SPEC = {
     parameters: {
         type: "object",
         properties: {
-            name: { type: "string", description: "Skill name exactly as listed in the system prompt's skills index." },
+            name: { type: "string", description: "Skill name exactly as listed in the system prompt's skills index, or an exact skill ref returned by search_capabilities." },
         },
         required: ["name"],
     },
@@ -988,7 +990,7 @@ export class ManagedSession {
         const findCanvasAppTool = defineTool("find_canvas_app", FIND_CANVAS_APP_TOOL_SPEC);
         const loadSkillTool = defineTool("load_skill", LOAD_SKILL_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool,
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
     }
 
@@ -999,24 +1001,7 @@ export class ManagedSession {
      */
     static subAgentToolDefs(): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
-            description:
-                "Spawn an autonomous sub-agent to work on a task in parallel. " +
-                "The sub-agent is a full Copilot session with its own conversation and tools. " +
-                "Returns an agent ID you can use to check status, send messages, or wait for completion. " +
-                "If the user explicitly asks you to use sub-agents, delegation, fan-out, or parallel processing, you should comply within runtime limits instead of collapsing the work into a direct answer. " +
-                "If the user did not explicitly ask for delegation, use your judgment about whether parallel work is actually helpful. " +
-                "Each agent adds cost, so avoid unnecessary fan-out when delegation was not requested. " +
-                "For KNOWN user-creatable agents, pass agent_name. The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
-                "Before choosing a custom child, check the available static and published agent definitions with ps_list_agents unless the current catalog already identifies a suitable specialist. Select by role, source access, and capabilities, then pass the exact agent_name from the list and task for the assignment. Prefer a suitable named specialist over recreating it as a generic child. " +
-                "You MAY spawn multiple concurrent instances of the same agent_name (e.g. one per bug or per shard); they each get their own conversation. The only caps are the global maximum concurrent sub-agents and the maximum nesting depth. " +
-                "Sub-agents do NOT auto-terminate when they finish their task \u2014 they stay alive idle, ready for follow-up via message_agent. YOU are responsible for closing each child with complete_agent (graceful), cancel_agent (interrupt), or delete_agent (forceful) when you no longer need it. " +
-                "Worker-managed system agents are NOT valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead. Do not attach package-owned names through tool_names; select their named agent through ps_list_agents so its instructions, tools, and startup requirement stay together. " +
-                "Call ps_list_agents to see all available named agents you CAN spawn. " +
-                "By default, sub-agents inherit the parent's model. " +
-                "If you want to override the model, call list_available_models first and use only an exact provider:model value returned there. " +
-                "If you want to override reasoning power, also use only a reasoning_effort value listed for that model. " +
-                "Never invent, guess, or shorten model names.",
+            description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
@@ -1919,6 +1904,14 @@ export class ManagedSession {
             ...LOAD_SKILL_TOOL_SPEC,
             handler: async (args: { name?: string }) => {
                 const name = String(args?.name ?? "").trim();
+                if (name.startsWith("cap1.")) {
+                    if (!this.config.capabilityServices) return "Error: capability service unavailable.";
+                    try {
+                        return JSON.stringify(await this.config.capabilityServices.load(name, "skill"));
+                    } catch (error) {
+                        return failureToolResult(error);
+                    }
+                }
                 if (!name) return "Error: name is required.";
                 const catalog = this.skillCatalog;
                 const skill = catalog.find((s) => s.name === name)
@@ -1930,6 +1923,31 @@ export class ManagedSession {
                 return `[SKILL: ${skill.name}]\n${skill.description ? `${skill.description}\n\n` : ""}${skill.prompt}`;
             },
         });
+
+        const capabilityTools = Object.entries(CAPABILITY_TOOL_SPECS).map(([name, spec]) => defineTool(name, {
+            ...spec,
+            handler: async (args: any) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary(name);
+                const service = this.config.capabilityServices;
+                if (!service) return "Error: capability service unavailable.";
+                try {
+                    if (name === "search_capabilities") return JSON.stringify(await service.search(args));
+                    if (name === "load_agent_guidelines") return JSON.stringify(await service.load(args.ref, "agent"));
+                    if (name === "list_session_capabilities") return JSON.stringify(await service.list());
+                    if (this.config.nativeSubagents === "sync") {
+                        const tasks = (await this.copilotSession.rpc.tasks.list()).tasks;
+                        if (tasks.some(task => task.type === "agent" && (task.status === "running" || task.status === "idle"))) {
+                            return "Error: finish native tasks before changing package capabilities.";
+                        }
+                    }
+                    const result = await service.use(args);
+                    if (!result.changed) return JSON.stringify(result);
+                    turnState.pendingActions.push({ type: "completed", content: "Package capability selections updated.",
+                        forceContinuePrompt: "Package capability selections changed. The same session has refreshed its tools and MCP servers. Continue the user's original task using the selected capabilities; do not repeat the completed activation." });
+                    return `${JSON.stringify(result)}\n${acknowledgeTurnBoundary("use_package")}`;
+                } catch (error) { return failureToolResult(error); }
+            },
+        }));
 
         // list_available_models — returns data inline (no abort/continuation needed)
         const listModelsTool = defineTool("list_available_models", {
@@ -2114,19 +2132,7 @@ export class ManagedSession {
 
         // Build sub-agent tools
         const spawnAgentTool = defineTool("spawn_agent", {
-            description:
-                "Spawn a sub-agent. For KNOWN user-creatable agents, pass agent_name. " +
-                "The agent's instructions, tools, and startup requirement load automatically; task supplies your assignment. " +
-                "Do not override system_message or tool_names when using agent_name. " +
-                "Before choosing a custom child, check the available static and published agent definitions with ps_list_agents unless the current catalog already identifies a suitable specialist. Select by role, source access, and capabilities, then pass the exact agent_name from the list and task for the assignment. Prefer a suitable named specialist over recreating it as a generic child. " +
-                "Calling spawn_agent does NOT finish your turn. After it succeeds, continue executing the rest of your workflow in the SAME turn unless you intentionally call wait, wait_for_agents, ask_user, or give your final answer. " +
-                "Call ps_list_agents to see all available named agents you CAN spawn. " +
-                "Worker-managed system agents are not valid spawn_agent targets; if one is missing, the workers likely need to be restarted. " +
-                "For CUSTOM agents (ad-hoc tasks), pass task instead — no agent_name is needed. Do not attach package-owned names through tool_names; select their named agent through ps_list_agents so its instructions, tools, and startup requirement stay together. " +
-                "Use a custom agent when no available named definition fits the task. " +
-                "If you want a different model, call list_available_models first and use only an exact provider:model value from that list. " +
-                "If you want different reasoning power, also use only a reasoning_effort value listed for that model. " +
-                "Never invent, guess, or shorten model names.",
+            description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
                 type: "object",
                 properties: {
@@ -2447,7 +2453,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2494,7 +2500,7 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package",
     "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -2507,6 +2513,7 @@ export class ManagedSession {
             setSessionModelTool,
             regenerateContextTool,
             regenerateAgentTool,
+            ...capabilityTools,
             sendSessionMessageTool,
             replySessionMessageTool,
             showArtifactTool,
@@ -3362,6 +3369,9 @@ export class ManagedSession {
     getNativeTaskAccess() { return this.config.nativeTaskAccess; }
 
     updateConfig(config: Partial<ManagedSessionConfig>): void {
+        this.config.capabilityServices = config.capabilityServices;
+        this.config.capabilityFingerprint = config.capabilityFingerprint;
+        if (config.baseAgentPolicy !== undefined) this.config.baseAgentPolicy = config.baseAgentPolicy;
         if (config.nativeFeatureAllowed !== undefined) this.config.nativeFeatureAllowed = config.nativeFeatureAllowed;
         if (config.featureToolFingerprint !== undefined) this.config.featureToolFingerprint = config.featureToolFingerprint;
         if (config.model !== undefined) this.config.model = config.model;

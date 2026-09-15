@@ -55,9 +55,14 @@ Important behavior:
 - it still applies even when another agent prompt is used
 - it extends the embedded PilotSwarm framework instructions rather than replacing them
 
-## Step 2: Add named agents
+## Step 2: Add named workflows when needed
 
-Named agents are the personas users invoke with `@name` or that other agents spawn by name.
+Named agents supply authored workflows users invoke with `@name` or that other
+agents can start by name. Reusable methods belong in skills; executable
+integrations belong in tools/MCP. Packages can ship those capabilities without
+any named agents. Sessions can also consult an agent's instructions through
+`load_agent_guidelines`, naming the source to the user, without launching it or
+adopting its identity or permissions.
 
 ```md
 ---
