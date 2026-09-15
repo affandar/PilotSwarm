@@ -65,12 +65,14 @@ test("buildOperationRequest resolves path, query, and body placement", () => {
     assert.deepEqual(send.body, { prompt: "hello", options: { clientMessageIds: ["m1"] } });
 });
 
-test("json query params round-trip through encode + coerce", () => {
+test("session page query params round-trip through encode + coerce", () => {
     const cursor = { updatedAt: 1751500000000, sessionId: "abc" };
-    const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursor, includeDeleted: true });
+    const { query } = buildOperationRequest("listSessionsPage", { limit: 10, cursor, includeDeleted: true, systemFilter: "only", viewerOnly: true });
     assert.deepEqual(coerceQueryValue(query.get("cursor"), "json"), cursor);
     assert.equal(coerceQueryValue(query.get("limit"), "number"), 10);
     assert.equal(coerceQueryValue(query.get("includeDeleted"), "boolean"), true);
+    assert.equal(query.get("systemFilter"), "only");
+    assert.equal(coerceQueryValue(query.get("viewerOnly"), "boolean"), true);
 });
 
 test("missing required path params throw", () => {

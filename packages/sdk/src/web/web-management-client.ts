@@ -73,11 +73,13 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("listSessions");
     }
 
-    async listSessionsPage(opts: { limit?: number; cursor?: { updatedAt: number; sessionId: string } | null; includeDeleted?: boolean } = {}): Promise<any> {
+    async listSessionsPage(opts: { limit?: number; cursor?: { updatedAt: number; sessionId: string } | null; includeDeleted?: boolean; systemFilter?: "all" | "only" | "exclude"; viewerOnly?: boolean } = {}): Promise<any> {
         return this._api.call("listSessionsPage", {
             limit: opts.limit,
             cursor: opts.cursor ?? undefined,
             includeDeleted: opts.includeDeleted,
+            systemFilter: opts.systemFilter,
+            viewerOnly: opts.viewerOnly,
         });
     }
 

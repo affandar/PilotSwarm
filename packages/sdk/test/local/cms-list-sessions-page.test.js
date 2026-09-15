@@ -25,8 +25,18 @@ describe("Management session paging", () => {
                 await catalog.createSession(sessionId, { model: "gpt-5.4" });
                 await catalog.updateSession(sessionId, { state: "running" });
             }
+            const systemSessionId = `mgmt-page-${Date.now()}-system`;
+            await catalog.createSession(systemSessionId, { model: "gpt-5.4", isSystem: true });
 
             mgmt = await createManagementClient(env);
+
+            const systemPage = await mgmt.listSessionsPage({ limit: 10, systemFilter: "only" });
+            assertEqual(systemPage.sessions.length, 1, "System-only page should contain the system session");
+            assertEqual(systemPage.sessions[0].sessionId, systemSessionId, "System-only page should exclude regular sessions");
+
+            const regularPage = await mgmt.listSessionsPage({ limit: 10, systemFilter: "exclude" });
+            assertEqual(regularPage.sessions.length, 5, "Regular page should contain every non-system session");
+            assert(!regularPage.sessions.some((session) => session.isSystem), "Regular page should exclude system sessions");
 
             const firstPage = await mgmt.listSessionsPage({ limit: 2 });
             assertEqual(firstPage.sessions.length, 2, "First page should contain requested page size");

@@ -401,7 +401,151 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0077", name: "feature_flags", sql: featureFlagsMigration(schema) },
         { version: "0078", name: "native_tasks_default_policy", sql: nativeTasksDefaultPolicyMigration(schema) },
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
+        { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
     ];
+}
+
+/** Additive page filter used by the portal's independent system-session load. */
+function migration_0080_session_page_system_filter(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+-- Replace the nine-argument routine with a ten-argument compatible
+-- successor. The final parameter has a default, so rolling-back/older
+-- callers that still pass nine arguments continue to resolve this function.
+DROP FUNCTION IF EXISTS ${s}.cms_list_sessions_page(INT, TIMESTAMPTZ, TEXT, BOOL, TEXT, TEXT, BOOL, TEXT, TEXT);
+CREATE OR REPLACE FUNCTION ${s}.cms_list_sessions_page(
+    p_limit                 INT         DEFAULT 51,
+    p_cursor_updated_at     TIMESTAMPTZ DEFAULT NULL,
+    p_cursor_session_id     TEXT        DEFAULT NULL,
+    p_include_deleted       BOOL        DEFAULT FALSE,
+    p_viewer_provider       TEXT        DEFAULT NULL,
+    p_viewer_subject        TEXT        DEFAULT NULL,
+    p_viewer_system_visible BOOL        DEFAULT TRUE,
+    p_placement_provider    TEXT        DEFAULT NULL,
+    p_placement_subject     TEXT        DEFAULT NULL,
+    p_system_filter         TEXT        DEFAULT 'all'
+) RETURNS TABLE (
+    session_id         TEXT,
+    orchestration_id   TEXT,
+    title              TEXT,
+    title_locked       BOOLEAN,
+    state              TEXT,
+    model              TEXT,
+    reasoning_effort   TEXT,
+    group_id           TEXT,
+    short_summary      TEXT,
+    summary_state      JSONB,
+    summary_updated_at TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ,
+    updated_at         TIMESTAMPTZ,
+    last_active_at     TIMESTAMPTZ,
+    deleted_at         TIMESTAMPTZ,
+    current_iteration  INTEGER,
+    last_error         TEXT,
+    parent_session_id  TEXT,
+    wait_reason        TEXT,
+    is_system          BOOLEAN,
+    agent_id           TEXT,
+    splash             TEXT,
+    owner_provider     TEXT,
+    owner_subject      TEXT,
+    owner_email        TEXT,
+    owner_display_name TEXT,
+    splash_mobile      TEXT,
+    visibility         TEXT,
+    root_session_id    TEXT
+) AS $$
+DECLARE
+    v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 51), 201));
+    v_placement_user BIGINT;
+    v_system_filter TEXT := COALESCE(p_system_filter, 'all');
+BEGIN
+    IF v_system_filter NOT IN ('all', 'only', 'exclude') THEN
+        RAISE EXCEPTION 'system filter must be all, only, or exclude' USING ERRCODE = '22023';
+    END IF;
+    IF p_placement_provider IS NOT NULL AND p_placement_subject IS NOT NULL THEN
+        SELECT u.user_id INTO v_placement_user
+        FROM ${s}.users u
+        WHERE u.provider = BTRIM(p_placement_provider) AND u.subject = BTRIM(p_placement_subject);
+    END IF;
+    RETURN QUERY
+    SELECT
+        sess.session_id,
+        sess.orchestration_id,
+        sess.title,
+        sess.title_locked,
+        sess.state,
+        sess.model,
+        sess.reasoning_effort,
+        usgp.group_id,
+        sess.short_summary,
+        sess.summary_state,
+        sess.summary_updated_at,
+        sess.created_at,
+        sess.updated_at,
+        sess.last_active_at,
+        sess.deleted_at,
+        sess.current_iteration,
+        sess.last_error,
+        sess.parent_session_id,
+        sess.wait_reason,
+        sess.is_system,
+        sess.agent_id,
+        sess.splash,
+        u.provider     AS owner_provider,
+        u.subject      AS owner_subject,
+        u.email        AS owner_email,
+        u.display_name AS owner_display_name,
+        sess.splash_mobile,
+        sess.visibility,
+        sess.root_session_id
+    FROM ${s}.sessions sess
+    LEFT JOIN ${s}.session_owners so ON so.session_id = sess.session_id
+    LEFT JOIN ${s}.users u ON u.user_id = so.user_id
+    LEFT JOIN ${s}.user_session_group_placements usgp
+        ON usgp.user_id = v_placement_user AND usgp.root_session_id = sess.session_id
+    WHERE
+        (p_include_deleted OR sess.deleted_at IS NULL)
+        AND (
+            v_system_filter = 'all'
+            OR (v_system_filter = 'only' AND sess.is_system)
+            OR (v_system_filter = 'exclude' AND NOT sess.is_system)
+        )
+        AND (
+            p_cursor_updated_at IS NULL
+            OR date_trunc('milliseconds', sess.updated_at) < date_trunc('milliseconds', p_cursor_updated_at)
+            OR (
+                date_trunc('milliseconds', sess.updated_at) = date_trunc('milliseconds', p_cursor_updated_at)
+                AND sess.session_id < p_cursor_session_id
+            )
+        )
+        AND (
+            p_viewer_provider IS NULL
+            OR EXISTS (
+                SELECT 1
+                FROM ${s}.sessions r
+                LEFT JOIN ${s}.session_owners rso ON rso.session_id = r.session_id
+                LEFT JOIN ${s}.users ru ON ru.user_id = rso.user_id
+                WHERE r.session_id = COALESCE(sess.root_session_id, sess.session_id)
+                  AND (
+                    (r.is_system AND p_viewer_system_visible)
+                    OR (ru.provider = BTRIM(p_viewer_provider) AND ru.subject = BTRIM(p_viewer_subject))
+                    OR COALESCE(r.visibility, 'private') IN ('shared_read', 'shared_write')
+                    OR EXISTS (
+                        SELECT 1 FROM ${s}.session_shares sh
+                        JOIN ${s}.users vu ON vu.user_id = sh.user_id
+                        WHERE sh.session_id = r.session_id
+                          AND vu.provider = BTRIM(p_viewer_provider)
+                          AND vu.subject = BTRIM(p_viewer_subject)
+                    )
+                  )
+            )
+        )
+    ORDER BY date_trunc('milliseconds', sess.updated_at) DESC, sess.session_id DESC
+    LIMIT v_limit;
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 /** Cluster admin accounting projections; all pre-existing procedures remain intact. */

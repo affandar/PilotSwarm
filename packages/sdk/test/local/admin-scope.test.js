@@ -154,6 +154,29 @@ describe("admin-scope catalog and portal integration", () => {
         expect(await call("getSessionAccess", { sessionId: "system" })).toMatchObject({ canWrite: true, canManage: true });
     });
 
+    it("keeps system-filtered pages viewer-scoped", async () => {
+        const adminSystems = await call("listSessionsPage", { limit: 200, systemFilter: "only" });
+        expect(adminSystems.sessions.map(session => session.sessionId)).toEqual(["system"]);
+
+        const adminRegular = await call("listSessionsPage", { limit: 200, systemFilter: "exclude" });
+        expect(adminRegular.sessions.some(session => session.sessionId === "system")).toBe(false);
+        expect(adminRegular.sessions.some(session => session.sessionId === "foreign")).toBe(false);
+        expect(adminRegular.sessions.map(session => session.sessionId).sort()).toEqual(["own", "shared"]);
+
+        const userSystems = await call("listSessionsPage", { limit: 200, systemFilter: "only" }, ALICE, "user");
+        expect(userSystems.sessions).toEqual([]);
+    });
+
+    it("lets an authenticated unrestricted admin request only their viewer-visible catalog", async () => {
+        runtime.authz.adminScope = "unrestricted";
+        const fleetPage = await call("listSessionsPage", { limit: 200 });
+        expect(fleetPage.sessions.some(session => session.sessionId === "foreign")).toBe(true);
+
+        const viewerPage = await call("listSessionsPage", { limit: 200, viewerOnly: true });
+        expect(viewerPage.sessions.some(session => session.sessionId === "foreign")).toBe(false);
+        expect(viewerPage.sessions.map(session => session.sessionId).sort()).toEqual(["own", "shared", "system"]);
+    });
+
     it("private packages and all mutation paths do not inherit the admin role", async () => {
         expect((await call("listAgentPackages")).map((p) => p.name).sort()).toEqual(["own-kit", "shared-kit"]);
         expect(await call("getAgentPackage", { name: "private-kit", scope: "user", ownerProvider: "dev", ownerSubject: "alice", isAdmin: true, adminScope: "unrestricted" })).toBeNull();

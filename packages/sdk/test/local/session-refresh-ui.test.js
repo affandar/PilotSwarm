@@ -48,7 +48,7 @@ function linesText(lines) {
 }
 
 describe("session refresh UI recovery", () => {
-    it("loads sessions through bounded pages when the transport supports paging", async () => {
+    it("loads system sessions separately and follows every regular-session page", async () => {
         const calls = [];
         const { controller, store } = createController({
             listSessions: async () => {
@@ -56,6 +56,12 @@ describe("session refresh UI recovery", () => {
             },
             listSessionsPage: async (opts) => {
                 calls.push(opts);
+                if (opts.systemFilter === "only") {
+                    return {
+                        sessions: [{ sessionId: "system-root", title: "System Root", isSystem: true, status: "idle", createdAt: 1, updatedAt: 2 }],
+                        hasMore: false,
+                    };
+                }
                 if (!opts?.cursor) {
                     return {
                         sessions: [{ sessionId: "page-one", title: "Page One", status: "idle", createdAt: 1, updatedAt: 2 }],
@@ -72,32 +78,60 @@ describe("session refresh UI recovery", () => {
 
         await controller.refreshSessions();
 
-        assertEqual(calls.length, 2, "refresh should follow nextCursor while more pages exist");
-        assertEqual(calls[0].limit, 200, "refresh should request bounded max-size pages");
-        assertEqual(calls[1].cursor.sessionId, "page-one", "refresh should pass the prior page cursor");
+        const systemCalls = calls.filter(call => call.systemFilter === "only");
+        const regularCalls = calls.filter(call => call.systemFilter === "exclude");
+        assertEqual(systemCalls.length, 1, "refresh should load the system-session catalog independently");
+        assertEqual(regularCalls.length, 2, "refresh should follow nextCursor while regular pages remain");
+        assert(calls.every(call => call.limit === 200), "refresh should request bounded max-size pages");
+        assertEqual(regularCalls[1].cursor.sessionId, "page-one", "refresh should pass the prior regular-page cursor");
         const sessionIds = Object.keys(store.getState().sessions.byId);
+        assert(sessionIds.includes("system-root"), "separately loaded system session should be present");
         assert(sessionIds.includes("page-one"), "first page session should be loaded");
         assert(sessionIds.includes("page-two"), "second page session should be loaded");
     });
 
-    it("caps paged session refresh after five pages", async () => {
-        let calls = 0;
+    it("loads every viewer-visible session beyond the former 1,000-row window", async () => {
+        const regularCount = 1_001;
+        let regularCalls = 0;
         const { controller, store } = createController({
             listSessionsPage: async (opts) => {
-                calls += 1;
-                const id = `page-${calls}`;
+                if (opts.systemFilter === "only") return { sessions: [], hasMore: false };
+                regularCalls += 1;
+                const start = Number(opts.cursor?.updatedAt || 0);
+                const end = Math.min(start + 200, regularCount);
+                const sessions = Array.from({ length: end - start }, (_, offset) => {
+                    const index = start + offset;
+                    return { sessionId: `session-${index}`, title: `Session ${index}`, status: "idle", createdAt: index, updatedAt: index };
+                });
                 return {
-                    sessions: [{ sessionId: id, title: id, status: "idle", createdAt: calls, updatedAt: calls }],
-                    hasMore: true,
-                    nextCursor: { updatedAt: calls, sessionId: id },
+                    sessions,
+                    hasMore: end < regularCount,
+                    ...(end < regularCount ? { nextCursor: { updatedAt: end, sessionId: `session-${end - 1}` } } : {}),
                 };
             },
         });
 
         await controller.refreshSessions();
 
-        assertEqual(calls, 5, "refresh should stop after the configured page cap");
-        assertEqual(Object.keys(store.getState().sessions.byId).length, 5, "refresh should load only capped pages");
+        assertEqual(regularCalls, 6, "refresh should continue beyond five 200-row pages");
+        assertEqual(Object.keys(store.getState().sessions.byId).length, regularCount, "refresh should load the complete visible catalog");
+        assert(store.getState().sessions.byId["session-1000"], "the row beyond the old cutoff should be reachable");
+    });
+
+    it("fails a broken paged transport instead of looping forever or applying a partial catalog", async () => {
+        const { controller } = createController({
+            listSessionsPage: async (opts) => ({
+                sessions: [],
+                hasMore: true,
+                nextCursor: { updatedAt: 1, sessionId: `${opts.systemFilter}-same-cursor` },
+            }),
+        });
+
+        await assertThrows(
+            () => controller.refreshSessions(),
+            /repeated its next cursor/,
+            "a repeated cursor should terminate the refresh with an explicit error",
+        );
     });
 
     it("keeps the active session visible when it falls outside the paged window", async () => {

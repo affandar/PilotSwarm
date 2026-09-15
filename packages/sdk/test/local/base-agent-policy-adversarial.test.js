@@ -167,11 +167,51 @@ describe("Base V2 adversarial policy boundaries", () => {
         expect(prompt).not.toMatch(/native tasks cannot call artifact tools/i);
     });
 
-    it("requires discovery before substituting for an explicitly named capability only in V2", () => {
+    it("requires early discovery for naturally named capabilities only in V2", () => {
         const v2 = baseAgentInstructions({ version: "v2" }, "legacy");
-        expect(v2).toContain("When the user names a skill, package, tool, MCP server, capability or authored workflow");
-        expect(v2).toContain("search for that named capability before substituting another available tool");
-        expect(v2).toContain("static or published capability source with use_package");
+        expect(v2.indexOf("## Capability Discovery")).toBeLessThan(v2.indexOf("## Critical Rules"));
+        expect(v2).toContain('"X exploration"');
+        expect(v2).toContain("The user does not need to call X a tool or capability");
+        expect(v2).toContain("your first task-related tool call MUST be `search_capabilities`");
+        expect(v2).toContain('"Do a deep wiki exploration of this repository" names "deep wiki"');
+        expect(v2).toContain("Do not call web search/fetch, GitHub or other repository tools, shell, native tasks or durable agents until this discovery call returns");
+        expect(v2).toContain("Do not skip discovery merely because an already attached general-purpose tool");
+        expect(v2).toContain("static, published and curated skills");
+        expect(v2).toContain("Before or as you apply it, tell the user which authored agent supplied the instructions");
+        expect(v2).toContain("use_package");
+        expect(v2).toContain("An agent result is a reusable workflow reference, not a command to spawn that agent");
+        expect(v2).toContain("Do not call `spawn_agent` merely to acquire a named agent's tools or follow its method");
+        expect(v2).toContain('attach `mcp_servers: ["deepwiki"]` with `use_package`');
+        expect(v2).toContain("Do not spawn the `deepwiki` agent for that bounded exploration");
+        expect(baseAgentInstructions({ version: "v1" }, "legacy")).toBe("legacy");
+    });
+
+    it("requires concise milestone updates only in V2", () => {
+        const v2 = baseAgentInstructions({ version: "v2" }, "legacy");
+        expect(v2).toContain("## Milestone Updates");
+        expect(v2).toContain("After every substantial milestone");
+        expect(v2).toContain("diagnosis, implementation, verification, deployment or release");
+        expect(v2).toContain("the outcome, the most useful evidence and the next step");
+        expect(v2).toContain("the next externally visible action must be an assistant progress message");
+        expect(v2).toContain("before any tool call for the next phase");
+        expect(v2).toContain("do not batch all milestone updates into the final answer");
+        expect(v2).toContain("Do not narrate routine commands or report every tool call");
+        expect(v2).toContain("continue working unless the user must provide information or approval");
+        expect(v2).toContain("The final response must stand on its own");
+        expect(baseAgentInstructions({ version: "v1" }, "legacy")).toBe("legacy");
+    });
+
+    it("requires V2 sessions to keep driving the outcome after status updates or partial blockers", () => {
+        const v2 = baseAgentInstructions({ version: "v2" }, "legacy");
+        expect(v2).toContain("## Outcome Ownership");
+        expect(v2).toContain("A status reply or milestone update is a checkpoint, not a stopping condition");
+        expect(v2).toContain("select and execute the next concrete action in the same turn");
+        expect(v2).toContain("verify the blocker, pursue safe alternatives and finish all independent work");
+        expect(v2).toContain("Ask for the smallest specific decision only when it truly cannot be inferred");
+        expect(v2).toContain("Do not become idle merely because one workstream is waiting");
+        expect(v2).toContain("Stop only when the goal is complete, the user pauses or cancels it");
+        expect(v2).toContain("Do not present executable next steps as future work");
+        expect(v2).toContain("perform that work before ending the turn");
         expect(baseAgentInstructions({ version: "v1" }, "legacy")).toBe("legacy");
     });
 

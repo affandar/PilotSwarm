@@ -96,7 +96,6 @@ const FLEET_STATS_DEFAULT_WINDOW_DAYS = 30;
 const SESSION_REFRESH_FAILED_STATUS = "Session refresh failed";
 const AUTO_HISTORY_SCROLL_PAGE_COUNT = 3;
 const SESSION_REFRESH_PAGE_LIMIT = 200;
-const SESSION_REFRESH_MAX_PAGES = 5;
 const FULLSCREENABLE_PANES = new Set([
     FOCUS_REGIONS.SESSIONS,
     FOCUS_REGIONS.CHAT,
@@ -191,24 +190,57 @@ function isSessionGoneError(error) {
     return status === 404 || status === 403 || code === "NOT_FOUND" || code === "FORBIDDEN";
 }
 
-async function loadSessionCatalogPageWindow(transport) {
+async function loadSessionCatalogPages(transport, systemFilter) {
     if (typeof transport.listSessionsPage !== "function") {
         return transport.listSessions();
     }
 
     const sessions = [];
     let cursor = null;
-    for (let pageIndex = 0; pageIndex < SESSION_REFRESH_MAX_PAGES; pageIndex += 1) {
+    const seenCursors = new Set();
+    for (;;) {
         const page = await transport.listSessionsPage({
             limit: SESSION_REFRESH_PAGE_LIMIT,
             cursor,
+            systemFilter,
+            viewerOnly: true,
         });
         const pageSessions = Array.isArray(page?.sessions) ? page.sessions : [];
         sessions.push(...pageSessions);
-        if (!page?.hasMore || !page?.nextCursor) break;
+        if (!page?.hasMore) break;
+        if (!page?.nextCursor) {
+            throw new Error("Session catalog page reported more rows without a next cursor");
+        }
+        const cursorKey = `${Number(page.nextCursor.updatedAt)}\0${String(page.nextCursor.sessionId || "")}`;
+        if (seenCursors.has(cursorKey)) {
+            throw new Error("Session catalog page repeated its next cursor");
+        }
+        seenCursors.add(cursorKey);
         cursor = page.nextCursor;
     }
     return sessions;
+}
+
+async function loadSessionCatalog(transport) {
+    if (typeof transport.listSessionsPage !== "function") {
+        return transport.listSessions();
+    }
+
+    // System roots must not depend on where they happen to fall in the main
+    // catalog's recency order. Fetch both server-filtered streams
+    // independently, then combine them without changing either stream's
+    // order. Every page still goes through the transport's viewer-scoped API.
+    const [systemSessions, regularSessions] = await Promise.all([
+        loadSessionCatalogPages(transport, "only"),
+        loadSessionCatalogPages(transport, "exclude"),
+    ]);
+    const byId = new Set();
+    return [...systemSessions, ...regularSessions].filter((session) => {
+        const sessionId = String(session?.sessionId || "");
+        if (!sessionId || byId.has(sessionId)) return false;
+        byId.add(sessionId);
+        return true;
+    });
 }
 
 function groupModelsByProvider(models = []) {
@@ -2641,7 +2673,7 @@ export class PilotSwarmUiController {
                     return null;
                 })
             : Promise.resolve(null);
-        let sessions = (await loadSessionCatalogPageWindow(this.transport)).map(normalizeSessionListRow);
+        let sessions = (await loadSessionCatalog(this.transport)).map(normalizeSessionListRow);
         // Folders are NOT merged into the session payload any more: they live
         // in their own state slice, so a session refresh cannot drop them. A
         // failed fetch is "no news" and simply leaves the slice alone.

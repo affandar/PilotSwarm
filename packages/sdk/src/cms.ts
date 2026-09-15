@@ -1175,6 +1175,7 @@ export interface SessionCatalog {
         cursorUpdatedAt?: Date | null;
         cursorSessionId?: string | null;
         includeDeleted?: boolean;
+        systemFilter?: "all" | "only" | "exclude";
         /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
         /** When set, root rows carry this principal's private group placement as groupId. */
@@ -1905,12 +1906,13 @@ export class PgSessionCatalog implements SessionCatalog {
         cursorUpdatedAt?: Date | null;
         cursorSessionId?: string | null;
         includeDeleted?: boolean;
+        systemFilter?: "all" | "only" | "exclude";
         viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
             `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
-               FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9) g
+               FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
                 opts?.limit ?? null,
@@ -1922,6 +1924,7 @@ export class PgSessionCatalog implements SessionCatalog {
                 opts?.viewer?.systemVisible ?? true,
                 opts?.placement?.provider ?? null,
                 opts?.placement?.subject ?? null,
+                opts?.systemFilter ?? "all",
             ],
         );
         return rows.map(rowToSessionRow);

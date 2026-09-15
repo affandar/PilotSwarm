@@ -66,9 +66,9 @@ test("path, query, and body params are collected with declared types", async () 
     const { baseUrl, calls, close } = await createHarness();
     try {
         const cursor = { updatedAt: 123, sessionId: "abc" };
-        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
+        await fetch(`${baseUrl}/api/v1/management/sessions?limit=5&includeDeleted=true&systemFilter=exclude&viewerOnly=true&cursor=${encodeURIComponent(JSON.stringify(cursor))}`);
         const page = calls.find((call) => call.name === "listSessionsPage");
-        assert.deepEqual(page.params, { limit: 5, includeDeleted: true, cursor });
+        assert.deepEqual(page.params, { limit: 5, includeDeleted: true, systemFilter: "exclude", viewerOnly: true, cursor });
 
         await fetch(`${baseUrl}/api/v1/sessions/s1/messages`, {
             method: "POST",

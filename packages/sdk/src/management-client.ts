@@ -384,6 +384,8 @@ export interface ListSessionsPageOptions {
     limit?: number;
     cursor?: SessionPageCursor | null;
     includeDeleted?: boolean;
+    /** Restrict the page to system sessions, regular sessions, or keep both. */
+    systemFilter?: "all" | "only" | "exclude";
     /** When set, restrict rows to what this principal can read (viewer-scoped listing). */
     viewer?: { provider: string; subject: string; systemVisible?: boolean } | null;
     /** When set, root rows carry this principal's private group placement as viewerGroupId. */
@@ -936,6 +938,10 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
 
         const limit = clampInteger(opts.limit, DEFAULT_SESSION_PAGE_LIMIT, 1, MAX_SESSION_PAGE_LIMIT);
+        const systemFilter = opts.systemFilter ?? "all";
+        if (!new Set(["all", "only", "exclude"]).has(systemFilter)) {
+            throw new Error("systemFilter must be one of: all, only, exclude");
+        }
         const cursor = opts.cursor ?? null;
         let cursorUpdatedAt: Date | null = null;
         let cursorSessionId: string | null = null;
@@ -952,6 +958,7 @@ export class PilotSwarmManagementClient {
             cursorUpdatedAt,
             cursorSessionId,
             includeDeleted: opts.includeDeleted,
+            systemFilter,
             viewer: opts.viewer ?? null,
             placement: opts.placement ?? null,
         });

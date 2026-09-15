@@ -54,8 +54,18 @@ operations table, so nothing here is bespoke:
 const session = await api.call("createSession", { model: boot.defaultModel });
 await api.call("sendMessage", { sessionId: session.sessionId, prompt: "hello" });
 
-// paging, groups, stats — same pattern
-const page = await api.call("listSessionsPage", { limit: 50 });
+// paging, groups, stats — same pattern. Catalog UIs can load system roots
+// separately and keep following nextCursor until hasMore is false.
+const systemPage = await api.call("listSessionsPage", {
+  limit: 200,
+  systemFilter: "only",
+  viewerOnly: true,
+});
+const regularPage = await api.call("listSessionsPage", {
+  limit: 200,
+  systemFilter: "exclude",
+  viewerOnly: true,
+});
 ```
 
 ## 3. Subscribe, reduce, replay

@@ -108,6 +108,8 @@ describe("portal browser contracts", () => {
         assertIncludes(runtime, 'case "getUserStats":', "portal runtime should expose user stats RPC");
         assertIncludes(httpTransport, "async listSessionsPage(opts = {})", "web transport should expose bounded session paging");
         assertIncludes(httpTransport, 'this.api.call("listSessionsPage"', "web transport should call the bounded session paging operation");
+        assertIncludes(httpTransport, "systemFilter: opts?.systemFilter", "web transport should forward the additive system-session page filter");
+        assertIncludes(httpTransport, "viewerOnly: opts?.viewerOnly", "web transport should request a viewer-scoped catalog without changing the legacy API default");
         assertIncludes(httpTransport, "async getTopEventEmitters(opts = {})", "web transport should expose top event emitter diagnostics");
         assertIncludes(httpTransport, 'this.api.call("getTopEventEmitters"', "web transport should call the top event emitter diagnostics operation");
         assertIncludes(runtime, 'case "listSessionsPage":', "portal runtime should expose bounded session paging RPC");
@@ -120,7 +122,9 @@ describe("portal browser contracts", () => {
         assertIncludes(nodeTransport, "this.mgmt.listSessionsPage({ ...safeOpts", "node transport should delegate bounded session paging to management (threading the placement viewer)");
         assertIncludes(nodeTransport, "async getTopEventEmitters(opts)", "node transport should expose top event emitter diagnostics");
         assertIncludes(nodeTransport, "return this.mgmt.getTopEventEmitters(opts);", "node transport should delegate top emitter diagnostics to management");
-        assertIncludes(controller, "loadSessionCatalogPageWindow(this.transport)", "shared controller should consume bounded session pages when available");
+        assertIncludes(controller, 'loadSessionCatalogPages(transport, "only")', "shared controller should load system sessions through an independent page stream");
+        assertIncludes(controller, 'loadSessionCatalogPages(transport, "exclude")', "shared controller should load every regular session through its own page stream");
+        assertIncludes(controller, "viewerOnly: true", "shared controller should request only sessions visible to the signed-in viewer");
         assertIncludes(nodeTransport, "async uploadArtifactContent(sessionId, filename, content, contentType", "node transport should accept browser-supplied artifact content");
         assertIncludes(nodeTransport, "async deleteArtifact(sessionId, filename)", "node transport should expose single-artifact deletion against the artifact store");
         assertIncludes(nodeTransport, 'if (contentEncoding === "base64")', "node transport should decode base64 upload payloads back to raw bytes");

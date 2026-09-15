@@ -43,6 +43,10 @@ function clampInteger(value, defaultValue, min, max) {
 function normalizeSessionPageOptions(params) {
     const limit = clampInteger(params.limit, 50, 1, 200);
     const includeDeleted = params.includeDeleted === true;
+    const systemFilter = params.systemFilter == null ? "all" : String(params.systemFilter);
+    if (!new Set(["all", "only", "exclude"]).has(systemFilter)) {
+        throw new Error("listSessionsPage systemFilter must be one of: all, only, exclude");
+    }
     if (params.cursor != null && typeof params.cursor !== "object") {
         throw new Error("listSessionsPage cursor must be an object when provided");
     }
@@ -61,7 +65,7 @@ function normalizeSessionPageOptions(params) {
         cursor = { updatedAt, sessionId };
     }
 
-    return { limit, cursor, includeDeleted };
+    return { limit, cursor, includeDeleted, systemFilter };
 }
 
 function normalizeTopEventEmitterOptions(params) {
@@ -564,8 +568,8 @@ export class PortalRuntime {
      * admitted user by design) — never the unfiltered fleet or another user's
      * private sessions (adversarial review LOW-1 / NEW-5).
      */
-    _listViewer(owner, isAdmin) {
-        if (this._resourceAdmin(isAdmin) || !this.authz.enforce) return null;
+    _listViewer(owner, isAdmin, forceScoped = false) {
+        if (!forceScoped && (this._resourceAdmin(isAdmin) || !this.authz.enforce)) return null;
         if (!owner) return { provider: "\0nomatch", subject: "\0nomatch", systemVisible: false };
         return {
             provider: owner.provider,
@@ -692,9 +696,16 @@ export class PortalRuntime {
             case "listChildOutcomes":
                 return this.transport.listChildOutcomes(safeParams.parentSessionId);
             case "listSessionsPage":
+                // The portal opts into a personal catalog even when its user
+                // also has unrestricted fleet administration. With no signed-in
+                // principal (trusted no-auth deployments), retain the legacy
+                // unfiltered behavior because there is no "me" to scope to.
+                const pageViewer = safeParams.viewerOnly === true && owner
+                    ? this._listViewer(owner, isAdmin, true)
+                    : listViewer;
                 return this.transport.mgmt.listSessionsPage({
                     ...normalizeSessionPageOptions(safeParams),
-                    ...(listViewer ? { viewer: listViewer } : {}),
+                    ...(pageViewer ? { viewer: pageViewer } : {}),
                     placement: placementPrincipal(authContext),
                 });
             case "getSession":

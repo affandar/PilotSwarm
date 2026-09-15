@@ -1101,13 +1101,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Keyset-paginated session listing.
+     * Keyset-paginated session listing, optionally restricted to the authenticated viewer and to system or regular sessions.
      * @remarks `GET /management/sessions` — access: `session:list`
      */
     listSessionsPage(params: {
         limit?: number;
         cursor?: any;
         includeDeleted?: boolean;
+        systemFilter?: string;
+        viewerOnly?: boolean;
     }): Promise<any>;
 
     /**

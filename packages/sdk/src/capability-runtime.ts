@@ -17,7 +17,7 @@ export interface CapabilityServices {
 }
 export const CAPABILITY_TOOL_SPECS = {
     search_capabilities: {
-        description: "Search visible static and published skills, authored agent workflows, tools and MCP servers; also curated shared skills. Returns metadata and exact references. Does not load instructions or grant tools. Static/package search is weighted keyword matching; curated search uses the configured hybrid index.",
+        description: "MANDATORY first tool when the user names or might be referring to an unattached capability, including natural phrases such as 'X exploration' or 'X review'. Search before web, repository, shell or delegation tools even when those tools could answer the request. Covers visible static and published skills, authored agent workflows, tools and MCP servers, plus curated shared skills. Use the user's named phrase and goal as the query. Returns metadata and exact references; it does not load instructions or grant tools. Static/package search is weighted keyword matching; curated search uses the configured hybrid index.",
         parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 30 },
             kinds: { type: "array", items: { type: "string", enum: ["skill", "agent", "tool", "mcp"] } },
             sources: { type: "array", items: { type: "string", enum: ["static", "published", "curated"] } } }, required: ["query"] },

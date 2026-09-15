@@ -148,7 +148,7 @@ group membership is per-viewer state, not a property of the session. See
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| listSessionsPage | `GET /api/v1/management/sessions` | limit (query: number), cursor (query: json), includeDeleted (query: boolean) | Keyset-paginated session listing. |
+| listSessionsPage | `GET /api/v1/management/sessions` | limit (query: number), cursor (query: json), includeDeleted (query: boolean), systemFilter (query: `all` \| `only` \| `exclude`), viewerOnly (query: boolean) | Keyset-paginated session listing. `systemFilter` defaults to `all`; `viewerOnly` lets an authenticated administrator request the same owner/shared/system-visible catalog as the current viewer. |
 | renameSession | `PATCH /api/v1/management/sessions/:sessionId` | sessionId (path), title (body) | Rename a session. |
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |

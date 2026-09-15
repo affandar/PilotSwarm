@@ -166,6 +166,8 @@ export class HttpApiTransport {
             limit: opts?.limit,
             cursor: opts?.cursor ?? undefined,
             includeDeleted: opts?.includeDeleted,
+            systemFilter: opts?.systemFilter,
+            viewerOnly: opts?.viewerOnly,
         });
     }
 

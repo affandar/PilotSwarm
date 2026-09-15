@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.75 — 2026-09-15
+
+- Base Agent V2 discovery: require capability search before substitute tools when a user naturally names an unattached method, workflow, service, integration, agent, skill, package, tool or MCP server. Treat authored agents as reusable workflow guidance, disclose their source, and activate selected package tools or MCP servers in the current session instead of spawning an agent merely to acquire its capabilities.
+- Base Agent V2 execution: report concise outcome/evidence/next-step updates after substantial milestones, continue working after each update, pursue independent paths around partial blockers, and keep driving until the requested outcome is complete or truly requires user input. The cluster default remains off, user overrides remain available, and effective Native Copilot tasks remain a prerequisite.
+- Portal session catalog: load system and regular sessions independently, follow keyset cursors until every visible session is loaded, reject missing or repeated continuation cursors, and deduplicate the merged catalog. Portal requests are explicitly viewer-scoped, including for administrators, so private sessions owned by other users are not loaded.
+- Management API: add compatible `systemFilter=all|only|exclude` and `viewerOnly` options to paginated session listing while preserving the existing unfiltered API default for authorized callers. Migration 0080 keeps nine-argument PostgreSQL callers compatible through the new optional system-filter argument.
+- Validation: the full PostgreSQL-provider release gate passed 219 files and 2,060 tests with 16 intentional skips and zero failures; HorizonDB was intentionally not run. Live AKS checks covered natural-language DeepWiki discovery and activation, milestone updates followed by continued execution, six-page viewer-scoped catalog loading, separately paged system sessions, deduplication, and exclusion of another user's private session.
+
 ## 0.5.74 — 2026-09-15
 
 - Base Agent V2: add an opt-in framework prompt that favors synchronous native tasks for bounded work and reserves durable agents for independent responsibility, monitoring, schedules, work beyond the turn, runtime roles, and explicit named entry points. The cluster default remains off, user overrides remain available, and V2 requires effective native tasks.
