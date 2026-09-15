@@ -858,7 +858,8 @@ export interface PilotSwarmWorkerOptions {
      * Inactivity watchdog for a single LLM turn, in milliseconds. If the
      * Copilot CLI subprocess emits no events for this long mid-turn, the turn
      * is settled as a retryable transport-loss error instead of hanging
-     * forever on a dead subprocess. 0 = disabled; undefined = 5-minute default.
+     * forever on a dead subprocess. 0 = disabled; undefined =
+     * PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS or the 5-minute default.
      */
     turnInactivityTimeoutMs?: number;
 
