@@ -12,6 +12,12 @@ surface of a [PilotSwarm](https://github.com/affandar/pilotswarm) deployment:
 Requires **Node 24+**. Everything below assumes you already have a deployment's
 portal URL — that URL is the only thing you need to configure.
 
+PilotSwarm packages can distribute skills, worker tools, MCP servers, and
+optional authored agent workflows. In deployments with Base Agent V2 enabled,
+generic sessions discover these capabilities progressively and attach only the
+ones needed for the current task. Named agents remain useful for complex,
+prepackaged workflows and independent durable entry points.
+
 ---
 
 ## Quickstart

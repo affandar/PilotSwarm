@@ -20,7 +20,7 @@ Build layered SDK-first applications on top of PilotSwarm.
 ```text
 my-sdk-app/
 ├── plugin/
-│   ├── agents/
+│   ├── agents/                 # optional named workflows
 │   ├── skills/
 │   ├── .mcp.json
 │   └── session-policy.json
@@ -38,7 +38,7 @@ my-sdk-app/
 ## Workflow
 
 1. Run a guided intake before scaffolding.
-2. Separate plugin content from runtime code.
+2. Separate plugin content from runtime code. Put reusable methods in skills, executable actions in worker tools or MCP servers, and add an agent only for a complex authored workflow or durable named entry point. A package with no agents is valid and discoverable by Base Agent V2 sessions.
 3. Treat `plugin/agents/default.agent.md` as the app-wide default overlay, not as a replacement for PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it at all three layers (worker, client, TUI). Do not name any other agent file `default`.
 4. Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default. When editing an existing agent, bump its `version` according to the app's versioning style; prefer SemVer when the app uses it.
 4. Define tools with `defineTool()` in worker-side code.

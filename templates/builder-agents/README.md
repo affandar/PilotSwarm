@@ -1,10 +1,10 @@
-# PilotSwarm Builder Agents
+# PilotSwarm Builder Templates
 
-These are distributable Copilot custom-agent templates for users who are building apps on top of PilotSwarm.
+These are distributable skills and optional Copilot custom-agent entry points for users who are building apps on top of PilotSwarm.
 
-They are not active in this repository. Copy them into the target repository you want to assist.
+They are not active in this repository. Copy the relevant templates into the target repository you want to assist. Reusable methods belong in skills; create an agent file when a complex scenario needs prepackaged workflow choreography or an independent durable entry point.
 
-## Included Agents
+## Optional Agent Entry Points
 
 - `pilotswarm-cli-builder` — scaffolds plugin-driven CLI/TUI apps built on the shipped PilotSwarm UI
 - `pilotswarm-portal-builder` — scaffolds browser-portal customization, portal branding, and auth add-on wiring
@@ -38,6 +38,12 @@ npm install pilotswarm
 ```
 
 and that PilotSwarm's built-in framework and management plugins are embedded in those packages while app `default.agent.md` files act as app-wide overlays.
+
+Published packages may contain skills, worker tools, and MCP servers without any
+agent files. Base Agent V2 sessions can discover those visible capabilities on
+demand. Keep named agents for workflows whose ordering, checks, outputs, or
+durable responsibility should be packaged rather than reconstructed from a
+generic prompt.
 
 If the target app needs a custom model catalog, check in
 `.model_providers.example.json` as a credential-free provider-type template and

@@ -413,6 +413,19 @@ test("malformed .mcp.json shapes are rejected", async () => {
     assert.match(result.errors[0].message, /"command" \(stdio\) or "url"/);
 });
 
+test("a package may combine skills, tools and MCP servers without an agent", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.rmSync(path.join(dir, "agents"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "tools"));
+    fs.writeFileSync(path.join(dir, "tools", "worker-module.js"), "export default { tools: [] };\n");
+    const result = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+    assert.deepEqual(result.manifest.agents, []);
+    assert.deepEqual(result.manifest.skills.map(skill => skill.name), ["ops"]);
+    assert.deepEqual(result.manifest.mcpServers, ["ticket-api"]);
+    assert.equal(result.manifest.hasTools, true);
+});
+
 // ─── MCP: deployment-catalog fields and agent cross-checks ──────
 
 function warningCodes(validation) {

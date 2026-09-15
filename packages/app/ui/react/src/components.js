@@ -1922,7 +1922,7 @@ function formatAdminPrincipalLabelTui(principal) {
 }
 
 function buildAdminPackagesLines(view) {
-    // TUI parity for Admin → Agents: the same selector view-model the web
+    // TUI parity for Admin → Packages: the same selector view-model the web
     // workspace renders, as text — settings tree, selected package detail,
     // files, and a preview head. Keys: a/g switch sections, j/k select,
     // r refresh (wired via the ADMIN_* commands).
@@ -2029,7 +2029,7 @@ function buildAdminPackagesLines(view) {
         }
     } else {
         lines.push([{ text: packages.empty
-            ? "No agent packages yet — add one in the portal or `pilotswarm agents push ./dir`."
+            ? "No packages yet — add skills, tools, MCP integrations, or agents in the portal or `pilotswarm agents push ./dir`."
             : "Select a package (j/k) to see detail and files.", color: "gray" }]);
     }
     lines.push([{ text: "", color: "gray" }]);
@@ -2083,7 +2083,7 @@ function buildAdminWorkersLines(view) {
     lines.push([{ text: "Actions", color: "cyan", bold: true }]);
     lines.push([
         { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
-        { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
         { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
         { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
     ]);
@@ -2173,7 +2173,7 @@ function buildAdminModelProviderLines(view) {
     lines.push([
         { text: " r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
         { text: "m/M ", color: "cyan", bold: true }, { text: "my/shared  ", color: "gray" },
-        { text: "a ", color: "yellow", bold: true }, { text: "Agents  ", color: "gray" },
+        { text: "a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
         { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
     ]);
     return lines;
@@ -2248,7 +2248,7 @@ function buildAdminConsoleLines(view) {
         ]);
         lines.push([
             { text: " a ", color: "cyan", bold: true },
-            { text: "Agents (packages)  ", color: "gray" },
+            { text: "Packages  ", color: "gray" },
             { text: "Esc ", color: "red", bold: true },
             { text: "close console and return to workspace", color: "gray" },
         ]);

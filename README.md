@@ -2,7 +2,7 @@
 
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
-> **Latest release: v0.5.73** — Stable history scrolling and more compact chat and canvas panes.
+> **Latest release: v0.5.74** — Opt-in Base Agent V2 with progressive capability discovery and native-task-first routing.
 
 A durable execution runtime for [GitHub Copilot SDK](https://github.com/github/copilot-sdk) agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by [duroxide](https://github.com/microsoft/duroxide). Just add a connection string.
 
@@ -214,7 +214,7 @@ Common entry points:
 - [User Guide](docs/user-guide/README.md) — scenario-based walkthroughs of the TUI and browser portal, simple to advanced
 - [Working On PilotSwarm](./docs/developer/contributing/working-on-pilotswarm.md) — contributors working on the SDK, TUI, providers, prompts, or orchestration
 - [Builder Agent Templates](./docs/developer/building/builder-agents.md) — copyable Copilot custom agents for users building apps on top of PilotSwarm
-- [Building Agent Packages](./docs/building-agent-packages.md) — author an uploadable agent package (agents, skills, worker tools, MCP servers); written to be handed straight to a coding assistant
+- [Building Packages](./docs/building-agent-packages.md) — author uploadable skills, tools, MCP integrations, and agent workflows; zero-agent packages are valid; written to be handed straight to a coding assistant
 - [Building SDK Apps](./docs/developer/building/sdk-apps.md) — app developers using `PilotSwarmClient` and `PilotSwarmWorker`
 - [Building Agents For SDK Apps](./docs/developer/building/sdk-agents.md) — the clearest path for authoring `default.agent.md`, named agents, skills, and tools
 - [Building CLI Apps](./docs/developer/building/cli-apps.md) — plugin- and worker-module-driven apps on the shipped TUI

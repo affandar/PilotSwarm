@@ -25,7 +25,7 @@ my-app/
 ├── package.json
 ├── plugin/
 │   ├── plugin.json
-│   ├── agents/
+│   ├── agents/                 # optional named workflows
 │   ├── skills/
 │   ├── .mcp.json
 │   └── session-policy.json
@@ -41,7 +41,7 @@ my-app/
 1. Identify whether the app should use the shipped TUI rather than a custom UI.
 2. Run a guided intake before scaffolding.
 3. Create `plugin/plugin.json` when the user wants app branding.
-4. Put prompts and personas in `plugin/agents/*.agent.md`.
+4. Put reusable methods in `plugin/skills`, executable actions in worker tools or MCP servers, and use `plugin/agents/*.agent.md` only for complex authored workflows or durable named entry points. Packages without agents remain valid and are progressively discoverable by Base Agent V2 sessions.
 5. Every generated `.agent.md` must include `schemaVersion: 1` and a `version` string. Use `version: 1.0.0` for new agents by default. When editing an existing agent, bump its `version` according to the app's versioning style; prefer SemVer when the app uses it.
 6. Treat `plugin/agents/default.agent.md` as the app-wide default overlay under PilotSwarm's embedded framework base. It is **not** a selectable session agent — PilotSwarm excludes it from the agent picker, the client rejects `createSession` calls with `agentId: "default"`, and the worker never adds it to `allowedAgentNames`. Do not name any other agent file `default`.
 6. Put reusable domain knowledge in `plugin/skills/*/SKILL.md`.

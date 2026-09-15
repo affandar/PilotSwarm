@@ -33,6 +33,13 @@ const worker = new PilotSwarmWorker({ store: process.env.DATABASE_URL });
 
 `pilotswarm-sdk` ships PilotSwarm's embedded framework prompt, framework skills, and management plugins inside the package. App code should provide its own `plugin/` directory and worker-side tool handlers on top of that base.
 
+Packages may contain skills, worker tools, MCP servers, authored agent workflows,
+or any combination of them; agent files are optional. With the opt-in Base Agent
+V2 policy, sessions progressively search visible static, published, and curated
+capabilities, load only the guidance they need, and attach selected permitted
+tools or MCP servers at the next turn boundary. Existing sessions retain the V1
+framework unless the feature is enabled, and Base V2 requires native tasks.
+
 Artifact note:
 
 - `write_artifact` remains the standard way for agents to create downloadable files.

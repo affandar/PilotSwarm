@@ -17,7 +17,12 @@ A plugin is a directory containing any combination of:
 | MCP servers | `.mcp.json` at directory root | JSON object |
 | Metadata + UI branding | `plugin.json` at directory root | JSON |
 
-Tools and model providers are configured in code or JSON rather than inside plugin directories.
+Agents are optional. Use skills for reusable methods and domain knowledge,
+tools/MCP for executable integrations, and agents for authored workflows with
+choreography, checks, and expected outputs. A skills-only or integrations-only
+package is valid; see [Building Packages](../../building-agent-packages.md)
+for the upload format, including packaged worker tools. Model providers remain
+deployment/runtime configuration.
 
 `plugin.json` is now used by the shipped UI layers for app branding. In addition to human-readable metadata, it may contain:
 
@@ -56,17 +61,17 @@ packages/sdk/plugins/system/
 │   └── default.agent.md        # Embedded framework base prompt
 └── skills/
     └── html-visuals/
-        └── SKILL.md             # opt-in: declare it to receive it
+        └── SKILL.md             # discover on demand or explicitly preload
 ```
 
 The system `default.agent.md` file is special — it becomes the embedded PilotSwarm framework base. It is not treated as an application-overridable `default.agent.md`, and it is never listed as a selectable agent.
 
 **"Always loaded" describes the tier, not its skills.** A plugin's skills are read
-into the worker's skill registry, but a skill only reaches a prompt when an agent
-names it in its `skills:` frontmatter — see [Skills](#5-skills). A skill
-nothing declares is inert: it costs nothing and does nothing. Guidance that every
-session must have belongs in the base prompt instead; skills are the mechanism for
-knowledge only *some* agents should pay for.
+into the worker's skill registry. Sessions can discover and load relevant skills
+on demand, or an agent can preload a skill by naming it in `skills:` frontmatter
+— see [Skills](#5-skills). Undeclared skills remain reusable without a named
+agent wrapper. Guidance that every session must have belongs in the base prompt;
+methods needed only for some tasks belong in skills.
 
 ### Tier 2: Management (`packages/sdk/plugins/mgmt/`)
 
@@ -233,17 +238,10 @@ registry. Two ways a skill reaches a model, and they cost very differently:
 1. **Declared (eager).** An agent names it in its `skills:` frontmatter. The
    worker splices `[PRELOADED SKILL: <name>]` plus the whole body into that
    agent's system message, on every turn, for the life of the session.
-2. **Discovered (progressive, the default since 0.5.46).** The framework base
-   prompt carries a one-line index of every registered skill — name and
-   description — and the `load_skill` system tool returns a body on demand.
-   A session pays for the index (a line per skill) and for exactly the skills
-   it pulls. This is how the canvas guidance (`html-visuals`, `canvas-apps`)
-   reaches a session that actually builds a canvas, and never one that does
-   not.
-
-(This is unrelated to the curated *facts* skills under the shared `skills/`
-fact namespace, which agents discover via `search_skills`. Same word,
-different mechanism.)
+2. **Discovered (progressive).** `search_capabilities` finds visible static,
+   published, and curated skills by goal; `load_skill` returns the selected
+   instructions on demand. Existing skill names and `search_skills` remain
+   supported. Only the methods needed for the task need to be loaded.
 
 Two consequences worth designing around:
 
@@ -251,18 +249,11 @@ Two consequences worth designing around:
   needs on *every* turn. If the model can decide when it needs a skill, let it
   load it. Write the `description` for that decision: it is the one line the
   model sees before choosing.
-- **User-scope package skills are private, but still discoverable — by their
-  owner.** Deployment and shared-package skills are indexed in the framework
-  base prompt, which every session reads, and `load_skill` serves them to
-  anyone. A user-scope package's skills are kept out of both. Since 0.5.53
-  they get the same treatment one level down: the worker holds them in a
-  second catalog keyed by owner, and a session owned by the person who
-  published them gets those names listed in its own prompt and can
-  `load_skill` them. Nobody else can — not another person, not a system
-  session, not an ownerless one, and not a session whose owner cannot be
-  read. On a name collision the owner's own copy wins. So a user-scope
-  package does **not** need `skills:` to reach its agents; declaring one
-  still works, and still costs the whole body on every turn.
+- **Visibility applies to discovery and loading.** A user-scope package's
+  skills are available to its owner's sessions, including generic sessions;
+  publishing a skill does not require an agent to declare it. The owner's
+  enabled package copy shadows the shared copy with the same name. Explicit
+  `skills:` preloads still work and carry their whole body on every turn.
 
 ### Directory Structure
 
@@ -297,18 +288,28 @@ When analyzing data, follow these steps:
 }
 ```
 
-Tools listed here are made available to sessions that load this skill.
+Dependency metadata is not an access grant. Loading skill instructions does
+not attach executable integrations; discover and activate needed permitted
+tools/MCP with `use_package`, or declare them on a named agent. Actual session
+and deployment restrictions still apply.
 
 ### Skill vs. Agent
 
 | Aspect | Skill | Agent |
 |--------|-------|-------|
-| Purpose | Inject domain knowledge | Define a persona with tools and behavior |
+| Purpose | Reusable methods and domain knowledge | Authored workflow and its declared configuration |
 | File | `SKILL.md` in a named directory | `*.agent.md` |
-| System prompt | Appended as context | Becomes the primary system prompt |
-| Tool binding | Optional (`tools.json`) | Explicit (`tools` frontmatter field) |
-| Selectable | No — loaded by directory | Yes — selected by name |
+| Instructions | Loaded as needed, or explicitly preloaded | Named session prompt; also loadable as reference |
+| Tool binding | Loading text grants no tools | Explicit `tools`/`mcpServers` declarations; runtime policy applies |
+| Entry point | `load_skill` after discovery | Select by name, or consult with `load_agent_guidelines` |
 | Collision | Additive (all directories combined) | Name collision → last tier wins |
+
+When a generic or named session applies another agent's instructions as
+reference, it tells the user the authored agent name and any material
+adaptations. Loading those instructions does not change identity, execute
+`initialPrompt`, start schedules, or inherit permissions. Use direct work or
+native tasks for bounded work; use durable sessions for independent ownership,
+schedules, work beyond the turn, or an explicit named-entry-point request.
 
 ---
 
@@ -589,7 +590,10 @@ PilotSwarm's own management agents use:
 
 **Use the embedded framework layer for invariants.** If a rule must apply to every session without exception, keep it in PilotSwarm's embedded framework prompt. Use your app's `default.agent.md` for app-wide overlays.
 
-**Prefer skills over long agent prompts.** Extract reusable domain knowledge into skills. Agents should define persona and tool access; skills should provide the how-to knowledge.
+**Choose the artifact that fits the capability.** Extract reusable methods and
+domain knowledge into discoverable skills. Put executable integrations in
+tools/MCP. Use agents for authored workflows, without requiring a named wrapper
+for every skill or tool.
 
 **Name tools descriptively.** Tool names are string references that flow through duroxide serialization. Names like `fetch_url` are better than `f` or `tool1`.
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.74 — 2026-09-15
+
+- Base Agent V2: add an opt-in framework prompt that favors synchronous native tasks for bounded work and reserves durable agents for independent responsibility, monitoring, schedules, work beyond the turn, runtime roles, and explicit named entry points. The cluster default remains off, user overrides remain available, and V2 requires effective native tasks.
+- Capability discovery: let generic and named sessions search visible static, published, and curated skills plus authored workflows, tools, and MCP servers; load selected instructions progressively; consult agent workflows as disclosed, adaptable reference material; and attach only selected permitted tools/MCP servers at a turn boundary.
+- Packages: allow packages containing any combination of skills, worker tools, and MCP servers without an agent file. Preserve existing agent-package APIs while presenting these distributions as Packages in user-facing documentation and the portal.
+- Discovery routing: require Base V2 sessions to search when a user names an unattached capability before substituting another tool. Match compact, spaced, and hyphenated product names, including `deepwiki`, `deep wiki`, and `deep-wiki`.
+- Agent Smith and builder guidance: distinguish reusable skills and executable integrations from named agents, which remain authored workflows for complex choreography and durable entry points.
+- Validation: production build and focused capability regressions passed. A live zero-agent published package supplied a skill, worker tool, and stdio MCP server to a generic Base V2 session, while V1 started without those exports attached. The HorizonDB provider gate passed 2,067 cases with three skips. The baseline gate passed 2,053 cases with 16 skips and one unchanged lease-expiry timeout under suite load; that handoff file passed in HorizonDB and in three isolated reruns without code or test-timeout changes.
+
 ## 0.5.73 — 2026-09-15
 
 - Portal: keep pane action buttons on one row by moving status below the title in narrow panes.

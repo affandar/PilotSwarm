@@ -107,10 +107,8 @@ export function createAgentDiscoveryTool(opts: {
     return defineTool("ps_list_agents", {
         description:
             "Discover the named agent blueprints available to this session: static deployment agents and enabled published agents visible to its owner. " +
-            "Before choosing a generic child or native task, inspect this list if you do not already have an adequate current catalog. " +
-            "Match the job to each role's description, declared tools, skills and source access; pass its exact agent_name to spawn_agent with task for the assignment. " +
-            "A named agent loads its own instructions, tools and startup requirement. Tools listed here are declarations; session defaults may also apply. " +
-            "If no listed specialist fits, choose the appropriate generic or native delegation. " +
+            "Entries describe a role's purpose, declared tools, skills and source access. Pass an exact agent_name to spawn_agent to launch that named workflow. " +
+            "Listing or reading a definition does not start a session or grant its capabilities. Choose execution using your base and workflow instructions. " +
             "These are blueprints, not running children; use check_agents for children already spawned. " +
             "systemOnly is for inspecting worker-managed definitions, which cannot be spawned.",
         parameters: {
