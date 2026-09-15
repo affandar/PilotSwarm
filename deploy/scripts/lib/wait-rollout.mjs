@@ -26,6 +26,7 @@ import { mkdirSync } from "node:fs";
 import { run, log } from "./common.mjs";
 import { loadDeployManifest, resolveEnvTemplate } from "./services-manifest.mjs";
 import { applyPrivateModePostDeploy } from "./private-mode-postdeploy.mjs";
+import { applyAfdModePostDeploy } from "./afd-mode-postdeploy.mjs";
 
 const FLUX_NAMESPACE = "flux-system";
 const DEFAULT_ROLLOUT_TIMEOUT = "10m";
@@ -212,6 +213,15 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   // and non-portal services no-op.
   if (service === "portal" && env.EDGE_MODE === "private") {
     await applyPrivateModePostDeploy({ env, kubeEnv });
+  }
+
+  // Portal in afd mode: recover from the AGIC first-boot RBAC race that can
+  // leave the AppGw backend pool empty (→ public AFD endpoint 504) even
+  // though the portal pod is healthy. Verifies a Healthy portal backend and
+  // restarts AGIC to re-program the pool if not. private-mode / non-portal
+  // services no-op. See afd-mode-postdeploy.mjs for the full rationale.
+  if (service === "portal" && env.EDGE_MODE === "afd") {
+    await applyAfdModePostDeploy({ env, kubeEnv });
   }
 }
 
