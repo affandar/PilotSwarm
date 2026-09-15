@@ -630,6 +630,16 @@ function buildChatMessage(event, role) {
         ? event.data.messageId
         : null;
     const chatRole = deriveChatRole(event, role, text);
+    // Model commentary is a durable user-facing progress update. Once it has
+    // been recorded as assistant.message it belongs in the transcript like
+    // any other agent message; only transient live-turn output and an
+    // unclassified/final response use the preview shell. Treating commentary
+    // as a preview hid milestone updates behind a collapsed "Agent update"
+    // disclosure even though the model had explicitly sent them to the user.
+    const assistantPhase = chatRole === "assistant"
+        ? String(event?.data?.phase || "").trim().toLowerCase()
+        : "";
+    const isAssistantCommentary = assistantPhase === "commentary";
     return {
         id: `${event.sessionId}:${event.seq}`,
         role: chatRole,
@@ -640,14 +650,16 @@ function buildChatMessage(event, role) {
         ...(sender ? { sender } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(messageId ? { messageId } : {}),
-        ...(chatRole === "assistant" ? {
+        ...(chatRole === "assistant" ? (isAssistantCommentary ? {
+            assistantCommentary: true,
+        } : {
             assistantPreview: true,
             responsePending: true,
             responseFinal: false,
             responseCanFinalize: !event?.data?.parentToolCallId && !event?.data?.toolRequests?.length,
             ...(typeof event?.data?.reasoningText === "string" && event.data.reasoningText
                 ? { liveReasoningText: event.data.reasoningText } : {}),
-        } : {}),
+        }) : {}),
     };
 }
 
@@ -1487,14 +1499,18 @@ export function appendEventToHistory(history, event) {
         if (liveIndex >= 0) {
             const settledAt = Date.now();
             const liveStartedAt = Number(liveItem?.liveStartedAt || liveItem?.createdAt) || settledAt;
-            // Keep the disclosure identity even for short streams. Committing
-            // an interim message must not reset expansion or its scroll box.
-            Object.assign(message, {
-                streamSettling: true,
-                liveKey: liveItem?.liveKey || message.messageId,
-                liveStartedAt,
-                liveReasoningText: message.liveReasoningText || liveItem?.reasoningText || "",
-            });
+            if (!message.assistantCommentary) {
+                // Keep the disclosure identity even for short streams.
+                // Committing an answer must not reset expansion or its scroll
+                // box. Durable commentary deliberately leaves this shell and
+                // becomes an ordinary visible transcript message.
+                Object.assign(message, {
+                    streamSettling: true,
+                    liveKey: liveItem?.liveKey || message.messageId,
+                    liveStartedAt,
+                    liveReasoningText: message.liveReasoningText || liveItem?.reasoningText || "",
+                });
+            }
             next.chat.splice(Math.min(liveIndex, next.chat.length), 0, message);
         }
         else next.chat.push(message);

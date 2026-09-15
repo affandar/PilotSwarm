@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.76 — 2026-09-15
+
+- Portal transcript: render durable model commentary as ordinary visible `Agent:` messages instead of hiding milestone and progress updates behind collapsed `Agent update` disclosures. The same classification applies to live delivery and history replay.
+- Streaming: retain compact `Message preview` treatment for transient deltas and preserve the existing final-answer promotion, reasoning disclosure, and stable final-response DOM.
+- Validation: shared UI and complete live-turn browser suites cover commentary arriving from live events and paged history, including replacement of a transient preview by its durable transcript message.
+
 ## 0.5.75 — 2026-09-15
 
 - Base Agent V2 discovery: require capability search before substitute tools when a user naturally names an unattached method, workflow, service, integration, agent, skill, package, tool or MCP server. Treat authored agents as reusable workflow guidance, disclose their source, and activate selected package tools or MCP servers in the current session instead of spawning an agent merely to acquire its capabilities.

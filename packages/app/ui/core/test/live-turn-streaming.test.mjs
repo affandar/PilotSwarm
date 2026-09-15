@@ -106,33 +106,50 @@ test("a successfully completed streamed answer uses the normal Agent prefix with
     assert.doesNotMatch(JSON.stringify(lines), /Agent responded|streamingCaret/);
 });
 
-test("durable-only history renders saved updates, never streaming previews, on append and replay", () => {
+test("durable commentary renders as visible transcript messages on append and replay", () => {
     const events = [
         evt(1, "user.message", { content: "Check the report" }),
-        evt(2, "assistant.message", { messageId: "m1", content: "Checking the report." }),
-        evt(3, "assistant.message", { messageId: "m2", content: "Preparing the summary." }),
-        evt(4, "assistant.message", { messageId: "m3", content: "The report is ready." }),
+        evt(2, "assistant.message", { phase: "commentary", messageId: "m1", content: "Checking the report." }),
+        evt(3, "assistant.message", { phase: "commentary", messageId: "m2", content: "Preparing the summary." }),
+        evt(4, "assistant.message", { phase: "final_answer", messageId: "m3", content: "The report is ready." }),
         evt(5, "session.turn_completed", { resultType: "completed" }),
     ];
     let appended = buildHistoryModel([], {});
-    for (const event of events) {
-        appended = appendEventToHistory(appended, event);
-        for (const line of selectChatLines(state(appended), 100, { tableMode: "sentinel" })) {
-            if (line.kind !== "assistantPreview") continue;
-            assert.equal(line.text, "Agent update");
-            assert.equal(line.isLive, false);
-            assert.equal(line.statusText, "");
-        }
-    }
+    for (const event of events) appended = appendEventToHistory(appended, event);
     const replay = buildHistoryModel(events, {});
-    const select = history => selectChatLines(state(history), 100, { tableMode: "sentinel" })
-        .filter(line => line.kind === "assistantPreview");
-    assert.deepEqual(select(replay), select(appended));
-    assert.deepEqual(select(replay).map(line => line.final), [false, false, true]);
-    const native = JSON.stringify(selectChatLines(state(replay), 100));
-    assert.doesNotMatch(native, /Message preview|Responding|streamingCaret/);
-    assert.match(native, /Checking the report/);
-    assert.match(native, /The report is ready/);
+    assert.deepEqual(replay.chat, appended.chat);
+    for (const id of ["m1", "m2"]) {
+        const update = replay.chat.find(item => item.messageId === id);
+        assert.equal(update?.assistantCommentary, true);
+        assert.equal(update?.assistantPreview, undefined);
+        assert.equal(update?.responsePending, undefined);
+    }
+    const lines = selectChatLines(state(replay), 100, { tableMode: "sentinel" });
+    const previews = lines.filter(line => line.kind === "assistantPreview");
+    assert.deepEqual(previews.map(line => line.final), [true]);
+    assert.equal(previews.filter(line => !line.final).length, 0);
+    const rendered = JSON.stringify(lines);
+    assert.doesNotMatch(rendered, /Message preview|Responding|streamingCaret/);
+    assert.match(rendered, /Checking the report/);
+    assert.match(rendered, /Preparing the summary/);
+    assert.match(rendered, /The report is ready/);
+});
+
+test("durable commentary replaces its live preview with a visible transcript message", () => {
+    let history = applyLiveTurnToHistory(buildHistoryModel([], {}), {
+        phase: "live", messageId: "m1", text: "Checking the report.", reasoningId: null, reasoningText: "",
+    }, { sessionId: "s1", seq: 1 });
+    history = appendEventToHistory(history, evt(2, "assistant.message", {
+        phase: "commentary", messageId: "m1", content: "Checking the report.",
+    }));
+
+    const update = history.chat.find(item => item.messageId === "m1");
+    assert.equal(update?.assistantCommentary, true);
+    assert.equal(update?.liveTurn, undefined);
+    assert.equal(update?.streamSettling, undefined);
+    const rendered = JSON.stringify(selectChatLines(state(history), 100, { tableMode: "sentinel" }));
+    assert.match(rendered, /Checking the report/);
+    assert.doesNotMatch(rendered, /Agent update|Message preview/);
 });
 
 test("stopped durable output stays a saved update rather than a live preview or final answer", () => {

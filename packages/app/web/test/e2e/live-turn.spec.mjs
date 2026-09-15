@@ -167,11 +167,11 @@ test("message previews are compact canvas-style disclosures with bounded scrolli
 });
 
 for (const delivery of ["events", "history"]) {
-    test(`streaming off: durable ${delivery} shows compact agent updates, not previews`, async ({ page }) => {
+    test(`durable ${delivery} shows commentary in the transcript`, async ({ page }) => {
         const events = [
-            { eventType: "assistant.message", data: { messageId: "update1", content: "Checking the report." } },
-            { eventType: "assistant.message", data: { messageId: "update2", content: "Preparing the summary." } },
-            { eventType: "assistant.message", data: { messageId: "answer", content: "The report is ready." } },
+            { eventType: "assistant.message", data: { phase: "commentary", messageId: "update1", content: "Checking the report." } },
+            { eventType: "assistant.message", data: { phase: "commentary", messageId: "update2", content: "Preparing the summary." } },
+            { eventType: "assistant.message", data: { phase: "final_answer", messageId: "answer", content: "The report is ready." } },
             { eventType: "session.turn_completed", data: { resultType: "completed" } },
         ].map((event, index) => ({ ...event, sessionId, seq: index + 1, createdAt: Date.now() - 60_000 + index }));
         if (delivery === "history") {
@@ -183,18 +183,9 @@ for (const delivery of ["events", "history"]) {
         // No live frame is sent in either path. This reproduces a deployment
         // with publishing disabled, including old messages loaded over REST.
         if (delivery === "events") for (const event of events) wire.event(event.eventType, event.data);
-        const updates = page.locator(".ps-assistant-preview:not(.is-final)");
-        await expect(updates).toHaveCount(2);
-        for (const update of await updates.all()) {
-            await expect(update.locator(":scope > summary")).toContainText("Agent update");
-            await expect(update.locator(".ps-preview-status")).toHaveCount(0);
-            await expect(update).not.toHaveAttribute("open");
-            await expect(update).toHaveCSS("border-left-width", "0px");
-            await expect(update).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-            expect((await update.boundingBox()).height).toBeLessThan(40);
-        }
-        await updates.first().locator(":scope > summary").click();
-        await expect(updates.first().getByRole("region", { name: "Agent update", exact: true })).toContainText("Checking the report.");
+        await expect(page.locator(".ps-assistant-preview:not(.is-final)")).toHaveCount(0);
+        await expect(page.getByText("Checking the report.", { exact: true })).toBeVisible();
+        await expect(page.getByText("Preparing the summary.", { exact: true })).toBeVisible();
         const answer = page.locator(".ps-assistant-preview.is-final");
         await expect(answer).toContainText("The report is ready.");
         await expect(answer.locator(":scope > summary")).toContainText("Agent:");
@@ -202,7 +193,9 @@ for (const delivery of ["events", "history"]) {
         await expect(page.locator(".ps-streaming-caret")).toHaveCount(0);
         if (delivery === "history") {
             await page.reload();
-            await expect(updates).toHaveCount(2);
+            await expect(page.getByText("Checking the report.", { exact: true })).toBeVisible();
+            await expect(page.getByText("Preparing the summary.", { exact: true })).toBeVisible();
+            await expect(page.locator(".ps-assistant-preview:not(.is-final)")).toHaveCount(0);
             await expect(page.getByText("Message preview", { exact: true })).toHaveCount(0);
         }
     });
