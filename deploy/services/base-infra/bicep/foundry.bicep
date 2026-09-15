@@ -21,10 +21,17 @@
 // valid (provisions an account with no deployments) so a stamp can opt
 // into Foundry incrementally.
 //
-// Phase 1 scope: API-key auth (`disableLocalAuth: false`). Future
-// proposals: Entra-mode (workload-identity → AAD token; see
-// docs/proposals/foundry-entra-mode-auth.md) and Foundry-hosted Claude
-// (see docs/proposals/foundry-hosted-claude.md).
+// Auth modes (`authMode` param): `entra` (default) runs the account with
+// `disableLocalAuth: true`, grants the worker workload identity the
+// Cognitive Services data-plane role, and writes a sentinel to
+// `azure-oai-key`; the worker then mints an AAD bearer token (provider
+// type `foundry-wif`). AAD token auth is not policy-gated, so entra works
+// on every subscription and is required where the governing management
+// group bans local/key auth (SFI Safe Secrets). `key` is the explicit
+// opt-out for legacy stamps whose subscription permits key auth: it writes
+// the account primary key to KV as `azure-oai-key` (back-compat with the
+// existing pss* siblings). See docs/proposals/foundry-entra-mode-auth.md.
+// Future: Foundry-hosted Claude (see docs/proposals/foundry-hosted-claude.md).
 // ==============================================================================
 
 @description('Azure region. Foundry resources are zonal-ish (data-plane lands in this region).')
@@ -45,6 +52,28 @@ param deployments array = []
 @description('Key Vault name. The Foundry account primary key is written here as `azure-oai-key`. Co-located with the account resource so listKeys() runs in the same template scope (avoids BCP422 / BCP426 around conditional secure-output indirection).')
 param keyVaultName string
 
+@description('Data-plane auth mode. `entra` (default) runs the account with `disableLocalAuth: true`, grants the worker workload identity the Cognitive Services data-plane role, and writes a sentinel placeholder to `azure-oai-key` so the stamp-invariant worker SPC mount still succeeds; the worker mints an AAD bearer token from its federated identity (provider type `foundry-wif`) instead of reading a key. AAD token auth is not policy-gated, so entra works on every subscription and is required where the governing management group bans local/key auth (e.g. SFI Safe Secrets). `key` is the explicit opt-out for legacy stamps whose subscription permits key auth: it writes the account primary key to KV as `azure-oai-key` (back-compat with the existing pss* siblings). See docs/proposals/foundry-entra-mode-auth.md.')
+@allowed([
+  'key'
+  'entra'
+])
+param authMode string = 'entra'
+
+@description('Principal (object) id of the worker workload identity (the CSI/federated UAMI). Granted `Cognitive Services OpenAI User` on this account in `entra` mode so the worker can call the data plane with an AAD token. Ignored in `key` mode; may be empty there.')
+param workloadIdentityPrincipalId string = ''
+
+// Cognitive Services OpenAI User — data-plane role that permits calling the
+// inference endpoints (chat/completions) without reading account keys. Built-in
+// role id, constant across tenants.
+var cognitiveServicesOpenAiUserRoleId = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
+
+// KV sentinel placeholder for `azure-oai-key` in entra mode — the worker's
+// sentinel-strip drops the env var at startup so the (now key-less) Foundry
+// catalog provider is treated as unset on the key path. Kept in lock-step with
+// deploy/scripts/lib/seed-secrets.mjs::SEED_SECRETS_UNSET_SENTINEL and
+// auto-secrets-sentinel.bicep.
+var keyVaultUnsetSentinel = '__PS_UNSET__'
+
 resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: accountName
   location: location
@@ -61,10 +90,11 @@ resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
     networkAcls: {
       defaultAction: 'Allow'
     }
-    // Phase 1: key-auth flow. The Entra-mode proposal flips this to true
-    // once the SDK has a token-provider codepath
-    // (docs/proposals/foundry-entra-mode-auth.md).
-    disableLocalAuth: false
+    // key mode → local/key auth on (Phase 1, back-compat). entra mode → off,
+    // the account only accepts AAD bearer tokens (workload identity). The
+    // governing management group denies accounts created with this false, so
+    // entra mode is mandatory under SFI Safe Secrets.
+    disableLocalAuth: authMode == 'entra'
   }
 }
 
@@ -93,6 +123,12 @@ resource modelDeployments 'Microsoft.CognitiveServices/accounts/deployments@2024
 // downstream auto-secrets module) so listKeys() lives in the same scope
 // as the resource declaration. Re-running this module after a portal-side
 // rotation re-syncs the KV value.
+//
+// In entra mode the account has no usable local key (disableLocalAuth) and
+// reading it would be pointless — so we write the `__PS_UNSET__` sentinel
+// instead. The secret must still exist because the worker SPC mount is
+// stamp-invariant and mounts `azure-oai-key` unconditionally. ARM's `if()`
+// short-circuits, so `listKeys()` is never evaluated in entra mode.
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
 }
@@ -101,8 +137,22 @@ resource azureOaiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'azure-oai-key'
   properties: {
-    value: account.listKeys().key1
+    value: authMode == 'entra' ? keyVaultUnsetSentinel : account.listKeys().key1
     contentType: 'text/plain'
+  }
+}
+
+// Grant the worker workload identity the data-plane role so it can call the
+// inference endpoints with an AAD bearer token. Only in entra mode, and only
+// when a principal id was supplied. The role assignment name is a stable GUID
+// derived from (account, principal, role) so re-deploys are idempotent.
+resource foundryDataPlaneRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (authMode == 'entra' && !empty(workloadIdentityPrincipalId)) {
+  name: guid(account.id, workloadIdentityPrincipalId, cognitiveServicesOpenAiUserRoleId)
+  scope: account
+  properties: {
+    principalId: workloadIdentityPrincipalId
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesOpenAiUserRoleId)
+    principalType: 'ServicePrincipal'
   }
 }
 

@@ -41,6 +41,11 @@ import {
     attachWorkloadIdentity,
     readAnthropicWifSettings,
 } from "../../dist/wif-credentials.js";
+import {
+    FOUNDRY_AAD_SCOPE,
+    foundryBearerTokenProvider,
+    _setFoundryAadCredentialForTests,
+} from "../../dist/foundry-credentials.js";
 
 const MODELS = [{ name: "claude-opus-5" }];
 
@@ -65,8 +70,9 @@ const ENTRA_ENV = {
 
 // ── the type itself ──────────────────────────────────────────────
 
-test("only anthropic-wif authenticates as the worker", () => {
+test("only workload-identity types authenticate as the worker", () => {
     assert.equal(providerTypeUsesWorkloadIdentity("anthropic-wif"), true);
+    assert.equal(providerTypeUsesWorkloadIdentity("foundry-wif"), true);
     for (const type of ["anthropic", "openai", "openai-proxy", "azure", "github", undefined, null, ""]) {
         assert.equal(providerTypeUsesWorkloadIdentity(type), false, `${type} must not be exempt`);
     }
@@ -597,4 +603,99 @@ test("a misconfigured worker is told which variables are missing", () => {
             return true;
         },
         "an opaque 401 on the first turn of every session is the alternative");
+});
+
+// ── Azure AI Foundry workload identity (foundry-wif) ─────────────
+//
+// The Foundry account runs disableLocalAuth:true under a management group that
+// bans key auth, so a foundry provider carries no apiKey and the worker mints
+// a Cognitive Services AAD token from its own federated identity. The type
+// rides the exact same seams as anthropic-wif; only the token source differs.
+
+const FOUNDRY_CONFIG = {
+    providers: [
+        {
+            id: "foundry",
+            type: "foundry-wif",
+            baseUrl: "https://acct.openai.azure.com/openai/v1",
+            models: [{ name: "gpt-5.6-sol" }],
+        },
+    ],
+};
+
+/** A credential whose getToken yields a fixed, non-expired AAD token. */
+function stubAadCredential(token = "aad-access-token") {
+    return {
+        getToken: async () => ({ token, expiresOnTimestamp: Date.now() + 3_600_000 }),
+    };
+}
+
+test("foundry-wif is openai on the wire", () => {
+    assert.equal(toSdkProviderType("foundry-wif"), "openai");
+});
+
+test("the registry keeps a keyless foundry-wif provider", () => {
+    const registry = new ModelProviderRegistry(FOUNDRY_CONFIG);
+    const ids = registry.getModelsByProvider().map((group) => group.providerId);
+    assert.deepEqual(ids, ["foundry"]);
+});
+
+test("resolve() yields an openai provider with no apiKey and the flag set", () => {
+    const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:gpt-5.6-sol");
+    assert.equal(resolved.type, "foundry-wif", "the declared type survives for the catalog");
+    assert.equal(resolved.usesWorkloadIdentity, true);
+    assert.equal(resolved.sdkProvider.type, "openai", "the SDK never sees the PilotSwarm-only value");
+    assert.equal(resolved.sdkProvider.baseUrl, "https://acct.openai.azure.com/openai/v1");
+    assert.ok(!("apiKey" in resolved.sdkProvider),
+        "an apiKey key present with no value reads as a broken credential downstream");
+});
+
+test("a foundry-wif provider is given an AAD bearer callback, and nothing else is touched", async () => {
+    _setFoundryAadCredentialForTests(stubAadCredential("aad-live"));
+    try {
+        const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:gpt-5.6-sol");
+        const provider = attachWorkloadIdentity(resolved);
+        assert.equal(typeof provider.bearerTokenProvider, "function");
+        assert.equal(await provider.bearerTokenProvider(), "aad-live");
+        assert.equal(provider.type, "openai");
+        assert.ok(!("apiKey" in provider), "a bearer token is not an api key");
+    } finally {
+        _setFoundryAadCredentialForTests(null);
+    }
+});
+
+test("the foundry callback does not disturb the provider fingerprint", () => {
+    _setFoundryAadCredentialForTests(stubAadCredential());
+    try {
+        const resolved = new ModelProviderRegistry(FOUNDRY_CONFIG).resolve("foundry:gpt-5.6-sol");
+        const withCallback = attachWorkloadIdentity(resolved);
+        assert.equal(JSON.stringify(withCallback), JSON.stringify(resolved.sdkProvider));
+    } finally {
+        _setFoundryAadCredentialForTests(null);
+    }
+});
+
+test("foundryBearerTokenProvider mints against the Cognitive Services data-plane scope", async () => {
+    let seenScope;
+    const cred = {
+        getToken: async (scope) => {
+            seenScope = scope;
+            return { token: "scoped-token", expiresOnTimestamp: Date.now() + 3_600_000 };
+        },
+    };
+    const token = await foundryBearerTokenProvider({ credential: cred })();
+    assert.equal(token, "scoped-token");
+    assert.equal(seenScope, FOUNDRY_AAD_SCOPE);
+    assert.equal(FOUNDRY_AAD_SCOPE, "https://cognitiveservices.azure.com/.default");
+});
+
+test("a foundry token failure names the workload identity, not an opaque 401", async () => {
+    const cred = { getToken: async () => null };
+    await assert.rejects(
+        foundryBearerTokenProvider({ credential: cred })(),
+        (error) => {
+            assert.match(error.message, /Cognitive Services OpenAI User/);
+            assert.match(error.message, /workload.identity/);
+            return true;
+        });
 });

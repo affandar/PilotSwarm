@@ -36,7 +36,8 @@
  * @module
  */
 
-import type { ResolvedProvider } from "./model-providers.js";
+import type { ProviderType, ResolvedProvider } from "./model-providers.js";
+import { foundryBearerTokenProvider } from "./foundry-credentials.js";
 
 /** Where the identity token that proves who this worker is comes from. */
 export type WifIdentitySource =
@@ -447,6 +448,7 @@ export function resetAnthropicWifCredentials(): void {
 export function attachWorkloadIdentity(
     resolved: {
         providerId: string;
+        type?: ProviderType | undefined;
         usesWorkloadIdentity?: boolean | undefined;
         sdkProvider?: ResolvedProvider["sdkProvider"];
     },
@@ -455,9 +457,19 @@ export function attachWorkloadIdentity(
     const provider = resolved.sdkProvider as Record<string, unknown>;
     if (!resolved.usesWorkloadIdentity) return provider;
 
-    // Said once at session creation, naming the variables that are absent,
-    // rather than as an opaque 401 on the first turn of every session that
-    // ever names this provider.
+    // Azure AI Foundry (Cognitive Services) workload identity: the token is a
+    // plain AAD access token for the Cognitive Services data plane, minted from
+    // the worker's federated identity. No per-vendor federation settings to
+    // read — DefaultAzureCredential surfaces its own actionable error if the
+    // workload identity is absent. See foundry-credentials.ts.
+    if (resolved.type === "foundry-wif") {
+        return { ...provider, bearerTokenProvider: foundryBearerTokenProvider() };
+    }
+
+    // Anthropic workload identity (default): trade the platform identity token
+    // for a short-lived Anthropic access token. Said once at session creation,
+    // naming the variables that are absent, rather than as an opaque 401 on the
+    // first turn of every session that ever names this provider.
     const found = readAnthropicWifSettings(deps.env ?? process.env);
     if (!found.ok) {
         throw new Error(

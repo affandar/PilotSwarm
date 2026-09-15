@@ -100,6 +100,16 @@ param foundrySku string = 'S0'
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
 
+@description('Optional Azure region for the Foundry account, decoupled from the stamp `region`. Empty (default) → the Foundry account is co-located with the stamp. Set when the stamp region does not offer the desired model format (e.g. westus2 offers no OpenAI-format models, so a westus2 stamp points its Foundry account at westus3/eastus2). Threaded by the deploy orchestrator via `--parameters foundryLocation=<region>` from FOUNDRY_LOCATION. The AKS worker reaches the account cross-region over its data-plane endpoint. Ignored when foundryEnabled=false.')
+param foundryLocation string = ''
+
+@description('Foundry data-plane auth mode. `entra` (default) runs the account with `disableLocalAuth: true` and grants the worker workload identity the Cognitive Services data-plane role, so the worker mints an AAD bearer token (provider type `foundry-wif`) instead of reading a key. AAD token auth is not policy-gated, so entra works on every subscription and is required where the governing management group bans local/key auth (SFI Safe Secrets). `key` is the explicit opt-out for legacy stamps whose subscription permits key auth: it writes the account key to KV as `azure-oai-key` (back-compat with the existing pss* siblings). Threaded by the deploy orchestrator from FOUNDRY_AUTH_MODE. Ignored when foundryEnabled=false.')
+@allowed([
+  'key'
+  'entra'
+])
+param foundryAuthMode string = 'entra'
+
 @description('Additional AKS agent pools (per-repo fleet git-cache pools) appended to the authoritative agentPoolProfiles of the cluster. Threaded by the deploy orchestrator from a per-stamp JSON file via `--parameters additionalAgentPools=@<file>` when AGENT_POOLS_FILE is set. Empty array → only systempool + userpool, so stamps without fleets are unaffected. Declaring the pools here keeps `deploy -- all` idempotent and non-destructive: the managedCluster PUT reconciles the full desired pool set instead of deleting fleet pools it did not create.')
 param additionalAgentPools array = []
 
@@ -508,11 +518,13 @@ module KeyVault './keyvault.bicep' = {
 module Foundry './foundry.bicep' = if (foundryEnabled) {
   name: '${resourceNamePrefix}-foundry-${dTime}'
   params: {
-    location: location
+    location: empty(foundryLocation) ? location : toLower(foundryLocation)
     accountName: foundryAccountName
     sku: foundrySku
     deployments: foundryDeployments
     keyVaultName: KeyVault.outputs.keyVaultName
+    authMode: foundryAuthMode
+    workloadIdentityPrincipalId: Uami.outputs.csiIdentityPrincipalId
   }
 }
 

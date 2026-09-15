@@ -217,6 +217,64 @@ function applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, en
   }
 }
 
+// Rewrite the staged model catalog for Entra (workload-identity) Foundry auth.
+//
+// The base catalog declares Azure AI Foundry providers in key mode:
+// `type: "openai"`, `apiKey: "env:AZURE_OAI_KEY"`. Entra (workload-identity)
+// auth is the DEFAULT for stamps that provision Foundry: the account runs
+// `disableLocalAuth: true` and the worker presents a Cognitive Services AAD
+// bearer token minted from its federated identity instead of a stored key.
+// AAD token auth is not policy-gated, so entra works on every subscription and
+// is required where the governing management group bans key auth (SFI Safe
+// Secrets). The SDK expresses this as the PilotSwarm-only provider type
+// `foundry-wif` (openai on the wire, no apiKey — see
+// packages/sdk/src/model-providers.ts + foundry-credentials.ts).
+//
+// `FOUNDRY_AUTH_MODE=key` is the explicit opt-out for legacy stamps whose
+// subscription permits key auth (the existing pss* siblings) — it leaves the
+// providers as-is. The transform is deliberately scoped to the staged copy so
+// the committed base catalog stays key-mode and can serve either path. A
+// provider is a Foundry provider iff it references the AZURE_OAI_KEY sentinel;
+// matching on that (rather than an id list) keeps new Foundry providers covered
+// for free.
+const FOUNDRY_KEY_SENTINEL = "env:AZURE_OAI_KEY";
+const FOUNDRY_CATALOG_SERVICES = new Set(["worker", "portal", "git-repo-worker"]);
+
+function applyFoundryAuthModeTransform({ service, stagedServiceRoot, env }) {
+  // Entra is the default; `key` is the only opt-out. Kept in lock-step with the
+  // bicep `foundryAuthMode` param default (main.bicep / foundry.bicep) so the
+  // account's disableLocalAuth and the catalog's auth shape never disagree.
+  if (String(env.FOUNDRY_AUTH_MODE ?? "").toLowerCase() === "key") return;
+  // Only meaningful when a Foundry account is actually provisioned. When
+  // FOUNDRY_ENABLED is false the bicep module is skipped and the providers are
+  // non-loadable anyway (empty endpoint), so leave the staged file untouched.
+  if (String(env.FOUNDRY_ENABLED ?? "").toLowerCase() !== "true") return;
+  if (!FOUNDRY_CATALOG_SERVICES.has(service)) return;
+
+  const abs = join(stagedServiceRoot, "base", "model_providers.json");
+  if (!existsSync(abs)) return;
+
+  const catalog = JSON.parse(readFileSync(abs, "utf8"));
+  const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+  if (!Array.isArray(providers)) return;
+
+  let rewritten = 0;
+  for (const provider of providers) {
+    if (provider?.apiKey !== FOUNDRY_KEY_SENTINEL) continue;
+    provider.type = "foundry-wif";
+    delete provider.apiKey;
+    rewritten++;
+  }
+  if (rewritten === 0) return;
+
+  writeFileSync(abs, `${JSON.stringify(catalog, null, 2)}\n`);
+  log(
+    "info",
+    `[stage-manifests] ${service}/base/model_providers.json: ` +
+      `rewrote ${rewritten} Foundry provider(s) to workload-identity (foundry-wif) [FOUNDRY_AUTH_MODE=${env.FOUNDRY_AUTH_MODE || "entra (default)"}]`,
+  );
+}
+
 // Resolve which overlay directory under deploy/gitops/<service>/overlays/
 // the deploy script should substitute + stage. Mirrors the bicep
 // `kustomizationPath` for each service. Exported for testability.
@@ -364,6 +422,12 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).
   applyPlaceholderRules({ service, serviceManifest, stagedServiceRoot, env });
+
+  // In Entra Foundry auth mode, rewrite the staged catalog's key-mode Foundry
+  // providers to workload identity (foundry-wif). No-op for key mode / stamps
+  // without Foundry. Must run after placeholder substitution so the endpoint
+  // is already resolved when the provider is rewritten.
+  applyFoundryAuthModeTransform({ service, stagedServiceRoot, env });
 
   return stagedServiceRoot;
 }

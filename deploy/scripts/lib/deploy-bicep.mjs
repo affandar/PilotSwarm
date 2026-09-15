@@ -292,14 +292,38 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         );
       }
       if (Array.isArray(parsedDeployments) && parsedDeployments.length > 0) {
-        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${env.LOCATION}`);
+        // Foundry account region may be decoupled from the stamp region via
+        // FOUNDRY_LOCATION (e.g. a westus2 stamp hosting its Foundry account in
+        // westus3 because westus2 offers no OpenAI-format models). Validate
+        // model availability against the EFFECTIVE Foundry region, not the
+        // stamp region, so the preflight matches where the account lands.
+        const foundryRegion = env.FOUNDRY_LOCATION || env.LOCATION;
+        log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${foundryRegion}`);
         assertFoundryDeploymentsValid({
           deployments: parsedDeployments,
-          region: env.LOCATION,
+          region: foundryRegion,
         });
       }
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
       log("info", `[${moduleName}] applying Foundry deployments from ${abs}`);
+      // Optional Foundry region override, decoupled from the stamp region.
+      // Zero-impact when unset (bicep param defaults to '' → account co-locates
+      // with the stamp). Mirrors the POSTGRES_LOCATION override pattern above.
+      if (env.FOUNDRY_LOCATION) {
+        baseArgs.push("--parameters", `foundryLocation=${env.FOUNDRY_LOCATION}`);
+        log("info", `[${moduleName}] foundryLocation override = ${env.FOUNDRY_LOCATION} (Foundry account decoupled from stamp region ${env.LOCATION})`);
+      }
+      // Foundry data-plane auth mode. Threaded only when explicitly set; when
+      // unset the bicep param defaults to `entra` (workload identity) — the
+      // stage-manifests catalog transform defaults to entra in lock-step, so
+      // the account's disableLocalAuth and the catalog's auth shape agree. Set
+      // `FOUNDRY_AUTH_MODE=key` to opt a stamp back into key auth (legacy pss*
+      // siblings whose subscription permits it). See stage-manifests.mjs +
+      // deploy/services/base-infra/bicep/foundry.bicep.
+      if (env.FOUNDRY_AUTH_MODE) {
+        baseArgs.push("--parameters", `foundryAuthMode=${env.FOUNDRY_AUTH_MODE}`);
+        log("info", `[${moduleName}] foundryAuthMode = ${env.FOUNDRY_AUTH_MODE}`);
+      }
     }
     // Additional AKS agent pools: when AGENT_POOLS_FILE is set the
     // orchestrator threads the per-stamp pools JSON file in via

@@ -129,3 +129,134 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// Minimal worker overlay env so stageManifests reaches the catalog steps.
+function workerBaseEnv(overrides = {}) {
+  return {
+    KV_NAME: "kvtest",
+    WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",
+    AZURE_TENANT_ID: "tenanttest",
+    DATABASE_URL: "postgres://test",
+    AZURE_STORAGE_ACCOUNT_URL: "https://example.blob.core.windows.net",
+    AZURE_STORAGE_CONTAINER: "copilot-sessions",
+    DEPLOYMENT_STORAGE_ACCOUNT_NAME: "satest",
+    DEPLOYMENT_STORAGE_CONTAINER_NAME: "worker-manifests",
+    ACR_LOGIN_SERVER: "acrtest.azurecr.io",
+    NAMESPACE: "pilotswarm",
+    RESOURCE_PREFIX: "pstest",
+    AKS_CLUSTER_NAME: "pstest-aks",
+    WORKER_IMAGE_TAG: "test",
+    IMAGE: "acrtest.azurecr.io/pilotswarm-worker:test",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+    PILOTSWARM_LIVE_TURN: "0",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgres://test/cms",
+    PILOTSWARM_DB_AAD_USER: "uami",
+    PILOTSWARM_WORKER_TAGS: "generic",
+    WORKER_REPLICAS: "3",
+    CALLER_AUTH_KEYVAULT_NAME: "kvtest",
+    LOCATION: "westus3",
+    FOUNDRY_ENDPOINT: "https://pstest-aif.cognitiveservices.azure.com/",
+    ...overrides,
+  };
+}
+
+test("FOUNDRY_AUTH_MODE=entra rewrites Foundry providers to foundry-wif and strips the api key", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-entra-"));
+  try {
+    const stagedRoot = stageManifests({
+      service: "worker",
+      envName: "test",
+      env: workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_AUTH_MODE: "entra" }),
+      stagingDir: tmp,
+    });
+    const catalog = JSON.parse(
+      readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8"),
+    );
+    const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+    const foundry = providers.filter((p) => p.baseUrl?.includes("/openai/v1"));
+    assert.ok(foundry.length > 0, "fixture must contain at least one Foundry provider");
+    for (const p of foundry) {
+      assert.equal(p.type, "foundry-wif", `${p.id} must become foundry-wif in entra mode`);
+      assert.ok(!("apiKey" in p), `${p.id} must carry no apiKey in entra mode`);
+    }
+    // The endpoint substitution still happened.
+    assert.ok(!JSON.stringify(catalog).includes("__FOUNDRY_ENDPOINT__"));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("entra is the default: an unset FOUNDRY_AUTH_MODE still rewrites to foundry-wif", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-default-"));
+  try {
+    const stagedRoot = stageManifests({
+      service: "worker",
+      envName: "test",
+      // FOUNDRY_ENABLED=true, FOUNDRY_AUTH_MODE unset → entra by default.
+      env: workerBaseEnv({ FOUNDRY_ENABLED: "true" }),
+      stagingDir: tmp,
+    });
+    const catalog = JSON.parse(
+      readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8"),
+    );
+    const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+    const foundry = providers.filter((p) => p.baseUrl?.includes("/openai/v1"));
+    assert.ok(foundry.length > 0, "fixture must contain at least one Foundry provider");
+    for (const p of foundry) {
+      assert.equal(p.type, "foundry-wif", `${p.id} must default to foundry-wif`);
+      assert.ok(!("apiKey" in p), `${p.id} must carry no apiKey by default`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("FOUNDRY_AUTH_MODE=key opts out: Foundry providers stay openai + env:AZURE_OAI_KEY", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-keymode-"));
+  try {
+    const stagedRoot = stageManifests({
+      service: "worker",
+      envName: "test",
+      env: workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_AUTH_MODE: "key" }),
+      stagingDir: tmp,
+    });
+    const catalog = JSON.parse(
+      readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8"),
+    );
+    const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+    const foundry = providers.filter((p) => p.baseUrl?.includes("/openai/v1"));
+    assert.ok(foundry.length > 0, "fixture must contain at least one Foundry provider");
+    for (const p of foundry) {
+      assert.equal(p.type, "openai", `${p.id} must stay openai in key mode`);
+      assert.equal(p.apiKey, "env:AZURE_OAI_KEY", `${p.id} must keep the key sentinel in key mode`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("Foundry disabled: the catalog is left untouched regardless of auth mode", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "ps-foundry-disabled-"));
+  try {
+    const stagedRoot = stageManifests({
+      service: "worker",
+      envName: "test",
+      // No FOUNDRY_ENABLED → the entra transform is a no-op; providers stay
+      // key-mode in the file (non-loadable at runtime via empty endpoint).
+      env: workerBaseEnv({ FOUNDRY_ENDPOINT: "" }),
+      stagingDir: tmp,
+    });
+    const catalog = JSON.parse(
+      readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8"),
+    );
+    const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+    const foundry = providers.filter((p) => p.apiKey === "env:AZURE_OAI_KEY");
+    assert.ok(foundry.length > 0, "providers must remain key-mode when Foundry is disabled");
+    for (const p of foundry) {
+      assert.equal(p.type, "openai");
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

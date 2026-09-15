@@ -108,7 +108,7 @@ export interface ModelVisionCapability {
  * and the worker mints a short-lived token per request from the identity its
  * own platform issues it. See `wif-credentials.ts`.
  */
-export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "github-ambient";
+export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "anthropic" | "anthropic-wif" | "foundry-wif" | "github-ambient";
 
 /**
  * Types that authenticate as the worker itself, with nothing stored.
@@ -119,7 +119,7 @@ export type ProviderType = "github" | "azure" | "openai" | "openai-proxy" | "ant
  * token minted at the moment of use.
  */
 export function providerTypeUsesWorkloadIdentity(type: ProviderType | string | undefined | null): boolean {
-    return type === "anthropic-wif";
+    return type === "anthropic-wif" || type === "foundry-wif";
 }
 
 /**
@@ -146,6 +146,11 @@ export function providerTypeUsesAmbientIdentity(type: ProviderType | string | un
 export function toSdkProviderType(type: ProviderType): "openai" | "azure" | "anthropic" {
     if (type === "openai-proxy") return "openai";
     if (type === "anthropic-wif") return "anthropic";
+    // Foundry (Azure AI Foundry / Cognitive Services) exposes an OpenAI-shaped
+    // `/openai/v1` data plane. `foundry-wif` authenticates it with an AAD bearer
+    // token (workload identity) instead of an api-key, but the wire shape is the
+    // SDK's `openai` provider — the token is attached as `bearerTokenProvider`.
+    if (type === "foundry-wif") return "openai";
     return type as "openai" | "azure" | "anthropic";
 }
 
