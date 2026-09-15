@@ -74,7 +74,7 @@ export function validateRootManifest(obj, path = "deploy-manifest.json") {
   return errs;
 }
 
-const VALID_STEPS = new Set(["build", "push", "bicep", "seed-secrets", "manifests", "rollout"]);
+const VALID_STEPS = new Set(["build", "push", "bicep", "workload-group", "seed-secrets", "manifests", "rollout"]);
 const VALID_SCOPES = new Set(["sub", "group"]);
 
 /** @internal exported for tests */

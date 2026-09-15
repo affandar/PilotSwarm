@@ -527,6 +527,58 @@ export const INPUTS = [
     },
     transform: (v) => normaliseYesNo(v),
   },
+  {
+    argKey: "workloadGroupMode",
+    flag: "--workload-group-mode",
+    metavar: "<m>",
+    help: [
+      "Join the stamp's workload managed identity to a shared Entra ID",
+      "authorization group: skip | join | create (default: skip).",
+      "Use a shared group when multiple stamps (across clusters or",
+      "subscriptions) must reuse the same out-of-band grants; a standalone",
+      "stamp should stay on skip.",
+      "  skip   — per-principal RBAC via bicep (OSS default).",
+      "  join   — add the UAMI to an existing group (--workload-group-object-id).",
+      "  create — reuse-or-create a cloud-native group (--workload-group-name).",
+    ],
+    cliChoices: ["skip", "join", "create"],
+    nonInteractiveDefault: () => "skip",
+    type: "menu",
+    prompt: "Workload MI authorization group",
+    default: "skip",
+    choices: ["skip", "join", "create"],
+    choiceDescriptions: {
+      skip: "Standalone stamp: bicep grants RBAC to the UAMI directly (default)",
+      join: "Adding this stamp to an EXISTING shared-cluster group (enter its objectId next)",
+      create: "First stamp of a new shared-cluster group: reuse-or-create it by name (enter a name next)",
+    },
+  },
+  {
+    argKey: "workloadGroupObjectId",
+    flag: "--workload-group-object-id",
+    metavar: "<id>",
+    help: "Entra group objectId. Required when --workload-group-mode join.",
+    prompt: "Existing Entra group objectId (UUID)",
+    promptIf: (ctx) => ctx.workloadGroupMode === "join",
+    validate: (v) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+        ? true
+        : "must be a group objectId (UUID)",
+    transform: "lowercase",
+  },
+  {
+    argKey: "workloadGroupName",
+    flag: "--workload-group-name",
+    metavar: "<name>",
+    help: [
+      "Entra group displayName to reuse-or-create. Required when",
+      "--workload-group-mode create. Must resolve to a cloud-native security",
+      "group (on-prem-synced groups cannot hold managed identities).",
+    ],
+    prompt: "Entra group displayName to reuse or create",
+    promptIf: (ctx) => ctx.workloadGroupMode === "create",
+    validate: (v) => (v && v.trim().length > 0 ? true : "must be a non-empty group name"),
+  },
 ];
 
 // Boolean flags that don't carry a value (and aren't part of INPUTS).
@@ -613,7 +665,7 @@ function usage() {
 
 // Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
-export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
+export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool, workloadGroupMode, workloadGroupObjectId, workloadGroupName }) {
   const prefix = `ps${name}`;
   const globalPrefix = `${prefix}global`;
   const resolvedEdgeMode = edgeMode ?? DEFAULT_EDGE_MODE;
@@ -687,6 +739,14 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     // default with the captured value. Other tlsSources don't consume it
     // and the template's empty default flows through unchanged.
     ...(sslCertDomainSuffix ? { SSL_CERT_DOMAIN_SUFFIX: sslCertDomainSuffix } : {}),
+    // Workload MI authorization group (see deploy/scripts/lib/group-membership.mjs
+    // and the `workload-group` deploy step). MODE defaults to skip so OSS stamps
+    // keep the classic per-principal RBAC bicep grants. join consumes OBJECT_ID;
+    // create consumes NAME. All three are always emitted so the local .env is a
+    // complete, self-describing record of the stamp's group posture.
+    WORKLOAD_MI_GROUP_MODE: (workloadGroupMode ?? "skip") || "skip",
+    WORKLOAD_MI_GROUP_OBJECT_ID: workloadGroupObjectId ?? "",
+    WORKLOAD_MI_GROUP_NAME: workloadGroupName ?? "",
   };
 }
 

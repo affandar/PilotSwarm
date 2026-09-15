@@ -623,6 +623,12 @@ output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
 // deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env key
 // WORKLOAD_IDENTITY_CLIENT_ID for downstream overlay `.env` substitution.
 output csiIdentityClientId string = Uami.outputs.csiIdentityClientId
+// Shared `csiIdentity` UAMI principalId (Entra object id of the workload MI).
+// Captured by the OSS deploy script (deploy-bicep.mjs OUTPUT_ALIAS) into env
+// key WORKLOAD_IDENTITY_PRINCIPAL_ID, consumed by the `workload-group` deploy
+// step (group-membership.mjs) to join the identity to the shared-cluster
+// Entra authorization group.
+output csiIdentityPrincipalId string = Uami.outputs.csiIdentityPrincipalId
 // Storage account name (consumed by Worker/Portal bicep + OSS deploy script
 // FR-022 alias map). Per-service container names are emitted by each
 // service's own bicep, not BaseInfra.

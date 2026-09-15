@@ -116,7 +116,7 @@ test("pipelineForService respects defaults by kind", () => {
   assert.deepEqual(pipelineForService(m.services.worker, m.root), [
     "build", "bicep", "push", "manifests", "rollout",
   ]);
-  assert.deepEqual(pipelineForService(m.services["base-infra"], m.root), ["bicep", "seed-secrets"]);
+  assert.deepEqual(pipelineForService(m.services["base-infra"], m.root), ["bicep", "workload-group", "seed-secrets"]);
   assert.deepEqual(defaultPipelineForKind("infra", m.root), ["bicep"]);
   assert.deepEqual(pipelineForService(m.services["git-cache"], m.root), [
     "bicep", "manifests", "rollout",

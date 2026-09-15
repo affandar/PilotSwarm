@@ -8,7 +8,10 @@
 import { loadDeployManifest, pipelineForService } from "./services-manifest.mjs";
 
 // Canonical pipeline order. bicep runs BEFORE push because BaseInfra's outputs
-// (ACR_NAME, ACR_LOGIN_SERVER, etc.) are required by push. seed-secrets runs
+// (ACR_NAME, ACR_LOGIN_SERVER, etc.) are required by push. workload-group runs
+// after bicep (the workload UAMIs it joins to the shared Entra authorization
+// group only exist once bicep has created them) and before seed-secrets so any
+// group-gated RBAC is in place before secrets flow. seed-secrets runs
 // after bicep so the Key Vault exists and the deployer has the role assignment
 // (granted by Bicep at create time), and before rollout so the worker pods
 // can mount the populated secrets via CSI on first start. Real stage modules
@@ -16,6 +19,7 @@ import { loadDeployManifest, pipelineForService } from "./services-manifest.mjs"
 export const PIPELINE = [
   "build",
   "bicep",
+  "workload-group",
   "seed-secrets",
   "push",
   "render",

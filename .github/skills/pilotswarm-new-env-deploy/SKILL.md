@@ -481,8 +481,9 @@ anything between services.
 | Validate without deploying | `npm run deploy -- <svc> <name> --steps noop` |
 
 `--steps` accepts any subset in any order; it re-sorts to canonical
-pipeline order (`build → bicep → seed-secrets → push → manifests →
-rollout`). Outside `all` mode, single-service runs also redeploy that
+pipeline order (`build → bicep → workload-group → seed-secrets → push →
+manifests → rollout`; `workload-group` is a no-op unless the stamp opts
+in via `WORKLOAD_MI_GROUP_MODE`). Outside `all` mode, single-service runs also redeploy that
 service's Bicep dependencies — the deploy-marker (template+params hash)
 short-circuits unchanged modules so this is cheap.
 

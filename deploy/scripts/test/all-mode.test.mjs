@@ -102,7 +102,7 @@ test("step intersection: --steps manifests,rollout skips infra-only services", (
 test("default (no --steps) full all-mode runs full pipeline for app services, bicep for infra", () => {
   const expected = {
     "global-infra": ["bicep"],
-    "base-infra": ["bicep", "seed-secrets"],
+    "base-infra": ["bicep", "workload-group", "seed-secrets"],
     "pls-anchor": ["bicep", "manifests"],
     "cert-manager": ["bicep", "manifests"],
     "cert-manager-issuers": ["bicep", "manifests"],

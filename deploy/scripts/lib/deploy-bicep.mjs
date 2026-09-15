@@ -58,6 +58,10 @@ const OUTPUT_ALIAS = {
   // identity per uami-federation.bicep) → cascades into both services'
   // overlay `.env` substitution in `all` mode.
   csiIdentityClientId: "WORKLOAD_IDENTITY_CLIENT_ID",
+  // Same shared csiIdentity UAMI, principalId (Entra object id). Consumed by
+  // the `workload-group` deploy step to add the identity to the shared-cluster
+  // Entra authorization group (group-membership.mjs).
+  csiIdentityPrincipalId: "WORKLOAD_IDENTITY_PRINCIPAL_ID",
   // Worker/Portal bicep each emit their own manifest container as
   // `manifestsContainerName`; since worker and portal are deployed via
   // separate `deploy.mjs` invocations, the env-key DEPLOYMENT_STORAGE_CONTAINER_NAME

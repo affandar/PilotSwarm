@@ -31,6 +31,7 @@ import { stageManifests } from "./lib/stage-manifests.mjs";
 import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
+import { ensureWorkloadGroupMembership } from "./lib/group-membership.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { configureServiceEnv, loadDeployManifest } from "./lib/services-manifest.mjs";
@@ -256,6 +257,12 @@ async function runStage(name, ctx) {
       return;
     case "seed-secrets":
       await seedSecrets({
+        envName: ctx.envName,
+        env: ctx.env,
+      });
+      return;
+    case "workload-group":
+      await ensureWorkloadGroupMembership({
         envName: ctx.envName,
         env: ctx.env,
       });

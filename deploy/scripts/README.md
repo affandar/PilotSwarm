@@ -173,6 +173,7 @@ Flags:
 | `build` | `docker build` the service image and `docker save` to a tarball under `deploy/.tmp/<svc>-<env>/`. | worker, portal |
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
 | `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. Git-cache also reconciles its instance-specific AKS node pool and workload-identity federation; git-repo-worker creates an isolated manifest container and Flux configuration. | per-service module list |
+| `workload-group` | Optionally join the stamp's workload UAMI to a shared Entra authorization group (`join`/`create`), so cross-cluster RBAC is anchored on one group instead of per-principal grants. No-op unless the stamp opts in via `WORKLOAD_MI_GROUP_MODE`. See [Workload identity authorization group](#workload-identity-authorization-group). | baseinfra |
 | `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
 | `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>[-<instance>]-<env>/`, then `az storage blob upload-batch` the Kustomize tree to the Flux Storage Bucket. Instance-scoped services publish to an isolated container. | worker, portal, git-cache, git-repo-worker |
 | `rollout` | Force the service's Flux Kustomization to reconcile, verify declared prerequisites, then wait for the declared Deployment or DaemonSet. Platform-built images are checked by tag; externally composed repo-worker images are checked by exact reference. | worker, portal, git-cache, git-repo-worker |
@@ -239,6 +240,9 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `PORTAL_HOSTNAME` | manifests (portal) | Public hostname for AFD origin. |
 | `SSL_CERT_DOMAIN_SUFFIX`, `WAF_MODE`, `ACR_SKU`, `APP_GATEWAY_PRIVATE_IP` | bicep | Static infra params. |
 | `IMAGE` | manifests | Auto-composed from `ACR_LOGIN_SERVER` + service image repo + `--image-tag`; do **not** seed manually. |
+| `WORKLOAD_MI_GROUP_MODE` | workload-group | `skip` (default) \| `join` \| `create`. Opt a stamp's workload UAMI into a shared Entra authorization group. See [Workload identity authorization group](#workload-identity-authorization-group). |
+| `WORKLOAD_MI_GROUP_OBJECT_ID` | workload-group | Group objectId. Required when `MODE=join`. |
+| `WORKLOAD_MI_GROUP_NAME` | workload-group | Group displayName. Required when `MODE=create`. |
 
 **Bicep outputs are never seeded.** `ACR_NAME`, `ACR_LOGIN_SERVER`, `KV_NAME`,
 `AKS_CLUSTER_NAME`, `BLOB_CONTAINER_ENDPOINT`, `DEPLOYMENT_STORAGE_ACCOUNT_NAME`,
@@ -250,6 +254,45 @@ all cascade into the env Map at runtime via the FR-022 alias map. A full
 split-step runs (e.g. `worker dev --steps manifests` without first running
 `--steps bicep` in the same process) fail fast with a clear "unresolved
 placeholder" error directing you to run a prior `--steps bicep`.
+
+## Workload identity authorization group
+
+By default, each stamp's workload managed identity (the `csiIdentity` UAMI that
+worker and portal pods federate against) is granted resource RBAC directly by
+Bicep — the classic per-principal model. That is fine for a single self-
+contained stamp, but it does not scale when many stamps across different
+clusters and subscriptions all need the same out-of-band grants (for example
+Key Vault, Postgres, ACR, or external systems like a source-control org or a
+telemetry store): every new stamp would have to be individually re-allow-listed
+everywhere.
+
+The optional **workload-group** step lets an operator anchor authorization on a
+single durable Entra ID security group instead. You allow-list that one group
+to the resources the workload needs once; then every stamp you stand up simply
+adds its UAMI to the group, so cluster and subscription churn never requires
+re-allow-listing. The step runs after `bicep` (the UAMI must already exist) and
+before secret seeding.
+
+It is a **no-op unless a stamp opts in**, and it carries no organization-
+specific value in checked-in files — the group identity lives entirely in the
+stamp's local `.env`:
+
+| `WORKLOAD_MI_GROUP_MODE` | Behavior | Required Graph permission |
+|---|---|---|
+| `skip` (default) | Do nothing. UAMI gets per-principal RBAC from Bicep. | none |
+| `join` | Add the UAMI to an **existing** group by `WORKLOAD_MI_GROUP_OBJECT_ID`. | `Group.ReadWrite` on that group, or group ownership |
+| `create` | Resolve `WORKLOAD_MI_GROUP_NAME` to a group (reuse the single cloud-native match if one exists, else create a cloud-native security group), then add the UAMI. | tenant self-service group creation (interactive) or `Group.ReadWrite.All` (SP/CI) |
+
+Both `join` and `create` are idempotent — re-running reuses the same group and
+skips the add when the UAMI is already a member. `create` refuses to act when a
+name is ambiguous (more than one group shares the displayName) or resolves to an
+on-prem-synced group (which cannot hold cloud managed identities); in those
+cases create the group once out of band and switch to `join` with an explicit
+`WORKLOAD_MI_GROUP_OBJECT_ID`.
+
+The UAMI's principalId is taken from the base-infra Bicep output
+`csiIdentityPrincipalId` (aliased to `WORKLOAD_IDENTITY_PRINCIPAL_ID`), so no
+principal id needs to be seeded by hand.
 
 ## How `.env` substitution works (vs. The enterprise path)
 
