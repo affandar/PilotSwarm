@@ -77,15 +77,15 @@ wrapper.
 
 ## Current queue
 
-- Assessed private-fork source commit (`ghe/feature/aks-git-repo-worker`):
-  `a6c754cfc3b53bb29a798e5345b0c2381a656224`
-- Assessed public-upstream head (`origin/main`):
-  `4bebb6be067fbc876717e18e6d931702cba5f7e1`
-- Source inventory assessed at: **2026-09-14T20:56:35-04:00**
-- Remaining candidate contribution units: **70**
-- Candidates that can be initiated now because they have no blockers: **22**
+- DAG regenerated from private-fork source commit (`ghe/feature/aks-git-repo-worker`):
+  `44f04926d84ef4fdfa8e73d3b65e2aab37308005`
+- DAG regenerated against public-upstream head (`origin/main`):
+  `db44b3992d80927d0cf42d2cc4e62e24f785aafd`
+- DAG regenerated at: **2026-09-15T12:24:31-04:00**
+- Remaining candidate contribution units: **71**
+- Candidates that can be initiated now because they have no blockers: **23**
 - Candidates currently blocked by one or more upstream items: **48**
-- Relative-risk distribution: **11 low**, **36 medium**, **23 high**
+- Relative-risk distribution: **11 low**, **37 medium**, **23 high**
 - Outstanding upstream pull requests: **5 / 5**
   ([affandar/PilotSwarm#83](https://github.com/affandar/PilotSwarm/pull/83),
   [affandar/PilotSwarm#84](https://github.com/affandar/PilotSwarm/pull/84),
@@ -95,6 +95,13 @@ wrapper.
 
 These are current-state counts derived from the U-items below. Whenever an item is removed or a
 dependency changes, recalculate the counts rather than retaining the previous values as history.
+
+Public upstream `0.5.74` does not replace any remaining candidate, and all five open transition
+pull requests remain mergeable. Prepared U06, U14, U15, U16, and U17 changes overlap files changed
+by the new Base Agent V2 capability runtime and must be reassembled from the assessed upstream
+head before publication without removing its capability discovery, prerequisite, policy,
+session-lifecycle, or worker-registry behavior. U08 and U12 overlap only package metadata or
+documentation and still require the normal current-upstream refresh before publication.
 
 ## Candidate dependency DAG
 
@@ -296,9 +303,14 @@ recomputation and do not advance the assessed private-fork source commit:
    candidates. Recalculate queue and risk totals, update every affected `Blocked by` set,
    readiness statement, coverage claim, and prepared or open branch assumption, then regenerate
    the SVG. Advance the assessed private-fork source commit only to the newest source-bearing
-   commit included in that inventory. If a fork change invalidates an open contribution's scope
-   or proof, reconcile that pull request before it can merge. The resulting graph exposes the next
-   eligible set, which begins the next cycle.
+   commit included in that inventory. After validating the Markdown and SVG agree, stage exactly
+   `UPSTREAM-CONTRIBUTION-SEQUENCE.md` and `UPSTREAM-CONTRIBUTION-DAG-VERTICAL.svg` together. The
+   bookkeeping commit subject must identify the assessed fork source commit, for example
+   `docs: regenerate upstream DAG at 44f04926`, and its body must record the full assessed fork
+   source and public-upstream SHAs. That bookkeeping commit does not advance the source stamp. If
+   a fork change invalidates an open contribution's scope or proof, reconcile that pull request
+   before it can merge. The resulting graph exposes the next eligible set, which begins the next
+   cycle.
 
 Multiple nodes can therefore be in preparation, review, or merge-drain stages simultaneously.
 The invariant is per-node independence and correct predecessor ancestry, not serial execution.
@@ -784,6 +796,59 @@ fix(deploy): bound captured command output
 Prevents ENOBUFS when deployment tools emit large manifest or build output while retaining a finite per-stream memory bound.
 Keep the implementation narrowly scoped to the generic upstream surface and its stable public contract.
 Safety comes from automated coverage that reproduces the default-buffer failure and rejects unbounded overrides.
+```
+
+<a id="u70"></a>
+### U70 - manage workload identity authorization groups
+
+- Theme / lane: Deployment / 10
+- Blocked by: None
+- Value: Lets independently deployed environments anchor shared resource authorization on a
+  stable cloud-native identity group instead of re-granting every workload identity separately.
+- Readiness: Near-ready
+- Relative risk: Medium
+- Existing coverage: Enough for the deploy logic: `group-membership.test.mjs` covers skip, join,
+  create, idempotency, ambiguity, synchronized-group refusal, and permission failures;
+  all-mode and service-manifest tests cover pipeline ordering
+- Limitations: Keep the stage opt-in with `skip` as the compatibility default. Remove
+  SQL-owned resource examples and concrete group policy from the public change. Document the
+  least-privilege difference between joining a controlled group and tenant-wide group creation,
+  and add direct scaffolder coverage for the three configuration modes. This mutates an
+  authorization boundary and requires explicit security-sensitive pre-PR approval.
+- Proposed commit message:
+
+```text
+feat(deploy): manage workload identity authorization groups
+
+Lets independently deployed environments anchor shared resource authorization on a stable cloud-native identity group.
+Keep the stage opt-in, fail closed on ambiguous or synchronized groups, and document least-privilege requirements without downstream resource policy.
+Safety comes from direct skip, join, create, idempotency, ambiguity, pipeline-order, and permission-failure tests.
+```
+
+<a id="u71"></a>
+### U71 - include external parameter files in deployment markers
+
+- Theme / lane: Deployment / 10
+- Blocked by: None
+- Value: Prevents deployment-marker cache hits from silently ignoring changes to configuration
+  files passed directly to infrastructure deployments.
+- Readiness: Ready
+- Relative risk: Medium
+- Existing coverage: Enough: `deploy-marker.test.mjs` covers content changes, deterministic
+  ordering, missing files, matching and changed hashes, and backward compatibility with old
+  markers; force-module coverage preserves the bypass contract
+- Limitations: Hash file contents without persisting them, keep parameter discovery explicit, and
+  preserve compatibility for modules without external files and markers created before the new
+  field. A changed hash may intentionally cause an additional infrastructure deployment, so the
+  public proof must cover unchanged, changed, missing, and forced paths.
+- Proposed commit message:
+
+```text
+fix(deploy): include external parameter files in deployment markers
+
+Prevents deployment-marker cache hits from silently ignoring changes to configuration files passed directly to infrastructure deployments.
+Hash external file contents without persisting them and preserve compatibility with markers and modules that have no external parameters.
+Safety comes from deterministic hashing, changed/missing file, backward-compatibility, skip, and force-path tests.
 ```
 
 
@@ -1390,20 +1455,26 @@ Accompany the change with focused tests for the remaining contract and integrati
 ### U49 - deploy Linux and Windows repository-worker fleets
 
 - Theme / lane: Repository worker / 1 + deployment
-- Blocked by: [U27](#u27), [U34](#u34), [U48](#u48)
-- Value: Adds OS-split git-cache and repo-worker DaemonSets, hostPath persistence, truthful readiness, and instance-scoped deployment.
+- Blocked by: [U27](#u27), [U34](#u34), [U48](#u48), [U71](#u71)
+- Value: Adds OS-split git-cache and repo-worker DaemonSets, hostPath persistence, truthful
+  readiness, authoritative cluster-owned agent-pool declarations, and instance-scoped deployment.
 - Readiness: Near-ready
 - Relative risk: High
 - High-risk reason: Fleet rollout changes DaemonSets, host persistence, and readiness behavior across two operating systems with live behavior only partially covered.
-- Existing coverage: Partial: `git-cache-deploy.test.mjs`, `git-repo-worker-deploy.test.mjs`, `windows-worker-build.test.mjs`
-- Limitations: Live DaemonSet behavior remains integration-only. Remove private node-pool names, memory values, repositories, registries, and exact fleet tuning.
+- Existing coverage: Partial: `git-cache-deploy.test.mjs`, `git-repo-worker-deploy.test.mjs`,
+  `windows-worker-build.test.mjs`, deploy-marker external-parameter tests
+- Limitations: Live DaemonSet behavior remains integration-only. The base infrastructure must own
+  the complete authoritative agent-pool set; per-instance services must reference pools rather
+  than create out-of-band child resources. Keep pool composition external and remove private
+  names, sizes, repositories, registries, exact fleet tuning, `GIT_CACHE_ADO_PAT`, and fixed
+  provider-specific secret names.
 - Proposed commit message:
 
 ```text
 feat(deploy): deploy Linux and Windows repository-worker fleets
 
-Adds OS-split git-cache and repo-worker DaemonSets, hostPath persistence, truthful readiness, and instance-scoped deployment.
-Live DaemonSet behavior remains integration-only. Remove private node-pool names, memory values, repositories, registries, and exact fleet tuning.
+Adds OS-split git-cache and repo-worker DaemonSets, hostPath persistence, truthful readiness, authoritative agent-pool declarations, and instance-scoped deployment.
+Keep the complete pool set under base-infrastructure ownership and remove private sizing, repository, registry, credential, and fleet-tuning policy.
 Accompany the change with focused tests for the remaining contract and integration gaps before merge.
 ```
 
@@ -1829,33 +1900,6 @@ Move tests upstream, replace domain-shaped sample keys, and decide whether polli
 Accompany the change with focused tests for the remaining contract and integration gaps before merge.
 ```
 
-<a id="u70"></a>
-### U70 - manage workload identity authorization groups
-
-- Theme / lane: Deployment / 10
-- Blocked by: None
-- Value: Lets independently deployed environments anchor shared resource authorization on a
-  stable cloud-native identity group instead of re-granting every workload identity separately.
-- Readiness: Near-ready
-- Relative risk: Medium
-- Existing coverage: Enough for the deploy logic: `group-membership.test.mjs` covers skip, join,
-  create, idempotency, ambiguity, synchronized-group refusal, and permission failures;
-  all-mode and service-manifest tests cover pipeline ordering
-- Limitations: Keep the stage opt-in with `skip` as the compatibility default. Remove
-  SQL-owned resource examples and concrete group policy from the public change. Document the
-  least-privilege difference between joining a controlled group and tenant-wide group creation,
-  and add direct scaffolder coverage for the three configuration modes. This mutates an
-  authorization boundary and requires explicit security-sensitive pre-PR approval.
-- Proposed commit message:
-
-```text
-feat(deploy): manage workload identity authorization groups
-
-Lets independently deployed environments anchor shared resource authorization on a stable cloud-native identity group.
-Keep the stage opt-in, fail closed on ambiguous or synchronized groups, and document least-privilege requirements without downstream resource policy.
-Safety comes from direct skip, join, create, idempotency, ambiguity, pipeline-order, and permission-failure tests.
-```
-
 ## Theme-level readiness summary
 
 ### Readiness by theme
@@ -1915,7 +1959,8 @@ Safety comes from direct skip, join, create, idempotency, ambiguity, pipeline-or
 - Overall readiness: Near-ready
 - Main limitation: Generic mechanics are covered but must be separated from concrete git-cache,
   repo-worker, and MCP service definitions. Workload authorization-group management also needs
-  downstream policy removed and least-privilege create-versus-join guidance.
+  downstream policy removed and least-privilege create-versus-join guidance. External parameter
+  files must participate in deployment-marker invalidation before agent-pool composition lands.
 
 #### 11. Runtime reliability and operability
 
@@ -1938,8 +1983,9 @@ The sequence is intentionally not one serial train. The following work can proce
 3. **MCP lane:** [U06](#u06), [U08](#u08), and [U12](#u12) can proceed together; then [U23](#u23) and [U24](#u24); then [U35](#u35) and [U36](#u36). [U45](#u45) remains
    blocked on its security redesign even after [U08](#u08) lands.
 4. **Deployment lane:** [U13](#u13) -> [U22](#u22) -> [U34](#u34). [U70](#u70)
-   is independently eligible but requires security-sensitive pre-PR approval. Concrete services
-   [U49](#u49) and [U54](#u54) attach only after their owning runtimes exist.
+   is independently eligible but requires security-sensitive pre-PR approval; [U71](#u71) is an
+   independently eligible marker-correctness fix and becomes a predecessor of [U49](#u49).
+   Concrete services [U49](#u49) and [U54](#u54) attach only after their owning runtimes exist.
 5. **Worker/git lane:** [U14](#u14), [U15](#u15), and [U16](#u16) can proceed together. [U26](#u26), [U40](#u40), [U46](#u46), [U47](#u47), [U48](#u48), and [U49](#u49) then form
    the repository-worker chain.
 6. **Job/orchestration lane:** [U09](#u09), [U41](#u41), and [U42](#u42) can start before durable orchestration. [U52](#u52),
@@ -1991,6 +2037,8 @@ Do not upstream:
   and concurrency values.
 - Concrete authorization-group names or IDs, downstream resource allow-lists, and SQL-owned
   examples of the permissions granted through a shared workload group.
+- Provider-specific repository credentials such as `GIT_CACHE_ADO_PAT` and fixed secret-store
+  names for a particular source-control provider; expose a generic credential seam instead.
 - The blanket MCP `/messages` WAF allow from `15cc3542`; replace it with a narrow,
   evidence-backed ingress rule if one is still required.
 - The private fleet's exact lease, timeout, pool-size, and single-slot tuning as public defaults.
