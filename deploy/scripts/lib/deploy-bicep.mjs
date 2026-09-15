@@ -120,7 +120,7 @@ const OUTPUT_ALIAS = {
   portalTlsCertName: "PORTAL_TLS_CERT_NAME",
 };
 
-export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules }) {
+export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules, replacePools }) {
   const modules = moduleListOverride ?? SERVICE_TO_MODULES[service];
   if (!modules || modules.length === 0) {
     log("info", `No Bicep modules for service '${service}'; skipping.`);
@@ -131,12 +131,12 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
 
   const forceSet = new Set(Array.isArray(forceModules) ? forceModules : []);
   for (const moduleName of modules) {
-    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet });
+    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, replacePools });
   }
   return env;
 }
 
-async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet }) {
+async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, replacePools }) {
   const scope = MODULE_SCOPE[moduleName];
   if (!scope) throw new Error(`Unknown Bicep scope for module '${moduleName}'`);
   const moduleIdentity =
@@ -328,14 +328,22 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     // Additional AKS agent pools: when AGENT_POOLS_FILE is set the
     // orchestrator threads the per-stamp pools JSON file in via
     // `--parameters additionalAgentPools=@<file>`. These are the per-repo
-    // fleet git-cache pools; declaring them through base-infra (rather than
-    // creating them out-of-band) is what makes `deploy -- all` idempotent and
-    // non-destructive — the managedCluster PUT reconciles the full desired
-    // pool set instead of deleting pools it did not create. The file is an
-    // artifact composed by the fleet/composition repository; this orchestrator
-    // stays generic and only threads it. When unset the bicep param defaults
-    // to [] and no file is required. Mirrors the foundryDeployments pattern
-    // above.
+    // fleet git-cache pools. The file is an artifact composed by the
+    // fleet/composition repository; this orchestrator stays generic and only
+    // threads it. When unset the bicep param defaults to [] and no file is
+    // required. Mirrors the foundryDeployments pattern above.
+    //
+    // IMPORTANT — a managedCluster PUT can only *update* pools that already
+    // exist; Azure forbids ADDING (or removing) a pool through it once the
+    // cluster exists ("Adding agent pools to an existing cluster is not allowed
+    // through managed cluster operations"). It also cannot change a pool's
+    // IMMUTABLE fields (vmSize, osType/osSKU, osDiskSizeGB, osDiskType) in
+    // place. So before we PUT, reconcileAgentPools() converges the live pools
+    // to the desired file via the per-pool API (`az aks nodepool add/delete`):
+    // it ADDS any declared-but-missing pool and, gated behind --replace-pools,
+    // REPLACES a pool whose immutable shape changed. After that the PUT below
+    // is a no-op for these pools. See reconcileAgentPools() at the bottom.
+    let desiredAgentPools = null;
     if (env.AGENT_POOLS_FILE) {
       const raw = env.AGENT_POOLS_FILE;
       const abs = isAbsolute(raw) ? raw : join(REPO_ROOT, raw);
@@ -363,6 +371,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         );
       }
       baseArgs.push("--parameters", `additionalAgentPools=@${abs}`);
+      desiredAgentPools = parsedPools;
       log(
         "info",
         `[${moduleName}] applying ${parsedPools.length} additional agent pool(s) from ${abs}`,
@@ -429,6 +438,18 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   }
 
   log("info", `[${moduleName}] az ${baseArgs.join(" ")}`);
+  // Preflight the fleet pools via the per-pool API BEFORE the managedCluster
+  // PUT — the PUT cannot add a missing pool or change an immutable field, so
+  // without this the deployment fails on exactly those cases. Only base-infra
+  // carries additionalAgentPools; scope==="group" guarantees `rg` is set above.
+  if (moduleName === "base-infra" && desiredAgentPools) {
+    await reconcileAgentPools({
+      pools: desiredAgentPools,
+      cluster: env.AKS_CLUSTER_NAME,
+      rg: env.RESOURCE_GROUP,
+      replacePools,
+    });
+  }
   run("az", baseArgs);
 
   // 3) Capture outputs and merge into env map.
@@ -468,6 +489,154 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     deployedAt: new Date().toISOString(),
     outputKeys: addedKeys,
   });
+}
+
+// AKS agent-pool fields that Azure treats as IMMUTABLE: they cannot be changed
+// on an existing pool, so a difference forces a pool replacement (delete + add)
+// rather than an in-place update. `desired` keys come from the AGENT_POOLS_FILE
+// entry (the shape Generate-AgentPools.ps1 emits); `live` keys are the casing
+// `az aks nodepool show` returns.
+const IMMUTABLE_POOL_FIELDS = [
+  { desired: "vmSize", live: "vmSize", label: "vmSize" },
+  { desired: "osType", live: "osType", label: "osType" },
+  { desired: "osSKU", live: "osSku", label: "osSKU" },
+  { desired: "osDiskSizeGB", live: "osDiskSizeGb", label: "osDiskSizeGB" },
+  { desired: "osDiskType", live: "osDiskType", label: "osDiskType" },
+];
+
+// Compare a desired pool (from AGENT_POOLS_FILE) against its live counterpart
+// and return the immutable fields that differ. Fields the file does not declare
+// are skipped (the pool inherits the AKS/bicep default, which we don't force).
+export function immutablePoolDiffs(desired, live) {
+  const diffs = [];
+  for (const f of IMMUTABLE_POOL_FIELDS) {
+    const want = desired[f.desired];
+    if (want === undefined || want === null) continue;
+    const have = live[f.live];
+    const equal =
+      typeof want === "number" || typeof have === "number"
+        ? Number(want) === Number(have)
+        : String(want).toLowerCase() === String(have ?? "").toLowerCase();
+    if (!equal) diffs.push({ field: f.label, desired: want, live: have ?? "(unset)" });
+  }
+  return diffs;
+}
+
+// Build the `az aks nodepool add` argv for a desired pool. Generic over the
+// AGENT_POOLS_FILE entry shape — mirrors the fields base-infra's bicep declares
+// (name, mode, count, vmSize, osType, osSKU, osDisk*, autoscale, scaleDownMode,
+// labels, taints) and injects the same vnetSubnetID the bicep defaults add, so
+// a per-pool add lands identically to a bicep-created pool.
+export function poolAddArgs(pool, { cluster, rg, subnetId }) {
+  const args = [
+    "aks", "nodepool", "add",
+    "--cluster-name", cluster,
+    "--resource-group", rg,
+    "--name", pool.name,
+  ];
+  if (pool.mode) args.push("--mode", pool.mode);
+  if (pool.count !== undefined && pool.count !== null) args.push("--node-count", String(pool.count));
+  if (pool.vmSize) args.push("--node-vm-size", pool.vmSize);
+  if (pool.osType) args.push("--os-type", pool.osType);
+  if (pool.osSKU) args.push("--os-sku", pool.osSKU);
+  if (pool.osDiskSizeGB !== undefined && pool.osDiskSizeGB !== null) args.push("--node-osdisk-size", String(pool.osDiskSizeGB));
+  if (pool.osDiskType) args.push("--node-osdisk-type", pool.osDiskType);
+  if (pool.scaleDownMode) args.push("--scale-down-mode", pool.scaleDownMode);
+  if (pool.enableAutoScaling) {
+    args.push("--enable-cluster-autoscaler");
+    if (pool.minCount !== undefined && pool.minCount !== null) args.push("--min-count", String(pool.minCount));
+    if (pool.maxCount !== undefined && pool.maxCount !== null) args.push("--max-count", String(pool.maxCount));
+  }
+  const labels = pool.nodeLabels ? Object.entries(pool.nodeLabels) : [];
+  if (labels.length) args.push("--labels", ...labels.map(([k, v]) => `${k}=${v}`));
+  if (Array.isArray(pool.nodeTaints) && pool.nodeTaints.length) args.push("--node-taints", ...pool.nodeTaints);
+  if (subnetId) args.push("--vnet-subnet-id", subnetId);
+  return args;
+}
+
+// Converge the cluster's fleet pools to the desired AGENT_POOLS_FILE via the
+// per-pool API, run BEFORE the managedCluster PUT so the PUT never has to add a
+// pool or change an immutable field (both of which it cannot do on an existing
+// cluster). Behaviour per desired pool:
+//   * cluster/RG unknown, or cluster not yet created → no-op (a fresh stamp's
+//     first PUT creates the cluster AND all pools in one shot, which is allowed).
+//   * pool absent           → `az aks nodepool add` (additive, non-destructive).
+//   * only mutable drift    → leave it; the managedCluster PUT reconciles
+//                             count/labels/taints in place.
+//   * immutable field drift → DESTRUCTIVE replacement. Refused unless
+//     `replacePools` is set; otherwise delete + re-add with the new shape.
+export async function reconcileAgentPools({ pools, cluster, rg, replacePools }) {
+  if (!Array.isArray(pools) || pools.length === 0) return;
+  if (!cluster || !rg) {
+    log(
+      "info",
+      "[base-infra] agent-pool preflight: AKS cluster/RG not known yet (fresh stamp?); the managedCluster deployment will create the cluster and its pools.",
+    );
+    return;
+  }
+  const listRes = run(
+    "az",
+    ["aks", "nodepool", "list", "--cluster-name", cluster, "--resource-group", rg, "-o", "json"],
+    { capture: true, allowFail: true },
+  );
+  if (listRes.status !== 0) {
+    log(
+      "info",
+      `[base-infra] agent-pool preflight: cluster '${cluster}' not found yet; the managedCluster deployment will create it with all declared pools.`,
+    );
+    return;
+  }
+  let live = [];
+  try {
+    live = JSON.parse(listRes.stdout);
+  } catch {
+    live = [];
+  }
+  const liveByName = new Map((Array.isArray(live) ? live : []).map((p) => [p.name, p]));
+  // Every fleet pool shares the cluster's node subnet (bicep injects it); derive
+  // it from any live pool so a per-pool add lands on the same subnet.
+  const subnetId = (Array.isArray(live) ? live : []).find((p) => p.vnetSubnetId)?.vnetSubnetId ?? null;
+
+  for (const pool of pools) {
+    if (!pool || !pool.name) continue;
+    const existing = liveByName.get(pool.name);
+
+    if (!existing) {
+      log(
+        "warn",
+        `[base-infra] pool '${pool.name}' is declared but absent on the cluster → adding via the per-pool API (a managedCluster PUT cannot add a pool to an existing cluster).`,
+      );
+      run("az", poolAddArgs(pool, { cluster, rg, subnetId }));
+      log("ok", `[base-infra] pool '${pool.name}' added (${pool.vmSize}, count ${pool.count}).`);
+      continue;
+    }
+
+    const diffs = immutablePoolDiffs(pool, existing);
+    if (diffs.length === 0) continue; // identical or mutable-only → PUT reconciles
+
+    const summary = diffs.map((d) => `${d.field} ${d.live} → ${d.desired}`).join(", ");
+    if (!replacePools) {
+      throw new Error(
+        `Agent pool '${pool.name}' needs REPLACEMENT — immutable change: ${summary}.\n` +
+          `Azure cannot change these in place, and the managedCluster deployment would fail on it.\n` +
+          `Replacing the pool DELETES it (drains + destroys its nodes), takes any fleet pinned to\n` +
+          `it DOWN, and forces those nodes to re-seed their node-local cache from scratch on recreate.\n` +
+          `This is a DESTRUCTIVE operation — re-run with --replace-pools to perform the delete + recreate.`,
+      );
+    }
+    log(
+      "warn",
+      `[base-infra] ⚠ REPLACING pool '${pool.name}' (${summary}). Deleting it now (nodes drain + destroy; the fleet on it goes DOWN and cold-reseeds), then recreating with the new shape.`,
+    );
+    run("az", [
+      "aks", "nodepool", "delete",
+      "--cluster-name", cluster,
+      "--resource-group", rg,
+      "--name", pool.name,
+    ]);
+    run("az", poolAddArgs(pool, { cluster, rg, subnetId }));
+    log("ok", `[base-infra] pool '${pool.name}' replaced (now ${pool.vmSize}, count ${pool.count}).`);
+  }
 }
 
 // Look up the AAD principal currently signed in to the Azure CLI and return

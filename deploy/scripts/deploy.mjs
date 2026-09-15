@@ -50,6 +50,7 @@ function parseArgs(argv) {
     clean: false,
     force: false,
     forceModules: [],
+    replacePools: false,
     help: false,
   };
 
@@ -61,6 +62,8 @@ function parseArgs(argv) {
       flags.clean = true;
     } else if (a === "--force") {
       flags.force = true;
+    } else if (a === "--replace-pools") {
+      flags.replacePools = true;
     } else if (a.startsWith("--force-module=")) {
       const value = a.slice("--force-module=".length);
       if (!value) throw new Error("--force-module requires a module name (got empty value)");
@@ -119,7 +122,7 @@ function parseArgs(argv) {
       "Usage: npm run deploy -- <service> <env> [flags]\n" +
         "  <service>    worker | portal | git-cache | git-repo-worker | mcp-proxy | baseinfra | globalinfra | pls-anchor | cert-manager | cert-manager-issuers | all\n" +
         "  <env>        local env name created with `npm run deploy:new-env`\n" +
-        "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --help",
+        "Flags: --steps, --region, --image-tag, --instance, --env-overlay, --clean, --force, --replace-pools, --help",
     );
   }
 
@@ -163,6 +166,11 @@ function printHelp() {
       "                      pls-anchor). Repeatable. Lighter-touch than --force when only",
       "                      one module needs to retry past its deploy marker (e.g. recover",
       "                      from an out-of-band Bicep tweak or RBAC propagation race).",
+      "  --replace-pools     Allow the base-infra agent-pool preflight to REPLACE a fleet",
+      "                      node pool whose IMMUTABLE shape changed (vmSize, osType/osSKU,",
+      "                      osDisk*). Without it, such a change aborts the deploy with a",
+      "                      warning. DESTRUCTIVE: the pool is deleted (nodes drain +",
+      "                      destroy) and recreated, so its fleet goes down + cold-reseeds.",
       "  --help, -h          Show this help.",
       "",
       "Spec: .paw/work/oss-deploy-script/Spec.md",
@@ -244,6 +252,7 @@ async function runStage(name, ctx) {
         moduleListOverride: ctx.moduleListOverride,
         force: ctx.force,
         forceModules: ctx.forceModules,
+        replacePools: ctx.replacePools,
       });
       // Re-run composition: a fresh `all` run starts with an empty outputs
       // cache, so the startup pass at line ~258 had nothing to compose.
@@ -338,6 +347,7 @@ async function main() {
     clean,
     force,
     forceModules,
+    replacePools,
   } = parsed;
 
   // 1) Validate inputs (accepts the virtual `all` aggregate)
@@ -571,6 +581,7 @@ async function main() {
       clean,
       force,
       forceModules,
+      replacePools,
       edgeMode,
     });
   } else {
@@ -586,6 +597,7 @@ async function main() {
       clean,
       force,
       forceModules,
+      replacePools,
       moduleListOverride: null,
     });
   }
@@ -607,6 +619,7 @@ async function runOneService({
   clean,
   force,
   forceModules,
+  replacePools,
   moduleListOverride,
 }) {
   if (clean) {
@@ -647,6 +660,7 @@ async function runOneService({
     moduleListOverride,
     force,
     forceModules,
+    replacePools,
   };
 
   for (const step of effectiveSteps) {
@@ -683,6 +697,7 @@ async function runAll({
   clean,
   force,
   forceModules,
+  replacePools,
   edgeMode,
 }) {
   // Drop globalinfra from the sequence when AFD is disabled — the service is
@@ -713,6 +728,7 @@ async function runAll({
       clean,
       force,
       forceModules,
+      replacePools,
       moduleListOverride: ALL_MODE_MODULES[svc],
     });
   }
