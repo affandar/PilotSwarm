@@ -18,6 +18,12 @@
 //     (Common is hashed because modules import from there.)
 //   * paramsHash   — SHA256 of the rendered params JSON file (post-env
 //     substitution). Captures every env-driven knob the deploy depends on.
+//   * externalParamsHash — SHA256 of the CONTENT of external
+//     `--parameters <name>=@<file>` inputs (additionalAgentPools,
+//     foundryDeployments, WAF custom rules) that are threaded straight to `az`
+//     and therefore NOT present in the rendered params JSON. Without this,
+//     editing one of those files (e.g. a fleet pool-count change) would not
+//     bust the marker and the change would be silently skipped.
 //
 // Marker file location:
 //   deploy/.tmp/<envName>/<Module>.deploy-marker.json
@@ -126,6 +132,35 @@ export function computeParamsHash(renderedParamsPath) {
     .digest("hex");
 }
 
+// Hash the CONTENT of external `--parameters <name>=@<file>` inputs that are
+// threaded straight to `az` and are therefore NOT captured by
+// computeParamsHash (they never enter the rendered params JSON). `files` is an
+// array of `{ param, path }`; entries are sorted by `param` for a stable
+// digest that is independent of append order. A missing file contributes a
+// sentinel so its later appearance/disappearance still busts the hash (the
+// deploy path validates existence separately with a clearer error). Returns ""
+// when there are no external files — matching the "no external params" marker
+// state so pre-existing markers (written before this field existed) still
+// compare equal for modules that use none.
+export function computeExternalParamsHash(files) {
+  if (!Array.isArray(files) || files.length === 0) return "";
+  const sorted = [...files].sort((a, b) => a.param.localeCompare(b.param));
+  const h = createHash("sha256");
+  for (const { param, path } of sorted) {
+    h.update(param);
+    h.update("\n");
+    let content;
+    try {
+      content = readFileSync(path);
+    } catch {
+      content = Buffer.from("\0__MISSING__\0");
+    }
+    h.update(content);
+    h.update("\n");
+  }
+  return h.digest("hex");
+}
+
 export function loadMarker(envName, moduleName) {
   const p = markerPath(envName, moduleName);
   if (!existsSync(p)) return null;
@@ -152,6 +187,7 @@ export function shouldSkipDeploy({
   moduleName,
   templateHash,
   paramsHash,
+  externalParamsHash = "",
   force,
 }) {
   if (force) return { skip: false, reason: "force" };
@@ -162,6 +198,13 @@ export function shouldSkipDeploy({
   }
   if (marker.paramsHash !== paramsHash) {
     return { skip: false, reason: "params changed" };
+  }
+  // Backward-compatible: markers written before externalParamsHash existed
+  // lack the field (undefined). Treat a missing stored value as "" so a module
+  // that uses no external @file params still skips against an old marker; a
+  // module that now has external params will see "" !== <hash> and redeploy.
+  if ((marker.externalParamsHash || "") !== (externalParamsHash || "")) {
+    return { skip: false, reason: "external params changed" };
   }
   // Defensive: the bicep-outputs cache is what feeds env vars to downstream
   // services when we skip. If it's missing the marker is meaningless.

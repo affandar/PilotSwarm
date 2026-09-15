@@ -71,6 +71,23 @@ param userPoolCount int = 2
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
 
+@description('Additional agent pools appended to the authoritative agentPoolProfiles array — e.g. the per-repo fleet git-cache pools. Each entry is a full agentPoolProfile object; this module injects the infra-owned invariants (vnetSubnetID, type) so callers only supply the varying fields (name, count, vmSize, osType, osSKU, osDiskSizeGB, osDiskType, mode, nodeLabels, nodeTaints). Defaults to [] so stamps without fleets are unaffected. Declaring these pools here (rather than adding them out-of-band) keeps `deploy -- all` idempotent: the managedCluster PUT reconciles the full desired pool set instead of deleting pools it does not know about.')
+param additionalAgentPools array = []
+
+// Infra-owned invariants injected into every additional pool. Placed second in
+// the union so they win over any caller-supplied value for these keys.
+// Deliberately does NOT set orchestratorVersion: like systempool/userpool below,
+// the pools inherit the control-plane version implicitly. Pinning it here would
+// make every `deploy -- all` request "latest patch of <minor>" and could nudge a
+// node reimage on the fleet pools — reconcile must stay churn-free.
+var additionalAgentPoolDefaults = {
+  type: 'VirtualMachineScaleSets'
+  vnetSubnetID: aksSubnetId
+}
+var mergedAdditionalAgentPools = [
+  for pool in additionalAgentPools: union(pool, additionalAgentPoolDefaults)
+]
+
 resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
   name: clusterName
   location: location
@@ -96,7 +113,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         objectId: kubeletIdentityPrincipalId
       }
     }
-    agentPoolProfiles: [
+    agentPoolProfiles: concat([
       {
         name: 'systempool'
         mode: 'System'
@@ -132,7 +149,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         vnetSubnetID: aksSubnetId
         availabilityZones: availabilityZones
       }
-    ]
+    ], mergedAdditionalAgentPools)
     addonProfiles: edgeMode == 'afd' ? {
       azureKeyvaultSecretsProvider: {
         enabled: true

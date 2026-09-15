@@ -64,6 +64,15 @@ export const SEEDABLE_SECRET_KEYS = [
   // load. Stamps using Azure-hosted models via managed identity, or any
   // other non-Anthropic provider, can leave this empty.
   { env: "ANTHROPIC_API_KEY", kv: "anthropic-api-key", required: false, seedEmpty: true },
+  // git-cache ADO PAT — read-only Azure DevOps Personal Access Token the
+  // per-repo git-cache DaemonSet uses to mirror private ADO repos. Optional
+  // with seedEmpty so base-infra `all` succeeds on stamps that run no fleets
+  // (git-cache is a per-instance service, not part of `all`); the sentinel
+  // keeps the git-cache SecretProviderClass mount valid. Fleet operators set
+  // GIT_CACHE_ADO_PAT in the stamp .env before `deploy -- all` so the real
+  // token is seeded here. The KV secret name matches the objectName in
+  // deploy/gitops/git-cache/base/secret-provider-class.yaml (git-cache-ado-pat).
+  { env: "GIT_CACHE_ADO_PAT", kv: "git-cache-ado-pat", required: false, seedEmpty: true },
   // Portal auth/authz config (PORTAL_AUTH_* / PORTAL_AUTHZ_*) used to live
   // here as KV secrets. They are NOT credentials — Entra tenant/client
   // GUIDs and group object ids are public; provider/default-role/allow-unauth

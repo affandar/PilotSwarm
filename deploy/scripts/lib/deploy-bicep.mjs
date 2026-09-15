@@ -18,6 +18,7 @@ import { saveCache } from "./bicep-outputs-cache.mjs";
 import {
   computeTemplateHash,
   computeParamsHash,
+  computeExternalParamsHash,
   shouldSkipDeploy,
   saveMarker,
 } from "./deploy-marker.mjs";
@@ -33,6 +34,32 @@ function moduleBicepPath(moduleName) {
 }
 function moduleParamsTemplate(moduleName) {
   return `deploy/services/${moduleName}/bicep/${moduleName}.params.template.json`;
+}
+
+// External `--parameters <name>=@<file>` inputs are threaded straight to `az`
+// (see the append sites in deployBicep) instead of through the rendered params
+// template, so their CONTENT is invisible to computeParamsHash. This helper
+// enumerates them for a module so their file contents can be folded into the
+// deploy marker via computeExternalParamsHash — otherwise editing e.g. the
+// agent-pools JSON (a pool-count change) would not bust the marker and the
+// change would be silently skipped on a marker hit. Keep this list in lockstep
+// with the `baseArgs.push("--parameters", \`<name>=@...\`)` append sites below.
+function externalParamFilesFor(moduleName, env) {
+  const files = [];
+  const add = (param, raw) => {
+    if (!raw) return;
+    files.push({ param, path: isAbsolute(raw) ? raw : join(REPO_ROOT, raw) });
+  };
+  if (moduleName === "base-infra") {
+    if ((env.FOUNDRY_ENABLED || "").toLowerCase() === "true") {
+      add("foundryDeployments", env.FOUNDRY_DEPLOYMENTS_FILE);
+    }
+    add("additionalAgentPools", env.AGENT_POOLS_FILE);
+    add("appgwWafCustomRules", env.APPGW_WAF_CUSTOM_RULES_FILE);
+  } else if (moduleName === "global-infra") {
+    add("customRules", env.WAF_CUSTOM_RULES_FILE);
+  }
+  return files;
 }
 
 export function boundedDeploymentName(value, maxLength = 64) {
@@ -139,6 +166,14 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   // bypass `az deployment create` entirely. Bypass with `--force`.
   const templateHash = computeTemplateHash(moduleName);
   const paramsHash = computeParamsHash(renderedPath);
+  // External @file params (additionalAgentPools, foundryDeployments, WAF custom
+  // rules) bypass the rendered params template, so computeParamsHash can't see
+  // them. Fold their content into the marker separately — otherwise editing one
+  // of those files (e.g. changing a fleet pool count) won't bust the marker and
+  // the change is silently skipped on a marker hit.
+  const externalParamsHash = computeExternalParamsHash(
+    externalParamFilesFor(moduleName, env),
+  );
   // Per-module bypass: the operator can pass `--force-module <name>`
   // (collected into forceSet) to force a single module past its marker
   // without rebuilding everything via `--force`.
@@ -150,6 +185,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     moduleName: moduleIdentity,
     templateHash,
     paramsHash,
+    externalParamsHash,
     force: effectiveForce,
   });
   if (decision.skip) {
@@ -265,6 +301,49 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
       baseArgs.push("--parameters", `foundryDeployments=@${abs}`);
       log("info", `[${moduleName}] applying Foundry deployments from ${abs}`);
     }
+    // Additional AKS agent pools: when AGENT_POOLS_FILE is set the
+    // orchestrator threads the per-stamp pools JSON file in via
+    // `--parameters additionalAgentPools=@<file>`. These are the per-repo
+    // fleet git-cache pools; declaring them through base-infra (rather than
+    // creating them out-of-band) is what makes `deploy -- all` idempotent and
+    // non-destructive — the managedCluster PUT reconciles the full desired
+    // pool set instead of deleting pools it did not create. The file is an
+    // artifact composed by the fleet/composition repository; this orchestrator
+    // stays generic and only threads it. When unset the bicep param defaults
+    // to [] and no file is required. Mirrors the foundryDeployments pattern
+    // above.
+    if (env.AGENT_POOLS_FILE) {
+      const raw = env.AGENT_POOLS_FILE;
+      const abs = isAbsolute(raw) ? raw : join(REPO_ROOT, raw);
+      if (!existsSync(abs)) {
+        throw new Error(
+          `AGENT_POOLS_FILE points to a missing file: ${abs}. ` +
+            `Either unset AGENT_POOLS_FILE (stamps without fleets need no pools ` +
+            `file) or generate the JSON array file. Each entry is an AKS ` +
+            `agentPoolProfile object (name, count, vmSize, osType, osSKU, ` +
+            `osDiskSizeGB, osDiskType, mode, nodeLabels, nodeTaints); the ` +
+            `base-infra module injects vnetSubnetID and type.`,
+        );
+      }
+      let parsedPools;
+      try {
+        parsedPools = JSON.parse(readFileSync(abs, "utf8"));
+      } catch (e) {
+        throw new Error(
+          `AGENT_POOLS_FILE is not valid JSON (${abs}): ${e.message}`,
+        );
+      }
+      if (!Array.isArray(parsedPools)) {
+        throw new Error(
+          `AGENT_POOLS_FILE must contain a JSON array of agent pools (${abs}).`,
+        );
+      }
+      baseArgs.push("--parameters", `additionalAgentPools=@${abs}`);
+      log(
+        "info",
+        `[${moduleName}] applying ${parsedPools.length} additional agent pool(s) from ${abs}`,
+      );
+    }
     // AppGw WAF custom rules: optional JSON array file at
     // APPGW_WAF_CUSTOM_RULES_FILE. Mirrors the AFD-side WAF_CUSTOM_RULES_FILE
     // pattern below (gitignored location, same error shape on missing file).
@@ -361,6 +440,7 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
     region: region || env.LOCATION || "",
     templateHash,
     paramsHash,
+    externalParamsHash,
     deployedAt: new Date().toISOString(),
     outputKeys: addedKeys,
   });

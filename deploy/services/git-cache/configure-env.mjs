@@ -25,10 +25,6 @@ export function configureEnv(
     "REPO_NAME",
     "REPO_URL",
     "NODE_POOL_NAME",
-    "NODE_COUNT",
-    "NODE_VM_SIZE",
-    "NODE_OSDISK_SIZE_GB",
-    "NODE_OSDISK_TYPE",
     "ADO_PAT_KEYVAULT_SECRET_URI",
   ]) {
     requireValue(env, key);
@@ -49,19 +45,6 @@ export function configureEnv(
       `NODE_POOL_NAME must be 1-${nodePoolNameMaxLength} lowercase alphanumeric characters ` +
         `and start with a letter for ${gitCacheOs} node pools; ` +
         `got '${env.NODE_POOL_NAME}'.`,
-    );
-  }
-  if (!/^[0-9]+$/.test(env.NODE_COUNT)) {
-    throw new Error(`NODE_COUNT must be a non-negative integer; got '${env.NODE_COUNT}'.`);
-  }
-  if (!/^[1-9][0-9]*$/.test(env.NODE_OSDISK_SIZE_GB)) {
-    throw new Error(
-      `NODE_OSDISK_SIZE_GB must be a positive integer; got '${env.NODE_OSDISK_SIZE_GB}'.`,
-    );
-  }
-  if (!["Managed", "Ephemeral"].includes(env.NODE_OSDISK_TYPE)) {
-    throw new Error(
-      `NODE_OSDISK_TYPE must be 'Managed' or 'Ephemeral'; got '${env.NODE_OSDISK_TYPE}'.`,
     );
   }
 

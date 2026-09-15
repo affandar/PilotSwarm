@@ -21,17 +21,10 @@ param baseInfraResourceNamePrefix string
 @maxLength(40)
 param deployInstance string
 
-@description('AKS agent-pool name for this cache instance.')
+@description('AKS agent-pool name for this cache instance. The pool itself is declared and reconciled by base-infra (additionalAgentPools); git-cache no longer creates it. Kept here only to echo the pool name in outputs and to validate naming consistency with the DaemonSet placement.')
 @minLength(1)
 @maxLength(12)
 param nodePoolName string
-
-@description('Desired number of nodes in the cache agent pool.')
-@minValue(0)
-param nodeCount int
-
-@description('VM SKU for the cache agent pool.')
-param nodeVmSize string
 
 @description('Operating system for the cache agent pool.')
 @allowed([
@@ -39,17 +32,6 @@ param nodeVmSize string
   'windows'
 ])
 param gitCacheOs string
-
-@description('OS disk size in GB for the cache agent pool.')
-@minValue(30)
-param nodeOsDiskSizeGb int
-
-@description('OS disk type for the cache agent pool.')
-@allowed([
-  'Managed'
-  'Ephemeral'
-])
-param nodeOsDiskType string
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
   name: storageAccountName
@@ -61,36 +43,6 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' existing = 
 
 resource csiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: '${baseInfraResourceNamePrefix}-csi-mid'
-}
-
-resource cacheNodePool 'Microsoft.ContainerService/managedClusters/agentPools@2024-05-01' = {
-  parent: aks
-  name: nodePoolName
-  properties: {
-    count: nodeCount
-    vmSize: nodeVmSize
-    osType: gitCacheOs == 'windows' ? 'Windows' : 'Linux'
-    osSKU: gitCacheOs == 'windows' ? 'Windows2022' : 'AzureLinux'
-    osDiskSizeGB: nodeOsDiskSizeGb
-    osDiskType: nodeOsDiskType
-    mode: 'User'
-    type: 'VirtualMachineScaleSets'
-    vnetSubnetID: aks.properties.agentPoolProfiles[0].vnetSubnetID
-    enableAutoScaling: false
-    scaleDownMode: 'Delete'
-    orchestratorVersion: aks.properties.kubernetesVersion
-    nodeLabels: {
-      'pilotswarm.io/git-cache-repo': deployInstance
-    }
-    nodeTaints: gitCacheOs == 'windows'
-      ? [
-          cacheIsolationTaint
-          'os=windows:NoSchedule'
-        ]
-      : [
-          cacheIsolationTaint
-        ]
-  }
 }
 
 resource gitCacheFederation 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
@@ -112,7 +64,6 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
 
 var configName = 'git-cache-${deployInstance}'
 var containerName = '${configName}-manifests'
-var cacheIsolationTaint = 'pilotswarm.io/cache-not-ready=true:NoSchedule'
 
 resource manifestsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
@@ -136,4 +87,4 @@ module GitCacheFluxConfig '../../common/bicep/flux-config.bicep' = {
 output manifestsContainerName string = manifestsContainer.name
 output fluxConfigName string = GitCacheFluxConfig.outputs.fluxConfigName
 output csiIdentityClientId string = csiIdentity.properties.clientId
-output cacheNodePoolName string = cacheNodePool.name
+output cacheNodePoolName string = nodePoolName

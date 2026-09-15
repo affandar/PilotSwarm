@@ -22,10 +22,6 @@ function gitCacheEnv(extra = {}) {
     CACHE_MAX_UNAVAILABLE: "1",
     CACHE_MEM_LIMIT: "1Gi",
     NODE_POOL_NAME: "samplerepo",
-    NODE_COUNT: "1",
-    NODE_VM_SIZE: "Standard_D4ds_v5",
-    NODE_OSDISK_SIZE_GB: "128",
-    NODE_OSDISK_TYPE: "Managed",
     ADO_PAT_KEYVAULT_SECRET_URI:
       "https://sample-kv.vault.azure.net/secrets/git-cache-ado-pat",
     WORKLOAD_IDENTITY_CLIENT_ID: "00000000-0000-0000-0000-000000000000",

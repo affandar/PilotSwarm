@@ -100,6 +100,9 @@ param foundrySku string = 'S0'
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
 
+@description('Additional AKS agent pools (per-repo fleet git-cache pools) appended to the authoritative agentPoolProfiles of the cluster. Threaded by the deploy orchestrator from a per-stamp JSON file via `--parameters additionalAgentPools=@<file>` when AGENT_POOLS_FILE is set. Empty array → only systempool + userpool, so stamps without fleets are unaffected. Declaring the pools here keeps `deploy -- all` idempotent and non-destructive: the managedCluster PUT reconciles the full desired pool set instead of deleting fleet pools it did not create.')
+param additionalAgentPools array = []
+
 // ----- VPN P2S ingress (additive, optional) ---------------------------------
 // All defaults preserve byte-equivalent param shape for non-VPN stamps.
 
@@ -390,6 +393,7 @@ module Aks './aks.bicep' = {
     aksControlPlaneIdentityPrincipalId: Uami.outputs.aksControlPlaneIdentityPrincipalId
     availabilityZones: availabilityZones
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
+    additionalAgentPools: additionalAgentPools
   }
   dependsOn: [
     AksControlPlaneRbac

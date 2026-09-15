@@ -17,20 +17,8 @@
     "nodePoolName": {
       "value": "${NODE_POOL_NAME}"
     },
-    "nodeCount": {
-      "value": ${NODE_COUNT}
-    },
-    "nodeVmSize": {
-      "value": "${NODE_VM_SIZE}"
-    },
     "gitCacheOs": {
       "value": "${GIT_CACHE_OS}"
-    },
-    "nodeOsDiskSizeGb": {
-      "value": ${NODE_OSDISK_SIZE_GB}
-    },
-    "nodeOsDiskType": {
-      "value": "${NODE_OSDISK_TYPE}"
     }
   }
 }
