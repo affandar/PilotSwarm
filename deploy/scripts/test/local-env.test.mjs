@@ -191,6 +191,110 @@ test("loadEnv rejects a missing external env file", () => {
   }
 });
 
+test("loadEnv composes a STAMP_ENV_FILE pointer as the base-most overlay", () => {
+  cleanup();
+  const dir = mkdtempSync(join(tmpdir(), "ps-stamp-env-"));
+  const stampFile = join(dir, "pststenv.env");
+  const cliOverlay = join(dir, "cli.env");
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    // Local stub: secrets/paths + pointer. Shared config lives in the stamp file.
+    writeFileSync(
+      TEST_FILE,
+      [
+        `STAMP_ENV_FILE=${stampFile}`,
+        "GITHUB_TOKEN=local-secret",
+        "SHARED=local",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // Versioned stamp file wins over the local stub for shared config.
+    writeFileSync(
+      stampFile,
+      ["SHARED=stamp", "STAMP_ONLY=stamp", "CLI_KEY=stamp", ""].join("\n"),
+      "utf8",
+    );
+    // Explicit --env-overlay still wins over the stamp file.
+    writeFileSync(cliOverlay, ["CLI_KEY=cli", ""].join("\n"), "utf8");
+
+    const { env, sources } = loadEnv(TEST_NAME, {
+      overlayEnvFiles: [cliOverlay],
+      processEnv: {},
+    });
+
+    assert.equal(env.SHARED, "stamp"); // stamp file wins over local stub
+    assert.equal(env.STAMP_ONLY, "stamp");
+    assert.equal(env.GITHUB_TOKEN, "local-secret"); // stub-only key preserved
+    assert.equal(env.CLI_KEY, "cli"); // explicit overlay wins over stamp file
+    assert.equal(sources.stampEnvFile, resolve(stampFile));
+    assert.deepEqual(sources.overlays, [resolve(stampFile), resolve(cliOverlay)]);
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadEnv lets process.env STAMP_ENV_FILE override the stub pointer", () => {
+  cleanup();
+  const dir = mkdtempSync(join(tmpdir(), "ps-stamp-env-proc-"));
+  const stubStamp = join(dir, "stub.env");
+  const procStamp = join(dir, "proc.env");
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, `STAMP_ENV_FILE=${stubStamp}\nSHARED=local\n`, "utf8");
+    writeFileSync(stubStamp, "WHICH=stub\n", "utf8");
+    writeFileSync(procStamp, "WHICH=proc\n", "utf8");
+
+    const { env, sources } = loadEnv(TEST_NAME, {
+      processEnv: { STAMP_ENV_FILE: procStamp },
+    });
+
+    assert.equal(env.WHICH, "proc");
+    assert.equal(sources.stampEnvFile, resolve(procStamp));
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadEnv does not double-apply a STAMP_ENV_FILE also passed explicitly", () => {
+  cleanup();
+  const dir = mkdtempSync(join(tmpdir(), "ps-stamp-env-dedupe-"));
+  const stampFile = join(dir, "stamp.env");
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, `STAMP_ENV_FILE=${stampFile}\n`, "utf8");
+    writeFileSync(stampFile, "SHARED=stamp\n", "utf8");
+
+    const { env, sources } = loadEnv(TEST_NAME, {
+      overlayEnvFiles: [stampFile],
+      processEnv: {},
+    });
+
+    assert.equal(env.SHARED, "stamp");
+    assert.deepEqual(sources.overlays, [resolve(stampFile)]);
+  } finally {
+    cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadEnv rejects a missing STAMP_ENV_FILE pointer", () => {
+  cleanup();
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(
+      TEST_FILE,
+      `STAMP_ENV_FILE=${join(dirname(TEST_FILE), "missing-stamp.env")}\n`,
+      "utf8",
+    );
+    assert.throws(() => loadEnv(TEST_NAME), /External env file not found or not a file/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(

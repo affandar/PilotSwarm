@@ -135,6 +135,14 @@ export function applyProcessEnvOverrides(env, processEnv = process.env) {
 // scaffold time). An optional external env file overlays the local file so a
 // composition repository can retain its values outside PilotSwarm.
 //
+// A stamp's non-secret configuration can be versioned in an external
+// composition repository and referenced from the gitignored local stub via a
+// persistent `STAMP_ENV_FILE` pointer (also settable through process.env). When
+// present it composes as the base-most external overlay: it wins over the local
+// stub (so the versioned file is authoritative for shared config, and the stub
+// only carries secrets + machine-specific paths), while explicit
+// `--env-overlay` files and process.env still win over it.
+//
 // process.env values override keys present after file composition (so a
 // contributor can `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc
 // tests). We do NOT merge the entire process environment.
@@ -158,12 +166,32 @@ export function loadEnv(
   if (!Array.isArray(requestedOverlays)) {
     throw new Error("overlayEnvFiles must be an array when specified.");
   }
+
+  // Persistent versioned-stamp pointer. process.env wins over the stub so CI
+  // can retarget it; the stub value is the operator default. It is the
+  // base-most external overlay so explicit --env-overlay files still win.
+  const stampEnvPointer = (
+    (processEnv.STAMP_ENV_FILE ?? "") || (merged.STAMP_ENV_FILE ?? "")
+  ).trim();
+  const orderedOverlays = stampEnvPointer
+    ? [stampEnvPointer, ...requestedOverlays]
+    : [...requestedOverlays];
+
   const resolvedOverlays = [];
-  for (const overlay of requestedOverlays) {
+  const seenOverlays = new Set();
+  let resolvedStampEnvFile = null;
+  for (const overlay of orderedOverlays) {
     const resolvedOverlay = resolve(overlay);
     if (!existsSync(resolvedOverlay) || !statSync(resolvedOverlay).isFile()) {
       throw new Error(`External env file not found or not a file: ${resolvedOverlay}`);
     }
+    if (stampEnvPointer && resolve(stampEnvPointer) === resolvedOverlay) {
+      resolvedStampEnvFile = resolvedOverlay;
+    }
+    if (seenOverlays.has(resolvedOverlay)) {
+      continue;
+    }
+    seenOverlays.add(resolvedOverlay);
     Object.assign(merged, parseEnvFile(resolvedOverlay));
     resolvedOverlays.push(resolvedOverlay);
   }
@@ -175,6 +203,7 @@ export function loadEnv(
     sources: {
       base: null,
       local: localEnvFile,
+      stampEnvFile: resolvedStampEnvFile,
       overlay: resolvedOverlays.at(-1) ?? null,
       overlays: resolvedOverlays,
     },
