@@ -77,10 +77,15 @@ wrapper.
 
 ## Current queue
 
-- Remaining candidate contribution units: **69**
-- Candidates that can be initiated now because they have no blockers: **21**
+- Assessed private-fork source commit (`ghe/feature/aks-git-repo-worker`):
+  `a6c754cfc3b53bb29a798e5345b0c2381a656224`
+- Assessed public-upstream head (`origin/main`):
+  `4bebb6be067fbc876717e18e6d931702cba5f7e1`
+- Source inventory assessed at: **2026-09-14T20:56:35-04:00**
+- Remaining candidate contribution units: **70**
+- Candidates that can be initiated now because they have no blockers: **22**
 - Candidates currently blocked by one or more upstream items: **48**
-- Relative-risk distribution: **11 low**, **35 medium**, **23 high**
+- Relative-risk distribution: **11 low**, **36 medium**, **23 high**
 - Outstanding upstream pull requests: **5 / 5**
   ([affandar/PilotSwarm#83](https://github.com/affandar/PilotSwarm/pull/83),
   [affandar/PilotSwarm#84](https://github.com/affandar/PilotSwarm/pull/84),
@@ -232,19 +237,32 @@ the current upstream platform, not to the already-deployed private fork.
 ## DAG drain algorithm
 
 The DAG is an executable convergence algorithm, not only a suggested serial order. Repeat this
-cycle until the graph is empty:
+cycle until the graph is empty. Re-enter the cycle whenever a source-bearing private fork commit
+lands, even when no upstream pull request has merged. A commit whose changed paths are wholly
+limited to `UPSTREAM-CONTRIBUTION-SEQUENCE.md` and
+`UPSTREAM-CONTRIBUTION-DAG-VERTICAL.svg` is transition bookkeeping: ignore it for source-inventory
+recomputation and do not advance the assessed private-fork source commit:
 
-1. **Compute the eligible set.** Select every remaining node whose `Blocked by` set is
+1. **Refresh the moving source inventory.** Fetch the current upstream default branch and private
+   fork feature branch before computing the eligible set or filling an available pull-request
+   slot. Inspect commits after the assessed private-fork source commit, excluding bookkeeping-only
+   commits as defined above, and classify every new, changed, or removed fork-only delta. A commit
+   that mixes planning artifacts with source changes is source-bearing and must be assessed. Add
+   or revise a candidate when it is a generic platform capability, route SQL-owned behavior to
+   `sqlmort`, and identify obsolete behavior for deletion. Recalculate affected dependencies,
+   scope, readiness, risk, coverage, and overlap with prepared or open contribution branches. The
+   fork remains a behavioral reference only: never publish its commits or history.
+2. **Compute the eligible set.** Select every remaining node whose `Blocked by` set is
    empty because it never had predecessors or all of its predecessors have merged upstream and
    been drained from the fork.
-2. **Process independent eligible nodes in parallel.** Create one isolated branch and worktree
+3. **Process independent eligible nodes in parallel.** Create one isolated branch and worktree
    per candidate from the then-current upstream default branch. Never stack unrelated eligible
    candidates on one another. A candidate may include only already-merged predecessors.
-3. **Disposition and de-risk each candidate independently.** Confirm that the node still belongs
+4. **Disposition and de-risk each candidate independently.** Confirm that the node still belongs
    upstream rather than in an external package or deletion. Reduce its implementation, test,
    security, compatibility, and operational risk as far as practical. If this work exposes a
    real predecessor, add the missing DAG edge and remove the node from the current eligible set.
-4. **Open review-sized pull requests concurrently.** Every branch must satisfy the contribution
+5. **Open review-sized pull requests concurrently.** Every branch must satisfy the contribution
    principles and carry its own red/green proof, generic-platform value statement, and focused
    review watchouts. Parallel eligibility does not justify combining independent behaviors into
    one pull request. Keep a hard limit of **five outstanding upstream pull requests** across this
@@ -259,24 +277,28 @@ cycle until the graph is empty:
    pull requests must not be created autonomously. Present the proposed scope, design, diff,
    tests, title, description, universal-value argument, security analysis, and review watchouts
    to the transition owner and obtain explicit approval first.
-5. **Let upstream review define the accepted implementation.** Apply feedback on the public
+6. **Let upstream review define the accepted implementation.** Apply feedback on the public
    contribution branch and keep the corresponding fork behavior aligned with the reviewed
    public delta. Rebase each still-open independent branch onto current upstream when accepted
    changes or other merged eligible nodes overlap it.
-6. **Monitor the open eligible set.** Track required checks, requested changes, unresolved review
+7. **Monitor the open eligible set.** Track required checks, requested changes, unresolved review
    threads, and reviewer inactivity. Human owners may need to request or prompt review, but a
    blocked pull request does not prevent unrelated eligible pull requests from progressing within
    the five-PR ceiling. When a pull request merges or closes, refill the available slot with the
    ready eligible candidate that has the lowest residual risk and least overlap with outstanding
    reviews; use dependency-unblocking value as the next tie-breaker.
-7. **Drain each merged node immediately.** After a pull request enters the upstream default
+8. **Drain each merged node immediately.** After a pull request enters the upstream default
    branch, follow the merge-commit protocol in `SQLFORK-TRANSITION-PLAN.md`. Merge the resulting
    upstream default branch into the private fork, preserve explicitly retained downstream
    behavior, and prove that the upstreamed logical delta is absent from the fork-only tree diff.
-8. **Recompute instead of preserving history here.** Remove every drained node, recalculate
-   queue and risk totals, update every affected `Blocked by` set and readiness statement, and
-   regenerate the SVG. The removals expose the next eligible set, which begins the next
-   cycle.
+9. **Recompute instead of preserving history here.** After a node drains or a source-bearing
+   private fork change lands, remove drained nodes and revise, split, add, or delete affected
+   candidates. Recalculate queue and risk totals, update every affected `Blocked by` set,
+   readiness statement, coverage claim, and prepared or open branch assumption, then regenerate
+   the SVG. Advance the assessed private-fork source commit only to the newest source-bearing
+   commit included in that inventory. If a fork change invalidates an open contribution's scope
+   or proof, reconcile that pull request before it can merge. The resulting graph exposes the next
+   eligible set, which begins the next cycle.
 
 Multiple nodes can therefore be in preparation, review, or merge-drain stages simultaneously.
 The invariant is per-node independence and correct predecessor ancestry, not serial execution.
@@ -367,7 +389,8 @@ Safety comes from existing automated coverage, including packages/sdk/test/unit/
 - Relative risk: Low
 - Existing coverage: Enough: direct diagnostic tests plus client and management integration tests
 - Limitations: Keep the public contribution to the supported diagnostic module and privacy-safe,
-  bounded process metadata; the untested trace script is excluded.
+  bounded process metadata; the untested trace script is excluded. This bounded operational
+  diagnostics scope is not security-sensitive and does not require the pre-PR approval gate.
 - Proposed commit message:
 
 ```text
@@ -389,7 +412,9 @@ Accompany the change with focused tests for the remaining contract and integrati
 - Existing coverage: Enough: router tests prove structured server logging and an unchanged
   sanitized client response
 - Limitations: Error messages remain server-log data and require normal retention and access
-  controls. Request identifiers and logging failures must not affect the response.
+  controls. Request identifiers and logging failures must not affect the response. This
+  privacy-safe server logging scope is not security-sensitive and does not require the pre-PR
+  approval gate.
 - Proposed commit message:
 
 ```text
@@ -658,8 +683,9 @@ Safety comes from direct ordering, cancellation, returned/thrown failure, and ho
   symlink/junction rejection, ownership markers, warm/cold cleanup, caller-owned preservation, and
   opt-in repository configuration discovery
 - Limitations: Platform-owned paths are opaque digest directories and repository-authored
-  configuration remains denied by default. This is git-worker design and requires explicit
-  pre-PR design approval.
+  configuration remains denied by default. Refresh the prepared change against current upstream
+  without losing its new runtime `excludedTools` binding fingerprint. This is git-worker design
+  and requires explicit pre-PR design approval.
 - Proposed commit message:
 
 ```text
@@ -701,8 +727,10 @@ Safety comes from existing automated coverage, including worker-registry-heartbe
 - Relative risk: Medium
 - Existing coverage: Enough: race, duplicate-request, navigation, cancellation, paging, and
   missing-chat fallback tests
-- Limitations: Assemble against current upstream session loading/search behavior and retain
-  native-task, canvas, outbox, model, and context reconciliation.
+- Limitations: Current upstream `0.5.73` added guarded wheel/touch history paging and DOM-anchor
+  preservation. Rebuild the prepared change from that head and retain those accepted behaviors
+  while adding only the live-seed hydration correctness guards. Also retain native-task, canvas,
+  outbox, model, and context reconciliation.
 - Proposed commit message:
 
 ```text
@@ -1801,6 +1829,33 @@ Move tests upstream, replace domain-shaped sample keys, and decide whether polli
 Accompany the change with focused tests for the remaining contract and integration gaps before merge.
 ```
 
+<a id="u70"></a>
+### U70 - manage workload identity authorization groups
+
+- Theme / lane: Deployment / 10
+- Blocked by: None
+- Value: Lets independently deployed environments anchor shared resource authorization on a
+  stable cloud-native identity group instead of re-granting every workload identity separately.
+- Readiness: Near-ready
+- Relative risk: Medium
+- Existing coverage: Enough for the deploy logic: `group-membership.test.mjs` covers skip, join,
+  create, idempotency, ambiguity, synchronized-group refusal, and permission failures;
+  all-mode and service-manifest tests cover pipeline ordering
+- Limitations: Keep the stage opt-in with `skip` as the compatibility default. Remove
+  SQL-owned resource examples and concrete group policy from the public change. Document the
+  least-privilege difference between joining a controlled group and tenant-wide group creation,
+  and add direct scaffolder coverage for the three configuration modes. This mutates an
+  authorization boundary and requires explicit security-sensitive pre-PR approval.
+- Proposed commit message:
+
+```text
+feat(deploy): manage workload identity authorization groups
+
+Lets independently deployed environments anchor shared resource authorization on a stable cloud-native identity group.
+Keep the stage opt-in, fail closed on ambiguous or synchronized groups, and document least-privilege requirements without downstream resource policy.
+Safety comes from direct skip, join, create, idempotency, ambiguity, pipeline-order, and permission-failure tests.
+```
+
 ## Theme-level readiness summary
 
 ### Readiness by theme
@@ -1858,7 +1913,9 @@ Accompany the change with focused tests for the remaining contract and integrati
 #### 10. Deployment-framework extensions
 
 - Overall readiness: Near-ready
-- Main limitation: Generic mechanics are covered but must be separated from concrete git-cache, repo-worker, and MCP service definitions.
+- Main limitation: Generic mechanics are covered but must be separated from concrete git-cache,
+  repo-worker, and MCP service definitions. Workload authorization-group management also needs
+  downstream policy removed and least-privilege create-versus-join guidance.
 
 #### 11. Runtime reliability and operability
 
@@ -1880,8 +1937,9 @@ The sequence is intentionally not one serial train. The following work can proce
    deployment lanes. [U33](#u33) should be designed in parallel because it blocks final portal cleanup.
 3. **MCP lane:** [U06](#u06), [U08](#u08), and [U12](#u12) can proceed together; then [U23](#u23) and [U24](#u24); then [U35](#u35) and [U36](#u36). [U45](#u45) remains
    blocked on its security redesign even after [U08](#u08) lands.
-4. **Deployment lane:** [U13](#u13) -> [U22](#u22) -> [U34](#u34). Concrete services [U49](#u49) and [U54](#u54) attach only after
-   their owning runtimes exist.
+4. **Deployment lane:** [U13](#u13) -> [U22](#u22) -> [U34](#u34). [U70](#u70)
+   is independently eligible but requires security-sensitive pre-PR approval. Concrete services
+   [U49](#u49) and [U54](#u54) attach only after their owning runtimes exist.
 5. **Worker/git lane:** [U14](#u14), [U15](#u15), and [U16](#u16) can proceed together. [U26](#u26), [U40](#u40), [U46](#u46), [U47](#u47), [U48](#u48), and [U49](#u49) then form
    the repository-worker chain.
 6. **Job/orchestration lane:** [U09](#u09), [U41](#u41), and [U42](#u42) can start before durable orchestration. [U52](#u52),
@@ -1931,6 +1989,8 @@ Do not upstream:
 - The private fork transition plan or migration-ledger conversion procedure.
 - Concrete ACR names, node-pool names, private repositories, private NuGet feeds, or fleet memory
   and concurrency values.
+- Concrete authorization-group names or IDs, downstream resource allow-lists, and SQL-owned
+  examples of the permissions granted through a shared workload group.
 - The blanket MCP `/messages` WAF allow from `15cc3542`; replace it with a narrow,
   evidence-backed ingress rule if one is still required.
 - The private fleet's exact lease, timeout, pool-size, and single-slot tuning as public defaults.
