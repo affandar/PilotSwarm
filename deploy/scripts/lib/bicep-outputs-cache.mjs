@@ -66,7 +66,17 @@ export function saveCache(envName, addedKeys, env) {
   let changed = 0;
   for (const k of addedKeys) {
     const v = env[k];
-    if (v === undefined || v === null || v === "") continue;
+    // An output the deployment declared but returned EMPTY (e.g. postgresFqdn
+    // when deployPostgres=false) must evict any prior value. Keeping the old
+    // one would let a later run compose a connection string for a server this
+    // stamp no longer provisions.
+    if (v === undefined || v === null || v === "") {
+      if (k in cached) {
+        delete cached[k];
+        changed++;
+      }
+      continue;
+    }
     if (cached[k] !== v) {
       cached[k] = v;
       changed++;

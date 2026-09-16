@@ -19,6 +19,39 @@
 import { log } from "./common.mjs";
 
 export function composeDerivedEnv(env) {
+  // Bring-your-own database (DEPLOY_POSTGRES=0): base-infra provisioned no
+  // server, so any POSTGRES_* value here is empty or a stale leftover that the
+  // per-env Bicep outputs cache merged in from an earlier provisioned run
+  // (bicep-outputs-cache.mjs deliberately keeps prior keys). Composing from
+  // those would silently point the worker back at the OLD server, so drop them
+  // and require the caller to supply the connection strings explicitly.
+  const byoDatabase = String(env.DEPLOY_POSTGRES ?? "").trim() === "0";
+  if (byoDatabase) {
+    for (const k of ["POSTGRES_FQDN", "POSTGRES_AAD_ADMIN_PRINCIPAL_NAME"]) {
+      if (env[k]) {
+        log("info", `DEPLOY_POSTGRES=0: ignoring stale ${k}; it will not be composed into a connection string.`);
+        delete env[k];
+      }
+    }
+    const missing = ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL"].filter((k) => !env[k]);
+    if (missing.length > 0) {
+      throw new Error(
+        `DEPLOY_POSTGRES=0 (bring your own database) requires ${missing.join(" and ")} to be set in ` +
+          `the environment; base-infra provisions no server to compose them from.`,
+      );
+    }
+    // Entra auth is a property of the provisioned stamp server. A supplied
+    // password URL cannot use it, so require an explicit choice instead of
+    // silently inheriting the template default.
+    if (String(env.PILOTSWARM_USE_MANAGED_IDENTITY ?? "").trim() === "1" && !env.PILOTSWARM_DB_AAD_USER) {
+      throw new Error(
+        "DEPLOY_POSTGRES=0 with PILOTSWARM_USE_MANAGED_IDENTITY=1 requires PILOTSWARM_DB_AAD_USER " +
+          "(the Entra principal registered on your database). Set it, or set " +
+          "PILOTSWARM_USE_MANAGED_IDENTITY=0 to use credentials embedded in the supplied URLs.",
+      );
+    }
+  }
+
   // DATABASE_URL — overlay ConfigMap value, NOT a KV secret in the
   // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
   // Embeds the deterministic bootstrap admin password from postgres.bicep.

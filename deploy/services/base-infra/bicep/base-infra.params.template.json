@@ -38,6 +38,9 @@
     "logAnalyticsRetentionDays": {
       "value": ${LOG_ANALYTICS_RETENTION_DAYS}
     },
+    "deployPostgres": {
+      "value": ${DEPLOY_POSTGRES}
+    },
     "foundryEnabled": {
       "value": ${FOUNDRY_ENABLED}
     },

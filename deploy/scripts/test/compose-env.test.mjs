@@ -129,3 +129,72 @@ test("simulates the deploy flow: empty cache, then bicep merges BaseInfra output
   assert.equal(env.PILOTSWARM_DB_AAD_USER, "ps-csi-mid");
   assert.ok(env.PILOTSWARM_CMS_FACTS_DATABASE_URL);
 });
+
+// ─── Bring-your-own database (DEPLOY_POSTGRES=0) ───
+
+test("DEPLOY_POSTGRES=0 drops stale cached POSTGRES_* instead of composing from them", () => {
+  // The per-env Bicep outputs cache still holds the previously provisioned
+  // server, and composeDerivedEnv runs BEFORE the bicep stage. Without the
+  // guard, PILOTSWARM_CMS_FACTS_DATABASE_URL would be built from the OLD host
+  // while DATABASE_URL points at the supplied one.
+  const env = {
+    DEPLOY_POSTGRES: "0",
+    POSTGRES_FQDN: "old-stamp-pg.postgres.database.azure.com",
+    POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "old-stamp-uami",
+    DATABASE_URL: "postgresql://u:p@byo.example.com:5432/app?sslmode=require",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u:p@byo.example.com:5432/app?sslmode=require",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "0",
+  };
+  composeDerivedEnv(env);
+  assert.equal(env.POSTGRES_FQDN, undefined);
+  assert.equal(env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME, undefined);
+  assert.equal(env.PILOTSWARM_DB_AAD_USER, undefined);
+  assert.ok(!env.DATABASE_URL.includes("old-stamp-pg"));
+  assert.ok(!env.PILOTSWARM_CMS_FACTS_DATABASE_URL.includes("old-stamp-pg"));
+});
+
+test("DEPLOY_POSTGRES=0 requires both connection strings", () => {
+  assert.throws(
+    () => composeDerivedEnv({ DEPLOY_POSTGRES: "0" }),
+    /requires DATABASE_URL and PILOTSWARM_CMS_FACTS_DATABASE_URL/,
+  );
+  assert.throws(
+    () => composeDerivedEnv({ DEPLOY_POSTGRES: "0", DATABASE_URL: "postgresql://u:p@h:5432/d" }),
+    /requires PILOTSWARM_CMS_FACTS_DATABASE_URL/,
+  );
+});
+
+test("DEPLOY_POSTGRES=0 forces an explicit auth decision", () => {
+  const base = {
+    DEPLOY_POSTGRES: "0",
+    DATABASE_URL: "postgresql://u:p@byo.example.com:5432/app",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u:p@byo.example.com:5432/app",
+  };
+  // The template default is PILOTSWARM_USE_MANAGED_IDENTITY=1, an attribute of
+  // the provisioned stamp server. Inheriting it silently with a supplied
+  // password URL is the trap this guards.
+  assert.throws(
+    () => composeDerivedEnv({ ...base, PILOTSWARM_USE_MANAGED_IDENTITY: "1" }),
+    /requires PILOTSWARM_DB_AAD_USER/,
+  );
+  const entra = { ...base, PILOTSWARM_USE_MANAGED_IDENTITY: "1", PILOTSWARM_DB_AAD_USER: "byo-principal" };
+  composeDerivedEnv(entra);
+  assert.equal(entra.PILOTSWARM_DB_AAD_USER, "byo-principal");
+  const pwd = { ...base, PILOTSWARM_USE_MANAGED_IDENTITY: "0" };
+  composeDerivedEnv(pwd);
+  assert.equal(pwd.DATABASE_URL, base.DATABASE_URL);
+});
+
+test("DEPLOY_POSTGRES=1 and unset both keep the provisioned path unchanged", () => {
+  for (const deployPostgres of ["1", undefined]) {
+    const env = {
+      POSTGRES_FQDN: "stamp-pg.postgres.database.azure.com",
+      POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "stamp-uami",
+    };
+    if (deployPostgres !== undefined) env.DEPLOY_POSTGRES = deployPostgres;
+    composeDerivedEnv(env);
+    assert.ok(env.DATABASE_URL.includes("stamp-pg.postgres.database.azure.com"));
+    assert.equal(env.PILOTSWARM_DB_AAD_USER, "stamp-uami");
+    assert.ok(env.PILOTSWARM_CMS_FACTS_DATABASE_URL.includes("stamp-uami"));
+  }
+});
