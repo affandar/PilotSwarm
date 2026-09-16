@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CapabilityCatalog, capabilityRef, parseCapabilityRef } from '../../dist/capability-catalog.js';
+import { CapabilityCatalog, capabilityRef, ownedAndStaticCapabilityInventory, parseCapabilityRef } from '../../dist/capability-catalog.js';
 
 const alice = { provider: 'oidc', subject: 'alice' };
 const bob = { provider: 'oidc', subject: 'bob' };
@@ -54,6 +54,41 @@ test('default search unions static, own/shared published and curated skills with
     assert.ok(result.capabilities.every(c => c.name === 'incident-review'));
     assert.ok(!JSON.stringify(result).includes('bob-package'));
     assert.deepEqual(result.coverage, { static: 'available', published: 'available', curated: 'available' });
+});
+
+test('owner-aware inventory is complete metadata only; foreign shared stays discoverable with its ownership labeled', async () => {
+    const sources = [
+        source('deployment', { source: 'static' }),
+        source('own-shared', { owner: alice, artifacts: [
+            { kind: 'agent', name: 'incident-review', description: 'Owned shared workflow', body: 'OWNED_AGENT_BODY' },
+            { kind: 'skill', name: 'incident-review', description: 'Owned shared skill', body: 'OWNED_SKILL_BODY' },
+            { kind: 'tool', name: 'helper', description: 'Only discover on demand' },
+        ] }),
+        source('own-private', { scope: 'user', owner: alice }),
+        source('other-shared', { owner: bob }),
+        source('unattributed-shared'),
+        source('other-private', { scope: 'user', owner: bob }),
+    ];
+    const inventory = ownedAndStaticCapabilityInventory(sources, alice);
+    assert.deepEqual(inventory.map(item => item.package).sort(), ['deployment', 'own-private', 'own-shared', 'own-shared']);
+    assert.deepEqual(new Set(inventory.map(item => item.ownership)), new Set(['static', 'owned']));
+    assert.equal(new Set(inventory.map(item => item.ref)).size, 4, 'same-name artifacts keep separate refs');
+    for (const body of ['OWNED_AGENT_BODY', 'OWNED_SKILL_BODY', 'BODY:own-private', 'BODY:deployment', 'BODY:other-shared']) {
+        assert.ok(!JSON.stringify(inventory).includes(body), 'no body is preloaded into the prompt');
+    }
+    assert.deepEqual(ownedAndStaticCapabilityInventory(sources, null).map(item => item.package), ['deployment']);
+    const catalog = new CapabilityCatalog(() => sources);
+    const found = await catalog.search(alice, reader, { query: 'incident review', limit: 30 });
+    const byPackage = new Map(found.capabilities.filter(hit => hit.kind === 'skill').map(hit => [parseCapabilityRef(hit.ref).s, hit.ownership]));
+    assert.equal(byPackage.get('deployment'), 'static');
+    assert.equal(byPackage.get('own-private'), 'owned');
+    assert.equal(byPackage.get('own-shared'), 'owned');
+    assert.equal(byPackage.get('other-shared'), 'other_shared');
+    assert.equal(byPackage.get('unattributed-shared'), 'other_shared');
+    assert.equal(byPackage.has('other-private'), false);
+    const explicitlySelected = found.capabilities.find(hit => parseCapabilityRef(hit.ref).s === 'other-shared');
+    assert.equal((await catalog.load(alice, reader, explicitlySelected.ref, 'skill')).body, 'BODY:other-shared',
+        'the exact foreign shared ref remains available if the owner explicitly requests it');
 });
 
 test('compound capability names match joined, spaced and hyphenated user wording', async () => {

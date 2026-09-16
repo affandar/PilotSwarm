@@ -17,13 +17,13 @@ export interface CapabilityServices {
 }
 export const CAPABILITY_TOOL_SPECS = {
     search_capabilities: {
-        description: "MANDATORY first tool when the user names or might be referring to an unattached capability, including natural phrases such as 'X exploration' or 'X review'. Search before web, repository, shell or delegation tools even when those tools could answer the request. Covers visible static and published skills, authored agent workflows, tools and MCP servers, plus curated shared skills. Use the user's named phrase and goal as the query. Returns metadata and exact references; it does not load instructions or grant tools. Static/package search is weighted keyword matching; curated search uses the configured hybrid index.",
+        description: "MANDATORY first tool when the user names or might be referring to an unattached capability, including natural phrases such as 'X exploration' or 'X review'. Search before web, repository, shell or delegation tools even when those tools could answer the request. Covers visible static and published skills, authored agent workflows, tools and MCP servers, plus curated shared skills. Use the user's named phrase and goal as the query. Returns metadata, ownership (static, owned, other_shared or curated) and exact references; it does not load instructions or grant tools. In Base V2, other_shared packages may be mentioned but must not be loaded or activated unless the session owner explicitly requests that capability. Static/package search is weighted keyword matching; curated search uses the configured hybrid index.",
         parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 30 },
             kinds: { type: "array", items: { type: "string", enum: ["skill", "agent", "tool", "mcp"] } },
             sources: { type: "array", items: { type: "string", enum: ["static", "published", "curated"] } } }, required: ["query"] },
     },
     load_agent_guidelines: {
-        description: "Read an authored agent's own workflow as reference material using its search reference. Before applying it, tell the user which agent supplied the instructions and describe material adaptations. Does not launch an agent, adopt its identity, grant tools, or execute its startup prompt.",
+        description: "Read an authored agent's own workflow as reference material using its search reference. In Base V2, do not load an other_shared workflow unless the session owner explicitly requested that capability. Before applying it, tell the user which agent supplied the instructions and describe material adaptations. Does not launch an agent, adopt its identity, grant tools, or execute its startup prompt.",
         parameters: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
     },
     list_session_capabilities: {
@@ -31,7 +31,7 @@ export const CAPABILITY_TOOL_SPECS = {
         parameters: { type: "object", properties: {} },
     },
     use_package: {
-        description: "Add or remove explicitly selected tools/MCP servers from an exact visible static or published source_ref returned by search_capabilities. Does not install packages, grant an agent identity, or load every export. Parent-session only. Selections persist for this durable session; changes refresh the same session at the next turn boundary and continue automatically. Finish native tasks first. Use list_session_capabilities for expected_revision; use a new request_id per logical change and reuse it on retry. Existing original/bound tools cannot be removed here.",
+        description: "Add or remove explicitly selected tools/MCP servers from an exact visible static or published source_ref returned by search_capabilities. In Base V2, do not activate other_shared packages unless the session owner explicitly requested that capability. Does not install packages, grant an agent identity, or load every export. Parent-session only. Selections persist for this durable session; changes refresh the same session at the next turn boundary and continue automatically. Finish native tasks first. Use list_session_capabilities for expected_revision; use a new request_id per logical change and reuse it on retry. Existing original/bound tools cannot be removed here.",
         parameters: { type: "object", properties: { source_ref: { type: "string" }, tools: { type: "array", items: { type: "string" } },
             mcp_servers: { type: "array", items: { type: "string" } }, action: { type: "string", enum: ["add", "remove"] },
             expected_revision: { type: "integer", minimum: 0 }, request_id: { type: "string", minLength: 1, maxLength: 128 } },

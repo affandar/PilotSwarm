@@ -94,7 +94,8 @@ const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
 // Minimum downward finger travel (px) while at the top of the chat pane before
 // a touch pull counts as a load-older-history request.
-const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
+const TOUCH_TOP_PULL_THRESHOLD_PX = 56;
+const TOUCH_TOP_PULL_MAX_PX = 84;
 // How long after the last user-driven scroll event the pane still counts as
 // momentum-scrolling (native flick glide), during which programmatic scrollTop
 // restores are suppressed so they don't kill the glide.
@@ -1107,7 +1108,11 @@ function scrollBoundaryIdentity(lines, fromEnd = false) {
     return boundary.map(scrollLineIdentity).join("\u241e");
 }
 
-function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
+function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, {
+    stickyBottom = false,
+    historyPullEnabled = false,
+    historySessionId = null,
+} = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
     // otherwise call onScroll → dispatch ui/scroll → clobber the user's
@@ -1122,6 +1127,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const previousContentRef = React.useRef(null);
     const historyScrollRef = React.useRef(null);
     React.useEffect(() => () => { historyScrollRef.current = null; }, []);
+    const [topPullDistance, setTopPullDistance] = React.useState(0);
+    const [loadingHistorySessionId, setLoadingHistorySessionId] = React.useState(null);
+    React.useEffect(() => { setTopPullDistance(0); }, [historySessionId]);
     // Touch scrolling relies on native momentum for speed: a hard flick keeps
     // scrolling long after the finger lifts. Re-asserting scrollTop from state
     // on every render (live events, status updates) kills that momentum at the
@@ -1309,7 +1317,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const node = ref.current;
         const state = controller.getState();
         const sessionId = state.sessions.activeSessionId;
-        if (!node || !sessionId || historyScrollRef.current) return;
+        if (!node || !sessionId || !historyPullEnabled || historyScrollRef.current) return;
         const top = node.getBoundingClientRect().top;
         const element = [...node.children].find(child => child.textContent?.trim() && child.getBoundingClientRect().bottom > top + 6);
         const pending = {
@@ -1320,15 +1328,17 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         historyScrollRef.current = pending;
         const load = controller.handleChatTopHistoryScrollIntent?.(
             (node.scrollHeight - node.clientHeight) / SCROLL_ROW_HEIGHT,
-            { force: true, preserveDomAnchor: true },
+            { force: true, preserveDomAnchor: true,
+                onLoadStarted: () => setLoadingHistorySessionId(sessionId) },
         );
         Promise.resolve(load).catch(() => {}).finally(() => {
+            setLoadingHistorySessionId(current => current === sessionId ? null : current);
             if (historyScrollRef.current !== pending) return;
             const oldest = controller.getState().history.bySessionId.get(sessionId)?.events?.[0]?.seq;
             if (!(oldest < pending.oldestSeq)) historyScrollRef.current = null;
             else setViewportRevision(revision => revision + 1);
         });
-    }, [controller, ref]);
+    }, [controller, historyPullEnabled, ref]);
 
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
@@ -1354,13 +1364,18 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // scroll events either — so mobile had no way to request older history.
     // A downward pull that starts while the pane is at (or near) the top fires
     // the same top-history intent, once per gesture.
-    const touchPullRef = React.useRef({ startY: null, fired: false });
+    const touchPullRef = React.useRef({ startY: null, distance: 0 });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
         if (historyScrollRef.current?.applied) historyScrollRef.current = null;
-        if (paneKey !== "chat") return;
-        touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
-    }, [paneKey]);
+        const node = ref.current;
+        touchPullRef.current = {
+            startY: historyPullEnabled && loadingHistorySessionId !== historySessionId
+                && paneKey === "chat" && node?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX
+                ? event.touches?.[0]?.clientY ?? null : null,
+            distance: 0,
+        };
+    }, [historyPullEnabled, historySessionId, loadingHistorySessionId, paneKey, ref]);
     const onTouchEnd = React.useCallback(() => {
         userScrollRef.current.touching = false;
         // Momentum continues past the finger lift; onScroll keeps refreshing
@@ -1369,6 +1384,16 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         if (historyScrollRef.current?.applied) {
             historyScrollRef.current.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
         }
+        const distance = touchPullRef.current.distance;
+        touchPullRef.current = { startY: null, distance: 0 };
+        setTopPullDistance(0);
+        if (distance >= TOUCH_TOP_PULL_THRESHOLD_PX
+            && ref.current?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) requestHistoryPage();
+    }, [ref, requestHistoryPage]);
+    const onTouchCancel = React.useCallback(() => {
+        userScrollRef.current.touching = false;
+        touchPullRef.current = { startY: null, distance: 0 };
+        setTopPullDistance(0);
     }, []);
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
@@ -1379,17 +1404,14 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             event.preventDefault();
             return;
         }
-        if (pull.fired || pull.startY == null) return;
+        if (pull.startY == null) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
         const y = event.touches?.[0]?.clientY;
-        if (y == null || y - pull.startY < TOUCH_TOP_PULL_THRESHOLD_PX) return;
-        pull.fired = true;
-        // A deliberate pull at the top of the pane is an unambiguous request:
-        // Request one page at the measured DOM boundary. The shared gesture
-        // guard absorbs repeated wheel events and the remainder of this pull.
-        event.preventDefault();
-        requestHistoryPage();
-    }, [paneKey, ref, requestHistoryPage]);
+        if (y == null) return;
+        pull.distance = Math.min(TOUCH_TOP_PULL_MAX_PX, Math.max(0, y - pull.startY));
+        setTopPullDistance(pull.distance);
+        if (pull.distance > 0) event.preventDefault();
+    }, [paneKey, ref]);
 
     React.useEffect(() => {
         const node = ref.current;
@@ -1404,7 +1426,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         };
     }, [ref, onWheel, onTouchMove]);
 
-    return { normalizedLines, onScroll, onTouchStart, onTouchEnd };
+    return { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel,
+        topPullDistance, loadingOlderHistory: loadingHistorySessionId === historySessionId };
 }
 
 function Runs({ runs, theme }) {
@@ -4230,7 +4253,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4243,7 +4266,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [panelRef]);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onTouchStart, onTouchEnd } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -4332,7 +4355,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [preserveHorizontalScroll, syncScrollLeft]);
 
     return React.createElement(Panel, { title, titleRight, color, focused, actions, theme, className: panelClassName },
-        topContent,
+        typeof topContent === "function" ? topContent({ topPullDistance, loadingOlderHistory }) : topContent,
         normalizedSticky.length > 0
             ? React.createElement("div", {
                 ref: stickyRef,
@@ -4342,7 +4365,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -6904,6 +6927,39 @@ function SessionHeaderStatus({ controller }) {
         queue ? React.createElement("span", { className: "ps-mobile-queue", title: queue }, queue) : null);
 }
 
+function HistoryUpGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("path", { d: "M12 19V5m-5 5 5-5 5 5" }));
+}
+
+function HistorySpinnerGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("path", { d: "M20.5 12a8.5 8.5 0 1 1-8.5-8.5" }));
+}
+
+function HistoryLoadIndicator({ loading, manual, pullDistance, onManualLoad }) {
+    const ready = pullDistance >= TOUCH_TOP_PULL_THRESHOLD_PX;
+    const label = loading ? "Loading earlier messages…"
+        : manual ? "Load older messages"
+            : ready ? "Release to load earlier messages"
+                : "Pull for earlier messages";
+    return React.createElement("div", {
+        className: `ps-history-load${loading ? " is-loading" : ""}${manual ? " is-manual" : ""}${ready ? " is-ready" : ""}`,
+        style: pullDistance > 0 ? { "--ps-history-pull": `${Math.min(pullDistance, TOUCH_TOP_PULL_MAX_PX)}px` } : undefined,
+        role: "status", "aria-live": "polite",
+    },
+        React.createElement("span", { className: "ps-history-track", "aria-hidden": "true" },
+            React.createElement("span", { className: "ps-history-tick is-first" }),
+            React.createElement("span", { className: "ps-history-tick is-second" }),
+            React.createElement("span", { className: "ps-history-marker" },
+                loading ? React.createElement(HistorySpinnerGlyph) : React.createElement(HistoryUpGlyph),
+                loading ? React.createElement("span", { className: "ps-history-text-spinner" },
+                    ["|", "/", "—", "\\"].map((frame, index) => React.createElement("span", { key: index }, frame))) : null)),
+        manual && !loading
+            ? React.createElement("button", { type: "button", className: "ps-mini-button ps-load-older-button", onClick: onManualLoad }, label)
+            : React.createElement("span", { className: "ps-history-label" }, label));
+}
+
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -6986,7 +7042,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const [loadingOlder, setLoadingOlder] = React.useState(false);
+    const [manualLoadingSessionId, setManualLoadingSessionId] = React.useState(null);
     // Scroll-up expands the transcript automatically until the soft cap, then
     // refuses — and the portal had no control to ask for more, so a busy
     // session's history became unreachable from the browser. Surface the
@@ -7085,25 +7141,27 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
         paneKey: "chat",
+        historySessionId: viewState.activeSessionId,
+        historyPullEnabled: Boolean(viewState.activeHistory?.hasOlderEvents && !showLoadOlder),
         ariaLive: "polite",
         className: "is-wrapped",
         panelClassName: "ps-chat-panel",
         panelRef,
         bottomContent: composer,
-        topContent: showLoadOlder
-            ? React.createElement("div", { className: "ps-load-older-bar" },
-                React.createElement("button", {
-                    type: "button",
-                    className: "ps-load-older-button",
-                    disabled: loadingOlder,
-                    onClick: () => {
-                        setLoadingOlder(true);
-                        controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY)
-                            .catch(() => {})
-                            .finally(() => setLoadingOlder(false));
-                    },
-                }, loadingOlder ? "Loading older messages…" : "↑ Load older messages"))
-            : null,
+        topContent: ({ topPullDistance, loadingOlderHistory }) => {
+            const loading = loadingOlderHistory || manualLoadingSessionId === viewState.activeSessionId;
+            if (!showLoadOlder && topPullDistance <= 0 && !loading) return null;
+            return React.createElement(HistoryLoadIndicator, {
+                loading, manual: showLoadOlder, pullDistance: loading ? 0 : topPullDistance,
+                onManualLoad: () => {
+                    const sessionId = viewState.activeSessionId;
+                    setManualLoadingSessionId(sessionId);
+                    controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY)
+                        .catch(() => {})
+                        .finally(() => setManualLoadingSessionId(current => current === sessionId ? null : current));
+                },
+            });
+        },
         structuredBlocks: true,
         renderBody: null,
     });

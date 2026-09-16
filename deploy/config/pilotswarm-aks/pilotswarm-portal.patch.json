@@ -1,0 +1,34 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "volumes": [
+          {
+            "name": "aks-model-catalog",
+            "configMap": {
+              "name": "pilotswarm-aks-model-catalog"
+            }
+          }
+        ],
+        "containers": [
+          {
+            "name": "portal",
+            "env": [
+              {
+                "name": "PS_MODEL_PROVIDERS_PATH",
+                "value": "/app/aks-model-catalog/model_providers.json"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "name": "aks-model-catalog",
+                "mountPath": "/app/aks-model-catalog",
+                "readOnly": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

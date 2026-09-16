@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Base Agent V2: include a metadata-only index of static and session-owner-authored skills and agent workflows in the session prompt. Keep other users' shared packages discoverable without automatically loading their instructions, tools, or MCP servers; preserve Base V1 behavior.
+- Portal: open saved Agent updates in a bounded preview, show a stretch-and-spinner cue while older chat history loads across retro themes, and carry queued prompts between normal chat and Master of Agents panels.
+- PilotSwarm AKS: keep the deployment-specific model catalog mounted on worker, portal, and MCP deployments when their images are updated.
+
 ## 0.5.76 — 2026-09-15
 
 - Portal transcript: render durable model commentary as ordinary visible `Agent:` messages instead of hiding milestone and progress updates behind collapsed `Agent update` disclosures. The same classification applies to live delivery and history replay.

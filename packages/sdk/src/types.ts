@@ -243,6 +243,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     capabilityServices?: import("./capability-runtime.js").CapabilityServices;
     capabilityFingerprint?: string;
     baseAgentPolicy?: import("./base-agent-policy.js").BaseAgentPolicy;
+    /** Metadata-only V2 capability index from this turn's catalog-owner snapshot. */
+    baseV2CapabilityIndex?: string;
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
     /** Runtime-only exact native child capability map. */

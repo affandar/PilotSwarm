@@ -64,6 +64,43 @@ test('worker registry preserves package revision, owner, raw guidelines and same
     }
 });
 
+test('V2 SDK skill directories and declared-agent bodies exclude unrelated shared packages without changing V1', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-owner-skill-dirs-'));
+    let worker;
+    try {
+        const deployment = plugin(root, 'deployment', 'STATIC_METHOD');
+        const mine = plugin(root, 'mine', 'OWNED_METHOD');
+        const foreign = plugin(root, 'foreign', 'FOREIGN_METHOD');
+        worker = new PilotSwarmWorker({ sessionStateDir: path.join(root, 'sessions'), disableManagementAgents: true });
+        worker._packageDirOwners = new Map([
+            [mine, { packageId: 'mine-shared', scope: 'shared', owner: alice, revision: '1' }],
+            [foreign, { packageId: 'foreign-shared', scope: 'shared', owner: bob, revision: '1' }],
+        ]);
+        worker._resetLoadedPluginState();
+        worker.config.pluginDirs = [deployment, mine, foreign];
+        worker._loadPlugins();
+
+        const dirs = worker._getBaseV2SkillDirectories(alice);
+        assert.ok(dirs.includes(path.join(deployment, 'skills')));
+        assert.ok(dirs.includes(path.join(mine, 'skills')));
+        assert.ok(!dirs.includes(path.join(foreign, 'skills')));
+        assert.ok(!worker._getBaseV2SkillDirectories(null).includes(path.join(mine, 'skills')));
+        assert.ok(worker._loadedSkillDirs.includes(path.join(foreign, 'skills')), 'V1 still receives the old directory list');
+
+        const entry = worker._agentPromptLookup['incident-review'];
+        const deploymentCopy = entry.copies.find(copy => !copy.packageId);
+        const ownedCopy = entry.copies.find(copy => copy.packageId === 'mine-shared');
+        assert.match(deploymentCopy.prompt, /FOREIGN_METHOD/, 'V1 retains its existing composition');
+        assert.match(deploymentCopy.baseV2Prompt, /STATIC_METHOD/);
+        assert.doesNotMatch(deploymentCopy.baseV2Prompt, /FOREIGN_METHOD|OWNED_METHOD/);
+        assert.match(ownedCopy.baseV2Prompt, /OWNED_METHOD/, 'explicitly selected package agent keeps its own declared skills');
+        assert.doesNotMatch(ownedCopy.baseV2Prompt, /FOREIGN_METHOD/);
+    } finally {
+        if (worker) await worker.sessionManager.shutdown();
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test('direct skill directories, custom agents and MCP servers are present in the static registry', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-capability-inline-'));
     let worker;

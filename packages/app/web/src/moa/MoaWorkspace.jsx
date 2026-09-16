@@ -57,6 +57,33 @@ function restoreOutbox(store, key, controller) {
     controller.maybeFlushQueuedOutbox(key);
 }
 
+// Each panel has its own controller, but queued prompts belong to the session.
+// Mirror the parent controller's outbox so the main chat and every panel show
+// the same envelopes (and therefore preserve their deduplication IDs).
+function linkSessionOutbox(parent, child, sessionId) {
+    const setChildItems = child.setSessionOutboxItems.bind(child);
+    let parentItems = parent.getState().outbox?.bySessionId?.[sessionId] || null;
+    setChildItems(sessionId, parentItems || []);
+    const unsubscribe = parent.subscribe(() => {
+        const current = parent.getState().outbox?.bySessionId?.[sessionId] || null;
+        if (current === parentItems) return;
+        parentItems = current;
+        setChildItems(sessionId, current || []);
+    });
+    const mirroredSet = (targetSessionId, items) => {
+        if (targetSessionId === sessionId) parent.setSessionOutboxItems(sessionId, items);
+        else setChildItems(targetSessionId, items);
+    };
+    child.setSessionOutboxItems = mirroredSet;
+    let linked = true;
+    return () => {
+        if (!linked) return;
+        linked = false;
+        unsubscribe();
+        if (child.setSessionOutboxItems === mirroredSet) child.setSessionOutboxItems = setChildItems;
+    };
+}
+
 // One icon treatment for MoA actions; names remain available to keyboard and
 // screen-reader users and as hover tooltips.
 const ICON_PATHS = {
@@ -287,7 +314,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
     }, []);
     React.useEffect(() => {
         if (!visible) return;
-        let cancelled = false, offDraft, pendingSend, wrappedSend, wrappedSchedule;
+        let cancelled = false, offDraft, offOutbox, pendingSend, wrappedSend, wrappedSchedule;
         setError("");
         if (!resources.current) {
             const transport = createTransport();
@@ -312,6 +339,10 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             }
         };
         const handoffPendingOutbox = () => {
+            // A linked panel already writes every update to the parent. Moving
+            // those items into the panel-only retained store would hide them
+            // from the main chat until a panel is opened again.
+            if (offOutbox) return;
             const items = child?.getPendingOutboxItems(node.sessionId) || [];
             if (!items.length) return;
             const ids = new Set(items.map(item => item.id));
@@ -324,7 +355,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             // retry while a rapid A → B → A switch resumes this same cached
             // controller. An obsolete cleanup must never detach that newer
             // generation or clear its polling timer.
-            if (cached.generation !== generation || cached.disposed) return;
+            if (cached.generation !== generation) return;
             clearInterval(cached.timer); cached.timer = null; offDraft?.();
             if (child.sendPrompt === wrappedSend) child.sendPrompt = cached.send;
             if (child.scheduleOutboxDispatch === wrappedSchedule) child.scheduleOutboxDispatch = cached.scheduleDispatch;
@@ -334,8 +365,9 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             // A retry may already be in flight after sendPrompt returned.
             // Settle that exact envelope before handing it to the next view.
             await Promise.allSettled([...(child?.outboxFlushPromises?.values() || [])]);
-            if (cached.generation !== generation || cached.disposed) return;
+            if (cached.generation !== generation) return;
             handoffPendingOutbox();
+            offOutbox?.(); offOutbox = null;
             child.detachActiveSession();
         };
         refreshScheduler(async () => {
@@ -352,6 +384,13 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             child.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
             await child.loadSession(node.sessionId);
             if (cancelled || !ownsResources()) { retireIfUnused(); return suspend(); }
+            cached.outboxLink?.();
+            const unlink = linkSessionOutbox(parent, child, node.sessionId);
+            cached.outboxLink = unlink;
+            offOutbox = () => {
+                if (cached.outboxLink === unlink) cached.outboxLink = null;
+                unlink();
+            };
             child.dispatch({ type: "profileSettings/apply", settings: { themeId: parent.getState().ui.themeId } });
             child.setFocus("prompt");
             const draft = drafts.current.get(draftKey);

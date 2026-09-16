@@ -81,6 +81,10 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await card.evaluate(el => { window.retroCard = el; });
         event("assistant.message", { messageId: "default-message", content: "The deployment report is ready." });
         await expect(card.locator(":scope > summary")).toContainText("Agent update");
+        await expect(card, "saved agent updates should be readable in chat without a click").toHaveAttribute("open", "");
+        await expect(card.locator(".ps-assistant-preview-content")).toContainText("The deployment report is ready.");
+        await expect(card.locator(".ps-assistant-preview-viewport")).toHaveCSS("max-height", "280px");
+        await expect(page.locator(".ps-chat-panel .ps-assistant-preview-content", { hasText: "The deployment report is ready." })).toHaveCount(1);
         await previewContrast(card, `${themeId} default saved update`);
         event("session.turn_completed", { resultType: "completed" });
         await expect(card).toHaveClass(/is-final/);
@@ -117,5 +121,32 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         await expect(page.getByRole("tab")).toHaveCount(1);
         await expect(page.getByRole("button", { name: "Share", exact: true })).toHaveCount(0);
         expect(errors).toEqual([]);
+    });
+}
+
+for (const themeId of ["doom", "terminal-green"]) {
+    test(`${themeId}: saved agent update opens in the bounded chat viewport`, async ({ page }) => {
+        await page.route("**/api/v1/me/profile**", route => route.fulfill({ json: {
+            ok: true, result: { isAdmin: false, profileSettings: { themeId } },
+        } }));
+        const subscribers = new Set();
+        await page.routeWebSocket("**/api/v1/ws", socket => {
+            socket.onMessage(raw => { if (JSON.parse(raw).type === "subscribeLive") subscribers.add(socket); });
+        });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${sessionId}`);
+        await expect.poll(() => subscribers.size).toBeGreaterThan(0);
+        const content = "Pulling the actual PR and our recorded reasoning side by side.\n\n"
+            + Array.from({ length: 40 }, (_, i) => `Evidence line ${i}.`).join("\n\n");
+        for (const socket of subscribers) socket.send(JSON.stringify({
+            type: "sessionEvent", sessionId,
+            event: { sessionId, seq: 1, eventType: "assistant.message", createdAt: Date.now(), data: { content } },
+        }));
+        const card = page.locator(".ps-chat-panel .ps-assistant-preview");
+        await expect(card).toHaveAttribute("open", "");
+        await expect(card.locator(".ps-assistant-preview-content")).toContainText("Pulling the actual PR");
+        const viewport = card.locator(".ps-assistant-preview-viewport");
+        await expect(viewport).toHaveCSS("max-height", "280px");
+        expect(await viewport.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+        await previewContrast(card, `${themeId} saved update`);
     });
 }

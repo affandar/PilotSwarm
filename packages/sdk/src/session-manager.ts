@@ -1,11 +1,11 @@
-import { CapabilityCatalog, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
+import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, type NativeTaskTools } from "./native-task-policy.js";
 import { NATIVE_BUILTIN_AGENTS, NATIVE_EXCLUDED_TOOLS, nativeSubagentGuidance, nativeSubagentDefinitions, nativeSubagentHooks, guardNativeExternalTools } from "./native-subagents.js";
 import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
-import { FeatureFlagError } from "./feature-flags.js";
+import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
 import { CopilotClient, type CopilotSession, type SectionOverride, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
 import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
@@ -119,6 +119,8 @@ function isMissingDehydrateSnapshotError(error: unknown): boolean {
  */
 export interface AgentCopyEntry {
     prompt: string;
+    /** V2 declared-skill composition excludes unrelated published packages. */
+    baseV2Prompt?: string;
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     nativeTaskTools?: NativeTaskTools;
@@ -242,6 +244,8 @@ export interface WorkerDefaults {
     appDefaultDescriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     /** Skill directories to pass to the Copilot SDK. */
     skillDirectories?: string[];
+    /** V2 only: SDK-visible skill dirs after filtering by the session owner's verified package provenance. */
+    getBaseV2SkillDirectories?: (owner: FeatureOwner | null) => string[];
     /** Custom agents to pass to the Copilot SDK. */
     customAgents?: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: Record<string, any> }>;
     /**
@@ -1975,6 +1979,15 @@ export class SessionManager {
             : undefined;
         config.nativeTaskAccess = nativeTaskAccess;
 
+        // The catalog row was already read for this turn's feature policy.
+        // Use that same owner to prepare the V2 index and load_skill catalog;
+        // the prompt callback must not repeat an inspect/role database lookup.
+        const v2Owner = catalogRow?.isSystem || (nativeOwner?.provider === SYSTEM_USER_PRINCIPAL.provider
+            && nativeOwner?.subject === SYSTEM_USER_PRINCIPAL.subject) ? null : nativeOwner;
+        const v2Inventory = config.baseAgentPolicy?.version === "v2"
+            ? ownedAndStaticCapabilityInventory(getSources(), v2Owner) : undefined;
+        config.baseV2CapabilityIndex = v2Inventory ? this._baseV2CapabilityIndexSection(v2Inventory) : undefined;
+
         // Build system message: worker base + client override
         const systemMessage = this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null);
 
@@ -1985,9 +1998,14 @@ export class SessionManager {
             ...(nativeEnabled ? NATIVE_EXCLUDED_TOOLS : ["task"]),
             ...(config.excludedTools ?? []),
         ])];
+        const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
+            ? this.workerDefaults.getBaseV2SkillDirectories?.(nativeOwner) ?? []
+            : this.workerDefaults.skillDirectories ?? [];
+        const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = createHash("sha256").update(JSON.stringify({
             capabilityFingerprint: config.capabilityFingerprint,
             baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
+            ...(v2InventoryFingerprint ? { v2InventoryFingerprint, sdkSkillDirectories } : {}),
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
@@ -2064,7 +2082,7 @@ export class SessionManager {
             ...resolvedProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(this.workerDefaults.skillDirectories?.length && { skillDirectories: this.workerDefaults.skillDirectories }),
+            ...(sdkSkillDirectories.length && { skillDirectories: sdkSkillDirectories }),
             ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
@@ -2099,6 +2117,9 @@ export class SessionManager {
                 this.sessionAgentCopies.set(sessionId, boundAgentCopy);
                 config.nativeTaskAccess = existing.getNativeTaskAccess();
                 existing.updateConfig(config);
+                if (config.baseAgentPolicy?.version === "v2") {
+                    existing.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
+                }
                 return existing;
             }
         }
@@ -2212,7 +2233,7 @@ export class SessionManager {
         // The `load_skill` catalog (progressive discovery) — held on the
         // managed session, NEVER in the CLI's session config. Shared skills
         // plus this session owner's own private ones.
-        managed.setSkillCatalog(await this._skillCatalogForSession(sessionId));
+        managed.setSkillCatalog(await this._skillCatalogForSession(sessionId, v2Owner));
         // The facts accessor a worker-registered tool sees as
         // `invocation.facts`. Built HERE, next to the fact tools, because the
         // store lives on this manager; the session config is serialisable
@@ -2844,9 +2865,12 @@ export class SessionManager {
                 // Follow the same per-turn snapshot as tools/MCP/descriptor.
                 // Re-selecting by bare name here could both defeat an explicit
                 // shared-package pin and adopt refreshed instructions mid-turn.
-                const activeAgentPrompt = (this.sessionAgentCopies.has(sessionId)
+                const activeAgentCopy = (this.sessionAgentCopies.has(sessionId)
                     ? this.sessionAgentCopies.get(sessionId)
-                    : initialAgentCopy)?.prompt;
+                    : initialAgentCopy);
+                const activeAgentPrompt = latest.baseAgentPolicy?.version === "v2"
+                    ? activeAgentCopy?.baseV2Prompt ?? activeAgentCopy?.prompt
+                    : activeAgentCopy?.prompt;
                 // Orchestration ≥1.0.71 delivers the per-turn note inside the
                 // user turn (see prompt-system-context.ts) and flags it. For
                 // those turns the note must NOT land here: this section is
@@ -2861,7 +2885,9 @@ export class SessionManager {
                 // sessions only. Stable for the life of the session — it
                 // changes when its owner republishes a package, not per turn
                 // — so it does not disturb the prompt prefix.
-                const ownSkillsIndex = await this._ownerSkillsIndexSection(sessionId);
+                const ownSkillsIndex = latest.baseAgentPolicy?.version === "v2"
+                    ? latest.baseV2CapabilityIndex
+                    : await this._ownerSkillsIndexSection(sessionId);
                 const overlay = mergePromptSections([
                     activeAgentPrompt,
                     runtimeContext,
@@ -3068,6 +3094,24 @@ export class SessionManager {
         return `## Your own skills, available on demand\n\nPublished by you and visible only to your sessions. Call \`load_skill(name)\` when a task matches one; the full instructions come back as the tool result. Load a skill once per session, before the work it covers.\n\n${lines.join("\n")}`;
     }
 
+    private async _baseV2CapabilityOwner(sessionId: string): Promise<{ provider: string; subject: string } | null> {
+        try {
+            const viewer = await this._resolveInspectViewer(sessionId);
+            return viewer?.provider && viewer?.subject && !viewer.isSystemPrincipal
+                ? { provider: viewer.provider, subject: viewer.subject } : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** V2 sees every static and owner-authored skill/workflow without loading its body. */
+    private _baseV2CapabilityIndexSection(entries: ReturnType<typeof ownedAndStaticCapabilityInventory>): string | undefined {
+        if (!entries.length) return undefined;
+        const lines = entries.map(item => `- ${item.ownership} ${item.kind} ${JSON.stringify(item.name)} in ${JSON.stringify(item.package)}`
+            + (item.description ? ` — ${item.description}` : ""));
+        return `## Available workflows and skills (metadata only)\n\nThis complete index includes deployment/static packages and packages published by this session's owner, whether private or shared. Find the current exact reference with \`search_capabilities\`, then load a relevant skill or agent workflow on demand. Other users' shared packages are excluded here; search can disclose their existence, but use one only when the session owner explicitly asks.\n\n${lines.join("\n")}`;
+    }
+
     /**
      * The `load_skill` catalog for ONE session: every shared/deployment skill,
      * plus the private skills from user-scope packages this session's OWNER
@@ -3077,7 +3121,30 @@ export class SessionManager {
      * session is ownerless, system-owned, or the owner cannot be read: a
      * failure to identify somebody must never hand out their private skills.
      */
-    private async _skillCatalogForSession(sessionId: string): Promise<Array<{ name: string; description: string; prompt: string; dir?: string }>> {
+    private async _skillCatalogForSession(sessionId: string, turnOwner?: { provider: string; subject: string } | null): Promise<Array<{ name: string; description: string; prompt: string; dir?: string }>> {
+        if (this.sessionConfigs.get(sessionId)?.baseAgentPolicy?.version === "v2") {
+            const getSources = this.workerDefaults.getCapabilitySources;
+            if (!getSources) return []; // Unknown provenance must not become an automatic V2 skill.
+            const owner = turnOwner === undefined ? await this._baseV2CapabilityOwner(sessionId) : turnOwner;
+            let sources: CapabilitySource[];
+            try { sources = getSources(); } catch { return []; }
+            const candidates = sources.filter(source => {
+                const relation = capabilityOwnership(source, owner);
+                return relation === "static" || relation === "owned";
+            }).sort((a, b) => {
+                // An owner's private copy outranks their shared copy, then deployment.
+                const rank = (source: CapabilitySource) => source.source === "static" ? 2 : source.scope === "user" ? 0 : 1;
+                return rank(a) - rank(b) || a.id.localeCompare(b.id);
+            });
+            const catalog: Array<{ name: string; description: string; prompt: string }> = [];
+            const names = new Set<string>();
+            for (const source of candidates) for (const artifact of source.artifacts) {
+                if (artifact.kind !== "skill" || typeof artifact.body !== "string" || names.has(artifact.name)) continue;
+                names.add(artifact.name);
+                catalog.push({ name: artifact.name, description: artifact.description, prompt: artifact.body });
+            }
+            return catalog;
+        }
         const shared = this.workerDefaults.skills ?? [];
         const byOwner = this.workerDefaults.ownerScopedSkills;
         if (!byOwner || byOwner.size === 0) return shared;

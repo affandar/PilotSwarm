@@ -61,6 +61,12 @@ export function capabilityHash(value: unknown): string {
 export function visibleCapabilitySource(source: CapabilitySource, owner: FeatureOwner | null): boolean {
     return source.scope === "shared" || Boolean(owner && source.owner?.provider === owner.provider && source.owner.subject === owner.subject);
 }
+export type CapabilityOwnership = "static" | "owned" | "other_shared";
+export function capabilityOwnership(source: CapabilitySource, owner: FeatureOwner | null): CapabilityOwnership {
+    if (source.source === "static") return "static";
+    if (owner && source.owner?.provider === owner.provider && source.owner.subject === owner.subject) return "owned";
+    return "other_shared";
+}
 interface Ref { s: string; r: string; k: CapabilityKind | "source"; n: string }
 export function capabilityRef(s: string, r: string, k: Ref["k"], n = ""): string {
     return "cap1." + Buffer.from(JSON.stringify({ s, r, k, n })).toString("base64url");
@@ -97,6 +103,26 @@ function lexicalScore(query: string, name: string, description: string): number 
 function artifactId(artifact: CapabilityArtifact, index: number): string {
     return artifact.id ?? `${artifact.kind}:${index}:${artifact.name}`;
 }
+/** Complete, body-free inventory trusted for automatic Base V2 discovery. */
+export function ownedAndStaticCapabilityInventory(sources: CapabilitySource[], owner: FeatureOwner | null) {
+    const entries: Array<{ kind: "skill" | "agent"; name: string; description: string; package: string;
+        ownership: "static" | "owned"; scope: "shared" | "user"; ref: string }> = [];
+    for (const source of sources) {
+        if (!visibleCapabilitySource(source, owner)) continue;
+        const ownership = capabilityOwnership(source, owner);
+        if (ownership === "other_shared") continue;
+        for (const [index, artifact] of source.artifacts.entries()) {
+            if (artifact.kind !== "skill" && artifact.kind !== "agent") continue;
+            entries.push({ kind: artifact.kind, name: artifact.name,
+                description: String(artifact.description ?? "").replace(/\s+/g, " ").trim().slice(0, 240),
+                package: source.name, ownership, scope: source.scope,
+                ref: capabilityRef(source.id, source.revision, artifact.kind, artifactId(artifact, index)) });
+        }
+    }
+    return entries.sort((a, b) => a.ownership.localeCompare(b.ownership)
+        || a.package.localeCompare(b.package) || a.kind.localeCompare(b.kind)
+        || a.name.localeCompare(b.name) || a.ref.localeCompare(b.ref));
+}
 function factValue(f: FactRecord): any {
     if (typeof f.value !== "string") return f.value;
     try { return JSON.parse(f.value); } catch { return { instructions: f.value }; }
@@ -126,6 +152,7 @@ export class CapabilityCatalog {
                     ranked.push({ kind: a.kind, name: a.name, description: a.description.slice(0, 600), source: origin,
                         ref: capabilityRef(source.id, source.revision, a.kind, artifactId(a, index)),
                         source_ref: capabilityRef(source.id, source.revision, "source"), revision: source.revision, scope: source.scope,
+                        ownership: capabilityOwnership(source, owner),
                         tools: a.tools, mcp_servers: a.mcpServers, score });
                 }
             }
@@ -141,7 +168,7 @@ export class CapabilityCatalog {
                 result.facts.filter(this.isCurated).forEach((f, i) => {
                     const v = factValue(f);
                     hits.push({ kind: "skill", name: v?.name ?? f.key, description: String(v?.description ?? "").slice(0, 600),
-                        source: "curated", scope: "shared", revision: String(f.etag),
+                        source: "curated", scope: "shared", ownership: "curated", revision: String(f.etag),
                         ref: capabilityRef(`curated:${f.scopeKey}`, String(f.etag), "skill", f.key),
                         confidence: v?.confidence, expires_at: v?.expires_at, contradiction_count: v?.contradiction_count,
                         score: 1 / (60 + i + 1) });
@@ -169,7 +196,7 @@ export class CapabilityCatalog {
             if (named.length === 1) a = named[0];
         }
         if (!a) throw new Error("Capability unavailable; search again");
-        return { ref, source: source.source, revision: source.revision, mode: "reference", ...a,
+        return { ref, source: source.source, revision: source.revision, ownership: capabilityOwnership(source, owner), mode: "reference", ...a,
             ...(kind === "agent" ? { notice: `Before applying these instructions, tell the user you are using instructions from ${a.name}. State material adaptations. This does not launch the agent, grant its identity/tools, execute initialPrompt, or create schedules.` } : {}) };
     }
 }
