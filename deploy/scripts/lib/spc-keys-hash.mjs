@@ -1,7 +1,7 @@
 // SPC keys hash — declarative SPC-vs-Deployment coupling.
 //
 // Computes a short stable hash from the sorted list of env-var keys that the
-// service's SecretProviderClass projects into its synthesized K8s Secret
+// service's base SecretProviderClass projects into its synthesized K8s Secret
 // (i.e. the `secretObjects[].data[].key` list). The deploy pipeline plumbs
 // the result into the overlay-generated env ConfigMap as `SPC_KEYS_HASH`,
 // and the per-service `*-replacements` kustomize component substitutes it
@@ -29,7 +29,9 @@
 // `deploy/gitops/<service>/base/secret-provider-class.yaml`'s
 // `secretObjects[].data[].key` entries. Adding/removing a key in either
 // place without the other defeats the guarantee. Both files cross-
-// reference each other in comments.
+// reference each other in comments. This invariant covers the base SPC only.
+// BYO database keys use a separate component in database-secrets.mjs; its
+// versioned Secret references change the pod template directly.
 
 import { createHash } from "node:crypto";
 

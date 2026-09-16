@@ -109,6 +109,9 @@ const worker = new PilotSwarmWorker({
     useManagedIdentity: ["1", "true", "yes", "on"].includes(
         (process.env.PILOTSWARM_USE_MANAGED_IDENTITY || "").trim().toLowerCase(),
     ),
+    blobUseManagedIdentity: process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY?.trim()
+        ? ["1", "true", "yes", "on"].includes(process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY.trim().toLowerCase())
+        : undefined,
     cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
     aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     blobAccountUrl: process.env.AZURE_STORAGE_ACCOUNT_URL || undefined,

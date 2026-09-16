@@ -125,7 +125,7 @@ test("portal: case-insensitive on EDGE_MODE / TLS_SOURCE", () => {
 
 // ─── stageManifests integration: portal pulls model_providers.json from worker base ───
 import { stageManifests } from "../lib/stage-manifests.mjs";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -259,4 +259,119 @@ test("stageManifests(portal): PORTAL_TLS_CERT_NAME defaults to pilotswarm-portal
   );
   // Defaulting is observable via the env map being mutated.
   assert.equal(env.PORTAL_TLS_CERT_NAME, "pilotswarm-portal-tls");
+});
+
+function byoEnv(extra = {}) {
+  return makePortalEnv({
+    DEPLOY_POSTGRES: "false",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "0",
+    PILOTSWARM_DB_AAD_USER: undefined,
+    DATABASE_URL: "postgresql://u:byo-password-not-for-configmaps@shared.invalid:5432/testenv?sslmode=require",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://u:byo-password-not-for-configmaps@shared.invalid:5432/testenv?sslmode=require",
+    DATABASE_URL_SECRET_VERSION: "a".repeat(32),
+    PILOTSWARM_CMS_FACTS_DATABASE_URL_SECRET_VERSION: "b".repeat(32),
+    AZURE_STORAGE_CONTAINER: "copilot-sessions",
+    PILOTSWARM_TURN_TIMEOUT_MS: "1200000",
+    PILOTSWARM_LIVE_TURN: "0",
+    ...extra,
+  });
+}
+
+function allFileText(dir) {
+  return readdirSync(dir, { withFileTypes: true }).map((entry) => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? allFileText(path) : readFileSync(path, "utf8");
+  }).join("\n");
+}
+
+for (const [service, edgeMode, tlsSource, overlay] of [
+  ["worker", "afd", "letsencrypt", "default"],
+  ["portal", "afd", "letsencrypt", "afd-letsencrypt"],
+  ["portal", "afd", "akv", "afd-akv"],
+  ["portal", "private", "akv-selfsigned", "private-akv"],
+]) {
+  test(`password BYO stages ${service}/${overlay} without AAD stubs or credential ConfigMaps`, (t) => {
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-stage-"));
+    t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+    const env = byoEnv({ EDGE_MODE: edgeMode, TLS_SOURCE: tlsSource });
+    const root = stageManifests({ service, envName: "testenv", env, stagingDir });
+    const overlayText = readFileSync(join(root, "overlays", overlay, ".env"), "utf8");
+    for (const key of ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL", "PILOTSWARM_DB_AAD_USER"]) {
+      assert.doesNotMatch(overlayText, new RegExp(`^${key}=`, "m"));
+    }
+    assert.match(overlayText, /^PILOTSWARM_USE_MANAGED_IDENTITY=0$/m);
+    assert.match(overlayText, /^PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1$/m);
+    assert.ok(!allFileText(root).includes("byo-password-not-for-configmaps"), "no password in ANY uploaded file");
+    const component = JSON.parse(readFileSync(join(root, "components/database-secrets/kustomization.yaml"), "utf8"));
+    const patch = JSON.parse(component.patches[0].patch);
+    const pod = patch.spec.template.spec;
+    assert.equal(pod.containers[0].name, service);
+    assert.deepEqual(pod.containers[0].env.map((entry) => entry.name),
+      ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL"]);
+    assert.ok(pod.containers[0].env.every((entry) => entry.valueFrom.secretKeyRef && !("value" in entry)));
+    const spc = JSON.parse(readFileSync(join(root, "components/database-secrets/secret-provider-class.yaml"), "utf8"));
+    assert.match(spc.spec.parameters.objects, new RegExp(`objectVersion: ${"a".repeat(32)}`));
+    assert.equal(spc.spec.parameters.keyvaultName, env.KV_NAME);
+    assert.equal(pod.volumes[0].csi.volumeAttributes.secretProviderClass, spc.metadata.name);
+    assert.equal(pod.containers[0].env[0].valueFrom.secretKeyRef.name, spc.spec.secretObjects[0].secretName);
+    assert.match(readFileSync(join(root, "overlays", overlay, "kustomization.yaml"), "utf8"),
+      /- \.\.\/\.\.\/components\/database-secrets/);
+  });
+}
+
+test("BYO Entra keeps the real AAD user and projects passwordless URLs through CSI", (t) => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-aad-"));
+  t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+  const env = byoEnv({
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    PILOTSWARM_DB_AAD_USER: "external-principal",
+    DATABASE_URL: "postgresql://external-principal@shared.invalid/app?sslmode=require",
+    PILOTSWARM_CMS_FACTS_DATABASE_URL: "postgresql://external-principal@shared.invalid/app?sslmode=require",
+  });
+  const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
+  const text = readFileSync(join(root, "overlays/default/.env"), "utf8");
+  assert.match(text, /^PILOTSWARM_DB_AAD_USER=external-principal$/m);
+  assert.doesNotMatch(text, /^DATABASE_URL=/m);
+});
+
+test("secret-reference-only manifests work without loading database passwords", (t) => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-refs-"));
+  t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+  const env = byoEnv({
+    DATABASE_URL: undefined, PILOTSWARM_CMS_FACTS_DATABASE_URL: undefined,
+    DATABASE_URL_SECRET_NAME: "external-runtime", PILOTSWARM_CMS_FACTS_DATABASE_URL_SECRET_NAME: "external-cms",
+  });
+  const root = stageManifests({ service: "worker", envName: "testenv", env, stagingDir });
+  const text = readFileSync(join(root, "components/database-secrets/secret-provider-class.yaml"), "utf8");
+  assert.match(text, /external-runtime/);
+  assert.match(text, /external-cms/);
+});
+
+test("rotated Key Vault versions change Secret references; unchanged versions are deterministic", (t) => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-rotation-"));
+  t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+  const render = (version) => {
+    const root = stageManifests({
+      service: "worker", envName: "testenv", stagingDir,
+      env: byoEnv({ DATABASE_URL_SECRET_VERSION: version }),
+    });
+    return readFileSync(join(root, "components/database-secrets/kustomization.yaml"), "utf8");
+  };
+  const first = render("a".repeat(32));
+  assert.equal(render("a".repeat(32)), first);
+  assert.notEqual(render("c".repeat(32)), first);
+});
+
+test("runtime manifests fail before staging when BYO settings or versions are missing", (t) => {
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-invalid-"));
+  t.after(() => rmSync(stagingDir, { recursive: true, force: true }));
+  assert.throws(() => stageManifests({
+    service: "worker", envName: "testenv", stagingDir,
+    env: { DEPLOY_POSTGRES: "false", PILOTSWARM_USE_MANAGED_IDENTITY: "0" },
+  }), /requires DATABASE_URL and PILOTSWARM_CMS_FACTS_DATABASE_URL/);
+  assert.throws(() => stageManifests({
+    service: "worker", envName: "testenv", stagingDir,
+    env: byoEnv({ DATABASE_URL_SECRET_VERSION: undefined }),
+  }), /DATABASE_URL_SECRET_VERSION/);
+  assert.equal(existsSync(join(stagingDir, "gitops")), false);
 });
