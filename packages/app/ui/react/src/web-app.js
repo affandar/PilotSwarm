@@ -3785,7 +3785,9 @@ const PreviewMessageContent = React.memo(function PreviewMessageContent({ conten
 });
 
 const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, theme, controller }) {
-    const [open, setOpen] = React.useState(false);
+    // Saved updates should be readable immediately. The viewport below keeps
+    // long updates scrollable without taking over the whole chat pane.
+    const [open, setOpen] = React.useState(line.text === "Agent update");
     const [revealed, setRevealed] = React.useState(
         !line.liveStartedAt || Date.now() - line.liveStartedAt >= 200,
     );
@@ -3794,6 +3796,10 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
     const followRef = React.useRef(true);
     const snapshotRef = React.useRef(null);
     const expanded = open || line.final;
+    React.useLayoutEffect(() => {
+        // A live preview can become a saved update in the same card.
+        if (line.text === "Agent update") setOpen(true);
+    }, [line.text]);
     // Keep already-mounted markdown/disclosures when closed, but don't parse
     // new hidden deltas. Reopening catches up in a single render.
     if (expanded) snapshotRef.current = line;

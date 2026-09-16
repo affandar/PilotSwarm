@@ -166,6 +166,24 @@ test("message previews are compact canvas-style disclosures with bounded scrolli
     await expect(viewport).not.toBeVisible();
 });
 
+test("saved Agent updates open inside a bounded scroll box while commentary is chat text", async ({ page }) => {
+    const wire = await open(page);
+    const longUpdate = Array.from({ length: 80 }, (_, i) => `Update line ${i}`).join("\n\n");
+    wire.event("assistant.message", { messageId: "saved-update", content: longUpdate });
+    const update = page.locator(".ps-assistant-preview:not(.is-final)");
+    await expect(update).toHaveCount(1);
+    await expect(update).toHaveAttribute("open", "");
+    await expect(update.locator(":scope > summary")).toContainText("Agent update");
+    const viewport = update.locator(".ps-assistant-preview-viewport");
+    await expect(viewport).toBeVisible();
+    expect((await viewport.boundingBox()).height).toBeLessThanOrEqual(280);
+    expect(await viewport.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+
+    wire.event("assistant.message", { phase: "commentary", messageId: "milestone", content: "Milestone reached." });
+    await expect(page.getByText("Milestone reached.", { exact: true })).toBeVisible();
+    await expect(update).toHaveCount(1);
+});
+
 for (const delivery of ["events", "history"]) {
     test(`durable ${delivery} shows commentary in the transcript`, async ({ page }) => {
         const events = [
