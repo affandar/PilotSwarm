@@ -79,6 +79,9 @@ param localDeploymentPrincipalType string = 'User'
 @description('Kubernetes namespace hosting the worker + portal service accounts. MUST match the NAMESPACE env-var that drives the Kustomize overlay (deploy/envs/local/<env>/env). Used to build federated identity credential subjects.')
 param serviceAccountNamespace string = 'pilotswarm'
 
+@description('Whether to provision the stamp PostgreSQL flexible server. Set false to bring your own database: skip the module and supply DATABASE_URL (and PILOTSWARM_CMS_FACTS_DATABASE_URL) in the environment instead. When false, postgresFqdn / postgresAadAdminPrincipalName are emitted empty and deploy/scripts/lib/compose-env.mjs leaves the supplied connection strings untouched.')
+param deployPostgres bool = true
+
 @description('Whether to provision an Azure AI Foundry (Cognitive Services AIServices) account in this stamp. When true, foundry.bicep + auto-secrets.bicep run; the Foundry primary key lands in KV as `azure-oai-key` and FOUNDRY_ENDPOINT is emitted as a deployment output. When false, no Foundry resource is provisioned and the worker catalog substitutes `__FOUNDRY_ENDPOINT__` to empty (Foundry providers in the catalog become non-loadable; non-Foundry providers — github-copilot, anthropic — keep working).')
 param foundryEnabled bool = false
 
@@ -454,7 +457,7 @@ module Storage './storage.bicep' = {
 // PostgreSQL Flexible Server (worker runs its own migrations).
 // ==============================================================================
 
-module Postgres './postgres.bicep' = {
+module Postgres './postgres.bicep' = if (deployPostgres) {
   name: '${resourceNamePrefix}-pg-${dTime}'
   params: {
     location: location
@@ -603,8 +606,8 @@ output acrName string = acrName
 output keyVaultName string = KeyVault.outputs.keyVaultName
 output blobContainerEndpoint string = Storage.outputs.blobContainerEndpoint
 output aksClusterName string = Aks.outputs.aksClusterName
-output postgresFqdn string = Postgres.outputs.fullyQualifiedDomainName
-output postgresAadAdminPrincipalName string = Postgres.outputs.aadAdminPrincipalName
+output postgresFqdn string = deployPostgres ? Postgres!.outputs.fullyQualifiedDomainName : ''
+output postgresAadAdminPrincipalName string = deployPostgres ? Postgres!.outputs.aadAdminPrincipalName : ''
 output frontDoorProfileName string = frontDoorProfileName
 output frontDoorProfileResourceGroup string = frontDoorProfileResourceGroup
 output sslCertificateDomainSuffix string = sslCertificateDomainSuffix
