@@ -103,7 +103,33 @@ test("loadEnv does NOT cascade values from template.env", () => {
     assert.equal(env.NAMESPACE, undefined);
     assert.equal(env.AZURE_TENANT_ID, undefined);
     assert.equal(env.EDGE_MODE, undefined);
+    assert.equal(env.DEPLOY_POSTGRES, "true", "only explicit compatibility defaults are added");
+    assert.equal(env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY, "1");
   } finally {
+    cleanup();
+  }
+});
+
+test("old local env accepts a process override for newly introduced database keys", () => {
+  cleanup();
+  const keys = ["DEPLOY_POSTGRES", "DATABASE_URL_SECRET_NAME", "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY"];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    process.env.DEPLOY_POSTGRES = " 0 ";
+    process.env.DATABASE_URL_SECRET_NAME = "shared-runtime-url";
+    process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY = "true";
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.DEPLOY_POSTGRES, "false");
+    assert.equal(env.DATABASE_URL_SECRET_NAME, "shared-runtime-url");
+    assert.equal(env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY, "true");
+    assert.equal(env.NAMESPACE, undefined);
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
     cleanup();
   }
 });

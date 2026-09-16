@@ -8,6 +8,7 @@ import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
+import { DATABASE_ENV_DEFAULTS, DATABASE_INPUT_KEYS, deploysPostgres } from "./database-env.mjs";
 
 // Repo root: this file lives at <repo>/deploy/scripts/lib/common.mjs
 const __filename = fileURLToPath(import.meta.url);
@@ -126,13 +127,16 @@ export function loadEnv(envName) {
     );
   }
 
-  const merged = parseEnvFile(envFile);
+  // Compatibility defaults for newly introduced switches, not a cascade
+  // onto the mutable scaffolding template.
+  const merged = { ...DATABASE_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
-  // process.env override for keys already in the merged map.
-  for (const k of Object.keys(merged)) {
+  // Allow the new database inputs on pre-existing env files too.
+  for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
     if (process.env[k] !== undefined && process.env[k] !== "") {
       merged[k] = process.env[k];
     }
+    merged.DEPLOY_POSTGRES = String(deploysPostgres(merged));
   }
 
   return {

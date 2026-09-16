@@ -801,11 +801,18 @@ export interface PilotSwarmWorkerOptions {
     blobContainer?: string;
     /**
      * Account-level URL (`https://<account>.blob.core.windows.net`) used
-     * when running with `useManagedIdentity: true`. Ignored otherwise.
+     * when Blob managed identity is enabled. Ignored otherwise.
      */
     blobAccountUrl?: string;
     /**
-     * Opt into managed-identity auth for Azure Blob Storage. When `true`,
+     * Blob-only auth override. Defaults to `useManagedIdentity` for
+     * compatibility. Set true with useManagedIdentity=false to keep
+     * Blob workload identity while using a password-authenticated database.
+     */
+    blobUseManagedIdentity?: boolean;
+    /**
+     * Opt into database managed identity and, unless overridden by
+     * `blobUseManagedIdentity`, Azure Blob Storage. For Blob, when enabled,
      * `blobAccountUrl` is required and `blobConnectionString` is ignored;
      * the worker uses `DefaultAzureCredential` (workload identity in AKS,
      * `az login` / env-var creds locally). SAS URL generation will throw

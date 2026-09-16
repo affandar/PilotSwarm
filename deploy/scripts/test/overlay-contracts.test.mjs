@@ -22,6 +22,7 @@ import {
   TLS_SOURCES,
   DEFAULT_EDGE_MODE,
   DEFAULT_TLS_SOURCE,
+  databaseOverlayOmittedKeys,
 } from "../lib/overlay-contracts.mjs";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -52,6 +53,16 @@ test("resolveOverlayKey collapses akv-selfsigned to akv", () => {
     resolveOverlayKey({ edgeMode: "private", tlsSource: "akv-selfsigned" }),
     "private-akv",
   );
+});
+
+test("database overlay contract removes secrets and AAD-only requirements for password BYO", () => {
+  assert.deepEqual(databaseOverlayOmittedKeys({
+    DEPLOY_POSTGRES: "false", PILOTSWARM_USE_MANAGED_IDENTITY: "0",
+  }), ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL", "PILOTSWARM_DB_AAD_USER"]);
+  assert.deepEqual(databaseOverlayOmittedKeys({
+    DEPLOY_POSTGRES: "false", PILOTSWARM_USE_MANAGED_IDENTITY: "true",
+  }), ["DATABASE_URL", "PILOTSWARM_CMS_FACTS_DATABASE_URL"]);
+  assert.deepEqual(databaseOverlayOmittedKeys({ PILOTSWARM_USE_MANAGED_IDENTITY: "1" }), []);
 });
 
 test("resolveOverlayKey honors JS defaults when inputs are blank", () => {
@@ -380,4 +391,3 @@ test("VPN combo-error hints never reference the nonexistent deploy/docs/ tree", 
     "overlay-contracts.mjs still contains a deploy/docs/ reference",
   );
 });
-

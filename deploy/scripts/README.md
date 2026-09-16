@@ -318,9 +318,9 @@ Operator guidance:
 
 ## Secrets &amp; identity (bicep-deploy path only)
 
-This deploy path uses **managed identity for Azure resources** and keeps a
-single gitignored env file holding only the two human-only secrets the
-runtime cannot bootstrap on its own.
+This deploy path uses **managed identity for Azure resources** and keeps
+operator inputs in a single gitignored env file. Database and Blob
+authentication can be selected independently.
 
 > **Legacy `scripts/deploy-aks.sh` is unchanged.** It still builds the
 > `copilot-runtime-secrets` K8s secret from local env vars
@@ -339,27 +339,31 @@ them to `deploy/envs/local/<name>/.env` (gitignored — the entire
 |---|---|---|
 | `GITHUB_TOKEN` | Optional. Human-issued PAT, cannot be created at deploy time. When blank, the deploy writes the `__PS_UNSET__` sentinel into KV; users supply their own per-user GitHub Copilot key via the Admin panel instead. | Synced to KV → mounted into worker pod via SPC as `github-token` |
 | `ANTHROPIC_API_KEY` | Vendor-issued API key | Synced to KV → mounted as `anthropic-api-key` |
+| `DATABASE_URL`, `PILOTSWARM_CMS_FACTS_DATABASE_URL` (BYO only) | External database connection URLs, which can contain passwords | Seeded into the stamp Key Vault and projected through a dedicated CSI Secret, never the BYO ConfigMap |
 
 Everything else that used to live in K8s secrets is now either:
-- **Config** (e.g. `DATABASE_URL`, `AZURE_STORAGE_ACCOUNT_URL`,
+- **Config** (e.g. the legacy provisioned bootstrap `DATABASE_URL`, `AZURE_STORAGE_ACCOUNT_URL`,
   `KV_NAME`, `DEPLOYMENT_STORAGE_ACCOUNT_NAME`) — sourced from Bicep
   outputs, surfaced via the worker `ConfigMap` in the rendered overlay; or
 - **Acquired at runtime** via managed identity — Postgres AAD tokens
   for CMS+facts; Blob OAuth tokens for session blobs.
 
-The `seed-secrets` step reads those two keys from the loaded env map,
-validates both are non-empty, then `az keyvault secret set` for each.
+The `seed-secrets` step reads these keys from the loaded env map.
+Optional model credentials receive the unset sentinel when blank.
+For BYO databases it validates the supplied URLs or explicit secret
+references before writing any secrets.
 It runs **after** `bicep` (so the KV exists) and **before**
 `manifests`/`rollout`.
 
-### Managed identity feature switch
+### Independent database and Blob authentication
 
 The bicep-deploy path enables MI mode by setting these in the overlay
 `.env` (substituted into the worker `ConfigMap`):
 
 | Key | Effect |
 |---|---|
-| `PILOTSWARM_USE_MANAGED_IDENTITY=1` | Master switch. Both blob and Postgres factories follow the MI branch. |
+| `PILOTSWARM_USE_MANAGED_IDENTITY=1` | Database Entra auth. Set `0` for password-authenticated BYO databases. Legacy callers without a Blob-specific override still use this as a shared default. |
+| `PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1` | Independent Blob auth; default on this deploy path, including older env files. Keep enabled when database auth is password-based. The deploy does not seed a Blob connection-string secret. |
 | `AZURE_STORAGE_ACCOUNT_URL=https://<acct>.blob.core.windows.net/` | Worker constructs `BlobServiceClient(accountUrl, DefaultAzureCredential)`. SAS generation throws `NotSupportedInManagedIdentityMode` — artifact downloads must proxy through the worker. |
 | `PILOTSWARM_CMS_FACTS_DATABASE_URL=postgresql://<aad-user>@<fqdn>:5432/<db>?sslmode=require` | Passwordless URL for CMS + facts pools. The factory installs an AAD token callback (`https://ossrdbms-aad.database.windows.net/.default`). |
 | `PILOTSWARM_DB_AAD_USER=<csi-uami-display-name>` | Postgres AAD admin role name = CSI UAMI display name. Used to build `aadUser` in the factory. |
@@ -369,6 +373,69 @@ The bicep-deploy path enables MI mode by setting these in the overlay
 `BLOB_CONTAINER_ENDPOINT` Bicep output, and composes
 `PILOTSWARM_CMS_FACTS_DATABASE_URL` + `PILOTSWARM_DB_AAD_USER` from
 `POSTGRES_FQDN` + `POSTGRES_AAD_ADMIN_PRINCIPAL_NAME`.
+
+### Use an existing database (including HorizonDB)
+
+Set `DEPLOY_POSTGRES=false` in `deploy/envs/local/<name>/.env`.
+The supported `deploy.mjs` path skips the flexible-server module and ignores
+stale `POSTGRES_*` cache entries. `true` is the default, including for older
+env files with no key. Legacy `1` and `0` are accepted and serialized as
+JSON booleans; other values fail. This is an explicit provisioning choice,
+not inferred from a URL. Switching to `false` does **not** delete a server
+from an earlier incremental deployment.
+
+For a password-authenticated external database, set:
+
+```dotenv
+DEPLOY_POSTGRES=false
+PILOTSWARM_USE_MANAGED_IDENTITY=0
+PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1
+DATABASE_URL=postgresql://<user>:<percent-encoded-password>@<host>:5432/<environment-db>?sslmode=require
+PILOTSWARM_CMS_FACTS_DATABASE_URL=postgresql://<user>:<percent-encoded-password>@<host>:5432/<environment-db>?sslmode=require
+```
+
+For Entra auth, use passwordless URLs, set
+`PILOTSWARM_USE_MANAGED_IDENTITY=1`, and set `PILOTSWARM_DB_AAD_USER` to
+the principal registered on the external database. The deploy does not
+create that external principal, configure the external firewall, or
+provision the external database. Verify network access and provider/extension
+compatibility separately. Use a distinct database and role per test
+environment on a shared cluster; sharing a server must not mean sharing
+PilotSwarm's tables.
+
+The full `npm run deploy -- all <name>` pipeline seeds the two URLs into
+the environment's Key Vault as `database-url` and
+`pilotswarm-cms-facts-database-url`. For split bring-up, run:
+
+```sh
+npm run deploy -- base-infra <name> --steps bicep,seed-secrets
+npm run deploy -- worker <name>
+npm run deploy -- portal <name>
+```
+
+Alternatively, populate secrets in that same vault beforehand and set
+`DATABASE_URL_SECRET_NAME` and
+`PILOTSWARM_CMS_FACTS_DATABASE_URL_SECRET_NAME` instead of raw URLs.
+`seed-secrets` leaves reference-only secrets unchanged. Custom names can
+also be supplied with raw URLs to choose the seed destination.
+When both URLs use one secret name, their supplied values must agree.
+
+The manifests stage queries only secret identifiers, pins their Key Vault
+versions, and creates service-specific CSI projections with explicit
+`secretKeyRef` entries. URL values never enter the staged BYO `.env`,
+ConfigMaps, Bicep outputs cache, or uploaded manifest tree. Password auth
+omits the AAD-user key rather than inventing a placeholder. Version changes
+produce new Kubernetes Secret references, forcing fresh pods to wait for
+the new CSI-synced Secret instead of starting with an old value.
+An explicit `<URL_KEY>_SECRET_VERSION` can pin an existing 32-character
+Key Vault version; otherwise `--steps manifests` resolves the latest.
+
+After changing a supplied URL, run `base-infra --steps seed-secrets`, then
+publish the worker and portal manifests again. A raw URL in a manifests-only
+invocation is **not** written to Key Vault; run the seeding step first.
+Infrastructure-only `--steps bicep`, build-only, and unrelated services do
+not require database URLs. Only secret seeding and worker/portal manifest
+staging require the BYO configuration.
 
 ### Bicep-side identity wiring
 
