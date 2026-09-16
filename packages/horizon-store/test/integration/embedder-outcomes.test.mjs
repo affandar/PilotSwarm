@@ -91,11 +91,14 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
     it("E5 edited fact is re-embedded after vector reset", async () => {
         await store.storeFact({ key: "live/jsonb2", value: { text: "subscript syntax for jsonb columns — REVISED edition" }, shared: true });
         assert.equal((await rowState("live/jsonb2")).has_vec, false, "edit clears the row's stale vector");
+        // The live durable worker can take several one-minute ticks to pick up
+        // an edit while other integration suites share the service. The old
+        // 120s ceiling expired before a healthy loop re-embedded this row.
         await pollUntil(async () => {
             const st = await rowState("live/jsonb2");
             return st.has_vec && st.embedding_model === REAL_EMBED_MODEL;
-        }, { label: "re-embed after edit", timeoutMs: 120_000 });
-    }, 180_000);
+        }, { label: "re-embed after edit", timeoutMs: 360_000 });
+    }, 420_000);
 
     it("E13 mid-flight edits converge: the FINAL content is what ends up embedded", async () => {
         // Edit the fact repeatedly while the loop is actively embedding a batch;
@@ -105,13 +108,15 @@ describe.skipIf(!HAS_DB || !HAS_REAL_EMBED)("embedder outcomes (E4/E5/E13/E14) +
             await store.storeFact({ key: "live/jsonb", value: { text: `jsonb subscripting churn edit ${i}` }, shared: true });
             await new Promise((r) => setTimeout(r, 300)); // churn cadence, not a sync sleep
         }
+        // Give the same shared live worker enough ticks to revisit the final
+        // edit; the assertion still requires its vector and current model.
         await pollUntil(async () => {
             const st = await rowState("live/jsonb");
             return st.has_vec && st.embedding_model === REAL_EMBED_MODEL;
-        }, { label: "convergence on final content", timeoutMs: 120_000 });
+        }, { label: "convergence on final content", timeoutMs: 360_000 });
         const st = await rowState("live/jsonb");
         assert.equal(st.has_vec, true, "final content is embedded");
-    }, 180_000);
+    }, 420_000);
 
     it("E14 model rotation: reconfigured model re-embeds; mismatched rows vanish from semantic results", async () => {
         await store.configureEmbedder(realEmbedding({ model: ROTATED_MODEL }));

@@ -47,14 +47,19 @@ function effectivePolicy(cache, principal = owner) {
     return resolveBaseAgentPolicy(cache, principal, nativeEnabled);
 }
 
-async function sessionFixture(policy, { named = false, isSystem = false, workerNative = true } = {}) {
+async function sessionFixture(policy, { named = false, isSystem = false, workerNative = true, sources = [], skills = [],
+    skillDirectories = [], baseV2SkillDirectories = [], sessionOwner = owner } = {}) {
     const home = mkdtempSync(join(tmpdir(), "ps-base-policy-review-"));
     const calls = [];
-    const row = { sessionId: "policy-session", owner, isSystem };
+    const row = { sessionId: "policy-session", owner: sessionOwner, isSystem };
     const defaults = {
         frameworkBasePrompt: "V1 FRAMEWORK: prefer the named specialist when its role fits.",
         appDefaultPrompt: "APP SECURITY: never disclose deployment credentials.",
         nativeSubagents: workerNative ? "sync" : "off",
+        getCapabilitySources: () => sources,
+        skillDirectories,
+        getBaseV2SkillDirectories: () => baseV2SkillDirectories,
+        skills,
         agentPromptLookup: { analyst: { prompt: "NAMED SECURITY: read-only investigation; do not execute mutations.",
             toolNames: [], kind: "app-agent" } },
     };
@@ -85,6 +90,162 @@ async function sessionFixture(policy, { named = false, isSystem = false, workerN
 }
 
 describe("Base V2 adversarial policy boundaries", () => {
+    it("indexes all static and owner-authored private/shared workflows and skills without adopting foreign shared packages", async () => {
+        const mine = { provider: "test", subject: "base-policy-owner" };
+        const other = { provider: "test", subject: "other-publisher" };
+        const capability = (id, scope, publisher, kind, name, body) => ({
+            id, name: id, source: id === "deployment" ? "static" : "published", scope,
+            owner: publisher, revision: "1", tools: new Map(), mcpServers: {},
+            artifacts: [{ kind, name, description: `Description of ${name}`, body }],
+        });
+        const sources = [
+            capability("deployment", "shared", null, "skill", "static-method", "STATIC BODY"),
+            capability("mine-shared", "shared", mine, "agent", "my-review", "OWNED AGENT BODY"),
+            capability("mine-private", "user", mine, "skill", "my-private", "OWNED PRIVATE BODY"),
+            capability("mine-shared-skill", "shared", mine, "skill", "my-shared", "OWNED SHARED BODY"),
+            capability("other-shared", "shared", other, "skill", "other-shared", "FOREIGN BODY"),
+            capability("other-private", "user", other, "agent", "other-secret", "PRIVATE BODY"),
+        ];
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const h = await sessionFixture(policy, { sources,
+            skillDirectories: ["/static/skills", "/foreign/skills"], baseV2SkillDirectories: ["/static/skills"], skills: [
+            { name: "other-shared", description: "Legacy shared skill", prompt: "FOREIGN BODY" },
+        ] });
+        const session = await h.turn(0);
+        const sdk = h.calls.at(-1).config;
+        const index = await sdk.systemMessage.sections.last_instructions.action("");
+        for (const name of ["static-method", "my-review", "my-private", "my-shared"]) expect(index).toContain(name);
+        for (const absent of ["other-shared", "other-secret", "STATIC BODY", "OWNED PRIVATE BODY", "FOREIGN BODY"]) expect(index).not.toContain(absent);
+        expect(session.skillCatalog.map(s => s.name).sort()).toEqual(["my-private", "my-shared", "static-method"]);
+        expect(session.skillCatalog.find(s => s.name === "my-shared").prompt).toBe("OWNED SHARED BODY");
+        expect(sdk.skillDirectories).toEqual(["/static/skills"]);
+        const found = await session.config.capabilityServices.search({ query: "other-shared" });
+        expect(found.capabilities.find(item => item.name === "other-shared").ownership).toBe("other_shared");
+        expect(found.capabilities.some(item => item.name === "other-secret")).toBe(false);
+
+        await policy.set(base, { user: false });
+        const legacy = await h.turn(1);
+        expect(legacy.skillCatalog.find(s => s.name === "other-shared").prompt).toBe("FOREIGN BODY");
+        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills", "/foreign/skills"]);
+        expect(await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("")).not.toContain("## Available workflows and skills");
+    });
+
+    it("fails closed on unverified shared ownership and still permits static V2 skills", async () => {
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const sources = [
+            { id: "static", name: "static", source: "static", scope: "shared", revision: "1", tools: new Map(), mcpServers: {},
+                artifacts: [{ kind: "skill", name: "safe", description: "safe method", body: "SAFE BODY" }] },
+            { id: "unknown", name: "unknown", source: "published", scope: "shared", revision: "1", tools: new Map(), mcpServers: {},
+                artifacts: [{ kind: "skill", name: "unverified", description: "unknown publisher", body: "UNVERIFIED BODY" }] },
+        ];
+        const h = await sessionFixture(policy, { sources });
+        const session = await h.turn(0);
+        expect(session.skillCatalog.map(s => s.name)).toEqual(["safe"]);
+        const index = await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
+        expect(index).toContain("safe");
+        expect(index).not.toContain("unverified");
+    });
+
+    it("keeps SDK skill directories static for a system-owned non-system child", async () => {
+        // Real children of system sessions are system-owned but isSystem=false.
+        // They can enter V2 if the cluster enables both prerequisite flags.
+        const systemOwner = { provider: "system", subject: "system" };
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const sources = [
+            { id: "static", name: "static", source: "static", scope: "shared", revision: "1",
+                tools: new Map(), mcpServers: {}, artifacts: [
+                    { kind: "skill", name: "static-method", description: "deployment method", body: "STATIC BODY" },
+                ] },
+            { id: "system-published", name: "system-published", source: "published", scope: "shared", owner: systemOwner,
+                revision: "1", tools: new Map(), mcpServers: {}, artifacts: [
+                    { kind: "skill", name: "published-method", description: "system package method", body: "PUBLISHED BODY" },
+                ] },
+        ];
+        const h = await sessionFixture(policy, { sessionOwner: systemOwner, sources,
+            skillDirectories: ["/static/skills", "/published/skills"] });
+        const scopedOwners = [];
+        h.manager.workerDefaults.getBaseV2SkillDirectories = scopedOwner => {
+            scopedOwners.push(scopedOwner);
+            return scopedOwner ? ["/published/skills"] : ["/static/skills"];
+        };
+        const session = await h.turn(0);
+        expect(session.config.baseAgentPolicy.version).toBe("v2");
+        expect(scopedOwners).toEqual([null]);
+        expect(h.calls[0].config.skillDirectories).toEqual(["/static/skills"]);
+        expect(session.skillCatalog.map(skill => skill.name)).toEqual(["static-method"]);
+        const index = await h.calls[0].config.systemMessage.sections.last_instructions.action("");
+        expect(index).toContain("static-method");
+        expect(index).not.toContain("published-method");
+        await policy.set(base, { enabled: false });
+        await h.turn(1);
+        expect(h.calls.at(-1).config.skillDirectories).toEqual(["/static/skills", "/published/skills"]);
+    });
+
+    it("renders the V2 index without prompt-time catalog reads and reuses the turn owner for skills", async () => {
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const sources = [{ id: "mine", name: "mine", source: "published", scope: "user", owner,
+            revision: "1", tools: new Map(), mcpServers: {}, artifacts: [
+                { kind: "skill", name: "my-method", description: "owned method", body: "MY BODY" },
+            ] }];
+        const h = await sessionFixture(policy, { sources });
+        const sessionRead = vi.spyOn(h.manager.sessionCatalog, "getSession");
+        const roleRead = vi.spyOn(h.manager.sessionCatalog, "getUserRole");
+        const fallbackOwnerLookup = vi.spyOn(h.manager, "_baseV2CapabilityOwner");
+        await h.turn(0);
+        const readsBeforePrompt = [sessionRead.mock.calls.length, roleRead.mock.calls.length];
+        const prompt = h.calls[0].config.systemMessage.sections.last_instructions;
+        expect(await prompt.action("")).toContain("my-method");
+        expect(await prompt.action("")).toContain("my-method");
+        expect([sessionRead.mock.calls.length, roleRead.mock.calls.length]).toEqual(readsBeforePrompt);
+        expect(fallbackOwnerLookup).not.toHaveBeenCalled();
+
+        const warm = await h.turn(1);
+        expect(fallbackOwnerLookup).not.toHaveBeenCalled();
+        expect(warm.skillCatalog.find(skill => skill.name === "my-method").prompt).toBe("MY BODY");
+    });
+
+    it("refreshes V2 owner inventory across package changes and updates warm by-name skills", async () => {
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const sources = [{ id: "static", name: "static", source: "static", scope: "shared", revision: "1",
+            tools: new Map(), mcpServers: {}, artifacts: [
+                { kind: "skill", name: "method", description: "static", body: "FIRST BODY" },
+            ] }];
+        const h = await sessionFixture(policy, { sources });
+        const original = await h.turn(0);
+        sources.push({ id: "foreign", name: "foreign", source: "published", scope: "shared",
+            owner: { provider: "test", subject: "other" }, revision: "1", tools: new Map(), mcpServers: {},
+            artifacts: [{ kind: "skill", name: "foreign-method", description: "foreign", body: "FOREIGN BODY" }] });
+        expect(await h.turn(1)).toBe(original);
+        expect(h.calls).toHaveLength(1);
+        sources.push({ id: "mine", name: "mine", source: "published", scope: "shared", owner,
+            revision: "1", tools: new Map(), mcpServers: {},
+            artifacts: [{ kind: "skill", name: "new-method", description: "new owner skill", body: "NEW BODY" }] });
+        const rebound = await h.turn(2);
+        expect(rebound).not.toBe(original);
+        expect(h.calls).toHaveLength(2);
+        expect(rebound.skillCatalog.map(s => s.name).sort()).toEqual(["method", "new-method"]);
+        expect(await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("")).toContain("new-method");
+        sources[0].artifacts[0].body = "REFRESHED BODY";
+        expect(await h.turn(3)).toBe(rebound);
+        expect(rebound.skillCatalog.find(s => s.name === "method").prompt).toBe("REFRESHED BODY");
+        expect(h.calls).toHaveLength(2);
+    });
+
+    it("selects the V2-safe declared-skill composition for an active named agent", async () => {
+        const policy = await flags({ [base]: { enabled: true, allowUserOverride: true } });
+        const h = await sessionFixture(policy, { named: true });
+        h.manager.workerDefaults.agentPromptLookup.analyst.baseV2Prompt = "V2 NAMED SECURITY: only permitted skills";
+        const session = await h.turn(0);
+        expect(session.config.baseAgentPolicy.version).toBe("v2");
+        const v2 = await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
+        expect(v2).toContain("V2 NAMED SECURITY: only permitted skills");
+        expect(v2).not.toContain("read-only investigation; do not execute mutations");
+        await policy.set(base, { user: false });
+        await h.turn(1);
+        const v1 = await h.calls.at(-1).config.systemMessage.sections.last_instructions.action("");
+        expect(v1).toContain("NAMED SECURITY: read-only investigation; do not execute mutations");
+    });
+
     it.each([
         ["cluster default off", {}, "v1"],
         ["owner opts in", { [base]: { enabled: false, allowUserOverride: true, user: true } }, "v2"],
@@ -170,6 +331,11 @@ describe("Base V2 adversarial policy boundaries", () => {
     it("requires early discovery for naturally named capabilities only in V2", () => {
         const v2 = baseAgentInstructions({ version: "v2" }, "legacy");
         expect(v2.indexOf("## Capability Discovery")).toBeLessThan(v2.indexOf("## Critical Rules"));
+        expect(v2).toContain("session-owner-authored agent workflows and skills");
+        expect(v2).toContain("owner's private and shared published packages");
+        expect(v2).toContain("`other_shared` belongs to another user");
+        expect(v2).toContain("session owner explicitly asks to use that package or capability");
+        expect(v2).toContain("A generic related task or a request from another session is not that permission");
         expect(v2).toContain('"X exploration"');
         expect(v2).toContain("The user does not need to call X a tool or capability");
         expect(v2).toContain("your first task-related tool call MUST be `search_capabilities`");

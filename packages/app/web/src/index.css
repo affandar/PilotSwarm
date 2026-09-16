@@ -2452,14 +2452,78 @@ body.is-resizing-pane-y iframe {
   cursor: text;
 }
 
-/* Appears only when automatic scroll-up expansion has hit its cap — the point
-   at which the transcript would otherwise be a dead end in the browser. */
-.ps-load-older-bar {
-  display: flex;
-  justify-content: center;
-  padding: 4px 0 6px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+/* Earlier-history pull and loading share one timeline marker. The rail grows
+   with a finger drag; wheel paging enters directly in the loading state. */
+.ps-history-load {
+  position: relative;
+  flex: none;
+  height: calc(32px + var(--ps-history-pull, 0px));
+  min-width: 0;
+  color: var(--ps-foreground);
+  background: var(--ps-surface);
+  border-bottom: 1px solid var(--ps-border);
+  overflow: hidden;
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
 }
+
+.ps-history-load.is-loading,
+.ps-history-load.is-manual { height: 40px; }
+
+.ps-history-track {
+  position: absolute;
+  left: 22px;
+  top: 4px;
+  bottom: 5px;
+  width: 1px;
+  background: var(--ps-border);
+}
+
+.ps-history-tick {
+  position: absolute;
+  left: -4px;
+  width: 9px;
+  height: 1px;
+  background: var(--ps-border);
+}
+
+.ps-history-tick.is-first { top: 5px; }
+.ps-history-tick.is-second { top: 16px; }
+
+.ps-history-marker {
+  position: absolute;
+  left: -11px;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  border: 1px solid var(--ps-accent);
+  border-radius: 50%;
+  background: var(--ps-chrome);
+  color: var(--ps-accent);
+}
+
+.ps-history-marker .ps-share-glyph { width: 14px; height: 14px; }
+.ps-history-load.is-loading .ps-history-marker .ps-share-glyph { animation: ps-history-spin 1s linear infinite; }
+@keyframes ps-history-spin { to { transform: rotate(360deg); } }
+
+.ps-history-label,
+.ps-history-load .ps-load-older-button {
+  position: absolute;
+  left: 49px;
+  bottom: 7px;
+}
+
+.ps-history-label {
+  right: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ps-history-load.is-ready .ps-history-label { color: var(--ps-accent); }
+.ps-history-text-spinner { display: none; }
 
 .ps-load-older-button {
   font: inherit;
@@ -2470,6 +2534,84 @@ body.is-resizing-pane-y iframe {
   border-radius: 4px;
   padding: 2px 12px;
   cursor: pointer;
+}
+
+/* The retro skins keep the timeline shape but draw it in their own idiom. */
+:root[data-ps-theme="doom"] .ps-history-load { background: #1c1310; color: var(--doom-bone); border-color: var(--doom-band); }
+:root[data-ps-theme="doom"] .ps-history-track,
+:root[data-ps-theme="doom"] .ps-history-tick { background: var(--doom-light); }
+:root[data-ps-theme="doom"] .ps-history-marker {
+  border-radius: 0;
+  border-color: var(--doom-light) var(--doom-shadow) var(--doom-shadow) var(--doom-light);
+  background: var(--doom-band);
+  color: var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .ps-history-load.is-ready .ps-history-label { color: #ffd84a; }
+
+:root[data-ps-theme="terminal-green"] .ps-history-load { background: #020503; color: #c9f7d3; border-color: #245c33; }
+:root[data-ps-theme="terminal-green"] .ps-history-track,
+:root[data-ps-theme="terminal-green"] .ps-history-tick { background: #63e27a; }
+:root[data-ps-theme="terminal-green"] .ps-history-marker {
+  border-color: #63e27a;
+  background: #061109;
+  color: #c9f7d3;
+}
+:root[data-ps-theme="terminal-green"] .ps-history-load .ps-load-older-button {
+  background: #061109;
+  border-color: #63e27a;
+  color: #c9f7d3;
+}
+:root[data-ps-theme="terminal-green"] .ps-history-load.is-ready .ps-history-label { color: #8cff9f; }
+
+:root[data-ps-theme="win95"] .ps-history-load { background: var(--w95-face); color: #000000; border-color: var(--w95-shadow); }
+:root[data-ps-theme="win95"] .ps-history-track,
+:root[data-ps-theme="win95"] .ps-history-tick { background: var(--w95-shadow); }
+:root[data-ps-theme="win95"] .ps-history-marker {
+  border-radius: 0;
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  background: #000080;
+  color: #ffffff;
+}
+:root[data-ps-theme="win95"] .ps-history-load.is-ready .ps-history-label { color: #000080; }
+
+:root[data-ps-theme="winamp"] .ps-history-load { background: var(--wa-glass); color: var(--wa-green); border-color: var(--wa-face); }
+:root[data-ps-theme="winamp"] .ps-history-track,
+:root[data-ps-theme="winamp"] .ps-history-tick { background: var(--wa-light); }
+:root[data-ps-theme="winamp"] .ps-history-marker {
+  border-radius: 0;
+  background: var(--wa-glass);
+  border-color: var(--wa-light) var(--wa-shadow) var(--wa-shadow) var(--wa-light);
+  color: var(--wa-green);
+}
+:root[data-ps-theme="winamp"] .ps-history-load.is-ready .ps-history-label { color: var(--wa-amber); }
+
+:root[data-ps-theme="ms-dos"] .ps-history-load { background: #000000; color: var(--dos-fg); border-color: var(--dos-fg); }
+:root[data-ps-theme="ms-dos"] .ps-history-track,
+:root[data-ps-theme="ms-dos"] .ps-history-tick { background: var(--dos-fg); }
+:root[data-ps-theme="ms-dos"] .ps-history-marker {
+  border: 0;
+  border-radius: 0;
+  background: #000000;
+  color: var(--dos-bright);
+}
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-loading .ps-history-marker .ps-share-glyph { display: none; }
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-loading .ps-history-text-spinner { display: block; position: relative; width: 1ch; height: 1em; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: ps-history-text-spin .48s steps(1, end) infinite;
+}
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(2) { animation-delay: -.12s; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(3) { animation-delay: -.24s; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(4) { animation-delay: -.36s; }
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-ready .ps-history-label { color: var(--dos-bright); }
+@keyframes ps-history-text-spin { 0%, 24.9% { opacity: 1; } 25%, 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-history-load.is-loading .ps-history-marker .ps-share-glyph,
+  :root[data-ps-theme="ms-dos"] .ps-history-text-spinner span { animation: none; }
+  :root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:first-child { opacity: 1; }
 }
 
 .ps-load-older-button:hover:not(:disabled) {

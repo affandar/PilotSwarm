@@ -9698,6 +9698,7 @@ export class PilotSwarmUiController {
         await this.maybeAutoExpandActiveHistory(requestedScrollOffset, {
             pages: AUTO_HISTORY_SCROLL_PAGE_COUNT,
             preserveDomAnchor: options.preserveDomAnchor === true,
+            onLoadStarted: options.onLoadStarted,
             // Always bypass the offset gate. Every caller of this method fires
             // only when the DOM scroller is already AT the top — a direct
             // measurement. The gate is a second, weaker guess that compares a
@@ -10035,7 +10036,7 @@ export class PilotSwarmUiController {
             if (targetOffset < maxOffset) return;
         }
 
-        await this.expandSessionHistory(sessionId, {
+        const load = this.expandSessionHistory(sessionId, {
             requestedScrollOffset: targetOffset,
             autoTriggered: true,
             pages: options.pages,
@@ -10044,6 +10045,8 @@ export class PilotSwarmUiController {
             // only, so each page is transcript instead of raw event noise.
             eventTypes: CHAT_HISTORY_EVENT_TYPES,
         });
+        options.onLoadStarted?.();
+        await load;
     }
 
     async expandSessionHistory(sessionId, options = {}) {

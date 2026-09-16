@@ -37,6 +37,15 @@ the user and states any material adaptations. A named session is still useful
 when the user wants that workflow's entry point or an independent durable
 responsibility.
 
+With Base Agent V2 enabled, a session starts with a metadata-only index of
+deployment packages and packages published by its owner, including the owner's
+private and shared copies. It loads a relevant skill or workflow only when
+needed. Other users' shared packages remain searchable, but V2 may only load
+their instructions or activate their tools and MCP servers when the session
+owner explicitly asks for that capability. Base V1 keeps its existing skill
+catalog and declared-skill behavior. A system-owned child without a verified
+human owner uses deployment skills for automatic V2 loading.
+
 ---
 
 ## 1. A minimal useful package — no agents required

@@ -1,0 +1,120 @@
+{
+    "providers": [
+        {
+            "id": "github-copilot",
+            "type": "github",
+            "githubToken": "env:GITHUB_TOKEN",
+            "models": [
+                {
+                    "name": "gpt-5.4",
+                    "description": "GPT-5.4. Strong flagship GPT model for harder reasoning, planning, and coding tasks through GitHub Copilot.",
+                    "cost": "high"
+                },
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini. Faster, lighter-weight GPT option for everyday chat, drafting, and cheaper iteration.",
+                    "cost": "medium"
+                },
+                {
+                    "name": "gpt-6-astra",
+                    "description": "GPT-6 Astra via GitHub Copilot. 272K default or 872K extended prompt budget within a 1M-token total context window.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default",
+                    "contextWindowSizes": {
+                        "default": 272000,
+                        "long_context": 872000
+                    }
+                },
+                {
+                    "name": "gpt-5.6-sol",
+                    "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-sol-fast",
+                    "description": "GPT-5.6 Sol Fast (internal only) via GitHub Copilot. Same capability tier and ~921K-token window as Sol, tuned for lower latency; costs about twice Sol per token.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-luna",
+                    "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                },
+                {
+                    "name": "gpt-5.6-terra",
+                    "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
+                    "cost": "high",
+                    "supportedReasoningEfforts": [
+                        "none",
+                        "low",
+                        "medium",
+                        "high",
+                        "xhigh",
+                        "max"
+                    ],
+                    "defaultReasoningEffort": "medium",
+                    "supportedContextTiers": [
+                        "default",
+                        "long_context"
+                    ],
+                    "defaultContextTier": "default"
+                }
+            ]
+        }
+    ],
+    "defaultModel": "github-copilot:gpt-5.4"
+}

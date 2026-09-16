@@ -136,6 +136,11 @@ MCP_KEY="${PILOTSWARM_MCP_KEY:-${EXISTING_KEY:-$(openssl rand -hex 32)}}"
 # ─── Deploy ───────────────────────────────────────────────────────
 echo "🚀 Deploying MCP server..."
 render_manifest deploy/k8s/mcp-deployment.yaml | "${KUBECTL[@]}" apply -f -
+
+# Keep the pilotswarm-aks catalog override across image deployments.
+if [ "${K8S_CONTEXT:-$(kubectl config current-context)}" = "pilotswarm-aks" ] && [ "$NAMESPACE" = "copilot-runtime" ]; then
+    bash scripts/apply-aks-model-catalog.sh pilotswarm-mcp
+fi
 "${KUBECTL[@]}" rollout restart deployment/pilotswarm-mcp -n "$NAMESPACE" 2>/dev/null || true
 "${KUBECTL[@]}" rollout status deployment/pilotswarm-mcp -n "$NAMESPACE" --timeout=180s
 

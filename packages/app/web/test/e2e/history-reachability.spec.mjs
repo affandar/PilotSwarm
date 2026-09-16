@@ -33,6 +33,7 @@ async function open(page) {
 
 test("a session past the auto-expand cap offers a way to load older messages", async ({ page }) => {
     await open(page);
+    await expect(page.locator(".ps-history-load.is-manual")).toBeVisible();
     const button = page.locator(".ps-load-older-button");
     await expect(button, "no control to reach older history past the soft cap").toHaveCount(1);
     await expect(button).toBeEnabled();
@@ -93,16 +94,20 @@ for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances
     const anchor = viewport.getByText("VISIBLE_ANCHOR_702").first();
     const anchorBefore = await anchor.boundingBox();
     const pull = () => gesture === "wheel" ? page.mouse.wheel(0, -10000)
-        : viewport.dispatchEvent("touchmove", { touches: [{ identifier: 1, clientX: 100, clientY: 600 }], cancelable: true });
-    if (gesture === "touch") await viewport.dispatchEvent("touchstart", { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+        : viewport.evaluate(node => {
+            const finger = y => new Touch({ identifier: 1, target: node, clientX: 100, clientY: y });
+            node.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [finger(100)] }));
+            node.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [finger(600)] }));
+            // The new stretch gesture deliberately loads only on release.
+            node.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [] }));
+        });
     await pull();
     await expect.poll(() => backwardRequests.length).toBe(1);
     for (let i = 0; i < 4; i++) await pull();
     releasePage();
     await expect(page.getByText("older message 692").first()).toBeAttached();
-    await pull();
+    if (gesture === "wheel") await pull();
     if (gesture === "touch") {
-        await viewport.dispatchEvent("touchend", { touches: [] });
         // A fling can emit scroll events even after touchmove has stopped.
         await viewport.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
     }
@@ -113,7 +118,14 @@ for (const gesture of ["wheel", "touch"]) test(`a delayed backward page advances
 
     // The page-boundary guard must release for a fresh intentional gesture.
     await page.waitForTimeout(250);
-    await page.mouse.wheel(0, -40);
+    if (gesture === "touch") {
+        // Native touch momentum changes scrollTop; Playwright's mouse wheel is
+        // not reliable in a mobile viewport, so model that browser scroll.
+        await viewport.evaluate(node => {
+            node.scrollTop = Math.max(0, node.scrollTop - 40);
+            node.dispatchEvent(new Event("scroll", { bubbles: true }));
+        });
+    } else await page.mouse.wheel(0, -40);
     await expect.poll(async () => (await anchor.boundingBox()).y - anchorAfter.y).toBeCloseTo(40, 0);
     const resumedAnchorOffset = (await anchor.boundingBox()).y - (await viewport.boundingBox()).y;
 

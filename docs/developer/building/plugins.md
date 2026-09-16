@@ -255,6 +255,14 @@ Two consequences worth designing around:
   enabled package copy shadows the shared copy with the same name. Explicit
   `skills:` preloads still work and carry their whole body on every turn.
 
+With Base Agent V2, the prompt indexes deployment and session-owner-authored
+skills and workflows by metadata. The runtime skill catalog and SDK skill
+directories likewise include those sources only. A named agent may still
+preload deployment skills and skills from its own package; a shared skill from
+another publisher cannot enter that prompt through a declared name collision.
+Other users' shared packages remain searchable and can be used when the
+session owner explicitly requests them. Base V1 retains the previous catalog.
+
 ### Directory Structure
 
 ```text

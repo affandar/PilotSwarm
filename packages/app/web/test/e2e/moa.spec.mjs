@@ -13,11 +13,12 @@ const layout = (tree, name = "Control room") => ({ name, tree });
 const composer = page => page.locator(".ps-moa-composer-strip textarea");
 const panel = (page, id) => page.locator(`[data-moa-panel="${id}"]`);
 
-async function fixture(page, slots = [], hash = "", themeId = "terminal-green") {
-    let settings = { themeId, moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
+async function fixture(page, slots = [], hash = "", themeOrOptions = "terminal-green") {
+    const options = typeof themeOrOptions === "string" ? { themeId: themeOrOptions } : themeOrOptions;
+    let settings = { themeId: options.themeId || "terminal-green", moa: Array.isArray(slots) ? normalizeMoa({ slots }) : slots };
     const sends = [], writes = [], errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    settings.moa = { ...settings.moa, composerMode: "shared" };
+    settings.moa = { ...settings.moa, composerMode: options.perChat ? "per-chat" : "shared" };
     await page.route("**/api/v1/**", async route => {
         const request = route.request(), url = new URL(request.url());
         const answer = result => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
@@ -28,7 +29,7 @@ async function fixture(page, slots = [], hash = "", themeId = "terminal-green") 
         }
         if (url.pathname.endsWith("/me/profile")) return answer({ isAdmin: false, profileSettings: settings });
         const send = /\/sessions\/([^/]+)\/messages$/.exec(url.pathname);
-        if (send) { sends.push({ sessionId: send[1], ...request.postDataJSON() }); return answer({ queued: true }); }
+        if (send) { sends.push({ sessionId: send[1], ...request.postDataJSON() }); await options.onSend?.(); return answer({ queued: true }); }
         return route.fallback();
     });
     await page.setViewportSize({ width: 1600, height: 1000 });
@@ -109,6 +110,50 @@ test("focus owns the sole composer, preserves drafts, and sends only to its sess
     await expect(page.locator(".ps-moa-composer-strip .ps-panel-bottom-sticky")).toHaveCount(0);
     await a.locator("header").first().click();
     await expect(composer(page)).toHaveValue("draft for first agent");
+    expect(f.errors).toEqual([]);
+});
+
+test("queued prompts follow a session between the main chat and every MoA panel", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1, "first"), chat(1, "second")))], "", { perChat: true });
+    await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();
+    const mainChat = page.locator(".ps-chat-panel:visible");
+    await mainChat.locator("textarea").fill("queued from main chat");
+    await mainChat.locator("textarea").press("Enter");
+    await expect.poll(() => f.sends.length).toBe(1);
+    await expect(mainChat.locator(".ps-panel-bottom-sticky")).toContainText("queued prompts: 1 queued");
+
+    await open(page);
+    const first = panel(page, "first"), second = panel(page, "second");
+    await expect(first.locator(".ps-chat-panel")).toContainText("queued from main chat");
+    await expect(second.locator(".ps-chat-panel")).toContainText("queued from main chat");
+
+    await first.locator("textarea").fill("queued from MoA");
+    await first.locator("textarea").press("Enter");
+    await expect.poll(() => f.sends.length).toBe(2);
+    await expect(second.locator(".ps-chat-panel")).toContainText("queued prompts: 2 queued");
+    await expect(second.locator(".ps-chat-panel")).toContainText("queued from MoA");
+
+    await first.getByRole("button", { name: "Focus panel", exact: true }).click();
+    await expect(page.locator(".ps-moa-workspace")).not.toBeVisible();
+    await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued prompts: 2 queued");
+    await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued from MoA");
+    expect(f.errors).toEqual([]);
+});
+
+test("a MoA enqueue that finishes after zoom still updates the main chat", async ({ page }) => {
+    let releaseSend;
+    const sendGate = new Promise(resolve => { releaseSend = resolve; });
+    const f = await fixture(page, [layout(chat(1))], "", { perChat: true, onSend: () => sendGate });
+    await open(page);
+    const first = panel(page, "panel-1");
+    await first.locator("textarea").fill("queued during zoom");
+    await first.locator("textarea").press("Enter");
+    await expect.poll(() => f.sends.length).toBe(1);
+    await first.getByRole("button", { name: "Focus panel", exact: true }).click();
+    await expect(page.locator(".ps-moa-workspace")).not.toBeVisible();
+    releaseSend();
+    await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued prompts: 1 queued");
+    await expect(page.locator(".ps-chat-panel:visible .ps-panel-bottom-sticky")).toContainText("queued during zoom");
     expect(f.errors).toEqual([]);
 });
 
