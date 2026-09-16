@@ -13,7 +13,7 @@ import { renderLocalEnv } from "../new-env.mjs";
 const passwordUrl = "postgresql://u:cli-fixture-password@shared.invalid/testenv?sslmode=require";
 let sequence = 0;
 
-function fixture(t, overrides = {}, { omitFlag = false, staleCache = false } = {}) {
+function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvValues = {} } = {}) {
   const name = `byo${process.pid.toString(36)}${sequence++}`;
   const dir = mkdtempSync(join(tmpdir(), "ps-deploy-byo-"));
   const local = join(REPO_ROOT, "deploy/envs/local", name);
@@ -73,10 +73,23 @@ if (args[0] === "deployment" && args[2] === "show") {
   })); process.exit(0);
 }
 if (args[0] === "keyvault") {
+  const name = option("--name");
+  const values = JSON.parse(fs.readFileSync(process.env.BYO_KV, "utf8"));
+  if (args[2] === "set" && args.includes("--value")) {
+    values[name] = option("--value");
+    fs.writeFileSync(process.env.BYO_KV, JSON.stringify(values));
+  }
+  if (args[2] === "show" && !Object.hasOwn(values, name)) {
+    console.error("fixture-secret-not-found"); process.exit(44);
+  }
   if (args[2] === "set" && ["database-url","pilotswarm-cms-facts-database-url"].includes(option("--name"))) {
     fs.appendFileSync(process.env.BYO_VALUES, JSON.stringify({name:option("--name"), value:option("--value")}) + "\\n");
   }
-  if (args.includes("--query")) console.log("https://test-vault.vault.azure.net/secrets/" + option("--name") + "/" + "a".repeat(32));
+  if (args.includes("--query")) {
+    const version = args.includes("--version") ? option("--version") : "a".repeat(32);
+    const id = "https://test-vault.vault.azure.net/secrets/" + name + "/" + version;
+    console.log(option("--query") === "{id:id,value:value}" ? JSON.stringify({id, value:values[name]}) : id);
+  }
   process.exit(0);
 }
 `;
@@ -85,8 +98,10 @@ if (args[0] === "keyvault") {
   }
   const callsFile = join(dir, "calls.jsonl");
   const valuesFile = join(dir, "values.jsonl");
+  const kvFile = join(dir, "kv.json");
   writeFileSync(callsFile, "");
   writeFileSync(valuesFile, "");
+  writeFileSync(kvFile, JSON.stringify(kvValues));
   t.after(() => {
     rmSync(local, { recursive: true, force: true });
     rmSync(join(REPO_ROOT, "deploy/.tmp", name), { recursive: true, force: true });
@@ -95,13 +110,16 @@ if (args[0] === "keyvault") {
   });
   return {
     name,
-    run(service, steps) {
+    run(service, steps, ambient = {}) {
       return spawnSync(process.execPath, [
         join(REPO_ROOT, "deploy/scripts/deploy.mjs"), service, name,
         "--steps", steps, "--image-tag", "fixture",
       ], {
         cwd: REPO_ROOT, encoding: "utf8",
-        env: { ...process.env, PATH: `${dir}${delimiter}${process.env.PATH}`, BYO_CALLS: callsFile, BYO_VALUES: valuesFile },
+        env: {
+          ...process.env, ...ambient, PATH: `${dir}${delimiter}${process.env.PATH}`,
+          BYO_CALLS: callsFile, BYO_VALUES: valuesFile, BYO_KV: kvFile,
+        },
       });
     },
     calls: () => readFileSync(callsFile, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse),
@@ -171,14 +189,64 @@ for (const staleCache of [false, true]) {
   });
 }
 
-test("manifests-only resolves preseeded secret versions without seeding or reading values", (t) => {
+test("manifests-only resolves preseeded secret versions without seeding or exporting values", (t) => {
   const f = fixture(t, {
     DATABASE_URL_SECRET_NAME: "preseeded-runtime", PILOTSWARM_CMS_FACTS_DATABASE_URL_SECRET_NAME: "preseeded-cms",
+  }, {
+    kvValues: { "preseeded-runtime": passwordUrl, "preseeded-cms": passwordUrl },
   });
   const result = f.run("worker", "manifests");
   assert.equal(result.status, 0, result.stderr);
   const calls = f.calls().filter(({ args }) => args[0] === "keyvault");
   assert.equal(calls.length, 2);
   assert.ok(calls.every(({ args }) => args[2] === "show" && args[args.indexOf("--query") + 1] === "id"));
+  assert.equal(f.values().length, 0);
+});
+
+test("provisioned manifests use stamp URLs, not ambient shell credentials", (t) => {
+  const f = fixture(t, {
+    DEPLOY_POSTGRES: "true", PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    POSTGRES_FQDN: "stamp.invalid", POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "stamp-uami",
+  });
+  const ambient = "postgresql://u:ambient-fixture-password@wrong-database.invalid/app";
+  const result = f.run("worker", "manifests", {
+    DATABASE_URL: ambient, PILOTSWARM_CMS_FACTS_DATABASE_URL: ambient,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Ignoring process.env.DATABASE_URL while DEPLOY_POSTGRES=true/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /ambient-fixture-password/);
+  const env = parseEnvFile(join(f.stage("worker"), "gitops/worker/overlays/default/.env"));
+  assert.equal(new URL(env.DATABASE_URL).hostname, "stamp.invalid");
+  assert.equal(new URL(env.PILOTSWARM_CMS_FACTS_DATABASE_URL).hostname, "stamp.invalid");
+  assert.equal(env.PILOTSWARM_DB_AAD_USER, "stamp-uami");
+});
+
+test("manifests-only verifies unchanged raw URLs without seeding again", (t) => {
+  const f = fixture(t, {
+    DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+  }, {
+    kvValues: { "database-url": passwordUrl, "pilotswarm-cms-facts-database-url": passwordUrl },
+  });
+  const result = f.run("worker", "manifests");
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().filter(({ args }) => args[0] === "keyvault");
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(({ args }) => args[2] === "show" && args[args.indexOf("--query") + 1] === "{id:id,value:value}"));
+  assert.equal(f.values().length, 0);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /cli-fixture-password/);
+});
+
+test("changed raw URLs fail manifests-only before publishing stale references", (t) => {
+  const old = "postgresql://u:older-fixture-password@shared.invalid/testenv?sslmode=require";
+  const f = fixture(t, {
+    DATABASE_URL: passwordUrl, PILOTSWARM_CMS_FACTS_DATABASE_URL: passwordUrl,
+  }, {
+    kvValues: { "database-url": old, "pilotswarm-cms-facts-database-url": old },
+  });
+  const result = f.run("worker", "manifests");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /differs from its Key Vault secret; run --steps seed-secrets/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /cli-fixture-password|older-fixture-password/);
+  assert.ok(!f.calls().some(({ args }) => args.includes("upload-batch") || args[2] === "set"));
   assert.equal(f.values().length, 0);
 });

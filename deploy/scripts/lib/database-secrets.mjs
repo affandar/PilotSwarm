@@ -40,13 +40,47 @@ export function seedDatabaseSecrets(env) {
   return seeded.size;
 }
 
-// A manifests-only run resolves latest versions; a preceding seed-secrets
-// stage has already supplied its exact versions. No secret value is exported.
+function verifySuppliedUrl(env, secret) {
+  const result = run("az", [
+    "keyvault", "secret", "show", "--vault-name", env.KV_NAME, "--name", secret.name,
+    ...(secret.version ? ["--version", secret.version] : []),
+    "--query", "{id:id,value:value}", "--output", "json",
+  ], { capture: true, allowFail: true });
+  // This response can contain credentials. Do not use runJson or include
+  // CLI output in errors; both can expose secret values on a failure.
+  if (result.status !== 0) {
+    throw new Error(`Cannot verify ${secret.key} against Key Vault (az exited ${result.status}); check secret access or run --steps seed-secrets first.`);
+  }
+  let stored;
+  try {
+    stored = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Key Vault returned an invalid response for ${secret.key}; secret values are not logged.`);
+  }
+  if (typeof stored?.id !== "string" || typeof stored?.value !== "string") {
+    throw new Error(`Key Vault returned incomplete metadata for ${secret.key}; secret values are not logged.`);
+  }
+  const version = versionFromId(stored.id, secret.name);
+  if (secret.version && version.toLowerCase() !== secret.version.toLowerCase()) {
+    throw new Error(`Key Vault returned an unexpected version for ${secret.key}.`);
+  }
+  if (stored.value !== secret.value) {
+    throw new Error(`${secret.key} differs from its Key Vault secret; run --steps seed-secrets before manifests, or remove the raw URL and use an explicit *_SECRET_NAME reference.`);
+  }
+  return version;
+}
+
+// Reference-only runs resolve identifiers without exporting values. Supplied
+// raw URLs must match the selected immutable version; compare only in memory.
 export function resolveDatabaseSecretVersions(env) {
   const config = validateDatabaseConfig(env);
   if (!config.byo) return;
   requireVault(env);
   for (const secret of config.secrets) {
+    if (secret.value !== undefined) {
+      env[`${secret.key}_SECRET_VERSION`] = verifySuppliedUrl(env, secret);
+      continue;
+    }
     if (secret.version) continue;
     const result = run("az", [
       "keyvault", "secret", "show", "--vault-name", env.KV_NAME, "--name", secret.name,

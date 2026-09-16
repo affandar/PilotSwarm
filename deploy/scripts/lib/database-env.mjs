@@ -114,8 +114,9 @@ export function validateDatabaseConfig(env, { requireVersions = false } = {}) {
 }
 
 export function databaseOverlayOmittedKeys(env) {
+  if (deploysPostgres(env)) return [];
   return [
-    ...(!deploysPostgres(env) ? DATABASE_URL_KEYS : []),
+    ...DATABASE_URL_KEYS,
     ...(!databaseUsesManagedIdentity(env) ? ["PILOTSWARM_DB_AAD_USER"] : []),
   ];
 }

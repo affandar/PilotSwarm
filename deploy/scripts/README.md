@@ -384,6 +384,12 @@ JSON booleans; other values fail. This is an explicit provisioning choice,
 not inferred from a URL. Switching to `false` does **not** delete a server
 from an earlier incremental deployment.
 
+Shell overrides of the two database URLs apply only when
+`DEPLOY_POSTGRES=false`, with a key-only warning. With provisioning enabled,
+ambient shell URLs are ignored and warned about, even if the env file has
+blank URL keys. Explicit file values and the existing stamp-URL composition
+remain unchanged.
+
 For a password-authenticated external database, set:
 
 ```dotenv
@@ -420,8 +426,11 @@ Alternatively, populate secrets in that same vault beforehand and set
 also be supplied with raw URLs to choose the seed destination.
 When both URLs use one secret name, their supplied values must agree.
 
-The manifests stage queries only secret identifiers, pins their Key Vault
-versions, and creates service-specific CSI projections with explicit
+For reference-only inputs, the manifests stage queries only secret
+identifiers. When a raw URL is supplied, it compares that URL with the
+selected Key Vault version in deployer memory and fails on any mismatch.
+No returned secret value is logged or persisted. The stage pins the
+versions and creates service-specific CSI projections with explicit
 `secretKeyRef` entries. URL values never enter the staged BYO `.env`,
 ConfigMaps, Bicep outputs cache, or uploaded manifest tree. Password auth
 omits the AAD-user key rather than inventing a placeholder. Version changes
@@ -429,10 +438,13 @@ produce new Kubernetes Secret references, forcing fresh pods to wait for
 the new CSI-synced Secret instead of starting with an old value.
 An explicit `<URL_KEY>_SECRET_VERSION` can pin an existing 32-character
 Key Vault version; otherwise `--steps manifests` resolves the latest.
+Raw URLs must match even an explicitly pinned version.
 
 After changing a supplied URL, run `base-infra --steps seed-secrets`, then
 publish the worker and portal manifests again. A raw URL in a manifests-only
-invocation is **not** written to Key Vault; run the seeding step first.
+invocation is **not** written to Key Vault; a changed value fails with an
+instruction to run the seeding step first. Unchanged values work across
+separate invocations without seeding again.
 Infrastructure-only `--steps bicep`, build-only, and unrelated services do
 not require database URLs. Only secret seeding and worker/portal manifest
 staging require the BYO configuration.
