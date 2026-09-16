@@ -108,12 +108,14 @@
                     "description": "GPT-5.6 Sol via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
@@ -129,12 +131,14 @@
                     "description": "GPT-5.6 Luna via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
@@ -146,12 +150,14 @@
                     "description": "GPT-5.6 Terra via GitHub Copilot. High-capability GPT-5.6 variant for advanced reasoning and coding; ~1M-token context.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
+                        "none",
                         "low",
                         "medium",
                         "high",
-                        "xhigh"
+                        "xhigh",
+                        "max"
                     ],
-                    "defaultReasoningEffort": "medium",
+                    "defaultReasoningEffort": "none",
                     "supportedContextTiers": [
                         "default",
                         "long_context"
