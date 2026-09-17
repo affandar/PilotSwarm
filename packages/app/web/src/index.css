@@ -91,7 +91,7 @@
 .ps-native-task-scope { color: var(--ps-muted); overflow-wrap: anywhere; margin-bottom: 10px; }
 .ps-native-task-result { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ps-native-task-profile { display: inline-block; margin-right: 8px; padding: 1px 6px; border: 1px solid var(--ps-border); border-radius: 4px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); font-weight: 400; }
-.ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain; min-width: 0; }
+.ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain auto; min-width: 0; }
 .ps-native-task-calls .ps-chat-call { margin: 0; border-radius: 0; }
 .ps-native-task-calls .ps-chat-call-summary { min-width: 0; }
 .ps-native-task-calls .ps-system-notice-summary-text { overflow-wrap: anywhere; min-width: 0; }
@@ -1684,7 +1684,7 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-foreground);
   overflow: auto;
   overflow-anchor: none;
-  overscroll-behavior: contain;
+  overscroll-behavior: contain auto;
   scrollbar-gutter: stable;
   border-left: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
 }
@@ -1737,7 +1737,7 @@ body.is-resizing-pane-y iframe {
 .ps-assistant-preview.is-final .is-live-reasoning > .ps-system-notice-body {
   max-height: min(240px, 30vh);
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: contain auto;
 }
 
 .ps-system-notice-body .ps-markdown-preview {
@@ -1769,7 +1769,7 @@ body.is-resizing-pane-y iframe {
 .ps-activity-run-status.is-failed { color: var(--ps-warning); }
 .ps-activity-run-chevron { flex: none; color: var(--ps-muted); transition: transform 120ms ease; }
 .ps-activity-run[open] .ps-activity-run-chevron { transform: rotate(90deg); }
-.ps-activity-run-viewport { max-height: min(320px, 38dvh); overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--ps-border); border-bottom: 1px solid var(--ps-border); background: color-mix(in srgb, var(--ps-background) 70%, transparent); }
+.ps-activity-run-viewport { max-height: min(320px, 38dvh); overflow: auto; overscroll-behavior: contain auto; border-top: 1px solid var(--ps-border); border-bottom: 1px solid var(--ps-border); background: color-mix(in srgb, var(--ps-background) 70%, transparent); }
 .ps-activity-run-viewport:focus-visible { outline: 1px solid var(--ps-selection-background); outline-offset: -1px; }
 .ps-activity-run .ps-chat-call { margin: 0; border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); border-radius: 0; }
 .ps-activity-run .ps-chat-call:first-child { border-top: 0; }

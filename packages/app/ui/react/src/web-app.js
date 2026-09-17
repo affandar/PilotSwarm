@@ -1108,6 +1108,19 @@ function scrollBoundaryIdentity(lines, fromEnd = false) {
     return boundary.map(scrollLineIdentity).join("\u241e");
 }
 
+// History loading belongs to the outer transcript. Let a tool result, activity
+// log or agent update consume the gesture first when it still has room.
+function nestedViewportCanScroll(viewport, target, deltaY) {
+    if (!deltaY) return false;
+    for (let node = target?.nodeType === 1 ? target : target?.parentElement;
+        node && node !== viewport; node = node.parentElement) {
+        const maxScroll = node.scrollHeight - node.clientHeight;
+        if (maxScroll <= 1 || !/^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) continue;
+        if (deltaY < 0 ? node.scrollTop > 1 : node.scrollTop < maxScroll - 1) return true;
+    }
+    return false;
+}
+
 function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, {
     stickyBottom = false,
     historyPullEnabled = false,
@@ -1343,6 +1356,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
         if (!node || paneKey !== "chat" || !event.deltaY || event.ctrlKey) return;
+        if (nestedViewportCanScroll(node, event.target, event.deltaY)) return;
         const pending = historyScrollRef.current;
         if (pending && event.deltaY > 0) historyScrollRef.current = null;
         else if (pending) {
@@ -1364,15 +1378,16 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // scroll events either — so mobile had no way to request older history.
     // A downward pull that starts while the pane is at (or near) the top fires
     // the same top-history intent, once per gesture.
-    const touchPullRef = React.useRef({ startY: null, distance: 0 });
+    const touchPullRef = React.useRef({ startY: null, lastY: null, distance: 0 });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
         if (historyScrollRef.current?.applied) historyScrollRef.current = null;
         const node = ref.current;
         touchPullRef.current = {
-            startY: historyPullEnabled && loadingHistorySessionId !== historySessionId
+            startY: event.touches?.length === 1 && historyPullEnabled && loadingHistorySessionId !== historySessionId
                 && paneKey === "chat" && node?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX
                 ? event.touches?.[0]?.clientY ?? null : null,
+            lastY: event.touches?.[0]?.clientY ?? null,
             distance: 0,
         };
     }, [historyPullEnabled, historySessionId, loadingHistorySessionId, paneKey, ref]);
@@ -1385,20 +1400,30 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
             historyScrollRef.current.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
         }
         const distance = touchPullRef.current.distance;
-        touchPullRef.current = { startY: null, distance: 0 };
+        touchPullRef.current = { startY: null, lastY: null, distance: 0 };
         setTopPullDistance(0);
         if (distance >= TOUCH_TOP_PULL_THRESHOLD_PX
             && ref.current?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) requestHistoryPage();
     }, [ref, requestHistoryPage]);
     const onTouchCancel = React.useCallback(() => {
         userScrollRef.current.touching = false;
-        touchPullRef.current = { startY: null, distance: 0 };
+        touchPullRef.current = { startY: null, lastY: null, distance: 0 };
         setTopPullDistance(0);
     }, []);
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
         const pull = touchPullRef.current;
         if (!node || paneKey !== "chat" || event.touches?.length !== 1) return;
+        const y = event.touches[0].clientY;
+        const deltaY = pull.lastY == null ? 0 : pull.lastY - y;
+        pull.lastY = y;
+        if (nestedViewportCanScroll(node, event.target, deltaY)) {
+            // Movement within a box must not accumulate into a history pull.
+            if (pull.startY != null) pull.startY = y;
+            pull.distance = 0;
+            setTopPullDistance(0);
+            return;
+        }
         if (historyScrollRef.current) {
             historyScrollRef.current.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
             event.preventDefault();
@@ -1406,8 +1431,6 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         }
         if (pull.startY == null) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
-        const y = event.touches?.[0]?.clientY;
-        if (y == null) return;
         pull.distance = Math.min(TOUCH_TOP_PULL_MAX_PX, Math.max(0, y - pull.startY));
         setTopPullDistance(pull.distance);
         if (pull.distance > 0) event.preventDefault();
@@ -1552,15 +1575,11 @@ function ChatActivityRun({ calls }) {
             followRef.current = getScrollDistanceToBottom(event.currentTarget) <= 24;
         },
         onWheel: (event) => {
-            event.stopPropagation();
             if (event.deltaY < 0) followRef.current = false;
         },
-        onTouchStart: (event) => {
-            event.stopPropagation();
+        onTouchStart: () => {
             followRef.current = false;
         },
-        onTouchMove: (event) => event.stopPropagation(),
-        onTouchEnd: (event) => event.stopPropagation(),
     }, calls.map((call) => React.createElement(ChatCallLine, { key: call.callKey, line: call }))),
     React.createElement("div", { className: "ps-activity-run-footer" },
         `Showing ${calls.length} ${calls.length === 1 ? "entry" : "entries"} · Scroll for earlier activity`));
@@ -3885,15 +3904,12 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
         },
         onWheel: (event) => {
             if (!line.final) {
-                event.stopPropagation();
                 if (event.deltaY < 0) followRef.current = false;
             }
         },
-        onTouchStart: (event) => {
-            if (!line.final) { event.stopPropagation(); followRef.current = false; }
+        onTouchStart: () => {
+            if (!line.final) followRef.current = false;
         },
-        onTouchMove: (event) => { if (!line.final) event.stopPropagation(); },
-        onTouchEnd: (event) => { if (!line.final) event.stopPropagation(); },
         onKeyDown: (event) => {
             if (!line.final && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
                 event.stopPropagation();
