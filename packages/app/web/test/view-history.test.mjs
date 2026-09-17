@@ -31,10 +31,15 @@ test("storage round trips the cursor and references, never arbitrary payloads", 
     for (const invalid of ["broken", "null", JSON.stringify({ version: 1, entries: [{ mode: "evil" }], index: 0 }), JSON.stringify({version:1,entries:[view(1)],index:9})])
         assert.equal(createViewHistory(invalid).entries.length, 0);
 });
-test("keyboard supports Option-produced characters and both plus keys without hijacking editing", () => {
+test("keyboard supports Option-produced characters and composer navigation without hijacking other editing", () => {
     const event = extra => ({ altKey: true, code: "Minus", key: "–", ...extra });
     assert.equal(navigationShortcut(event()), -1);
     for (const code of ["Equal", "NumpadAdd"]) assert.equal(navigationShortcut(event({ code, key: "±", shiftKey: true })), 1);
+    const composer = { matches: selector => selector === 'textarea.ps-prompt-input', closest: () => ({}) };
+    assert.equal(navigationShortcut(event({ target: composer })), -1);
+    assert.equal(navigationShortcut(event({ target: composer, code: "Equal", key: "≠" })), 1);
+    for (const extra of [{ isComposing: true }, { getModifierState: name => name === "AltGraph" }, { ctrlKey: true }, { repeat: true }])
+        assert.equal(navigationShortcut(event({ target: composer, ...extra })), 0);
     for (const extra of [{ altKey: false }, { ctrlKey: true }, { metaKey: true }, { repeat: true }, { isComposing: true }, { getModifierState: () => true }, { target: { isContentEditable: true } }, { target: { closest: () => ({}) } }])
         assert.equal(navigationShortcut(event(extra)), 0);
 });

@@ -91,14 +91,16 @@ test('dashboard visits count, panel activity and polling do not, and history is 
     expect((await saved(page)).entries).toHaveLength(10);
 });
 
-test('shortcuts work outside inputs, preserve typing and zoom, and disappear on mobile', async ({page}) => {
-    await fixture(page); await select(page,1); await select(page,2);
-    await main(page).locator('textarea').focus(); await page.keyboard.press('Alt+-');
-    expect((await saved(page)).entries[(await saved(page)).index].sessionId).toBe(sid(2));
-    await back(page).focus(); await page.keyboard.press('Alt+-');
+test('shortcuts work in composers, preserve drafts and zoom, and disappear on mobile', async ({page}) => {
+    const f = await fixture(page);
+    await select(page,1); await main(page).locator('textarea').fill('first draft');
+    await select(page,2); await main(page).locator('textarea').fill('second draft');
+    await page.keyboard.press('Alt+-');
     await expect(main(page)).toContainText('Session 1');
-    await forward(page).focus(); await page.keyboard.press('Alt+Shift+=');
+    await expect(main(page).locator('textarea')).toHaveValue('first draft');
+    await main(page).locator('textarea').focus(); await page.keyboard.press('Alt+Shift+=');
     await expect(main(page)).toContainText('Session 2');
+    await expect(main(page).locator('textarea')).toHaveValue('second draft');
     const prior = (await saved(page)).index;
     const prevented = await page.evaluate(() => {
         const event = new KeyboardEvent('keydown',{key:'-',code:'Minus',ctrlKey:true,bubbles:true,cancelable:true});
@@ -109,6 +111,30 @@ test('shortcuts work outside inputs, preserve typing and zoom, and disappear on 
     await expect(back(page)).toHaveCount(0); await expect(forward(page)).toHaveCount(0);
     await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press('Alt+-');
     expect((await saved(page)).index).toBe(prior);
+    expect(f.errors).toEqual([]);
+});
+
+test('composer shortcuts cross MoA and workspace while search and modal editors keep their keys', async ({page}) => {
+    const f = await fixture(page);
+    await select(page,2); await main(page).locator('textarea').fill('workspace draft');
+    await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
+    const moaComposer = page.locator('[data-moa-panel="one"] textarea');
+    await moaComposer.fill('MoA draft'); await moaComposer.press('Alt+-');
+    await expect(page.locator('.ps-moa-workspace')).not.toBeVisible();
+    await expect(main(page).locator('textarea')).toHaveValue('workspace draft');
+    await main(page).locator('textarea').press('Alt+=');
+    await expect(moaComposer).toHaveValue('MoA draft');
+    await moaComposer.press('Alt+-');
+    const prior = (await saved(page)).index;
+    const search = page.locator('.ps-session-search input');
+    await search.focus(); await search.press('Alt+-');
+    expect((await saved(page)).index).toBe(prior);
+    await page.getByRole('button',{name:'Theme',exact:true}).click();
+    await expect(page.locator('.ps-modal-backdrop')).toBeVisible();
+    await page.keyboard.press('Alt+-');
+    expect((await saved(page)).index).toBe(prior);
+    await expect(page.locator('.ps-modal-backdrop')).toBeVisible();
+    expect(f.errors).toEqual([]);
 });
 
 for (const theme of ['terminal-green','win95','winamp','ms-dos']) test(`${theme}: arrows sit between Filter and Canvas without overflowing`, async ({page}) => {

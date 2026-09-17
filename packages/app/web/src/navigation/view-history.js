@@ -51,7 +51,10 @@ export function navigationShortcut(event) {
     if (!event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing
         || event.getModifierState?.("AltGraph")) return 0;
     const target = event.target;
-    if (target?.isContentEditable || target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"]')) return 0;
+    // The composer keeps a draft per session, so navigation is safe while it
+    // is focused. Other editors (search, settings, etc.) retain native input.
+    if (!target?.matches?.('textarea.ps-prompt-input')
+        && (target?.isContentEditable || target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"]'))) return 0;
     // Option changes event.key on macOS; code keeps the physical +/- keys
     // usable. Accept the unshifted = key as well as Shift+= and the numpad.
     if (["Minus", "NumpadSubtract"].includes(event.code) || event.key === "-") return -1;
