@@ -601,6 +601,7 @@ as your app's portal.
 |---|---|
 | New session | **New** button (top-left) |
 | Switch session | Click in list |
+| Previous / next view (desktop) | **Back / Forward** arrows between Filter and Canvas; `Alt+-` / `Alt++` on Windows, `Option+-` / `Option++` on macOS, outside text fields |
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Attach file | Paperclip icon, or drag-and-drop |
@@ -618,6 +619,13 @@ as your app's portal.
 
 Many of the TUI keys (`j`/`k` to navigate, `r` to refresh,
 etc.) work inside the portal too when no input is focused.
+
+Desktop view history remembers the last ten deliberate destinations in this browser tab:
+sessions, MoA dashboards, canvases, artifact previews, Settings and Budget. Back and Forward
+restore the view; opening a new destination after Back replaces the forward branch.
+Background refreshes and agent activity do not create entries. History stores only view
+references, scoped to the signed-in account and site, and survives a tab refresh. The controls
+and shortcuts are unavailable on mobile layouts. Browser zoom shortcuts remain unchanged.
 
 ## Mobile
 

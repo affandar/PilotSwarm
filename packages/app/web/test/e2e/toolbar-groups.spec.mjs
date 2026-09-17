@@ -1,6 +1,6 @@
 // The toolbar's two clusters (proposal B, 2026-08-27).
 //
-//   left  : actions [new, filter] │ PANELS [canvas, diagnostics, expand]
+//   left  : actions [new, filter] · history [back, forward] · PANELS [canvas, diagnostics]
 //   right : MODE [workspace, budget, admin] │ theme · sign-out
 //
 // PANELS are things inside the workspace, so the cluster exists only in
@@ -52,13 +52,15 @@ test.describe("desktop", () => {
         expect(t.labels).toEqual([]);
         expect(await page.locator(".ps-toolbar .ps-toolbar-actions:not(.is-tools) .ps-toolbar-divider").count()).toBe(0);
         expect(await page.locator(".ps-toolbar .ps-toolbar-actions.is-tools .ps-toolbar-divider").count()).toBe(1);
-        // The stub's session may open its canvas by itself, so slot 3 is
+        // The stub's session may open its canvas by itself, so slot 5 is
         // either face of the toggle.
-        expect(t.left.length).toBe(4);
+        expect(t.left.length).toBe(6);
         expect(t.left[0]).toMatch(/^New session/);
         expect(t.left[1]).toBe("Filter sessions");
-        expect(t.left[2]).toMatch(/^(Show canvas|Hide the canvas)$/);
-        expect(t.left[3]).toMatch(/^(Show|Hide) diagnostics/);
+        expect(t.left[2]).toMatch(/^Back.*\((Alt|Option)\+/);
+        expect(t.left[3]).toMatch(/^Forward.*\((Alt|Option)\+/);
+        expect(t.left[4]).toMatch(/^(Show canvas|Hide the canvas)$/);
+        expect(t.left[5]).toMatch(/^(Show|Hide) diagnostics/);
         expect(t.right.map((n) => n.slice(0, 14))).toEqual(["Workspace — se", "Master of Agen", "Budget — provi", "Admin console", "Theme"]);
     });
 
@@ -86,8 +88,8 @@ test.describe("desktop", () => {
         await page.waitForTimeout(300);
         let t = await toolbarNames(page);
         // The whole left cluster is the workspace's: new session, filter,
-        // canvas, diagnostics. None of it applies to Budget or Admin.
-        expect(t.left, "no workspace buttons in Budget mode").toEqual([]);
+        // canvas, diagnostics. Only navigation history applies to Budget or Admin.
+        expect(t.left, "only history remains in Budget mode").toEqual([expect.stringMatching(/^Back/), expect.stringMatching(/^Forward/)]);
 
         // Admin from Budget: Budget closes, Admin opens — never both.
         await page.getByRole("button", { name: NAMES.admin }).first().click();
@@ -96,7 +98,7 @@ test.describe("desktop", () => {
         t = await toolbarNames(page);
         expect(t.right.some((n) => /^Close budget$/i.test(n)), "Budget is not also open").toBe(false);
         expect(t.right.some((n) => /^Close admin console$/i.test(n)), "Admin is the open mode").toBe(true);
-        expect(t.left, "no workspace buttons in Admin mode").toEqual([]);
+        expect(t.left, "only history remains in Admin mode").toEqual([expect.stringMatching(/^Back/), expect.stringMatching(/^Forward/)]);
         // The console has no ✕ and no repeated principal: the Mode cluster is
         // the way out, and the header already names the signed-in person.
         await expect(page.locator(".ps-admin-console__header button")).toHaveCount(0);
@@ -107,7 +109,7 @@ test.describe("desktop", () => {
         await page.waitForTimeout(300);
         await expect(page.locator(".ps-admin-console__header h2")).toHaveCount(0);
         t = await toolbarNames(page);
-        expect(t.left.length).toBe(4);
+        expect(t.left.length).toBe(6);
         expect(t.left.some((n) => NAMES.diagnostics.test(n))).toBe(true);
     });
 });

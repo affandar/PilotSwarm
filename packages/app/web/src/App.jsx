@@ -1,3 +1,4 @@
+import { useViewNavigation } from "./navigation/use-view-navigation.js";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
@@ -606,6 +607,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const moa = useMoa(controller);
+    const viewNavigation = useViewNavigation(controller, moa);
     const createPanelTransport = React.useCallback(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken, getResourceToken: auth.getResourceToken,
         onUnauthorized: auth.handleUnauthorized,
@@ -722,7 +724,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 onDismiss: () => setDismissedStatus(statusText),
             }),
         React.createElement("main", { className: "portal-main" },
-            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa }),
+            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa, viewNavigation }),
             moa.mobileZen ? React.createElement(MobileZen, { controller, onClose: moa.closeMobileZen, drafts: moa.zenDrafts, createTransport: createPanelTransport }) : null,
             moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, visible: moa.active, createTransport: createPanelTransport }) : null),
     );

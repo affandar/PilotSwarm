@@ -91,8 +91,9 @@ Sessions and canvases are preserved.
 **Zen** hides the PilotSwarm header and MoA toolbar. The small **Exit zen**
 handle and Escape restore the regular MoA view. Panel controls remain available.
 
-**Focus panel** opens that panel's session, or maximizes its chosen
-canvas. The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
+**Focus panel** immediately opens the panel's cached conversation, or maximizes its chosen
+canvas, while fresh data loads in the background. Drafts and the conversation's reading position carry over.
+The **Master of Agents** icon (labelled **Back to MoA** after zooming) restores
 the saved arrangement.
 
 Clicking an artifact link inside a chat also leaves MoA and focuses that chat's

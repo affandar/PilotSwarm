@@ -244,6 +244,10 @@ test('a delayed artifact click cannot replace a more recently opened pane sessio
     try {
         await panel(page, 'a').locator('.ps-artifact-card').click();
         await expect.poll(() => requested).toBe(true);
+        // Focus now exits MoA immediately, before the blocked detail read.
+        // Return to the dashboard to make the second, newer navigation.
+        await expect(page.locator('.ps-moa-workspace')).toBeHidden();
+        await page.getByRole('button', { name: 'Back to MoA — Master of Agents', exact: true }).click();
         await panel(page, 'b').locator('.ps-artifact-card').click();
         await expect(page.locator('.ps-moa-workspace')).toBeHidden();
         await expect(page.locator('.ps-chat-panel:visible')).toContainText('Session 2');

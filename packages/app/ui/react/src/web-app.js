@@ -9803,7 +9803,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -9957,6 +9957,15 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         },
     });
 
+    if (!mobile && moa?.desktop !== false && viewNavigation) for (const direction of ["back", "forward"]) buttonDefs.push({
+        key: direction,
+        icon: React.createElement("svg", { viewBox: "0 0 20 20", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
+            React.createElement("path", { d: direction === "back" ? "M16 10H4m5-5-5 5 5 5" : "M4 10h12m-5-5 5 5-5 5" })),
+        label: viewNavigation[`${direction}Label`],
+        disabled: !viewNavigation[direction === "back" ? "canBack" : "canForward"],
+        onClick: viewNavigation[direction],
+    });
+
     const renderButton = (def) => {
         const button = React.createElement(IconButton, {
             key: def.badge ? undefined : def.key,
@@ -10037,6 +10046,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
     // when the other opens) and the Workspace button is the way back.
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
+    const HISTORY = ["back", "forward"];
     const PANELS = ["canvas", "diagnostics"];
     const MODES = ["workspace", "moa", "budget", "admin"];
 
@@ -10046,7 +10056,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
     // it — is the confusing half of every full-screen mode. The Canvas toggle
     // is exempt: it already means "put the canvas away", and closing drops
     // the flag in the reducer.
-    const withRestore = (def) => ((!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
+    const withRestore = (def) => (HISTORY.includes(def.key) || (!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
         ...def,
         onClick: (...args) => {
             controller.dispatch({ type: "ui/canvasMaximized", on: false });
@@ -10061,10 +10071,10 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         .map(renderButton);
     const divider = (key) => React.createElement("span", { key, className: "ps-toolbar-divider", "aria-hidden": "true" });
 
-    // One run, no bar: all four act on the workspace.
+    // One run, no bar: history sits between the filter and panel controls.
     const leftCluster = mode === "workspace"
-        ? [...pick(ACTIONS), ...pick(PANELS)]
-        : [];
+        ? [...pick(ACTIONS), ...pick(HISTORY), ...pick(PANELS)]
+        : pick(HISTORY);
     const rightCluster = [
         ...pick(MODES),
         divider("mode-divider"),
@@ -10076,7 +10086,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         // canvas uses the otherwise-empty left rail for the normal actions so
         // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : canvasMaximized ? leftCluster : null),
+            moa?.active ? React.createElement(React.Fragment, null, leftCluster, React.createElement("div", { id: "ps-moa-status-slot" })) : canvasMaximized ? leftCluster : null),
         React.createElement("div", { className: "ps-toolbar-actions" },
             moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
         React.createElement("div", { className: "ps-toolbar-side is-right" },
@@ -14858,7 +14868,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) {
+export function PilotSwarmWebApp({ controller, suspended = false, moa = null, viewNavigation = null }) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
@@ -14994,7 +15004,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
-    const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
+    // Match the CSS and MoA breakpoint. The padded shell is narrower than
+    // the browser and otherwise flips to mobile while the header is desktop.
+    const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
@@ -15622,7 +15634,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         : null;
 
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
-        React.createElement(Toolbar, { controller, mobile: false, moa }),
+        React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
         React.createElement(ModalLayer, { controller }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
@@ -15630,7 +15642,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         // plus the Main layout cycle), so it renders on every pane — hiding it
         // anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
-            controller, moa,
+            controller, moa, viewNavigation,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,
