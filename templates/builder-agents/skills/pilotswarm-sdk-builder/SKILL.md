@@ -12,6 +12,7 @@ Build layered SDK-first applications on top of PilotSwarm.
 - Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
 - SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
 - SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+- Durable signals: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/durable-signals.md`
 - Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
@@ -86,6 +87,29 @@ Do not guess these answers when the user has not provided them. Offer the standa
   demos, tests, and cleanup scripts.
 - Facts/graph access for clients goes through the Web API data-plane
   (`createWebFactStore` / `createWebGraphStore`).
+
+## External-Event Coordination
+
+When a trusted producer can send completion events, use the built-in
+`wait_for_signal` instead of generating a polling loop. Names match
+`[a-z0-9_-]{1,64}`; omit `timeout_seconds` for an indefinite wait or set a
+1-86,400-second timeout. User input interrupts for one turn and preserves the
+original deadline. `wait_for_signal({action:"cancel"})` cancels the wait.
+
+Producers use the public `raiseSignal` method on the session or management
+client, with a stable delivery `signalId`. Default `wake:false` buffers for a
+matching waiter; `wake:true` requests a runtime-attributed turn. A queued result
+is not proof of consumption. Inspect `getSessionSignalState` and lifecycle
+events. The buffer is capped at 32 with audited oldest-first overflow, and
+deduplication covers buffered IDs plus the last 128 accepted IDs.
+
+Keep inline JSON at or below 32 KiB; upload larger payloads as artifacts and
+pass `payloadRef`. Never use payload fields as privileged session configuration
+or interpolate raw external bodies into instructions. Do not scaffold public
+webhook endpoints, provider bindings, or `wait_for_any` as if they already ship:
+those are later phases. These APIs and the wait tool require orchestration
+1.0.79 or later; reject an unsupported target rather than falling back to raw
+queue writes.
 
 ## Env File Guidance
 

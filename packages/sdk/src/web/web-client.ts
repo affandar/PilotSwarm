@@ -10,6 +10,13 @@ import {
     createApiClientFromOptions,
     webModeUnsupported,
 } from "./api-connection.js";
+import type { MessageSender } from "../message-sender.js";
+import {
+    validateSignalName,
+    validateRaiseSignalOptions,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+} from "../session-signals.js";
 
 const WAIT_SLICE_MS = 10_000;
 const EVENT_POLL_LIMIT = 200;
@@ -241,8 +248,17 @@ export class WebPilotSwarmSession {
         };
     }
 
+    async raiseSignal(name: string, options: RaiseSignalOptions = {}, _sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this.api.call("raiseSignal", {
+            sessionId: this.sessionId,
+            name: validateSignalName(name),
+            ...validateRaiseSignalOptions(options),
+        });
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
-        await this.api.call("sendSessionEvent", { sessionId: this.sessionId, eventName, data });
+        await this.raiseSignal(eventName, validateRaiseSignalOptions({ data }));
     }
 
     async cancelPendingMessage(clientMessageIds: string[]): Promise<void> {

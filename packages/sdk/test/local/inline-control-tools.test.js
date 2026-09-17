@@ -82,6 +82,36 @@ class FakeCopilotSession {
 }
 
 describe("inline control tool execution", () => {
+    it("keeps signal-wait declarations and handlers gated to the new activity contract", async () => {
+        expect(ManagedSession.systemToolDefs().some(tool => tool.name === "wait_for_signal")).toBe(false);
+        const declaration = ManagedSession.systemToolDefs({ durableSignals: true }).find(tool => tool.name === "wait_for_signal");
+        expect(declaration).toBeDefined();
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [{ name: "wait_for_signal", args: { names: ["ready"] } }];
+        const managed = new ManagedSession("signal-tools", fake, {});
+        const result = await managed.runTurn("Wait for ready", { durableSignals: true });
+        expect(result).toMatchObject({ type: "signal-wait", action: "wait", names: ["ready"] });
+        expect(result).not.toHaveProperty("timeoutSeconds");
+        expect(fake.registeredTools.find(tool => tool.name === "wait_for_signal").parameters).toEqual(declaration.parameters);
+        expect(fake.sentPrompts).toHaveLength(1);
+        const legacy = new FakeCopilotSession();
+        await new ManagedSession("legacy-tools", legacy, {}).runTurn("Hi");
+        expect(legacy.registeredTools.some(tool => tool.name === "wait_for_signal")).toBe(false);
+    });
+
+    it("returns a clear signal-wait validation failure and queues explicit cancellation inline", async () => {
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [
+            { name: "wait_for_signal", args: { names: ["ready"], timeout_seconds: -1 } },
+            { name: "wait_for_signal", args: { action: "cancel" } },
+        ];
+        const result = await new ManagedSession("signal-validation", fake, {}).runTurn("Cancel the wait", { durableSignals: true });
+        expect(result.type).toBe("completed");
+        expect(result.queuedActions).toEqual([{ type: "signal-wait", action: "cancel" }]);
+        expect(result.events.some(event => event.eventType === "tool.execution_complete"
+            && JSON.stringify(event.data).includes("timeout_seconds"))).toBe(true);
+    });
+
     it("fails before the model turn when a required tool handler is unavailable", async () => {
         const fakeSession = new FakeCopilotSession();
         const managed = new ManagedSession("required-tool-unavailable", fakeSession, {});

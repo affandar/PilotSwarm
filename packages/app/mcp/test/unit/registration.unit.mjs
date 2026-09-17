@@ -119,11 +119,12 @@ const GRAPH_TOOLS = [
     "list_graph_namespaces", "get_graph_namespace",
 ];
 const GRAPH_ADMIN = ["upsert_graph_namespace", "delete_graph_namespace"];
-const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_artifact", "pin_artifact", "delete_artifact", "send_session_event", "get_system_status", "export_execution_history"];
+const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_artifact", "pin_artifact", "delete_artifact", "get_system_status", "export_execution_history"];
 const ADMIN_TOOLS = ["restart_system_session", "facts_admin"];
 const ALWAYS_TOOLS = [
     "create_session", "send_message", "send_and_wait", "list_sessions", "get_session_detail",
     "get_capabilities", "stop_turn", "complete_session", "cancel_pending_messages",
+    "raise_signal", "send_session_event", "get_session_signals",
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",

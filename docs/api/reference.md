@@ -110,7 +110,9 @@ sessions return not-found to avoid an existence oracle.
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
 | sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body), options (body) | Answer a pending question. `options.expectedQuestion: { question, iteration? }` binds to the observed `pendingQuestion`; omitted options bind to the current question when enqueued. A stale binding preserves the text as an ordinary message. |
-| sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Send a custom event into the session. |
+| raiseSignal | `POST /api/v1/sessions/:sessionId/signals/:name` | sessionId/name (path), data/payloadRef/signalId/wake (body, optional) | Queue a typed durable signal; starts a new pending session without a prompt. Requires session write access. |
+| getSessionSignalState | `GET /api/v1/sessions/:sessionId/signals` | sessionId (path) | Read pending wait, interruption flag, and buffered metadata, never inline payloads. Requires session read access. |
+| sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Deprecated wrapper for `raiseSignal(eventName, { data })`, with `wake: false`; not a raw prompt/command channel. |
 | cancelPendingMessage | `POST /api/v1/sessions/:sessionId/cancel-pending` | sessionId (path), clientMessageIds (body) | Cancel queued messages by client message ids. |
 
 Session DTOs (`listSessions`, `getSession`, paged management listings) carry
@@ -119,6 +121,72 @@ session's tree root (`null`/absent on child rows and when the caller has not
 placed the tree). The former `groupId` field is **gone** from session DTOs:
 group membership is per-viewer state, not a property of the session. See
 [Management: session groups](#management-session-groups).
+
+### Durable signals
+
+```typescript
+const receipt = await management.raiseSignal(sessionId, "build_ready", {
+    data: { build: 7, succeeded: true },
+    signalId: "build-7", // reuse for delivery retries
+    wake: false,
+});
+// { signalId, name, raisedAt, status: "queued" }
+const state = await management.getSessionSignalState(sessionId);
+// { version: 1, pendingWait?, interrupted: boolean, buffered: [...] }
+```
+
+The same write is available as `session.raiseSignal(name, options)` in direct
+and Web SDK modes, and as MCP `raise_signal`. The HTTP body is the options
+object itself, not `{ options: ... }`.
+
+- Names match `[a-z0-9_-]{1,64}`. Inline `data` must be JSON and at most
+  **32 KiB in UTF-8** (bounded nesting/field count also applies).
+- `payloadRef` is an opaque non-empty reference of at most 1,024
+  **JSON-encoded UTF-8 bytes**, including quotes and escapes, without control
+  characters. It is **never automatically fetched**.
+- Optional `signalId` is 1–128 characters matching
+  `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; otherwise the server generates an ID.
+  Source/actor identity and `raisedAt` come from the trusted server context,
+  never request fields. Signal data cannot alter the session's owner, tools,
+  model, or other creation configuration.
+- `wake` defaults to `false`. Pre-arrival signals can start a pending session's
+  orchestration without a prompt or model turn. A matching durable wait
+  consumes a signal; `wake: true` requests an attributed turn even without a
+  matching wait. Waits can be indefinite or timed. Initial sends wait up to
+  ten seconds for a worker to initialize the execution so its actual version
+  can be verified; on timeout no signal is queued. Start may still complete,
+  so retry the same signal after upgraded workers are available.
+- A queued receipt confirms **enqueue**, not consumption or uniqueness.
+  Buffering is bounded to 32 signals; deduplication covers buffered signals
+  and the last 128 accepted IDs, not an unlimited exactly-once guarantee.
+  Inspect `session.signal_*` events through the existing event APIs for
+  lifecycle outcomes.
+- Writes refuse deleted, terminal, and service sessions. An execution older
+  than **1.0.79**, or one whose version cannot be confirmed, is not a signal
+  target: `SIGNALS_UNSUPPORTED` (`409`). Create a new session on upgraded
+  workers rather than attempting to feed the legacy decoder.
+- Validation failures are `INVALID_SIGNAL` (`400`) or `SIGNAL_TOO_LARGE`
+  (`413`); terminal/service conflicts are `SESSION_NOT_ACTIVE` (`409`).
+
+`getSessionSignalState` returns only metadata: `pendingWait` contains
+`waitId`, `names`, `reason`, `startedAt`, and an optional absolute `deadline`;
+buffered envelopes replace inline `data` with `dataBytes`. Missing state on
+a confirmed compatible execution means an empty buffer and no wait.
+Unstarted/unknown/legacy executions instead return `SIGNALS_UNSUPPORTED`.
+`getSession` and live custom-status reads also expose `signalWait` and
+`signalWaitInterrupted`.
+
+Stop cancels a parked signal wait using the **observed wait ID**; a replaced
+or already-consumed wait is a no-op. During an active interrupted model turn,
+Stop keeps its existing turn-scoped behavior. `StopTurnResult` is unchanged.
+
+Compatibility `session.sendEvent`, `management.sendSessionEvent`, HTTP
+`/events`, and MCP `send_session_event` wrap the entire payload as signal
+data. A payload such as `{ prompt: "...", type: "cmd", answer: "yes" }` does
+not invoke any of those operations. Use `sendMessage`, `sendAnswer`, or
+the appropriate management method instead.
+
+Phase 1 includes no webhook endpoints, provider connectors, or wait-race API.
 
 ### Session sharing
 
@@ -152,7 +220,7 @@ group membership is per-viewer state, not a property of the session. See
 | renameSession | `PATCH /api/v1/management/sessions/:sessionId` | sessionId (path), title (body) | Rename a session. |
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
-| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
+| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn or cancel the observed parked signal wait without cancelling the session. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |

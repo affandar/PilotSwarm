@@ -175,6 +175,20 @@ export class HttpApiTransport {
         return this.api.call("getSession", { sessionId });
     }
 
+    async raiseSignal(sessionId, name, options = {}) {
+        const { data, payloadRef, signalId, wake } = options;
+        return this.api.call("raiseSignal", { sessionId, name, data, payloadRef, signalId, wake });
+    }
+
+    async getSessionSignalState(sessionId) {
+        return this.api.call("getSessionSignalState", { sessionId });
+    }
+
+    /** @deprecated Use raiseSignal. */
+    async sendSessionEvent(sessionId, eventName, data) {
+        await this.raiseSignal(sessionId, eventName, { data });
+    }
+
     // ── Session sharing / access (security model) ────────────────────────
     async getSessionAccess(sessionId) {
         return this.api.call("getSessionAccess", { sessionId });

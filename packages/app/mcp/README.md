@@ -391,10 +391,31 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `stop_turn` | Abort the in-flight turn or cancel the observed parked signal wait; the session stays alive |
 | `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
-| `send_session_event` | Inject a custom named event into a session *(web)* |
+| `raise_signal` | Queue `{ session_id, name, data?, payload_ref?, signal_id?, wake? }` through the management client in direct or web mode; returns `{ signalId, name, raisedAt, status: "queued" }` |
+| `send_session_event` | Deprecated direct/web compatibility wrapper: `event_name` becomes the signal name, `data` stays untrusted data, and `wake` defaults to false |
+
+Signals require a session execution on orchestration **1.0.79+**. Raising a
+signal starts a new pending session without inventing a chat prompt or model
+turn. First sends wait up to ten seconds for worker initialization and verify
+the actual execution version before enqueueing; a timeout queues no signal.
+Names match `[a-z0-9_-]{1,64}`, inline data is JSON capped at 32 KiB UTF-8,
+and `payload_ref` is an opaque reference capped at 1,024 JSON-encoded UTF-8
+bytes, including quotes and escapes. It is never automatically fetched.
+Identity and timestamps are server-stamped; callers cannot supply
+them. `wake` defaults to false; matching waits can resume, and pre-arrival
+signals buffer durably. Reuse `signal_id` for delivery retries within the
+bounded deduplication window (128 accepted IDs plus buffered signals).
+The signal buffer holds 32 entries.
+
+`queued` means enqueue succeeded, not that an agent consumed the signal.
+Use `get_session_signals` and `get_session_events` (`session.signal_*`) to
+inspect state and lifecycle outcomes. Unsupported/unknown older executions
+return `SIGNALS_UNSUPPORTED`; oversized payloads return `SIGNAL_TOO_LARGE`.
+The legacy event wrapper is not an escape hatch for prompts, answers, or
+commands: use their dedicated tools. Phase 1 has no webhook/connector tools.
 
 ### Session Groups
 
@@ -418,6 +439,7 @@ with `get_capabilities` to see the shape of this server.
 |------|-------------|
 | `debug_session` | The agent-tuner's diagnostic surface as one tool — `include: [info, status, latest_response, events, summary, tokens_by_model, tree_stats, skill_usage, retrieval_usage, facts_stats, orchestration_stats, execution_history, child_outcomes, graph_node_usage, graph_edge_search_usage, graph_searches]`, per-axis error isolation |
 | `get_session_metrics` | Per-session/tree metrics — `include: [summary, tokens_by_model, skill_usage, retrieval_usage, facts_stats, orchestration_stats]` |
+| `get_session_signals` | Authorized pending signal wait, interruption flag, and buffered metadata; never inline signal payloads |
 | `get_fleet_overview` | Fleet aggregates — `include: [stats, skill_usage, retrieval_usage, graph_node_usage, user_stats, top_emitters, shared_facts, tombstones]` |
 | `list_child_outcomes` | What each sub-agent concluded, without transcript dumps |
 | `get_execution_history` | Raw duroxide execution events (orchestration forensics) |

@@ -146,6 +146,15 @@ These scenarios create a Builder session, stream tool calls, and demonstrate:
 - worker-local build monitoring with 40-second durable waits and `preserveWorkerAffinity: true`
 - remote build monitoring with the same polling cadence but ordinary waits
 
+For an integration with an authenticated external completion producer, the
+runtime also supports `wait_for_signal({names:["build-finished"]})` and
+`management.raiseSignal(sessionId, "build-finished", {signalId, data})`. A signal
+can arrive before the wait; omitted timeout means indefinite. This avoids
+polling when the producer can notify PilotSwarm. The existing mock build
+scenarios above deliberately remain polling examples; they do not register
+GitHub/Azure DevOps webhooks. See the [durable signals guide](../../docs/developer/building/durable-signals.md)
+for a producer example, limits, and the distinction between queued and consumed.
+
 The sample also includes artifact-oriented SDK scenarios:
 
 ```bash

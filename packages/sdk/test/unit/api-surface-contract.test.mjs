@@ -103,3 +103,36 @@ test("agent-package and worker operations stay behind management clients", () =>
     assert.doesNotMatch(mcp, /\b(?:ctx\.web|web)\.ops\.(?:listAgentPackages|uploadAgentPackage|getAgentPackage|setAgentPackage|pinAgentPackage|deleteAgentPackage|republishAgentPackage)/,
         "MCP package tools must use management methods");
 });
+
+test("durable signal operations are canonical management methods in both modes", () => {
+    for (const name of ["raiseSignal", "getSessionSignalState", "sendSessionEvent"]) {
+        assert.equal(operationRequiresManagementMethod(name), true);
+        assert.ok(direct.has(name), `direct management missing ${name}`);
+        assert.ok(web.has(name), `web management missing ${name}`);
+    }
+});
+
+test("published SDK and browser API signal types stay compatible", () => {
+    const file = `${root}/packages/sdk/test/fixtures/signal-api-consumer.mts`;
+    const program = ts.createProgram([file], {
+        noEmit: true, strict: true, skipLibCheck: true,
+        target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext,
+    });
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    assert.equal(diagnostics.length, 0, diagnostics
+        .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")).join("\n"));
+});
+
+test("SDK source compilation never loads its own emitted declarations", () => {
+    const config = ts.readConfigFile(`${root}/packages/sdk/tsconfig.json`, ts.sys.readFile);
+    assert.equal(config.error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, `${root}/packages/sdk`);
+    assert.deepEqual(parsed.errors, []);
+    assert.equal(typeof parsed.options.outDir, "string");
+    const outputPrefix = `${parsed.options.outDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+    const program = ts.createProgram(parsed.fileNames, { ...parsed.options, noEmit: true });
+    const emittedInputs = program.getSourceFiles()
+        .map(file => file.fileName.replace(/\\/g, "/"))
+        .filter(filename => filename.startsWith(outputPrefix));
+    assert.deepEqual(emittedInputs, [], "Importing SDK dist into source recreates the TS5055 emit cycle");
+});

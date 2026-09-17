@@ -4,6 +4,7 @@ import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-sys
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
+import { armSignalWait, cancelSignalWait, interruptSignalWait, startSignalWait, timeoutSignalWait } from "./signals.js";
 import { createSessionProxy } from "../session-proxy.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
@@ -327,6 +328,14 @@ export function* processPrompt(
     requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
+    if (state.pendingSignalWait && !state.signalWaitInterrupted) {
+        const wait = state.pendingSignalWait;
+        yield* interruptSignalWait(runtime, isBootstrap ? "system" : "user");
+        prompt = appendSystemContext(prompt,
+            `This turn interrupts your wait for signals ${wait.names.join(", ")}. ` +
+            `After your reply, that wait resumes automatically${wait.deadline ? ` with its original deadline ${wait.deadline}` : " indefinitely"}. ` +
+            "Call wait_for_signal(action='cancel') to cancel it, or wait_for_signal with new names to replace it.") ?? prompt;
+    }
 
     // Lifecycle protocol (P5): no needsHydration probe. The old protocol
     // asked a worker "do you have my files?" before every turn — an extra
@@ -711,6 +720,7 @@ function* handleTurnStopped(
     ]);
     // Authoritative CMS transition — also clears active_turn_index (migration
     // 0024 clears it on any state transition away from "running").
+    yield* cancelSignalWait(runtime, "stopped");
     yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
 
     // The turn ran and consumed context even though its result was discarded.
@@ -744,6 +754,10 @@ function* handleTurnStopped(
 
 function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { ctx, state, options } = runtime;
+    if (state.pendingSignalWait) {
+        yield* armSignalWait(runtime);
+        return;
+    }
 
     // A PROVIDER BUDGET pause is never re-armed. Every other wait is the
     // agent's own: it asked to sleep for N seconds, a message arrived, and
@@ -1080,6 +1094,11 @@ export function* handleTurnResult(
     const { ctx, state, options } = runtime;
     result = coerceChildQuestionToWait(runtime, result);
     const budgetRefusal = result.type === "wait" && (result as any).budget === true;
+    if (result.type === "stopped" || result.type === "cancelled") {
+        yield* cancelSignalWait(runtime, "stopped");
+    } else if (!budgetRefusal && (result.type === "wait" || result.type === "input_required" || result.type === "wait_for_agents")) {
+        yield* cancelSignalWait(runtime, "replaced");
+    }
     // "I'm here. Resuming the timer." is for a turn that RAN and said
     // nothing. A gate refusal is a turn that never ran — fabricating an
     // assistant reply for it put words in the transcript that answered a
@@ -1158,7 +1177,7 @@ export function* handleTurnResult(
                     }]);
                 }
 
-                if (runtime.input.isSystem && !state.cronSchedule && !state.cronAtSchedule) {
+                if (runtime.input.isSystem && !state.cronSchedule && !state.cronAtSchedule && !state.pendingSignalWait) {
                     ctx.traceInfo(`[orch] system sub-agent completed turn, continuing loop`);
                     return;
                 }
@@ -1175,6 +1194,16 @@ export function* handleTurnResult(
         case "cron_at":
             yield* applyCronAtAction(runtime, result, sourcePrompt);
             return;
+
+        case "signal-wait": {
+            if (result.action === "cancel") {
+                yield* cancelSignalWait(runtime, "cancelled");
+                yield* schedulePostTurnContinuation(runtime);
+            } else {
+                yield* startSignalWait(runtime, result, result.content);
+            }
+            return;
+        }
 
         case "wait": {
             state.interruptedWaitTimer = null;
@@ -1423,6 +1452,11 @@ export function* processTimer(
     const { ctx, state } = runtime;
     const timer = timerItem.timer;
     switch (timer.type) {
+        case "signal-timeout": {
+            const prompt = yield* timeoutSignalWait(runtime, timer.signalWaitId);
+            if (prompt) yield* processPrompt(runtime, prompt, true);
+            return;
+        }
         case "wait": {
             const seconds = Math.round(timer.originalDurationMs / 1000);
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{

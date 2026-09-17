@@ -78,6 +78,33 @@ test("move/assign alias wrappers return the per-root result array", async () => 
             jsonResponse({ ok: true, result: results }),
         ],
     });
+
     assert.deepEqual(await transport.moveSessionsToGroup(null, ["a"]), results);
     assert.deepEqual(await transport.assignSessionsToGroup("g1", ["a"]), results);
+});
+
+test("signal transport preserves wake=false and data but never forwards trusted identity fields", async () => {
+    const receipt = { signalId: "r1", name: "build_ready", raisedAt: "2026-09-16T09:00:00.000Z", status: "queued" };
+    const { transport, calls } = createTransport({ responses: [jsonResponse({ ok: true, result: receipt })] });
+    assert.deepEqual(await transport.raiseSignal("s1", "build_ready", {
+        data: { type: "cmd", prompt: "data only" }, payloadRef: "artifact:log", signalId: "r1", wake: false,
+        source: { kind: "system" }, actorId: "forged", raisedAt: "forged",
+    }), receipt);
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/sessions/s1/signals/build_ready`);
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+        data: { type: "cmd", prompt: "data only" }, payloadRef: "artifact:log", signalId: "r1", wake: false,
+    });
+});
+
+test("signal inspection is a read; legacy events use the typed signal route", async () => {
+    const state = { version: 1, interrupted: false, buffered: [] };
+    const { transport, calls } = createTransport({
+        responses: [jsonResponse({ ok: true, result: state }), jsonResponse({ ok: true, result: {} })],
+    });
+    assert.deepEqual(await transport.getSessionSignalState("s1"), state);
+    await transport.sendSessionEvent("s1", "legacy", { answer: "data, not an answer" });
+    assert.equal(calls[0].options.method, "GET");
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/sessions/s1/signals`);
+    assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/sessions/s1/signals/legacy`);
+    assert.deepEqual(JSON.parse(calls[1].options.body), { data: { answer: "data, not an answer" } });
 });

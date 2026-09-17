@@ -37,6 +37,7 @@ import { canonicalSystemTitle } from "./system-titles.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
+import { describeSignalEvent, isSignalWaiting, selectSessionSignalWait } from "./session-signals.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -47,6 +48,7 @@ import {
 
 export const ACTIVE_HIGHLIGHT_BACKGROUND = "activeHighlightBackground";
 export const ACTIVE_HIGHLIGHT_FOREGROUND = "activeHighlightForeground";
+export { selectSessionSignalWait };
 
 /**
  * Provider types that authenticate as the worker rather than with a key.
@@ -119,6 +121,7 @@ function getSessionVisualStatus(session) {
     if (dormant && normalizeSessionPause(session)) {
         return "budget_paused";
     }
+    if (isSignalWaiting(session)) return "waiting";
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -982,6 +985,11 @@ function buildSelectedSessionMetaRuns(session, mode) {
         if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
         runs.push({ text: statusLabel, color: sessionStatusColor(session, mode) });
     }
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait && (signalWait.interrupted || statusLabel === "waiting")) {
+        if (runs.length > 0) runs.push({ text: " · ", color: "gray" });
+        runs.push({ text: signalWait.text, color: signalWait.color });
+    }
 
     const modelLabel = shortModelReasoningLabel(session?.model, session?.reasoningEffort);
     if (modelLabel) {
@@ -1159,6 +1167,10 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
     if (pauseMark) {
         titleRuns.push({ text: ` ${pauseMark.label}`, color: pauseMark.color });
     }
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait) {
+        titleRuns.push({ text: ` ${signalWait.badge}`, color: signalWait.color });
+    }
     // Scheduled sessions keep a compact clock glyph on the title; the full
     // cron cadence rides in the detail line.
     const cronBadge = getCronBadge(session);
@@ -1211,6 +1223,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
         const childCount = totalDescendantCounts?.[session?.sessionId];
         if (childCount) { pushSep(); detailRuns.push({ text: `${childCount} child${childCount === 1 ? "" : "ren"}`, color: "gray" }); }
         if (cronBadge) { pushSep(); detailRuns.push({ text: cronBadge.text, color: cronBadge.color }); }
+        if (signalWait) { pushSep(); detailRuns.push({ text: signalWait.text, color: signalWait.color }); }
         // Why this session is parked, on the selected row. The reason names
         // the remedy, and the four reasons have four different ones, so the
         // detail line carries the sentence rather than the short label.
@@ -6221,6 +6234,9 @@ const SEQUENCE_ORCHESTRATOR_TYPES = new Set([
     "cmd_recv",
     "cmd_done",
     "model",
+    "signal",
+    "signal_wake",
+    "signal_timeout",
 ]);
 
 function isSequenceOrchestratorType(type) {
@@ -6245,6 +6261,9 @@ function mapEventToSequenceEntry(event) {
         detail: "",
         type: "other",
     };
+
+    const signal = describeSignalEvent(event);
+    if (signal) return { ...base, type: signal.type, color: signal.color, detail: signal.sequenceText };
 
     switch (event?.eventType) {
         case "session.turn_started":

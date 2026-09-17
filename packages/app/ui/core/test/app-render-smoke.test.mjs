@@ -19,6 +19,8 @@ import { appReducer } from "../src/reducer.js";
 import { createInitialState } from "../src/state.js";
 import { PilotSwarmUiController } from "../src/controller.js";
 import { INSPECTOR_TABS } from "../src/commands.js";
+import { buildHistoryModel } from "../src/history.js";
+import { formatCronTimestampForClient } from "../src/selectors.js";
 
 // The component module reads window at module and render time. Stub the few
 // APIs it touches BEFORE importing it — deliberately minimal, so the test keeps
@@ -58,7 +60,7 @@ if (!globalThis.navigator?.clipboard) {
     });
 }
 
-const { PilotSwarmWebApp } = await import("../../react/src/web-app.js");
+const { PilotSwarmWebApp, SessionDetailBox } = await import("../../react/src/web-app.js");
 
 function makeController(overrides = {}) {
     const store = createStore(appReducer, { ...createInitialState({ mode: "remote" }), ...overrides });
@@ -103,6 +105,47 @@ test("the Files tab renders with an artifact selected and marked", () => {
 test("the chat view renders", () => {
     const controller = makeController();
     assert.doesNotThrow(() => render(controller), "chat view must render");
+});
+
+test("portal details render indefinite, timed, and interrupted signal waits as text", () => {
+    const deadline = "2026-09-16T09:30:00.000Z";
+    const wait = { waitId: "w1", names: ["approval"], reason: "Review", startedAt: "2026-09-16T09:00:00.000Z" };
+    for (const [status, signalWait, signalWaitInterrupted, expected] of [
+        ["waiting", wait, false, "Waiting for signal: approval · no deadline"],
+        ["waiting", { ...wait, deadline }, false, `Waiting for signal: approval · until ${formatCronTimestampForClient(deadline)}`],
+        ["running", wait, true, "Signal wait interrupted: approval · no deadline"],
+    ]) {
+        const controller = makeController();
+        controller.dispatch({ type: "sessions/loaded", sessions: [{
+            sessionId: "s1", title: "Signal review", status, signalWait, signalWaitInterrupted,
+        }] });
+        controller.dispatch({ type: "sessions/selected", sessionId: "s1" });
+        const html = render(controller);
+        assert.ok(html.includes(expected), expected);
+        assert.doesNotMatch(html, /\[signal[^<]*0s/);
+        const details = renderToStaticMarkup(React.createElement(SessionDetailBox, {
+            session: controller.getState().sessions.byId.s1, collapsed: true,
+        }));
+        assert.ok(details.includes(expected), "the collapsed details keep the wait description");
+        if (signalWaitInterrupted) assert.ok(details.includes("(running)"), "an interruption keeps the running state");
+    }
+});
+
+test("portal signal Activity escapes markup and never turns payload references into links", () => {
+    const controller = makeController();
+    controller.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "s1", title: "Signals", status: "waiting" }] });
+    controller.dispatch({ type: "sessions/selected", sessionId: "s1" });
+    controller.dispatch({ type: "ui/diagnosticsOpen", open: true });
+    controller.dispatch({ type: "history/set", sessionId: "s1", history: buildHistoryModel([{
+        sessionId: "s1", seq: 1, eventType: "session.signal_received", createdAt: "2026-09-16T09:00:00.000Z",
+        data: { version: 1, signalId: "sig-1", name: "<b>approval</b>", source: { kind: "api" }, wake: false,
+            payloadRef: 'https://example.invalid/<img src=x onerror="bad()">',
+            data: { instructions: "DO NOT RENDER THIS PAYLOAD" } },
+    }]) });
+    const html = render(controller);
+    assert.ok(html.includes("&lt;b&gt;approval&lt;/b&gt;"), "names are text");
+    assert.ok(html.includes("https://example.invalid/&lt;img"), "references are text");
+    assert.doesNotMatch(html, /href="https:\/\/example\.invalid|<img src=x|DO NOT RENDER THIS PAYLOAD/);
 });
 
 // The suite rendered at 1440px only, so every mobile-only branch — the mobile

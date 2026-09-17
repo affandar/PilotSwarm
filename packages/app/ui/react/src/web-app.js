@@ -66,6 +66,7 @@ import {
     selectSessionOwnerFilterModal,
     selectSessionRows,
     selectSessionStatusSummary,
+    selectSessionSignalWait,
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
@@ -4387,11 +4388,13 @@ const SESSION_DETAIL_NONE = "—";
  * authoritative on its own and always shows.
  */
 export function visibleWaitReason(session, statusLabel) {
+    const status = String(statusLabel || "");
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait && (signalWait.interrupted || status === "waiting")) return signalWait.text;
     const reason = typeof session?.waitReason === "string" && session.waitReason.trim()
         ? clampWaitReason(session.waitReason)
         : null;
     if (!reason) return null;
-    const status = String(statusLabel || "");
     // "waiting", and "waiting on 7" / "waiting on children" for a parent whose
     // descendants are still going.
     const waiting = status === "waiting"
@@ -4457,6 +4460,7 @@ export function clampWaitReason(
  * the wake-up instruction read as a stall reason.
  */
 export function waitReasonLabel(session) {
+    if (selectSessionSignalWait(session)) return "Signal";
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
@@ -4516,6 +4520,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         : (childCount > 0 ? String(childCount) : null);
 
     const statusSummary = selectSessionStatusSummary(session);
+    const signalWait = selectSessionSignalWait(session);
 
     // Why this session is stopped, where the person is standing.
     //
@@ -4547,8 +4552,8 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         // Clipped on screen, whole on hover: for a cron the full text is the
         // wake-up instruction, and someone reading the box is often trying to
         // find out exactly what the next tick will do.
-        ...(!pause && typeof session?.waitReason === "string" && session.waitReason.trim()
-            ? { title: session.waitReason.trim() }
+        ...(!pause && (signalWait || (typeof session?.waitReason === "string" && session.waitReason.trim()))
+            ? { title: signalWait?.text || session.waitReason.trim() }
             : {}),
     },
         // The sentence already says when it clears wherever it can; `clears`
@@ -4590,7 +4595,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
                 key: "halt",
                 className: `ps-session-detail-mark${pause ? " is-paused" : ""}`,
                 title: pause ? pause.reason : waitReason,
-            }, pause ? "paused" : "waiting"));
+            }, pause ? "paused" : signalWait?.interrupted ? "signal interrupted" : "waiting"));
         }
         return React.createElement("div", { className: "ps-session-detail-box is-collapsed" },
             React.createElement("button", {

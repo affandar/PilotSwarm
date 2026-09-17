@@ -22,7 +22,16 @@ import type {
 } from "./types.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
-import { normalizeMessageSender } from "./message-sender.js";
+import { messageSenderKey, normalizeMessageSender } from "./message-sender.js";
+import {
+    createSessionSignal,
+    supportsSignalOrchestration,
+    SignalValidationError,
+    SIGNAL_MIN_ORCHESTRATION_VERSION,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+    type JsonValue,
+} from "./session-signals.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -112,6 +121,18 @@ export function projectSerializableSessionConfig(
     };
 }
 
+/** @internal Signals must never reach an execution with the legacy message decoder. */
+export async function requireSignalExecution(duroxideClient: any, sessionId: string): Promise<any> {
+    const info = await duroxideClient.getInstanceInfo(`session-${sessionId}`);
+    if (!supportsSignalOrchestration(info?.orchestrationVersion)) {
+        throw Object.assign(new Error(
+            `Session ${sessionId} does not support durable signals (orchestration version ${info?.orchestrationVersion ?? "unknown"}). `
+            + `Use a new session on workers supporting orchestration ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later; existing executions are not upgraded by raising a signal.`,
+        ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+    }
+    return info;
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -155,6 +176,15 @@ export class PilotSwarmClient {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
         };
+    }
+
+    /** @internal Borrow an already-open runtime; the owning management client closes it. */
+    static _fromRuntime(options: PilotSwarmClientOptions, catalog: SessionCatalog, duroxideClient: any): PilotSwarmClient {
+        const client = new PilotSwarmClient(options);
+        client._catalog = catalog;
+        client.duroxideClient = duroxideClient;
+        client.started = true;
+        return client;
     }
 
     // ─── Session Management ──────────────────────────────────
@@ -730,12 +760,8 @@ export class PilotSwarmClient {
         return { parentSessionId, nestingLevel };
     }
 
-    /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
-    private async _ensureOrchestrationAndSend(
-        sessionId: string,
-        prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
-    ): Promise<string> {
+    /** Start from the persisted creation contract without fabricating a user turn. */
+    private async _ensureOrchestration(sessionId: string): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
@@ -768,7 +794,7 @@ export class PilotSwarmClient {
         let serializableConfig: SerializableSessionConfig | undefined;
         let bootstrapNestingLevel: unknown;
 
-        trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
+        trace(`[client] ensureOrchestration start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
         {
@@ -870,7 +896,18 @@ export class PilotSwarmClient {
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
         }
 
-        // CMS: update state + orchestration ID
+        return orchestrationId;
+    }
+
+    /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
+    private async _ensureOrchestrationAndSend(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+    ): Promise<string> {
+        const orchestrationId = await this._ensureOrchestration(sessionId);
+        const trace = this.config.traceWriter ?? (() => {});
+        // Only prompt sends mark a turn running. Signal arrival is not a turn.
         const updateAt = Date.now();
         await this._catalog.updateSession(sessionId, {
             orchestrationId,
@@ -906,6 +943,88 @@ export class PilotSwarmClient {
         trace("[client] ensureOrchestrationAndSend complete");
 
         return orchestrationId;
+    }
+
+    /** @internal The sender is trusted transport metadata, separate from caller-controlled options. */
+    async _raiseSignal(
+        sessionId: string,
+        name: string,
+        options: RaiseSignalOptions = {},
+        sender?: MessageSender,
+    ): Promise<RaiseSignalResult> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const normalizedSender = normalizeMessageSender(sender);
+        const actorId = messageSenderKey(normalizedSender);
+        let signal;
+        try {
+            signal = createSessionSignal(name, options, {
+                kind: normalizedSender?.kind === "agent" ? "session"
+                    : normalizedSender?.kind === "system" ? "system" : "api",
+                ...(actorId ? { actorId } : {}),
+            }, { signalId: crypto.randomUUID(), raisedAt: new Date().toISOString() });
+        } catch (error) {
+            if (error instanceof SignalValidationError) {
+                Object.assign(error, { status: error.code === "SIGNAL_TOO_LARGE" ? 413 : 400 });
+            }
+            throw error;
+        }
+
+        const row = await this._catalog.getSession(sessionId);
+        if (!row || row.deletedAt) {
+            throw Object.assign(new Error(`Session ${sessionId} was not found.`), { code: "NOT_FOUND", status: 404 });
+        }
+        if (row.serviceKind || ["completed", "cancelled", "failed", "error"].includes(row.state)) {
+            throw Object.assign(new Error(`Session ${sessionId} is terminal or a service session and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+
+        const orchestrationId = `session-${sessionId}`;
+        let status = await this.duroxideClient.getStatus(orchestrationId);
+        if (status?.status === "NotFound") {
+            if ((row.orchestrationId && row.orchestrationId !== orchestrationId)
+                || row.state !== "pending" || !supportsSignalOrchestration(DURABLE_SESSION_LATEST_VERSION)) {
+                throw Object.assign(new Error(
+                    `Session ${sessionId} has no compatible orchestration. Create a new session on workers supporting ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later.`,
+                ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+            }
+            if (!row.orchestrationId) {
+                await this._ensureOrchestration(sessionId);
+                await this._catalog.updateSession(sessionId, { orchestrationId });
+            }
+            // A start is queued work, not an already-materialized execution.
+            // Wait on the existing status channel before checking its version;
+            // never assume our start won against another API process.
+            status = await this.duroxideClient.getStatus(orchestrationId);
+            if (status?.status === "NotFound") {
+                try {
+                    status = await this.duroxideClient.waitForStatusChange(orchestrationId, 0, 1_000, WAIT_POLL_SLICE_MS);
+                } catch (error) {
+                    if (!/timed out|timeout/i.test(String((error as Error)?.message))) throw error;
+                    throw Object.assign(new Error(
+                        `Session ${sessionId} has not initialized a compatible execution yet. No signal was queued. `
+                        + `Ensure upgraded workers are running, then retry the signal.`,
+                    ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+                }
+            }
+        }
+        if (!status?.status || status.status === "Unknown" || status.status === "NotFound") {
+            throw Object.assign(new Error(`Cannot confirm durable signal support for session ${sessionId}; no signal was queued.`),
+                { code: "SIGNALS_UNSUPPORTED", status: 409 });
+        }
+        if (["Completed", "Failed", "Terminated"].includes(status.status)) {
+            throw Object.assign(new Error(`Session ${sessionId} is a terminal orchestration and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+
+        // Check the actual execution even after a start: another process may
+        // have won the first-start race with a different orchestration version.
+        const info = await requireSignalExecution(this.duroxideClient, sessionId);
+        if (["Completed", "Failed", "Terminated"].includes(info.status)) {
+            throw Object.assign(new Error(`Session ${sessionId} is a terminal orchestration and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        await this.duroxideClient.enqueueEvent(orchestrationId, "messages", JSON.stringify({ signal }));
+        return { signalId: signal.signalId, name: signal.name, raisedAt: signal.raisedAt, status: "queued" };
     }
 
     /** @internal */
@@ -1116,6 +1235,7 @@ export class PilotSwarmClient {
             : latestResponse?.type === "completed" ? latestResponse : undefined;
         const resultSource = completedResponse ? "response"
             : orchStatus.status === "Completed" ? "orchestration" : undefined;
+        const terminalOrchestration = ["Completed", "Failed", "Terminated"].includes(orchStatus.status);
 
         return {
             sessionId,
@@ -1136,6 +1256,8 @@ export class PilotSwarmClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
+            signalWait: terminalOrchestration ? undefined : customStatus.signalWait,
+            signalWaitInterrupted: terminalOrchestration ? undefined : customStatus.signalWaitInterrupted,
             cronActive,
             cronInterval,
             cronKind,
@@ -1451,16 +1573,13 @@ export class PilotSwarmSession {
         };
     }
 
+    async raiseSignal(name: string, options: RaiseSignalOptions = {}, sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this.client._raiseSignal(this.sessionId, name, options, sender);
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
-        const duroxideClient = this.client._getDuroxideClient();
-        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
-        if (duroxideClient) {
-            await duroxideClient.enqueueEvent(
-                orchestrationId,
-                "messages",
-                JSON.stringify(data),
-            );
-        }
+        await this.raiseSignal(eventName, { data: data as JsonValue });
     }
 
     /**

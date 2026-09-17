@@ -17,6 +17,7 @@ import {
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
 import { shouldKeepSessionWarning } from "./session-errors.js";
+import { reconcileSignalWaitSnapshot } from "./session-signals.js";
 import {
     computeLegacyLayout,
     getBaseSessionPaneHeight,
@@ -451,6 +452,7 @@ function shouldPreserveStaleCronVisual(previousSession, nextSession) {
 
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
+    nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession);
 
     const patch = { sessionId: nextSession.sessionId };
     let changed = false;

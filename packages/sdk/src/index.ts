@@ -32,6 +32,16 @@
 
 export { PilotSwarmClient, PilotSwarmSession } from "./client.js";
 export type { SessionEventHandler } from "./client.js";
+export type {
+    JsonValue,
+    SessionSignalV1,
+    SessionSignalSummary,
+    SessionSignalState,
+    PendingSignalWait,
+    RaiseSignalOptions,
+    RaiseSignalResult,
+} from "./session-signals.js";
+export { SignalValidationError } from "./session-signals.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
