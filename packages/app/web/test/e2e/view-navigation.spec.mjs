@@ -15,10 +15,16 @@ const saved = page => page.evaluate(() => {
     const key = Object.keys(sessionStorage).find(k => k.startsWith('pilotswarm.view-history.v1:'));
     return key ? JSON.parse(sessionStorage.getItem(key)) : null;
 });
-async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPanelId = 'two'} = {}) {
+async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPanelId = 'two', fullHeader = false, admin = false, touchScale = false} = {}) {
+    if (fullHeader) {
+        const persona = {id:'test',displayName:'Test User With a Longer Display Name',email:'test.user@example.com'};
+        await page.addInitScript(persona => { if(window === window.top) sessionStorage.setItem('pilotswarm.devAuth.persona',JSON.stringify(persona)); }, persona);
+        await page.route('**/api/portal-config', route => route.fulfill({json:{ok:true,auth:{enabled:true,provider:'dev',client:{users:[persona]}},portal:{branding:{title:'PilotSwarm'}}}}));
+        await page.route('**/api/auth/me', route => route.fulfill({json:{ok:true,principal:{provider:'dev',subject:'test',displayName:persona.displayName,email:persona.email},authorization:{allowed:true,role:'user'}}}));
+    }
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
-    let settings = { themeId, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
+    let settings = { themeId, touchScale, moa: normalizeMoa({ version:3, activeDashboardId:'ops', dashboards:[
         { id:'ops', name:'Operations', tree:{id:'one',type:'chat',sessionId:sid(1)}, focusedPanelId:'one' },
         { id:'review', name:'Review', tree:{id:reviewPanelId,type:'chat',sessionId:sid(2)}, focusedPanelId:reviewPanelId },
     ] }) };
@@ -26,13 +32,14 @@ async function fixture(page, themeId = 'terminal-green', width = 1600, {reviewPa
         const path = new URL(route.request().url()).pathname;
         if (path.endsWith('/bootstrap')) return route.fulfill({json:{ok:true,result:{auth:{principal:{provider:'none',subject:'test',email:'test@example.com'},authorization:{allowed:true,role:'user'}}}}});
         if (path.endsWith('/me/profile/settings')) { settings = route.request().postDataJSON().settings; return route.fulfill({json:{ok:true,result:{profileSettings:settings}}}); }
-        if (path.endsWith('/me/profile')) return route.fulfill({json:{ok:true,result:{isAdmin:false,profileSettings:settings}}});
+        if (path.endsWith('/me/profile')) return route.fulfill({json:{ok:true,result:{isAdmin:admin,profileSettings:settings}}});
         return route.fallback();
     });
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(base + `/?session=${sid(0)}`);
     await expect(main(page).locator('textarea')).toBeVisible();
     await expect.poll(async () => Boolean(await saved(page))).toBe(true);
+    if(fullHeader) await expect(page.getByRole('button',{name:'Sign out',exact:true})).toBeVisible();
     return { errors };
 }
 async function select(page, i) { await row(page, i).click(); await expect(main(page)).toContainText(`Session ${i}`); }
@@ -243,4 +250,100 @@ test('Back and Forward restore canvas, diagnostics, Budget and Settings modes', 
     await expect(page.getByRole('button',{name:'Show canvas',exact:true})).toBeVisible();
     await forward(page).click();
     await expect(page.locator('.ps-canvas-layer:not(.is-hidden)')).toBeVisible();
+});
+
+async function chooseDashboard(page, name) {
+    const tab = page.getByRole('tab', {name, exact:true});
+    if (await tab.isVisible()) await tab.click();
+    else {
+        await page.getByRole('button', {name:'Switch MoA dashboard', exact:true}).click();
+        await page.locator('.ps-moa-dashboard-choice').filter({hasText:name}).click();
+    }
+}
+async function headerGeometry(page) {
+    return page.locator('.portal-header').evaluate(header => {
+        const buttons = [...header.querySelectorAll('button, select')].filter(button => {
+            const r = button.getBoundingClientRect();
+            return r.width && r.height && getComputedStyle(button).visibility !== 'hidden';
+        });
+        const rect = button => {
+            const {x,y,width,height} = button.getBoundingClientRect();
+            return {x,y,width,height};
+        };
+        const label = button => button.getAttribute('aria-label') || button.title || button.textContent;
+        const collisions = buttons.flatMap((a,i) => buttons.slice(i+1).filter(b => {
+            const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect();
+            return Math.min(ar.right,br.right)-Math.max(ar.left,br.left)>1 && Math.min(ar.bottom,br.bottom)-Math.max(ar.top,br.top)>1;
+        }).map(b=>[label(a),label(b)]));
+        const clipped = buttons.filter(b => {
+            const r=b.getBoundingClientRect(), hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+            return !b.contains(hit);
+        }).map(label);
+        return {
+            back: rect(buttons.find(b=>/^Back.*\((Alt|Option)\+/.test(label(b)))),
+            forward: rect(buttons.find(b=>/^Forward.*\((Alt|Option)\+/.test(label(b)))),
+            collisions, clipped, overflow: document.documentElement.scrollWidth>innerWidth,
+        };
+    });
+}
+const geometryCases = ['rust','terminal-green','win95','winamp','ms-dos'].flatMap(theme => [1920,1280,921].map(width => ({theme,width})));
+geometryCases.push({theme:'terminal-green',width:1600}, {theme:'terminal-green',width:1024}, {theme:'rust',width:1440,admin:true,touchScale:true}, {theme:'win95',width:1024,admin:true,touchScale:true});
+for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${theme} ${width}px: identical navigation coordinates across desktop screens`, async ({page}) => {
+    await page.route('**/api/v1/**', async route => {
+        const url=new URL(route.request().url());
+        if(url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({json:{ok:true,result:[1,2].map(slot=>({seq:slot,eventType:'session.canvas_updated',data:{slot,rev:1,sizeBytes:128,name:`Long canvas display name for slot ${slot}`}}))}});
+        if(url.pathname.includes('/artifacts/') && /canvas(?:2)?\.html/.test(url.pathname)) return route.fulfill({contentType:'text/html',body:'<!doctype html><h1>Navigation canvas fixture</h1>'});
+        return route.fallback();
+    });
+    const f=await fixture(page,theme,width,{fullHeader:true,admin,touchScale});
+    await expect(page.locator('html')).toHaveAttribute('data-ps-theme',theme);
+    const baseline=await headerGeometry(page);
+    const check=async mode=> {
+        await expect.poll(async()=> {
+            const g=await headerGeometry(page);
+            return Math.max(...['back','forward'].flatMap(key=>['x','y','width','height'].map(axis=>Math.abs(g[key][axis]-baseline[key][axis]))));
+        }, {message:`${mode}: navigation must stay at the workspace coordinates`}).toBeLessThan(0.5);
+        const g=await headerGeometry(page);
+        expect(g.collisions,`${mode}: header controls must not overlap`).toEqual([]);
+        expect(g.clipped,`${mode}: header controls must remain reachable`).toEqual([]);
+        expect(g.overflow,`${mode}: no horizontal page scroll`).toBe(false);
+    };
+    await check('workspace');
+    await page.getByRole('button',{name:'Show canvas',exact:true}).click();
+    await page.getByRole('button',{name:'Full screen canvas',exact:true}).waitFor();
+    await expect(page.locator('.ps-canvas-layer:not(.is-hidden) iframe').first().contentFrame().getByRole('heading',{name:'Navigation canvas fixture'})).toBeVisible();
+    await check('inset canvas');
+    await page.getByRole('button',{name:'Full screen canvas',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Restore canvas',exact:true})).toBeVisible();
+    await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toBeVisible();
+    await expect(page.locator('.portal-header').getByRole('combobox',{name:'Choose canvas',exact:true})).toBeVisible();
+    await check('maximized canvas');
+    if(theme==='win95') await expect(page.locator('.portal-header').getByRole('button',{name:'Zoom out',exact:true})).toHaveCSS('color','rgb(255, 255, 255)');
+    await page.screenshot({path:test.info().outputPath('maximized-canvas.png')});
+    await page.getByRole('button',{name:'Restore canvas',exact:true}).click();
+    await check('restored canvas');
+    await page.getByRole('button',{name:'Show diagnostics (inspector and activity)',exact:true}).click();
+    await check('diagnostics');
+    await page.getByRole('button',{name:'Budget — providers, limits and usage',exact:true}).click();
+    await check('Budget');
+    await page.getByRole('button',{name:admin?'Admin console':'Settings',exact:true}).click();
+    await expect(page.locator('.ps-admin-console__header h2')).toBeVisible();
+    await check(admin?'Admin console':'Settings');
+    await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Clear MoA layout',exact:true})).toBeVisible();
+    await check('MoA');
+    const clear=await page.getByRole('button',{name:'Clear MoA layout',exact:true}).boundingBox();
+    const zen=await page.getByRole('button',{name:'Enter zen',exact:true}).boundingBox();
+    expect(clear.x+clear.width).toBeLessThan(baseline.back.x);
+    expect(zen.x).toBeGreaterThan(baseline.forward.x+baseline.forward.width);
+    expect(clear.y).toBe(baseline.back.y); expect(zen.y).toBe(baseline.forward.y);
+    await chooseDashboard(page,'Review'); await check('another MoA dashboard');
+    await page.screenshot({path:test.info().outputPath('moa.png')});
+    await page.getByRole('button',{name:'Enter zen',exact:true}).click();
+    await expect(page.locator('.portal-header')).not.toBeVisible();
+    await page.getByRole('button',{name:'Exit zen',exact:true}).click();
+    await check('leaving MoA zen');
+    await page.getByRole('button',{name:'Workspace — sessions, chat and panels',exact:true}).click();
+    await check('returning to workspace');
+    expect(f.errors).toEqual([]);
 });

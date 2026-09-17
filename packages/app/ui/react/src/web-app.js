@@ -9334,13 +9334,21 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // A pane-splitter drag or a font-size change re-wraps the text with
         // no window resize; watch the box itself.
         const node = inputRef.current;
+        let frame = 0;
         const observer = node && typeof ResizeObserver !== "undefined"
-            ? new ResizeObserver(() => growInput(true))
+            ? new ResizeObserver(() => {
+                // growInput writes the same box's height. Defer those writes
+                // out of ResizeObserver delivery to prevent WebKit's resize
+                // loop error when a narrow pane wraps the placeholder.
+                cancelAnimationFrame(frame);
+                frame = requestAnimationFrame(() => growInput(true));
+            })
             : null;
         if (observer && node) observer.observe(node);
         return () => {
             window.removeEventListener("resize", onResize);
             observer?.disconnect();
+            cancelAnimationFrame(frame);
         };
     }, [growInput]);
 
@@ -10034,16 +10042,8 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         );
     }
 
-    // Two kinds of button, two clusters (desktop only):
-    //
-    //   left  : the workspace's — new, filter, canvas, diagnostics
-    //   right : modes [workspace, budget, admin] │ theme · sign-out
-    //
-    // The whole left cluster belongs to the workspace — new session, filter,
-    // canvas and diagnostics all act on it — so it exists only in Workspace
-    // mode. Budget and the Admin Console replace the workspace; nothing on
-    // the left applies there. Modes are exclusive (the controller closes one
-    // when the other opens) and the Workspace button is the way back.
+    // Keep navigation in one permanent slot in every desktop mode. Context
+    // controls occupy equal-width flanks; empty flanks still reserve space.
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
     const HISTORY = ["back", "forward"];
@@ -10071,10 +10071,6 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
         .map(renderButton);
     const divider = (key) => React.createElement("span", { key, className: "ps-toolbar-divider", "aria-hidden": "true" });
 
-    // One run, no bar: history sits between the filter and panel controls.
-    const leftCluster = mode === "workspace"
-        ? [...pick(ACTIONS), ...pick(HISTORY), ...pick(PANELS)]
-        : pick(HISTORY);
     const rightCluster = [
         ...pick(MODES),
         divider("mode-divider"),
@@ -10082,28 +10078,21 @@ function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvas
     ];
 
     const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
-        // Three columns: left rail | main controls | right rail. Full-screen
-        // canvas uses the otherwise-empty left rail for the normal actions so
-        // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            moa?.active ? React.createElement(React.Fragment, null, leftCluster, React.createElement("div", { id: "ps-moa-status-slot" })) : canvasMaximized ? leftCluster : null),
-        React.createElement("div", { className: "ps-toolbar-actions" },
-            moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
-        React.createElement("div", { className: "ps-toolbar-side is-right" },
-            // The portal header parks its version/status meta here, LEFT of
-            // the tool buttons, and its sign-out glyph in the slot after
-            // them — one right-aligned cluster: meta · mode · theme · out.
-            React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
-            // While the canvas is full screen its header controls (rev, zoom,
-            // zen, restore) portal INTO this slot from CanvasPane — zoom state
-            // lives there, so the controls come to the toolbar rather than
-            // their state moving out.
-            canvasMaximized
+            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : null,
+            // Canvas controls retain their state in CanvasPane. Their portal
+            // gets the flexible rail, so names/revisions cannot move history.
+            canvasMaximized && !moa?.active
                 ? React.createElement("span", { className: "ps-toolbar-canvas-slot", id: "ps-toolbar-canvas-slot" })
-                : null,
-            canvasMaximized
-                ? React.createElement("span", { className: "ps-toolbar-divider", "aria-hidden": "true" })
-                : null,
+                : null),
+        React.createElement("div", { className: "ps-toolbar-actions ps-toolbar-navigation", role: "navigation", "aria-label": moa?.active ? "Master of Agents" : "View navigation" },
+            React.createElement("div", { className: "ps-toolbar-context is-before", id: "ps-toolbar-before-history" },
+                mode === "workspace" ? pick(ACTIONS) : null),
+            React.createElement("div", { className: "ps-toolbar-history" }, pick(HISTORY)),
+            React.createElement("div", { className: "ps-toolbar-context is-after", id: "ps-toolbar-after-history" },
+                mode === "workspace" ? pick(PANELS) : null)),
+        React.createElement("div", { className: "ps-toolbar-side is-right" },
+            React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
             React.createElement("div", { className: "ps-toolbar-actions is-tools" }, rightCluster),
             React.createElement("span", { className: "ps-toolbar-signout-slot", id: "ps-toolbar-signout-slot" })),
     );

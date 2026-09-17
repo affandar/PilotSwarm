@@ -5301,6 +5301,7 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] {
   --w95-face: #c0c0c0;
   --w95-light: #ffffff;
+  --w95-soft-face: #dfdfdf;
   --w95-shadow: #808080;
   --w95-dark: #000000;
   /* Tahoma is the real Win95 UI face; the rest are era-appropriate fallbacks. */
@@ -5383,6 +5384,21 @@ body.is-resizing-pane-y iframe {
   border-radius: 0;
 }
 
+/* Transcript cards sit on the white document surface. Use the palette's
+   light button highlight, with white details, rather than teal desktop fills
+   or the heavier raised-button gray reserved for application chrome. */
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-tasks {
+  background: var(--w95-soft-face);
+  border-color: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run-viewport,
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-task-detail,
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call {
+  background: var(--w95-light);
+  border-color: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call-tag { color: #000080; }
+
 /* Selection is Explorer's navy bar, not a tint. */
 :root[data-ps-theme="win95"] .ps-list-button.is-selected,
 :root[data-ps-theme="win95"] .ps-session-list-button.is-selected {
@@ -5445,7 +5461,11 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] .portal-header-email,
 :root[data-ps-theme="win95"] .portal-header-status,
 :root[data-ps-theme="win95"] .portal-header-meta,
-:root[data-ps-theme="win95"] .portal-header-version {
+:root[data-ps-theme="win95"] .portal-header-version,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-btn,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-level {
   color: #ffffff;
   opacity: 1;
 }
@@ -9702,24 +9722,46 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
 
-/* Let toolbar groups use their actual width before centering them. Equal
-   zero-minimum rails allowed the right-hand icons to paint over the center. */
+/* Permanent desktop navigation geometry. Context controls may change, but
+   neither a mode change nor a long canvas title can move Back / Forward. */
 @media (min-width: 921px) {
+  .portal-header { padding-block: 4px; }
   .portal-header-brand { max-width: min(28vw, 320px); }
   .portal-header-slot { container: header-tools / inline-size; }
   .ps-toolbar:not(.is-mobile) {
-    grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+    --ps-header-button: 44px;
+    --ps-header-pair: 94px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     column-gap: 12px;
   }
-  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; overflow: hidden; }
-  .ps-toolbar:not(.is-mobile) .ps-toolbar-button { flex-shrink: 0; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: max-content; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
+  .ps-toolbar-navigation {
+    display: grid; grid-template-columns: repeat(3, var(--ps-header-pair));
+    gap: 6px; height: 44px; flex-wrap: nowrap;
+  }
+  .ps-toolbar-context, .ps-toolbar-history { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ps-toolbar-context.is-before { justify-content: flex-end; }
+  .ps-toolbar-navigation button,
+  .ps-toolbar-actions.is-tools > button,
+  .ps-toolbar-signout-slot > button {
+    box-sizing: border-box; flex: 0 0 var(--ps-header-button);
+    width: var(--ps-header-button); min-width: var(--ps-header-button);
+    height: 44px; min-height: 44px; padding: 0;
+  }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; min-width: 0; overflow: hidden; }
+  .ps-toolbar-actions.is-tools { flex-wrap: nowrap; }
+  .ps-toolbar-canvas-slot { min-width: 0; width: 100%; }
+  .ps-toolbar-canvas-slot > :not(.ps-toolbar-canvas-rev):not(.ps-canvas-slot-controls) { flex-shrink: 0; }
+  .ps-toolbar-canvas-rev { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
-@container header-tools (max-width: 760px) {
-  .ps-toolbar:not(.is-mobile) { display: flex; flex-wrap: wrap; gap: 8px 12px; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left:empty { display: none; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-actions { margin-inline: auto; flex: 0 0 auto; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { margin-left: auto; flex-wrap: wrap; }
+/* Use the SAME two rows in every mode when the rails cannot fit. Reserving
+   both rows keeps the navigation's vertical position stable as well. */
+@container header-tools (max-width: 960px) {
+  .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { grid-column: 2; grid-row: 1; gap: 6px; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-actions.is-tools { gap: 4px; }
   .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 100px; }
 }
 /* A pane can be narrow even on a wide monitor. Give its title a full row

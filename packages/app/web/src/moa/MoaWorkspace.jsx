@@ -576,8 +576,12 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
     const closePicker = React.useCallback(() => setPicker(null), []), closeMenu = React.useCallback(() => setMenu(null), []);
     const [clearing, setClearing] = React.useState(false);
     const layoutRef = React.useRef(null);
-    const [headerHost, setHeaderHost] = React.useState(null), [statusHost, setStatusHost] = React.useState(null);
-    React.useLayoutEffect(() => { setHeaderHost(document.getElementById("ps-moa-header-slot")); setStatusHost(document.getElementById("ps-moa-status-slot")); });
+    const [beforeHistoryHost, setBeforeHistoryHost] = React.useState(null), [afterHistoryHost, setAfterHistoryHost] = React.useState(null), [statusHost, setStatusHost] = React.useState(null);
+    React.useLayoutEffect(() => {
+        setBeforeHistoryHost(document.getElementById("ps-toolbar-before-history"));
+        setAfterHistoryHost(document.getElementById("ps-toolbar-after-history"));
+        setStatusHost(document.getElementById("ps-moa-status-slot"));
+    });
     const [controlsHost, setControlsHost] = React.useState(null);
     const [mobileStatusHost, setMobileStatusHost] = React.useState(null);
     const [composerHost, setComposerHost] = React.useState(null), [creating, setCreating] = React.useState(null);
@@ -713,10 +717,11 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         </section>;
     }
     const saveStatus = moa.saveStatus === "error" ? <span className="ps-moa-save" role="status"><IconButton label="Save failed · Retry" icon="retry" onClick={() => update(value)} /></span> : null;
-    const toolbar = <nav className="ps-moa-toolbar" aria-label="Master of Agents">
-            <IconButton label="Clear MoA layout" icon="clear" disabled={!layout.tree} onClick={() => setClearing(true)} />
-            <IconButton label="Enter zen" icon="zen" onClick={() => moa.setZen(true)} />
-        </nav>;
+    const clearButton = <IconButton label="Clear MoA layout" icon="clear" disabled={!layout.tree} onClick={() => setClearing(true)} />;
+    const zenButton = <IconButton label="Enter zen" icon="zen" onClick={() => moa.setZen(true)} />;
+    const toolbar = beforeHistoryHost && afterHistoryHost
+        ? <>{createPortal(clearButton, beforeHistoryHost)}{createPortal(zenButton, afterHistoryHost)}</>
+        : <nav className="ps-moa-toolbar" aria-label="Master of Agents">{clearButton}{zenButton}</nav>;
     const swipe = {
         onTouchStart: e => { swipeStart.current = e.touches.length === 1 && canSwipeFrom(e.target, e.currentTarget) ? { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() } : null; },
         onTouchEnd: e => {
@@ -753,7 +758,7 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
             <IconButton label="Switch MoA dashboard" icon="dropdown" aria-haspopup="dialog" aria-expanded={dashboardPicker} onClick={event => { if (Date.now() < suppressDashboardClickUntil.current) { suppressDashboardClickUntil.current = 0; event.preventDefault(); return; } setDashboardPicker(true); }} />
         </header>}
         {!moa.zen && saveStatus}
-        {visible && !mobile && (moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : (headerHost ? createPortal(toolbar, headerHost) : toolbar))}
+        {visible && !mobile && (moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : toolbar)}
         {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
         <div {...(mobile ? swipe : {})} ref={layoutRef} id="moa-layout" role="region" aria-label="MoA panels" className="ps-moa-layout">{layout.tree ? (mobile ? nodes.map(draw) : draw(layout.tree)) : <section className="ps-moa-panel ps-moa-initial-panel"><header><span className="ps-moa-panel-title">Empty panel</span>{splitButtons({ id: null, type: "empty" })}</header><div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div></section>}</div>
         {value.composerMode === "shared" && <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>

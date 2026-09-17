@@ -148,7 +148,10 @@ test('a stale dashboard load cannot suspend the controller resumed by a newer vi
         // The visible controller polls every four seconds. The obsolete first
         // load used to clear this newer timer and detach its live subscription.
         await expect.poll(() => alphaGets, { timeout: 7_000 }).toBeGreaterThan(afterRelease);
-        await expect(page.getByRole('navigation', { name: 'Master of Agents' }).getByRole('button')).toHaveCount(2);
+        // Context actions now flank history in the common navigation landmark.
+        await expect(page.getByRole('navigation', { name: 'Master of Agents' }).getByRole('button')).toHaveCount(4);
+        await expect(page.getByRole('button', { name: 'Clear MoA layout', exact: true })).toHaveCount(1);
+        await expect(page.getByRole('button', { name: 'Enter zen', exact: true })).toHaveCount(1);
         expect(f.errors).toEqual([]);
     } finally { releaseFirst(); }
 });
@@ -276,7 +279,10 @@ test('mobile uses one compact header and does not expose dashboard reordering', 
 });
 
 for (const themeId of ['terminal-green','win95','winamp','ms-dos']) for (const touchScale of [false,true]) test(`${themeId}, touch scale ${touchScale}: resizing collapses tabs and never overlaps icons`, async ({page}) => {
-    const moa=profiles(); moa.dashboards[0].name='Operations with a very long dashboard name';
+    const moa=profiles();
+    // The shared header gives tabs a full row on narrow desktops. Fill all
+    // five names so this still exercises the measured compact-picker path.
+    for (const dashboard of moa.dashboards) dashboard.name += ' with a very long dashboard name';
     const f=await fixture(page,{moa,themeId,touchScale});
     for (const width of [1920,1600,1280,1024,921,820,390,320,1280,1920]) {
         await page.setViewportSize({width,height:width<=920?844:1000});
@@ -292,7 +298,7 @@ for (const themeId of ['terminal-green','win95','winamp','ms-dos']) for (const t
             }
             return problems;
         })).toEqual([]);
-        if(width===1024) await expect(page.getByRole('button',{name:'Switch MoA dashboard'})).toBeVisible();
+        if(width===921) await expect(page.getByRole('button',{name:'Switch MoA dashboard'})).toBeVisible();
         if(width===390) await page.screenshot({path:`/tmp/moa-dashboards-${themeId}${touchScale?'-touch':''}-mobile.png`});
     }
     await page.screenshot({path:`/tmp/moa-dashboards-${themeId}${touchScale?'-touch':''}-desktop.png`});

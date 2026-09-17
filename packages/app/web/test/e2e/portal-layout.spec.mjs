@@ -109,7 +109,7 @@ test("the page never scrolls horizontally", async ({ page }) => {
     expect(overflows).toBe(false);
 });
 
-test("full-screen canvas moves the normal toolbar actions to the left rail", async ({ page }) => {
+test("full-screen canvas keeps actions in their permanent navigation slot", async ({ page }) => {
     await openPortal(page);
     // The canvas may already be up — the toggle reads "Hide the canvas" then,
     // and waiting for "Show canvas" simply times out. Same shape the
@@ -121,11 +121,11 @@ test("full-screen canvas moves the normal toolbar actions to the left rail", asy
     }
     await page.getByRole("button", { name: "Full screen canvas" }).click();
 
-    // The left rail carries the whole left cluster: the two actions and the
-    // history arrows and two panel toggles (canvas, diagnostics). Theme moved to the right
-    // cluster with the modes.
-    await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(6);
-    await expect(page.locator(".ps-toolbar > .ps-toolbar-actions .ps-icon-button")).toHaveCount(0);
+    // Full screen now shares the same action/history anchor as every other
+    // view; the flexible left rail holds the canvas controls instead.
+    await expect(page.locator(".ps-toolbar-side.is-left .ps-icon-button")).toHaveCount(0);
+    await expect(page.locator(".ps-toolbar-navigation .ps-icon-button")).toHaveCount(6);
+    await expect(page.locator(".ps-toolbar-side.is-left").getByRole("button", { name: "Restore canvas", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Restore canvas" })).toBeVisible();
 });
 
@@ -305,13 +305,17 @@ test("a long header status ellipsizes in the right rail instead of running under
         const el = document.querySelector(".ps-toolbar-meta-slot .portal-header-status");
         return {
             centreRight: rect(".ps-toolbar > .ps-toolbar-actions").right,
+            centreBottom: rect(".ps-toolbar > .ps-toolbar-actions").bottom,
+            statusTop: el.getBoundingClientRect().top,
             railLeft: rect(".ps-toolbar-side.is-right").left,
             statusLeft: el.getBoundingClientRect().left,
             ellipsized: el.scrollWidth > el.clientWidth,
         };
     });
-    expect(geometry.statusLeft, `status text starts at ${geometry.statusLeft} but the centre buttons end at ${geometry.centreRight}`)
-        .toBeGreaterThanOrEqual(geometry.centreRight);
+    // On narrow desktops the rail occupies a second row. In either layout
+    // status must stay completely outside the navigation controls.
+    expect(geometry.statusLeft >= geometry.centreRight || geometry.statusTop >= geometry.centreBottom,
+        "status text must not paint under the navigation controls").toBe(true);
     expect(geometry.statusLeft, "status text spilled out of its own rail").toBeGreaterThanOrEqual(geometry.railLeft - 0.5);
     expect(geometry.ellipsized, "the status should be clipped with an ellipsis at this width").toBe(true);
 });

@@ -87,10 +87,7 @@
 
 .ps-moa-dialog:has(> .ps-moa-control-panel) { width: 520px; }
 
-/* Reuse the workspace header's left/status, center/actions, right/modes grid. */
-.ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; min-width: 0; }
 .ps-toolbar.is-moa .ps-toolbar-meta-slot { display: none; }
-#ps-moa-header-slot .ps-moa-toolbar { padding: 0; border: 0; background: transparent; gap: 4px; }
 #ps-moa-status-slot { min-width: 0; overflow: hidden; }
 #ps-moa-status-slot .ps-moa-save { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 :root[data-ps-theme="win95"] #ps-moa-status-slot .ps-moa-save { color: #fff; }
@@ -179,10 +176,6 @@
 
 /* Tabs get only the space left after the fixed-size toolbar controls. Measure
    their natural width and switch to a picker before any controls can overlap. */
-.ps-toolbar.is-moa:not(.is-mobile) { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr); }
-.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { min-width: 0; width: 100%; }
-.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-actions { margin-inline: 0; }
-.ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-right { flex-wrap: nowrap; }
 #ps-moa-status-slot { width: 100%; }
 .ps-moa-dashboard-tabs { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; }
 .ps-moa-tabs-track { position: relative; flex: 0 1 auto; min-width: 0; overflow: hidden; }
@@ -216,10 +209,6 @@
 @container moa-panel (max-width: 330px) {
   .ps-moa-panel > header > .ps-moa-split-action, .ps-moa-panel > header > .ps-moa-focus-label { display: none; }
   .ps-moa-initial-panel > header > .ps-moa-split-action { display: inline-flex; }
-}
-@container header-tools (max-width: 520px) {
-  .ps-toolbar.is-moa:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); }
-  .ps-toolbar.is-moa:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; }
 }
 @media (max-width: 920px) {
   .ps-moa-dialog .ps-moa-dashboard-item .ps-moa-icon-button { width: 44px; height: 44px; }
