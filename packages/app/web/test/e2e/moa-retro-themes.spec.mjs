@@ -99,7 +99,9 @@ for (const themeId of ["win95", "winamp", "ms-dos"]) {
         const focusedPanel = page.locator('[data-moa-panel="chat"]');
         await contrast(focusedPanel, `${themeId} focus border against pane`, { property: "borderTopColor", minimum: 3 });
         const focusBorder = await focusedPanel.evaluate(el => getComputedStyle(el).borderTopColor);
-        await contrast(page.locator(".ps-moa-toolbar"), `${themeId} focus border against chrome`, { foreground: focusBorder, minimum: 3 });
+        // MoA controls now live in the portal header. The split divider is
+        // the chrome surface immediately adjacent to the focused pane.
+        await contrast(page.locator(".ps-moa-divider"), `${themeId} focus border against chrome`, { foreground: focusBorder, minimum: 3 });
         const empty = page.locator('[data-moa-panel="missing-canvas"] .ps-moa-empty');
         await expect(empty).toContainText("empty or no longer available");
         await contrast(empty, `${themeId} empty canvas notice`);
