@@ -222,3 +222,25 @@ test('asynchronous session creation becomes a history destination', async ({page
     await expect.poll(async () => { const h=await saved(page); return h.entries[h.index].sessionId; }).toBe(created);
     await back(page).click(); await expect(main(page)).toContainText('Session 1');
 });
+
+test('Back and Forward restore canvas, diagnostics, Budget and Settings modes', async ({page}) => {
+    await fixture(page); await select(page,1);
+    await page.getByRole('button',{name:'Show canvas',exact:true}).click();
+    await expect(page.locator('.ps-canvas-layer:not(.is-hidden)')).toBeVisible();
+    await page.getByRole('button',{name:'Show diagnostics (inspector and activity)',exact:true}).click();
+    await page.getByRole('button',{name:'Budget — providers, limits and usage',exact:true}).click();
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
+    await expect(page.locator('.ps-admin-console__header h2')).toBeVisible();
+    await back(page).click();
+    await expect(page.getByRole('button',{name:'Close budget',exact:true})).toBeVisible();
+    await expect(page.locator('.ps-admin-console__header h2')).toHaveCount(0);
+    await back(page).click();
+    await expect(page.getByRole('button',{name:'Hide the canvas',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Hide diagnostics',exact:true})).toBeVisible();
+    await back(page).click();
+    await expect(page.getByRole('button',{name:'Show diagnostics (inspector and activity)',exact:true})).toBeVisible();
+    await back(page).click();
+    await expect(page.getByRole('button',{name:'Show canvas',exact:true})).toBeVisible();
+    await forward(page).click();
+    await expect(page.locator('.ps-canvas-layer:not(.is-hidden)')).toBeVisible();
+});
