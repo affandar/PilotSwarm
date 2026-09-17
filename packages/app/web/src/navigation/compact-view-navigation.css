@@ -1,0 +1,4 @@
+.ps-compact-view-navigation { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.ps-compact-view-navigation .ps-mini-button { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 36px; height: 20px; min-height: 20px; padding: 1px 6px; }
+.ps-compact-view-navigation svg { flex: none; }
+.portal-chromeless-strip-actions { display: flex; align-items: center; gap: 6px; flex: none; }

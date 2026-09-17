@@ -137,6 +137,65 @@ test('composer shortcuts cross MoA and workspace while search and modal editors 
     expect(f.errors).toEqual([]);
 });
 
+for (const theme of ['terminal-green','win95','winamp','ms-dos']) test(`${theme}: MoA Zen keeps compact history beside Exit and remains reachable after exiting`, async ({page}) => {
+    const f = await fixture(page, theme);
+    await page.getByRole('button',{name:'Master of Agents',exact:true}).click();
+    await page.getByRole('button',{name:'Enter zen',exact:true}).click();
+    const compact = page.locator('.ps-moa-zen-controls');
+    await expect(compact).toBeVisible();
+    await expect(page.locator('.portal-header')).not.toBeVisible();
+    await expect(back(page)).toBeEnabled(); await expect(forward(page)).toBeDisabled();
+    const buttons = await compact.locator('button').evaluateAll(nodes => nodes.map(node => {
+        const r = node.getBoundingClientRect(); return {x:r.x,y:r.y,right:r.right,width:r.width,height:r.height};
+    }));
+    expect(buttons).toHaveLength(3);
+    for (const button of buttons) {
+        expect(button.width).toBeLessThanOrEqual(40); expect(button.height).toBeLessThanOrEqual(28);
+        expect(button.y).toBe(buttons[0].y);
+    }
+    expect(buttons[0].right).toBeLessThanOrEqual(buttons[1].x);
+    expect(buttons[1].right).toBeLessThanOrEqual(buttons[2].x);
+    expect(buttons[2].right).toBeGreaterThan(1550);
+    await back(page).click(); await expect(page.locator('.portal-header')).toBeVisible();
+    await forward(page).click(); await expect(compact).toBeVisible();
+    await page.getByRole('button',{name:'Exit zen',exact:true}).click();
+    await expect(page.locator('.portal-header')).toBeVisible();
+    await back(page).click(); await expect(compact).toBeVisible();
+    await expect(forward(page)).toBeEnabled();
+    await page.screenshot({path:test.info().outputPath(`${theme}-compact-zen-history.png`)});
+    await forward(page).click(); await expect(page.locator('.portal-header')).toBeVisible();
+    // Focusing an individual chat also has a way back to the Zen dashboard.
+    await back(page).click();
+    await page.getByRole('button',{name:'Focus panel',exact:true}).click();
+    await expect(main(page)).toContainText('Session 1');
+    await expect(back(page)).toBeVisible();
+    await back(page).click(); await expect(compact).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await expect(page.locator('.ps-compact-view-navigation')).toHaveCount(0);
+    await expect(back(page)).toHaveCount(0); await expect(forward(page)).toHaveCount(0);
+    expect(f.errors).toEqual([]);
+});
+
+test('a canvas with hidden chrome retains compact history, but mobile omits it', async ({page}) => {
+    const f = await fixture(page, 'win95');
+    await select(page,1); await select(page,2);
+    await page.goto(base + `/?session=${sid(2)}&view=canvas&slot=1&max=1&show_chrome=false`);
+    await expect(page.locator('.portal-header')).not.toBeVisible();
+    await expect(page.getByRole('button',{name:'Show chrome',exact:true})).toBeVisible();
+    await expect(back(page)).toBeVisible(); await expect(forward(page)).toBeVisible();
+    await expect(page.locator('.ps-canvas-layer.is-maximized')).toBeVisible();
+    const prior = (await saved(page)).index;
+    await back(page).click();
+    await expect.poll(async () => (await saved(page)).index).toBe(prior-1);
+    await forward(page).click();
+    await expect.poll(async () => (await saved(page)).index).toBe(prior);
+    await expect(page.locator('.ps-canvas-layer.is-maximized')).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await expect(page.locator('.ps-compact-view-navigation')).toHaveCount(0);
+    await expect(back(page)).toHaveCount(0); await expect(forward(page)).toHaveCount(0);
+    expect(f.errors).toEqual([]);
+});
+
 for (const theme of ['terminal-green','win95','winamp','ms-dos']) test(`${theme}: arrows sit between Filter and Canvas without overflowing`, async ({page}) => {
     await fixture(page, theme); await select(page,1);
     const filter = await page.getByRole('button',{name:'Filter sessions',exact:true}).boundingBox();

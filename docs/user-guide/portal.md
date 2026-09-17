@@ -601,7 +601,7 @@ as your app's portal.
 |---|---|
 | New session | **New** button (top-left) |
 | Switch session | Click in list |
-| Previous / next view (desktop) | **Back / Forward** arrows between Filter and Canvas; `Alt+-` / `Alt++` on Windows, `Option+-` / `Option++` on macOS. Works in the composer and preserves drafts; other text fields and open dialogs retain their keys. |
+| Previous / next view (desktop) | **Back / Forward** arrows between Filter and Canvas, or compact arrows beside the exit/restore control when chrome is hidden; `Alt+-` / `Alt++` on Windows, `Option+-` / `Option++` on macOS. Works in the composer and preserves drafts; other text fields and open dialogs retain their keys. |
 | Send prompt | Type, press `Enter` (Shift+Enter for newline) |
 | Stop the current turn | Red `■` button next to Send while the session is running; session stays alive and returns to idle |
 | Attach file | Paperclip icon, or drag-and-drop |

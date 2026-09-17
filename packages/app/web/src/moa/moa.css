@@ -144,6 +144,8 @@
 :root[data-ps-theme="ms-dos"] .ps-moa-panel.is-focused { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
 .ps-moa-icon-button.ps-moa-zen-exit { align-self: flex-end; margin-right: 4px; width: 36px; height: 20px; min-height: 20px; padding: 1px 8px; border-radius: 0 0 4px 4px; }
 .ps-moa-zen-exit svg { width: 14px; height: 14px; }
+.ps-moa-zen-controls { display: flex; align-items: center; align-self: flex-end; gap: 4px; margin-right: 4px; flex: none; }
+.ps-moa-zen-controls .ps-moa-zen-exit { box-sizing: border-box; margin-right: 0; }
 
 /* A definite picker height avoids Safari shrinking its flex list to zero.
    The body portal follows the visual viewport when the keyboard opens. */

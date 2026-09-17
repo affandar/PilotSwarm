@@ -1,4 +1,5 @@
 import React from "react";
+import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
 import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
@@ -564,7 +565,7 @@ export function MoaWorkspace(props) {
         {moa.value.dashboards.map(layout => <MoaDashboard key={layout.id} {...props} layout={layout} visible={Boolean(props.visible && layout.id === active.id)} />)}
     </div>;
 }
-function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
+function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout, visible }) {
     const { value, update } = moa, mobile = !moa.desktop;
     const [mapOpen, setMapOpen] = React.useState(false);
     const [dashboardPicker, setDashboardPicker] = React.useState(false), [dashboardEdit, setDashboardEdit] = React.useState(null);
@@ -758,7 +759,10 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
             <IconButton label="Switch MoA dashboard" icon="dropdown" aria-haspopup="dialog" aria-expanded={dashboardPicker} onClick={event => { if (Date.now() < suppressDashboardClickUntil.current) { suppressDashboardClickUntil.current = 0; event.preventDefault(); return; } setDashboardPicker(true); }} />
         </header>}
         {!moa.zen && saveStatus}
-        {visible && !mobile && (moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : toolbar)}
+        {visible && !mobile && (moa.zen ? <div className="ps-moa-zen-controls">
+            <CompactViewNavigation navigation={viewNavigation} />
+            <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} />
+        </div> : toolbar)}
         {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
         <div {...(mobile ? swipe : {})} ref={layoutRef} id="moa-layout" role="region" aria-label="MoA panels" className="ps-moa-layout">{layout.tree ? (mobile ? nodes.map(draw) : draw(layout.tree)) : <section className="ps-moa-panel ps-moa-initial-panel"><header><span className="ps-moa-panel-title">Empty panel</span>{splitButtons({ id: null, type: "empty" })}</header><div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div></section>}</div>
         {value.composerMode === "shared" && <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
