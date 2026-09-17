@@ -113,6 +113,45 @@ test("focus owns the sole composer, preserves drafts, and sends only to its sess
     expect(f.errors).toEqual([]);
 });
 
+test("Win95 idle, working, and queued status stay readable as panel focus changes", async ({ page }) => {
+    const f = await fixture(page, [layout(split(chat(1), chat(2)))], "", "win95");
+    await open(page);
+    const a = panel(page, "panel-1"), b = panel(page, "panel-2");
+    const verifyContrast = async () => {
+        for (const pane of [a, b]) {
+            const ratios = await pane.locator(":scope > header").evaluate(header => {
+                const luminance = color => (color.match(/[\d.]+/g) || []).slice(0, 3)
+                    .map(Number).map(v => color.startsWith("color(srgb ") ? v : v / 255)
+                    .map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
+                    .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+                const background = luminance(getComputedStyle(header).backgroundColor);
+                return [...header.querySelectorAll(".ps-mobile-activity, .ps-mobile-queue")].map(node => {
+                    const foreground = luminance(getComputedStyle(node).color);
+                    return (Math.max(background, foreground) + .05) / (Math.min(background, foreground) + .05);
+                });
+            });
+            expect(ratios.length).toBeGreaterThan(0);
+            for (const ratio of ratios) expect(ratio).toBeGreaterThanOrEqual(4.5);
+        }
+    };
+    await expect(a.getByLabel("Session status")).toContainText("Idle");
+    await expect(b.getByLabel("Session status")).toContainText("Working");
+    for (const focused of [a, b]) {
+        await focused.locator(":scope > header").click();
+        await expect(focused).toHaveClass(/is-focused/);
+        await verifyContrast();
+    }
+    await composer(page).fill("Continue the investigation");
+    await composer(page).press("Enter");
+    await expect.poll(() => f.sends.length).toBe(1);
+    await expect(b.locator(".ps-mobile-queue")).toContainText("queued");
+    await verifyContrast();
+    await a.locator(":scope > header").click();
+    await verifyContrast();
+    await page.screenshot({ path: test.info().outputPath("win95-status-contrast.png") });
+    expect(f.errors).toEqual([]);
+});
+
 test("queued prompts follow a session between the main chat and every MoA panel", async ({ page }) => {
     const f = await fixture(page, [layout(split(chat(1, "first"), chat(1, "second")))], "", { perChat: true });
     await page.locator(`.ps-session-list-button[data-session-id="${sid(1)}"]`).click();

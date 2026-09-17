@@ -5384,9 +5384,8 @@ body.is-resizing-pane-y iframe {
   border-radius: 0;
 }
 
-/* Transcript cards sit on the white document surface. Use the palette's
-   light button highlight, with white details, rather than teal desktop fills
-   or the heavier raised-button gray reserved for application chrome. */
+/* Light gray headers and softly shaded details distinguish activity from the
+   white transcript without the heavy gray or teal of application chrome. */
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-native-tasks {
   background: var(--w95-soft-face);
   border-color: var(--w95-face);
@@ -5394,7 +5393,7 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run-viewport,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-native-task-detail,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call {
-  background: var(--w95-light);
+  background: color-mix(in srgb, var(--w95-light) 50%, var(--w95-soft-face));
   border-color: var(--w95-face);
 }
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call-tag { color: #000080; }
@@ -9651,7 +9650,7 @@ textarea.ps-link-input {
 }
 :root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) .ps-preview-status { color: #4a4a4a; font-size: 1em; }
 :root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) > .ps-assistant-preview-viewport {
-  background: #fff;
+  background: color-mix(in srgb, var(--w95-light) 50%, var(--w95-soft-face));
   color: #000;
   border-left: 2px solid #808080;
 }

@@ -60,6 +60,8 @@
 :root[data-ps-theme="win95"] .ps-moa-dialog select { background: #fff; color: #000; border-radius: 0; border-color: #808080 #fff #fff #808080; }
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header { background: #000080; color: #fff; }
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused .ps-moa-focus-label { color: #fff; }
+:root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header .ps-mobile-session-status,
+:root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header .ps-mobile-queue { color: #fff; }
 /* Winamp's dark blue selection fill needs a brighter outline on black panes. */
 :root[data-ps-theme="winamp"] .ps-moa-panel.is-focused { border-color: var(--ps-foreground); box-shadow: inset 0 0 0 1px var(--ps-foreground); }
 

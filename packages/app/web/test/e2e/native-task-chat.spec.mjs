@@ -159,17 +159,20 @@ test("Win95 activity cards recede against the white transcript in chat and MoA",
         const scope=page.locator(mode==="MoA"?".ps-moa-workspace":".ps-chat-panel:visible");
         await expect(scope.locator(".ps-activity-run-viewport")).toBeVisible();
         await expect(scope.locator(".ps-native-task .ps-chat-call")).toBeVisible();
-        const colors=await scope.locator(".ps-native-tasks, .ps-activity-run-viewport, .ps-chat-call").evaluateAll(nodes=>nodes.map(node=> {
+        await expect(scope.locator(".ps-assistant-preview:not(.is-final) .ps-assistant-preview-viewport")).toBeVisible();
+        const colors=await scope.locator(".ps-native-tasks, .ps-activity-run-viewport, .ps-chat-call, .ps-assistant-preview:not(.is-final) .ps-assistant-preview-viewport").evaluateAll(nodes=>nodes.map(node=> {
             const style=getComputedStyle(node);
             return {surface:style.backgroundColor,text:style.color};
         }));
-        const rgb=color=>(color.match(/[\d.]+/g)||[]).slice(0,3).map(Number);
+        const rgb=color=>(color.match(/[\d.]+/g)||[]).slice(0,3).map(Number).map(v=>color.startsWith("color(srgb ")?v*255:v);
         const luminance=color=>rgb(color).map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
         for(const {surface,text} of colors) {
             const channels=rgb(surface);
             // Keep broad surfaces neutral and close to white, with readable
-            // text. This catches both the old gray slabs and teal activity rows.
+            // text, but visibly shaded against white chat. Catch the old gray
+            // slabs, teal rows, and boxes disappearing into the transcript.
             expect(Math.min(...channels)).toBeGreaterThanOrEqual(220);
+            expect(Math.max(...channels)).toBeLessThanOrEqual(245);
             expect(Math.max(...channels)-Math.min(...channels)).toBe(0);
             expect((luminance(surface)+.05)/(luminance(text)+.05)).toBeGreaterThanOrEqual(4.5);
         }
