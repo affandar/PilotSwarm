@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.78 — 2026-09-17
+
+- Portal navigation: focus MoA sessions immediately from cached content; keep the last ten desktop views with Back/Forward buttons and Alt/Option-plus/minus shortcuts, including the composer. Keep controls consistently positioned and available in compact Zen and hidden-chrome canvas views.
+- Portal activity: let mouse, trackpad, and touch scrolling continue into the conversation at nested activity boundaries. Lightly shade tool, native-task, and Agent Update cards across all themes while retaining readable labels and plain final answers. Correct Win95 focused status contrast and preserve layout during resize.
+- SDK: expose session creation and update timestamps through session-listing tools, with a new orchestration version that preserves existing histories.
+- Deployment: support bring-your-own PostgreSQL without provisioning a new database; validate database URLs and selected Key Vault secret versions, isolate deployment-stage configuration, and keep secrets out of generated artifacts and logs. Support managed-identity blob storage independently of PostgreSQL authentication.
+- Validation: full PostgreSQL-only release gate passed (2,076 SDK integration tests, 16 existing skips), along with 438 browser scenarios, package checks, Bicep compilation, and all four BYO manifest variants. HorizonDB integration was intentionally not run. Deployment CLI fixtures isolate ambient integration-test configuration while retaining explicit override coverage; existing assertions are unchanged.
+
 ## 0.5.77 — 2026-09-16
 
 - Base Agent V2: include a metadata-only index of static and session-owner-authored skills and agent workflows in the session prompt. Keep other users' shared packages discoverable without automatically loading their instructions, tools, or MCP servers; use only static SDK skill directories for system-owned children without a verified human owner; preserve Base V1 behavior.

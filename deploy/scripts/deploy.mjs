@@ -32,6 +32,7 @@ import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
+import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -205,6 +206,9 @@ async function runStage(name, ctx) {
       });
       return;
     case "manifests": {
+      if (ctx.service === "worker" || ctx.service === "portal") {
+        resolveDatabaseSecretVersions(ctx.env);
+      }
       // Compose the IMAGE env var (the only image-related key consumed by
       // the overlay `.env`/replacements chain). Derived from build/push
       // contract: the rendered overlay must point at the tag we pushed

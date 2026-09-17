@@ -109,3 +109,30 @@ test("loadCache survives a corrupt cache file", () => {
   assert.equal(n, 0);
   assert.deepEqual(env, {});
 });
+
+test("saveCache evicts a key whose new deployment output is empty", () => {
+  // deployPostgres=false makes base-infra emit postgresFqdn as "". The cache
+  // must DROP the previously provisioned value, or a later composeDerivedEnv
+  // would rebuild a connection string for a server this stamp no longer has.
+  const envName = freshEnv("evict");
+  saveCache(envName, ["POSTGRES_FQDN"], { POSTGRES_FQDN: "old-stamp-pg.postgres.database.azure.com" });
+  let cached = JSON.parse(readFileSync(cachePath(envName), "utf8"));
+  assert.equal(cached.POSTGRES_FQDN, "old-stamp-pg.postgres.database.azure.com");
+
+  saveCache(envName, ["POSTGRES_FQDN"], { POSTGRES_FQDN: "" });
+  cached = JSON.parse(readFileSync(cachePath(envName), "utf8"));
+  assert.ok(!("POSTGRES_FQDN" in cached));
+
+  const env = {};
+  loadCache(envName, env);
+  assert.equal(env.POSTGRES_FQDN, undefined);
+});
+
+test("saveCache preserves unrelated keys when one is evicted", () => {
+  const envName = freshEnv("evict_partial");
+  saveCache(envName, ["POSTGRES_FQDN", "ACR_NAME"], { POSTGRES_FQDN: "pg.example.com", ACR_NAME: "myacr" });
+  saveCache(envName, ["POSTGRES_FQDN"], { POSTGRES_FQDN: "" });
+  const cached = JSON.parse(readFileSync(cachePath(envName), "utf8"));
+  assert.ok(!("POSTGRES_FQDN" in cached));
+  assert.equal(cached.ACR_NAME, "myacr");
+});

@@ -34,6 +34,7 @@ test("rewrites UPPER_SNAKE keys present in env map", () => {
       dstPath: dst,
       envMap: { KV_NAME: "real-kv", ACR_NAME: "realacr" },
     });
+
     assert.deepEqual(res.substituted.sort(), ["ACR_NAME", "KV_NAME"]);
     const out = readFileSync(dst, "utf8");
     assert.ok(out.includes("KV_NAME=real-kv"));
@@ -135,5 +136,20 @@ test("preserves CRLF input by re-emitting LF (Windows-friendly)", () => {
     const out = readFileSync(dst, "utf8");
     assert.ok(out.includes("KV_NAME=v1"));
     assert.ok(out.includes("ACR_NAME=v2"));
+  });
+});
+
+test("explicitly omitted auth/secret keys never reach the ConfigMap env file", () => {
+  withTmp((dir) => {
+    const src = join(dir, "in.env");
+    const dst = join(dir, "out.env");
+    writeFileSync(src, "DATABASE_URL=placeholder\nPILOTSWARM_DB_AAD_USER=placeholder\nKV_NAME=placeholder\n");
+    const result = substituteOverlayEnv({
+      srcPath: src, dstPath: dst,
+      envMap: { DATABASE_URL: "postgresql://u:private-value@h/d", KV_NAME: "vault" },
+      omittedKeys: ["DATABASE_URL", "PILOTSWARM_DB_AAD_USER"],
+    });
+    assert.deepEqual(result.substituted, ["KV_NAME"]);
+    assert.equal(readFileSync(dst, "utf8"), "KV_NAME=vault\n");
   });
 });
