@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.79 — 2026-09-17
+
+- Master of Agents: drag pane headers to swap contents or split the target in half at any edge. Hold Shift at a matching T-junction to extend a pane across its neighbour. Preview the resulting layout before dropping, cancel with Escape, and undo recent moves. Preserve session connections, drafts, queued prompts, scroll position, and canvas state while rearranging.
+- Portal appearance: strengthen pane outlines across themes and lighten Workspace Dark activity cards. Indicate the active pane through its border and header shading without the redundant “Focused” label; keep rearrangement in header dragging rather than a separate control-panel menu.
+- Session lifecycle: reset every pane bound to a deleted session to the empty **+** state, including inactive dashboards and deletions from the normal workspace or another client. Keep completed/canceled sessions and retryable connection failures in place, and preserve layout geometry when clearing a binding.
+- Validation: all 468 portal browser checks passed, including 10 lifecycle regressions, drag/drop, mobile layouts, and theme coverage. Provider integration suites were intentionally skipped at the user's request for this UX release.
+
 ## 0.5.78 — 2026-09-17
 
 - Portal navigation: focus MoA sessions immediately from cached content; keep the last ten desktop views with Back/Forward buttons and Alt/Option-plus/minus shortcuts, including the composer. Keep controls consistently positioned and available in compact Zen and hidden-chrome canvas views.

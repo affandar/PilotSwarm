@@ -6661,6 +6661,9 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="workspace-dark"] {
   --ps-ws-accent: #2ea043;
   --ps-ws-card: #1c2129;
+  /* Activity should read as a lighter inset card, distinct from pane chrome. */
+  --ps-chat-card-body: color-mix(in srgb, var(--ps-surface) 88%, var(--ps-foreground) 12%);
+  --ps-chat-card-header: color-mix(in srgb, var(--ps-surface) 84%, var(--ps-foreground) 16%);
 }
 /* A hairline, not a full border: "no panel borders" left neighbouring panes
    reading as one continuous surface, so it was genuinely hard to tell where a

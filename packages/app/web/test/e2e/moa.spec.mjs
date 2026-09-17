@@ -344,13 +344,13 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     expect(f.errors).toEqual([]);
 });
 
-test("an inaccessible session displays a placeholder and cannot expose a composer or send", async ({ page }) => {
+test("an inaccessible session resets to an empty pane and cannot expose a composer or send", async ({ page }) => {
     const f = await fixture(page, [layout(chat(3))]);
     await page.route(`**/api/v1/sessions/${sid(3)}`, route => route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ ok: false, error: { code: "NOT_FOUND", message: "Not found" } }) }));
     await open(page);
     const denied = panel(page, "panel-3");
-    await expect(denied.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
-    await expect(denied).toContainText(/unavailable|Could not open/);
+    await expect(denied.getByRole("button", { name: "Choose session or canvas", exact: true })).toBeVisible();
+    await expect(denied).toContainText("Empty panel");
     await expect(denied.locator("textarea")).toHaveCount(0);
     await page.keyboard.press("Enter");
     expect(f.sends).toEqual([]);

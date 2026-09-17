@@ -10,16 +10,35 @@
 .ps-moa-workspace input, .ps-moa-dialog input, .ps-moa-dialog select { color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); border-radius: 3px; padding: 7px; font: inherit; min-width: 0; }
 .ps-moa-layout, .ps-moa-split, .ps-moa-child { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .ps-moa-layout { padding: 4px; }
+.ps-moa-stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.ps-moa-stage > .ps-moa-panel, .ps-moa-stage > .ps-moa-divider { position: absolute; box-sizing: border-box; }
+.ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"] { cursor: row-resize; }
+.ps-moa-workspace:not(.is-mobile) .ps-moa-stage > .ps-moa-panel > header { cursor: grab; touch-action: none; user-select: none; }
+.ps-moa-stage.is-dragging, .ps-moa-stage.is-dragging * { cursor: grabbing !important; user-select: none !important; }
+.ps-moa-stage.is-dragging iframe { pointer-events: none; }
+.ps-moa-panel.is-drag-source { opacity: .55; }
+.ps-moa-drop-preview { position: absolute; inset: 0; z-index: 20; pointer-events: none; }
+.ps-moa-preview-pane { position: absolute; box-sizing: border-box; border: 2px dashed var(--ps-muted); background: color-mix(in srgb, var(--ps-chrome) 78%, transparent); padding: 12px; overflow: hidden; }
+.ps-moa-preview-pane > span { display: inline-block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding: 5px 8px; color: var(--ps-foreground); background: var(--ps-background); border: 1px solid var(--ps-border); }
+.ps-moa-preview-pane.is-source { border: 3px solid var(--ps-moa-focus-ring); background: color-mix(in srgb, var(--ps-selection-background) 30%, var(--ps-chrome) 60%); }
+.ps-moa-drag-hint, .ps-moa-layout-undo { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 32px); box-sizing: border-box; padding: 10px 16px; color: var(--ps-foreground); background: var(--ps-chrome-strong); border: 2px solid var(--ps-moa-focus-ring); border-radius: 5px; box-shadow: 0 4px 16px #0005; }
+.ps-moa-drag-hint { display: flex; flex-direction: column; gap: 4px; text-align: center; width: max-content; }
+.ps-moa-drag-hint span { font-size: var(--ps-font-size-dense); }
+.ps-moa-layout-undo { display: flex; align-items: center; gap: 12px; z-index: 21; width: max-content; }
+.ps-moa-stage.is-dragging .ps-moa-layout-undo { display: none; }
+:root[data-ps-theme="win95"] :is(.ps-moa-drag-hint, .ps-moa-layout-undo) { background: var(--w95-face); color: #000; border-color: #fff #000 #000 #fff; border-radius: 0; }
+.ps-moa-workspace.is-mobile .ps-moa-stage { display: flex; }
+.ps-moa-workspace.is-mobile .ps-moa-stage > .ps-moa-panel { position: relative; }
 .ps-moa-split.column { flex-direction: column; }
 .ps-moa-divider { flex: 0 0 8px; background: var(--ps-chrome); cursor: col-resize; touch-action: none; }
 .ps-moa-split.column > .ps-moa-divider { cursor: row-resize; }
 .ps-moa-divider:hover, .ps-moa-divider:focus-visible { background: var(--ps-selection-background); }
-.ps-moa-panel { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 2px solid var(--ps-border); background: var(--ps-background); }
+/* Lift inactive pane outlines from the palette's quiet control borders. */
+.ps-moa-panel { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 2px solid color-mix(in srgb, var(--ps-border) 65%, var(--ps-foreground) 35%); background: var(--ps-background); }
 .ps-moa-panel.is-focused { border-color: var(--ps-selection-background); box-shadow: inset 0 0 0 1px var(--ps-selection-background); }
 .ps-moa-panel > header { display: flex; align-items: center; gap: 5px; padding: 4px 6px; flex-shrink: 0; background: var(--ps-chrome); border-bottom: 1px solid var(--ps-border); min-width: 0; }
 .ps-moa-panel.is-focused > header { background: color-mix(in srgb, var(--ps-selection-background) 16%, var(--ps-chrome)); }
 .ps-moa-panel-title { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; min-width: 0; flex: 1; }
-.ps-moa-focus-label { font-size: 10px; color: var(--ps-foreground); }
 .ps-moa-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 12px; min-height: 0; overflow: auto; color: var(--ps-muted); text-align: center; }
 .ps-moa-add { width: 54px; height: 54px; border: 1px dashed var(--ps-border); background: var(--ps-chrome); color: var(--ps-foreground); font-size: 28px; cursor: pointer; }
 .ps-moa-live { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; flex-direction: column; }
@@ -59,7 +78,6 @@
 :root[data-ps-theme="win95"] .ps-moa-dialog input,
 :root[data-ps-theme="win95"] .ps-moa-dialog select { background: #fff; color: #000; border-radius: 0; border-color: #808080 #fff #fff #808080; }
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header { background: #000080; color: #fff; }
-:root[data-ps-theme="win95"] .ps-moa-panel.is-focused .ps-moa-focus-label { color: #fff; }
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header .ps-mobile-session-status,
 :root[data-ps-theme="win95"] .ps-moa-panel.is-focused > header .ps-mobile-queue { color: #fff; }
 /* Winamp's dark blue selection fill needs a brighter outline on black panes. */
@@ -211,7 +229,7 @@
 .ps-moa-mobile-dashboard-bar > .ps-moa-icon-button { width: 44px; }
 .ps-moa-panel { container: moa-panel / inline-size; }
 @container moa-panel (max-width: 330px) {
-  .ps-moa-panel > header > .ps-moa-split-action, .ps-moa-panel > header > .ps-moa-focus-label { display: none; }
+  .ps-moa-panel > header > .ps-moa-split-action { display: none; }
   .ps-moa-initial-panel > header > .ps-moa-split-action { display: inline-flex; }
 }
 @media (max-width: 920px) {
@@ -252,3 +270,5 @@
     order: 1; flex: 1 0 100%; max-width: 100%;
   }
 }
+.ps-moa-drag-label { position: fixed; z-index: 22; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--ps-border); background: var(--ps-selection-background); color: var(--ps-selection-foreground); border-radius: 3px; box-shadow: 0 2px 6px #0005; }
+:root[data-ps-theme="win95"] .ps-moa-preview-pane > span { background: var(--w95-face); color: #000; }

@@ -42,6 +42,7 @@ model/agent creation flow, including when the list is filtered or empty.
 Creating fills that panel and keeps the default workspace’s selection.
 Cancelling returns to the picker; failed creation leaves the panel intact.
 
+The active panel is indicated by its border and header shading.
 In per-chat mode, only the focused panel shows its message box, including in zen.
 Click a panel to reveal its compact composer. On desktop, it receives keyboard focus so you can type immediately. Send, Stop,
 attachments, and drafts belong to that panel's session. **Dashboard options →
@@ -77,9 +78,11 @@ arrow keys and Home/End. Removing a panel expands its sibling into the freed
 space. Each layout supports up to 16 panels.
 
 A canvas panel stays pinned to its chosen session and canvas slot, even when
-an agent presents a different slot. Empty, deleted, or inaccessible content
-stays a placeholder that can be replaced; it never falls back to another
-session. Each populated panel has an isolated session controller/subscription.
+an agent presents a different slot. Deleting a session resets every pane bound
+to it to **+**, including panes on other dashboards. Completed and canceled
+sessions stay in their panes. A confirmed missing or inaccessible session also
+resets to **+**; a temporary connection failure keeps the pane with a retry
+action. An empty canvas stays a placeholder; it never falls back to another session. Each populated panel has an isolated session controller/subscription.
 
 ## Zen and opening a session
 
@@ -127,3 +130,25 @@ Mobile Zen reduces the view to a restore control, the shared searchable session
 picker, the transcript, and the compact composer. The picker includes session
 details, canvases, and the standard new-session action. Activity and queued
 prompt counts appear in the header instead of reserving a footer strip.
+
+### Rearrange panes
+
+On desktop, drag a pane's title bar onto another pane:
+
+- Drop in the centre to **swap panes** without changing the dividers.
+- Drop near the left, right, top, or bottom edge to **split the target 50/50**
+  and place the dragged pane in that half. The source's old space closes up.
+- At a T-junction, **hold Shift** at the matching edge to choose
+  **Extend upward/downward/left/right** instead of splitting the target.
+  This rotates the dividers: for example, the lower-left pane can become a
+  full-height column, with the former top pane and lower-right pane stacked
+  beside it. The surrounding dashboard stays in place.
+
+The shaded preview shows the resulting positions before anything is saved.
+Release to apply, press Escape to cancel, or drop outside the panels to cancel.
+An **Undo** button remains available briefly after applying a move; later
+layout edits dismiss it. Changes save to the current personal dashboard.
+
+Divider resizing continues to work after rearranging. Pane moves preserve session
+connections, drafts, queued messages, the visible conversation position, and
+canvas contents. The phone view retains its swipe and panel-map navigation.
