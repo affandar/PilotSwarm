@@ -33,6 +33,7 @@ import { replyInternalSessionMessage, sendInternalSessionMessage } from "./sessi
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
 import { approvePermissionForSession } from "./permissions.js";
+import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
 import {
@@ -1010,7 +1011,7 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("getOrchestrationStats", { sessionId });
         },
         /** List all sessions via the PilotSwarmClient SDK. */
-        listSessions(filters?: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string }) {
+        listSessions(filters?: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; includeTimestamps?: boolean }) {
             return ctx.scheduleActivity("listSessions", filters ?? {});
         },
         /** List direct child sessions of a session. */
@@ -2584,7 +2585,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         if (groupFilter === "null" && session.viewerGroupId) return false;
                         if (groupFilter && groupFilter !== "null" && session.viewerGroupId !== groupFilter) return false;
                         if (Number.isFinite(updatedSince)) {
-                            const updatedAt = Date.parse(session.updatedAt || session.lastActiveAt || session.createdAt || "");
+                            const updatedAt = sessionTimestampMillis(session.updatedAt ?? session.lastActiveAt ?? session.createdAt);
                             if (!Number.isFinite(updatedAt) || updatedAt < updatedSince) return false;
                         }
                         if (query) {
@@ -2607,6 +2608,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `    Owner: ${formatSessionOwnerLabel(s)}\n` +
                         `    Agent: ${s.agentId ?? "generic"}\n` +
                         `    Group: ${s.viewerGroupId ?? "none"}\n` +
+                        `    Created: ${formatSessionTimestamp(s.createdAt)}\n` +
+                        `    Updated: ${formatSessionTimestamp(s.updatedAt)}\n` +
                         `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                         `    Parent: ${s.parentSessionId ?? "none"}`
                     );
@@ -4782,7 +4785,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Lists all sessions via the PilotSwarmClient SDK.
     runtime.registerActivity("listSessions", async (
         activityCtx: any,
-        input: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string },
+        input: { includeSystem?: boolean; ownerQuery?: string; ownerKind?: string; includeTimestamps?: boolean },
     ): Promise<string> => {
         activityCtx.traceInfo(`[listSessions]`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
@@ -4800,6 +4803,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 iterations: s.iterations,
                 parentSessionId: s.parentSessionId,
                 error: s.error,
+                // Old orchestrations retain their original activity response shape.
+                ...(input.includeTimestamps === true ? { createdAt: s.createdAt, updatedAt: s.updatedAt } : {}),
             })));
         } finally {
             await sdkClient.stop();

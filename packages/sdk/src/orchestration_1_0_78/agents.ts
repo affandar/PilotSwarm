@@ -1,4 +1,3 @@
-import { formatSessionTimestamp } from "../session-list-timestamps.js";
 import type {
     CommandMessage,
     CommandResponse,
@@ -936,7 +935,6 @@ export function* handleSubAgentAction(
                 includeSystem: result.includeSystem,
                 ownerQuery: result.ownerQuery,
                 ownerKind: result.ownerKind,
-                includeTimestamps: true,
             });
             const sessions = JSON.parse(rawSessions);
 
@@ -953,8 +951,6 @@ export function* handleSubAgentAction(
                     : s.ownerKind === "unowned"
                         ? "unowned"
                         : (s.owner?.displayName || s.owner?.email || [s.owner?.provider, s.owner?.subject].filter(Boolean).join(":") || "user")}\n` +
-                `    Created: ${formatSessionTimestamp(s.createdAt)}\n` +
-                `    Updated: ${formatSessionTimestamp(s.updatedAt)}\n` +
                 `    Status: ${s.status}, Iterations: ${s.iterations ?? 0}\n` +
                 `    Parent: ${s.parentSessionId ?? "none"}`
             );
