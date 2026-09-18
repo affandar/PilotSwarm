@@ -250,6 +250,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     capabilityServices?: import("./capability-runtime.js").CapabilityServices;
     capabilityFingerprint?: string;
     baseAgentPolicy?: import("./base-agent-policy.js").BaseAgentPolicy;
+    /** Metadata-only V2 capability index from this turn's catalog-owner snapshot. */
+    baseV2CapabilityIndex?: string;
     /** Worker-local native delegation policy; never a durable session setting. */
     nativeSubagents?: "off" | "sync";
     /** Runtime-only exact native child capability map. */
@@ -820,11 +822,18 @@ export interface PilotSwarmWorkerOptions {
     blobContainer?: string;
     /**
      * Account-level URL (`https://<account>.blob.core.windows.net`) used
-     * when running with `useManagedIdentity: true`. Ignored otherwise.
+     * when Blob managed identity is enabled. Ignored otherwise.
      */
     blobAccountUrl?: string;
     /**
-     * Opt into managed-identity auth for Azure Blob Storage. When `true`,
+     * Blob-only auth override. Defaults to `useManagedIdentity` for
+     * compatibility. Set true with useManagedIdentity=false to keep
+     * Blob workload identity while using a password-authenticated database.
+     */
+    blobUseManagedIdentity?: boolean;
+    /**
+     * Opt into database managed identity and, unless overridden by
+     * `blobUseManagedIdentity`, Azure Blob Storage. For Blob, when enabled,
      * `blobAccountUrl` is required and `blobConnectionString` is ignored;
      * the worker uses `DefaultAzureCredential` (workload identity in AKS,
      * `az login` / env-var creds locally). SAS URL generation will throw

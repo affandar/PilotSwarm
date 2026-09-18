@@ -54,6 +54,15 @@
      added, because there is nothing per-theme to keep in sync. */
   --ps-chrome: color-mix(in srgb, var(--ps-surface) 94%, var(--ps-foreground) 6%);
   --ps-chrome-strong: color-mix(in srgb, var(--ps-surface) 89%, var(--ps-foreground) 11%);
+  /* Transcript cards need a filled body as well as an outline. Opaque,
+     palette-derived fills stay consistent when disclosures nest, and move
+     toward dark ink in light themes and light ink in dark themes. */
+  --ps-chat-card-body: color-mix(in srgb, var(--ps-surface) 92%, var(--ps-foreground) 8%);
+  --ps-chat-card-header: color-mix(in srgb, var(--ps-surface) 89%, var(--ps-foreground) 11%);
+  --ps-chat-card-muted: color-mix(in srgb, var(--ps-muted) 75%, var(--ps-foreground));
+  --ps-chat-card-accent: color-mix(in srgb, var(--ps-accent) 65%, var(--ps-foreground));
+  --ps-chat-card-success: color-mix(in srgb, var(--ps-success) 65%, var(--ps-foreground));
+  --ps-chat-card-warning: color-mix(in srgb, var(--ps-warning) 65%, var(--ps-foreground));
   /* The nested-session well sits on the LIST ground, not on a pane surface, so
      it elevates from --ps-background. Same polarity rule: --ps-surface would
      have been white-on-white in the light themes (verified: invisible). */
@@ -71,33 +80,33 @@
 }
 
 /* Native Copilot tasks stay anchored to dispatch, with live detail in place. */
-.ps-native-tasks { margin: 12px 0 18px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md); background: var(--ps-chrome); overflow: hidden; }
+.ps-native-tasks { margin: 12px 0 18px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md); background: var(--ps-chat-card-header); overflow: hidden; }
 .ps-native-tasks-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 13px; }
 .ps-native-tasks-title { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
 .ps-native-task-branch { color: var(--ps-selection-background); }
-.ps-native-tasks-count { margin-left: auto; font-size: var(--ps-font-size-dense); color: var(--ps-muted); }
-.ps-native-task { border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); }
+.ps-native-tasks-count { margin-left: auto; font-size: var(--ps-font-size-dense); color: var(--ps-chat-card-muted); }
+.ps-native-task { border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); background: var(--ps-chat-card-body); }
 .ps-native-task > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 12px; gap: 9px; align-items: start; padding: 12px 13px; }
 .ps-native-task > summary::-webkit-details-marker { display: none; }
 .ps-native-task-mark, .ps-native-task-status { color: var(--ps-native-task-accent); }
 .ps-native-task-mark { text-align: center; font-weight: 600; }
 .ps-native-task-main { min-width: 0; }
 .ps-native-task-title { display: block; font-weight: 600; overflow-wrap: anywhere; }
-.ps-native-task-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin-top: 5px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
-.ps-native-task-meta { display: flex; flex-direction: column; gap: 5px; color: var(--ps-muted); text-align: right; font-size: var(--ps-font-size-dense); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ps-native-task-chevron { color: var(--ps-muted); }
+.ps-native-task-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin-top: 5px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); }
+.ps-native-task-meta { display: flex; flex-direction: column; gap: 5px; color: var(--ps-chat-card-muted); text-align: right; font-size: var(--ps-font-size-dense); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-native-task-chevron { color: var(--ps-chat-card-muted); }
 .ps-native-task[open] > summary .ps-native-task-chevron { transform: rotate(90deg); }
 .ps-native-task-detail { padding: 0 14px 14px 40px; font-size: var(--ps-font-size-dense); }
-.ps-native-task-scope { color: var(--ps-muted); overflow-wrap: anywhere; margin-bottom: 10px; }
+.ps-native-task-scope { color: var(--ps-chat-card-muted); overflow-wrap: anywhere; margin-bottom: 10px; }
 .ps-native-task-result { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ps-native-task-profile { display: inline-block; margin-right: 8px; padding: 1px 6px; border: 1px solid var(--ps-border); border-radius: 4px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); font-weight: 400; }
-.ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain; min-width: 0; }
+.ps-native-task-profile { display: inline-block; margin-right: 8px; padding: 1px 6px; border: 1px solid var(--ps-border); border-radius: 4px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); font-weight: 400; }
+.ps-native-task-calls { border-left: 2px solid var(--ps-native-task-accent); padding-left: 8px; max-height: 320px; overflow: auto; overscroll-behavior: contain auto; min-width: 0; }
 .ps-native-task-calls .ps-chat-call { margin: 0; border-radius: 0; }
 .ps-native-task-calls .ps-chat-call-summary { min-width: 0; }
 .ps-native-task-calls .ps-system-notice-summary-text { overflow-wrap: anywhere; min-width: 0; }
 .ps-native-task-calls + .ps-native-task-result { margin-top: 12px; }
 
-.ps-native-task-activity { margin: 12px 0 0; padding-left: 18px; color: var(--ps-muted); overflow-wrap: anywhere; }
+.ps-native-task-activity { margin: 12px 0 0; padding-left: 18px; color: var(--ps-chat-card-muted); overflow-wrap: anywhere; }
 .ps-native-tasks-more { color: var(--ps-foreground); background: transparent; border: 0; border-top: 1px solid var(--ps-border); padding: 9px 13px; font: inherit; cursor: pointer; width: 100%; text-align: left; }
 @media (max-width: 600px) {
   .ps-native-task > summary { grid-template-columns: 16px minmax(0, 1fr) 12px; gap: 7px; padding: 11px 10px; }
@@ -1684,7 +1693,7 @@ body.is-resizing-pane-y iframe {
   color: var(--ps-foreground);
   overflow: auto;
   overflow-anchor: none;
-  overscroll-behavior: contain;
+  overscroll-behavior: contain auto;
   scrollbar-gutter: stable;
   border-left: 1px solid color-mix(in srgb, var(--ps-border) 42%, transparent);
 }
@@ -1692,6 +1701,12 @@ body.is-resizing-pane-y iframe {
 .ps-assistant-preview-content {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.ps-assistant-preview:not(.is-final) > .ps-assistant-preview-viewport {
+  background: var(--ps-chat-card-body);
+  padding-block: 8px;
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
 }
 
 /* Promotion is once per completed turn, never per saved tool-loop message.
@@ -1737,7 +1752,7 @@ body.is-resizing-pane-y iframe {
 .ps-assistant-preview.is-final .is-live-reasoning > .ps-system-notice-body {
   max-height: min(240px, 30vh);
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: contain auto;
 }
 
 .ps-system-notice-body .ps-markdown-preview {
@@ -1746,14 +1761,14 @@ body.is-resizing-pane-y iframe {
 
 /* Call previews keep one line at every panel width; details use their own
    scroll area. Fixed labels never squeeze the preview or each other. */
-.ps-system-notice.ps-chat-call { margin: 4px 0; min-width: 0; color: var(--ps-foreground); }
-.ps-chat-call-summary { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; font-size: .92em; }
+.ps-system-notice.ps-chat-call { margin: 4px 0; min-width: 0; color: var(--ps-foreground); background: var(--ps-chat-card-body); }
+.ps-chat-call-summary { opacity: 1; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 32px; font-size: .92em; }
 .ps-chat-call-summary::before { flex: none; }
 .ps-chat-call-summary .ps-system-notice-summary-text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ps-chat-call-tag { flex: none; font-size: .82em; text-transform: uppercase; color: var(--ps-accent); }
-.ps-chat-call-status { flex: none; font-size: .82em; color: var(--ps-muted); }
-.ps-chat-call-status.is-failed { color: var(--ps-warning); }
-.ps-chat-call-time { color: var(--ps-muted); font-size: .85em; margin-bottom: 6px; }
+.ps-chat-call-tag { flex: none; font-size: .82em; text-transform: uppercase; color: var(--ps-chat-card-accent); }
+.ps-chat-call-status { flex: none; font-size: .82em; color: var(--ps-chat-card-muted); }
+.ps-chat-call-status.is-failed { color: var(--ps-chat-card-warning); }
+.ps-chat-call-time { color: var(--ps-chat-card-muted); font-size: .85em; margin-bottom: 6px; }
 .ps-chat-call-payload { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .92em; }
 .ps-chat-call .ps-system-notice-body { max-height: min(360px, 45dvh); overflow: auto; padding: 10px; border-left: 2px solid var(--ps-border-strong); }
 
@@ -1764,17 +1779,17 @@ body.is-resizing-pane-y iframe {
 .ps-activity-run > summary { list-style: none; cursor: pointer; }
 .ps-activity-run > summary::-webkit-details-marker { display: none; }
 .ps-activity-run-summary { flex-wrap: nowrap; min-width: 0; }
-.ps-activity-run-latest { flex: 1 1 auto; min-width: 0; color: var(--ps-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ps-activity-run-status { flex: none; color: var(--ps-success); font-size: var(--ps-font-size-dense); }
-.ps-activity-run-status.is-failed { color: var(--ps-warning); }
-.ps-activity-run-chevron { flex: none; color: var(--ps-muted); transition: transform 120ms ease; }
+.ps-activity-run-latest { flex: 1 1 auto; min-width: 0; color: var(--ps-chat-card-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ps-activity-run-status { flex: none; color: var(--ps-chat-card-success); font-size: var(--ps-font-size-dense); }
+.ps-activity-run-status.is-failed { color: var(--ps-chat-card-warning); }
+.ps-activity-run-chevron { flex: none; color: var(--ps-chat-card-muted); transition: transform 120ms ease; }
 .ps-activity-run[open] .ps-activity-run-chevron { transform: rotate(90deg); }
-.ps-activity-run-viewport { max-height: min(320px, 38dvh); overflow: auto; overscroll-behavior: contain; border-top: 1px solid var(--ps-border); border-bottom: 1px solid var(--ps-border); background: color-mix(in srgb, var(--ps-background) 70%, transparent); }
+.ps-activity-run-viewport { max-height: min(320px, 38dvh); overflow: auto; overscroll-behavior: contain auto; border-top: 1px solid var(--ps-border); border-bottom: 1px solid var(--ps-border); background: var(--ps-chat-card-body); }
 .ps-activity-run-viewport:focus-visible { outline: 1px solid var(--ps-selection-background); outline-offset: -1px; }
 .ps-activity-run .ps-chat-call { margin: 0; border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); border-radius: 0; }
 .ps-activity-run .ps-chat-call:first-child { border-top: 0; }
 .ps-activity-run .ps-chat-call-summary { padding-inline: 12px; }
-.ps-activity-run-footer { padding: 7px 12px 8px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
+.ps-activity-run-footer { padding: 7px 12px 8px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); }
 @media (max-width: 620px) {
   .ps-activity-run-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; gap: 5px 8px; }
   .ps-activity-run-latest { grid-column: 1 / 2; grid-row: 2; }
@@ -2452,14 +2467,78 @@ body.is-resizing-pane-y iframe {
   cursor: text;
 }
 
-/* Appears only when automatic scroll-up expansion has hit its cap — the point
-   at which the transcript would otherwise be a dead end in the browser. */
-.ps-load-older-bar {
-  display: flex;
-  justify-content: center;
-  padding: 4px 0 6px;
-  border-bottom: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent);
+/* Earlier-history pull and loading share one timeline marker. The rail grows
+   with a finger drag; wheel paging enters directly in the loading state. */
+.ps-history-load {
+  position: relative;
+  flex: none;
+  height: calc(32px + var(--ps-history-pull, 0px));
+  min-width: 0;
+  color: var(--ps-foreground);
+  background: var(--ps-surface);
+  border-bottom: 1px solid var(--ps-border);
+  overflow: hidden;
+  font: inherit;
+  font-size: var(--ps-font-size-dense);
 }
+
+.ps-history-load.is-loading,
+.ps-history-load.is-manual { height: 40px; }
+
+.ps-history-track {
+  position: absolute;
+  left: 22px;
+  top: 4px;
+  bottom: 5px;
+  width: 1px;
+  background: var(--ps-border);
+}
+
+.ps-history-tick {
+  position: absolute;
+  left: -4px;
+  width: 9px;
+  height: 1px;
+  background: var(--ps-border);
+}
+
+.ps-history-tick.is-first { top: 5px; }
+.ps-history-tick.is-second { top: 16px; }
+
+.ps-history-marker {
+  position: absolute;
+  left: -11px;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  border: 1px solid var(--ps-accent);
+  border-radius: 50%;
+  background: var(--ps-chrome);
+  color: var(--ps-accent);
+}
+
+.ps-history-marker .ps-share-glyph { width: 14px; height: 14px; }
+.ps-history-load.is-loading .ps-history-marker .ps-share-glyph { animation: ps-history-spin 1s linear infinite; }
+@keyframes ps-history-spin { to { transform: rotate(360deg); } }
+
+.ps-history-label,
+.ps-history-load .ps-load-older-button {
+  position: absolute;
+  left: 49px;
+  bottom: 7px;
+}
+
+.ps-history-label {
+  right: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ps-history-load.is-ready .ps-history-label { color: var(--ps-accent); }
+.ps-history-text-spinner { display: none; }
 
 .ps-load-older-button {
   font: inherit;
@@ -2470,6 +2549,84 @@ body.is-resizing-pane-y iframe {
   border-radius: 4px;
   padding: 2px 12px;
   cursor: pointer;
+}
+
+/* The retro skins keep the timeline shape but draw it in their own idiom. */
+:root[data-ps-theme="doom"] .ps-history-load { background: #1c1310; color: var(--doom-bone); border-color: var(--doom-band); }
+:root[data-ps-theme="doom"] .ps-history-track,
+:root[data-ps-theme="doom"] .ps-history-tick { background: var(--doom-light); }
+:root[data-ps-theme="doom"] .ps-history-marker {
+  border-radius: 0;
+  border-color: var(--doom-light) var(--doom-shadow) var(--doom-shadow) var(--doom-light);
+  background: var(--doom-band);
+  color: var(--doom-bone-hi);
+}
+:root[data-ps-theme="doom"] .ps-history-load.is-ready .ps-history-label { color: #ffd84a; }
+
+:root[data-ps-theme="terminal-green"] .ps-history-load { background: #020503; color: #c9f7d3; border-color: #245c33; }
+:root[data-ps-theme="terminal-green"] .ps-history-track,
+:root[data-ps-theme="terminal-green"] .ps-history-tick { background: #63e27a; }
+:root[data-ps-theme="terminal-green"] .ps-history-marker {
+  border-color: #63e27a;
+  background: #061109;
+  color: #c9f7d3;
+}
+:root[data-ps-theme="terminal-green"] .ps-history-load .ps-load-older-button {
+  background: #061109;
+  border-color: #63e27a;
+  color: #c9f7d3;
+}
+:root[data-ps-theme="terminal-green"] .ps-history-load.is-ready .ps-history-label { color: #8cff9f; }
+
+:root[data-ps-theme="win95"] .ps-history-load { background: var(--w95-face); color: #000000; border-color: var(--w95-shadow); }
+:root[data-ps-theme="win95"] .ps-history-track,
+:root[data-ps-theme="win95"] .ps-history-tick { background: var(--w95-shadow); }
+:root[data-ps-theme="win95"] .ps-history-marker {
+  border-radius: 0;
+  border-color: var(--w95-dark) var(--w95-light) var(--w95-light) var(--w95-dark);
+  background: #000080;
+  color: #ffffff;
+}
+:root[data-ps-theme="win95"] .ps-history-load.is-ready .ps-history-label { color: #000080; }
+
+:root[data-ps-theme="winamp"] .ps-history-load { background: var(--wa-glass); color: var(--wa-green); border-color: var(--wa-face); }
+:root[data-ps-theme="winamp"] .ps-history-track,
+:root[data-ps-theme="winamp"] .ps-history-tick { background: var(--wa-light); }
+:root[data-ps-theme="winamp"] .ps-history-marker {
+  border-radius: 0;
+  background: var(--wa-glass);
+  border-color: var(--wa-light) var(--wa-shadow) var(--wa-shadow) var(--wa-light);
+  color: var(--wa-green);
+}
+:root[data-ps-theme="winamp"] .ps-history-load.is-ready .ps-history-label { color: var(--wa-amber); }
+
+:root[data-ps-theme="ms-dos"] .ps-history-load { background: #000000; color: var(--dos-fg); border-color: var(--dos-fg); }
+:root[data-ps-theme="ms-dos"] .ps-history-track,
+:root[data-ps-theme="ms-dos"] .ps-history-tick { background: var(--dos-fg); }
+:root[data-ps-theme="ms-dos"] .ps-history-marker {
+  border: 0;
+  border-radius: 0;
+  background: #000000;
+  color: var(--dos-bright);
+}
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-loading .ps-history-marker .ps-share-glyph { display: none; }
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-loading .ps-history-text-spinner { display: block; position: relative; width: 1ch; height: 1em; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: ps-history-text-spin .48s steps(1, end) infinite;
+}
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(2) { animation-delay: -.12s; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(3) { animation-delay: -.24s; }
+:root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:nth-child(4) { animation-delay: -.36s; }
+:root[data-ps-theme="ms-dos"] .ps-history-load.is-ready .ps-history-label { color: var(--dos-bright); }
+@keyframes ps-history-text-spin { 0%, 24.9% { opacity: 1; } 25%, 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ps-history-load.is-loading .ps-history-marker .ps-share-glyph,
+  :root[data-ps-theme="ms-dos"] .ps-history-text-spinner span { animation: none; }
+  :root[data-ps-theme="ms-dos"] .ps-history-text-spinner span:first-child { opacity: 1; }
 }
 
 .ps-load-older-button:hover:not(:disabled) {
@@ -5159,8 +5316,11 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] {
   --w95-face: #c0c0c0;
   --w95-light: #ffffff;
+  --w95-soft-face: #dfdfdf;
   --w95-shadow: #808080;
   --w95-dark: #000000;
+  --ps-chat-card-body: color-mix(in srgb, var(--w95-light) 50%, var(--w95-soft-face));
+  --ps-chat-card-header: var(--w95-soft-face);
   /* Tahoma is the real Win95 UI face; the rest are era-appropriate fallbacks. */
   --ps-ui-font: Tahoma, "MS Sans Serif", Verdana, Geneva, sans-serif;
 }
@@ -5241,6 +5401,20 @@ body.is-resizing-pane-y iframe {
   border-radius: 0;
 }
 
+/* Light gray headers and softly shaded details distinguish activity from the
+   white transcript without the heavy gray or teal of application chrome. */
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-tasks {
+  background: var(--w95-soft-face);
+  border-color: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run-viewport,
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-task-detail,
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call {
+  background: color-mix(in srgb, var(--w95-light) 50%, var(--w95-soft-face));
+  border-color: var(--w95-face);
+}
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call-tag { color: #000080; }
+
 /* Selection is Explorer's navy bar, not a tint. */
 :root[data-ps-theme="win95"] .ps-list-button.is-selected,
 :root[data-ps-theme="win95"] .ps-session-list-button.is-selected {
@@ -5303,7 +5477,11 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="win95"] .portal-header-email,
 :root[data-ps-theme="win95"] .portal-header-status,
 :root[data-ps-theme="win95"] .portal-header-meta,
-:root[data-ps-theme="win95"] .portal-header-version {
+:root[data-ps-theme="win95"] .portal-header-version,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-rev,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-artifact-pane-btn,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-btn,
+:root[data-ps-theme="win95"] .ps-toolbar-canvas-slot .ps-html-zoom-level {
   color: #ffffff;
   opacity: 1;
 }
@@ -6483,6 +6661,9 @@ body.is-resizing-pane-y iframe {
 :root[data-ps-theme="workspace-dark"] {
   --ps-ws-accent: #2ea043;
   --ps-ws-card: #1c2129;
+  /* Activity should read as a lighter inset card, distinct from pane chrome. */
+  --ps-chat-card-body: color-mix(in srgb, var(--ps-surface) 88%, var(--ps-foreground) 12%);
+  --ps-chat-card-header: color-mix(in srgb, var(--ps-surface) 84%, var(--ps-foreground) 16%);
 }
 /* A hairline, not a full border: "no panel borders" left neighbouring panes
    reading as one continuous surface, so it was genuinely hard to tell where a
@@ -9489,7 +9670,7 @@ textarea.ps-link-input {
 }
 :root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) .ps-preview-status { color: #4a4a4a; font-size: 1em; }
 :root[data-ps-theme="win95"] .ps-assistant-preview:not(.is-final) > .ps-assistant-preview-viewport {
-  background: #fff;
+  background: color-mix(in srgb, var(--w95-light) 50%, var(--w95-soft-face));
   color: #000;
   border-left: 2px solid #808080;
 }
@@ -9560,24 +9741,46 @@ textarea.ps-link-input {
 .ps-prompt-shell.is-compact .ps-send-button,
 .ps-prompt-shell.is-compact .ps-stop-button { flex: none; min-width: 44px; min-height: 44px; }
 
-/* Let toolbar groups use their actual width before centering them. Equal
-   zero-minimum rails allowed the right-hand icons to paint over the center. */
+/* Permanent desktop navigation geometry. Context controls may change, but
+   neither a mode change nor a long canvas title can move Back / Forward. */
 @media (min-width: 921px) {
+  .portal-header { padding-block: 4px; }
   .portal-header-brand { max-width: min(28vw, 320px); }
   .portal-header-slot { container: header-tools / inline-size; }
   .ps-toolbar:not(.is-mobile) {
-    grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
+    --ps-header-button: 44px;
+    --ps-header-pair: 94px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     column-gap: 12px;
   }
-  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; overflow: hidden; }
-  .ps-toolbar:not(.is-mobile) .ps-toolbar-button { flex-shrink: 0; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: max-content; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side { min-width: 0; min-height: 44px; }
+  .ps-toolbar-navigation {
+    display: grid; grid-template-columns: repeat(3, var(--ps-header-pair));
+    gap: 6px; height: 44px; flex-wrap: nowrap;
+  }
+  .ps-toolbar-context, .ps-toolbar-history { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ps-toolbar-context.is-before { justify-content: flex-end; }
+  .ps-toolbar-navigation button,
+  .ps-toolbar-actions.is-tools > button,
+  .ps-toolbar-signout-slot > button {
+    box-sizing: border-box; flex: 0 0 var(--ps-header-button);
+    width: var(--ps-header-button); min-width: var(--ps-header-button);
+    height: 44px; min-height: 44px; padding: 0;
+  }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 140px; min-width: 0; overflow: hidden; }
+  .ps-toolbar-actions.is-tools { flex-wrap: nowrap; }
+  .ps-toolbar-canvas-slot { min-width: 0; width: 100%; }
+  .ps-toolbar-canvas-slot > :not(.ps-toolbar-canvas-rev):not(.ps-canvas-slot-controls) { flex-shrink: 0; }
+  .ps-toolbar-canvas-rev { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
-@container header-tools (max-width: 760px) {
-  .ps-toolbar:not(.is-mobile) { display: flex; flex-wrap: wrap; gap: 8px 12px; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left:empty { display: none; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-actions { margin-inline: auto; flex: 0 0 auto; }
-  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { margin-left: auto; flex-wrap: wrap; }
+/* Use the SAME two rows in every mode when the rails cannot fit. Reserving
+   both rows keeps the navigation's vertical position stable as well. */
+@container header-tools (max-width: 960px) {
+  .ps-toolbar:not(.is-mobile) { grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 44px max(36px, var(--ps-control-min-height, 34px)); gap: 4px 6px; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-navigation { grid-column: 1; grid-row: 1; }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-left { grid-column: 1 / -1; grid-row: 2; min-height: max(36px, var(--ps-control-min-height, 34px)); }
+  .ps-toolbar:not(.is-mobile) > .ps-toolbar-side.is-right { grid-column: 2; grid-row: 1; gap: 6px; }
+  .ps-toolbar:not(.is-mobile) .ps-toolbar-actions.is-tools { gap: 4px; }
   .ps-toolbar:not(.is-mobile) .ps-toolbar-meta-slot { max-width: 100px; }
 }
 /* A pane can be narrow even on a wide monitor. Give its title a full row

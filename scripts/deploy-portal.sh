@@ -189,6 +189,11 @@ echo "🚀 Deploying portal to AKS..."
 
 # Apply portal deployment + service + canonical ingress
 render_manifest deploy/k8s/portal-deployment.yaml | "${KUBECTL[@]}" apply -f -
+
+# Keep the pilotswarm-aks catalog override across image deployments.
+if [ "${K8S_CONTEXT:-$(kubectl config current-context)}" = "pilotswarm-aks" ] && [ "$NAMESPACE" = "copilot-runtime" ]; then
+    bash scripts/apply-aks-model-catalog.sh pilotswarm-portal
+fi
 render_manifest deploy/k8s/portal-ingress.yaml | "${KUBECTL[@]}" apply -f -
 
 # Rollout restart to pick up new image

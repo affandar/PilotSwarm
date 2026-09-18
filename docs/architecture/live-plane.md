@@ -93,7 +93,9 @@ height limit or “Agent responded” label. Reasoning remains independently
 expandable and bounded.
 
 Saved legacy or control-loop intermediate messages use the label `Agent update`,
-without a live status badge. Only actual transient output uses `Message preview`
+without a live status badge. They open by default within a bounded, scrollable
+viewport so progress remains visible without taking over the transcript. Only
+actual transient output uses `Message preview`
 and `Responding` or `Thinking`. Disabling `PILOTSWARM_LIVE_TURN` stops delta
 publishing; it does not hide saved tool-loop messages. This distinction also
 applies to old history and reloads. Preview and final-answer states share the

@@ -19,7 +19,7 @@
 // What this step does NOT seed:
 //   • azure-storage-connection-string → auto-populated by Bicep
 //     (deploy/services/base-infra/bicep/auto-secrets.bicep)
-//   • DATABASE_URL → not a secret in the bicep-deploy path. It's a config
+//   • Provisioned DATABASE_URL → a legacy config
 //     value composed at deploy time from the postgres FQDN + bootstrap
 //     password (interim) and projected via the worker-env ConfigMap. Chunk
 //     C will switch this to a passwordless URL backed by AAD/workload-
@@ -36,6 +36,8 @@
 // with a hint to re-run new-env or edit the local env file directly.
 
 import { log, run } from "./common.mjs";
+import { validateDatabaseConfig } from "./database-env.mjs";
+import { seedDatabaseSecrets } from "./database-secrets.mjs";
 
 // The two human-only KV secrets that the bicep deploy flow needs. Both are
 // genuinely external (not derivable from infra outputs), so they get
@@ -79,6 +81,8 @@ export const SEEDABLE_SECRET_KEYS = [
  * @param {{ envName: string, env: Record<string,string> }} ctx
  */
 export async function seedSecrets({ envName, env }) {
+  // Validate before writing any secret, not at deploy startup.
+  validateDatabaseConfig(env);
   const kvName = env.KV_NAME;
   if (!kvName) {
     throw new Error(
@@ -87,7 +91,7 @@ export async function seedSecrets({ envName, env }) {
     );
   }
 
-  let setCount = 0;
+  let setCount = seedDatabaseSecrets(env);
   const missingRequired = [];
 
   for (const { env: envKey, kv: kvKey, required, seedEmpty } of SEEDABLE_SECRET_KEYS) {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.79 — 2026-09-17
+
+- Master of Agents: drag pane headers to swap contents or split the target in half at any edge. Hold Shift at a matching T-junction to extend a pane across its neighbour. Preview the resulting layout before dropping, cancel with Escape, and undo recent moves. Preserve session connections, drafts, queued prompts, scroll position, and canvas state while rearranging.
+- Portal appearance: strengthen pane outlines across themes and lighten Workspace Dark activity cards. Indicate the active pane through its border and header shading without the redundant “Focused” label; keep rearrangement in header dragging rather than a separate control-panel menu.
+- Session lifecycle: reset every pane bound to a deleted session to the empty **+** state, including inactive dashboards and deletions from the normal workspace or another client. Keep completed/canceled sessions and retryable connection failures in place, and preserve layout geometry when clearing a binding.
+- Validation: all 468 portal browser checks passed, including 10 lifecycle regressions, drag/drop, mobile layouts, and theme coverage. Provider integration suites were intentionally skipped at the user's request for this UX release.
+
+## 0.5.78 — 2026-09-17
+
+- Portal navigation: focus MoA sessions immediately from cached content; keep the last ten desktop views with Back/Forward buttons and Alt/Option-plus/minus shortcuts, including the composer. Keep controls consistently positioned and available in compact Zen and hidden-chrome canvas views.
+- Portal activity: let mouse, trackpad, and touch scrolling continue into the conversation at nested activity boundaries. Lightly shade tool, native-task, and Agent Update cards across all themes while retaining readable labels and plain final answers. Correct Win95 focused status contrast and preserve layout during resize.
+- SDK: expose session creation and update timestamps through session-listing tools, with a new orchestration version that preserves existing histories.
+- Deployment: support bring-your-own PostgreSQL without provisioning a new database; validate database URLs and selected Key Vault secret versions, isolate deployment-stage configuration, and keep secrets out of generated artifacts and logs. Support managed-identity blob storage independently of PostgreSQL authentication.
+- Validation: full PostgreSQL-only release gate passed (2,076 SDK integration tests, 16 existing skips), along with 438 browser scenarios, package checks, Bicep compilation, and all four BYO manifest variants. HorizonDB integration was intentionally not run. Deployment CLI fixtures isolate ambient integration-test configuration while retaining explicit override coverage; existing assertions are unchanged.
+
+## 0.5.77 — 2026-09-16
+
+- Base Agent V2: include a metadata-only index of static and session-owner-authored skills and agent workflows in the session prompt. Keep other users' shared packages discoverable without automatically loading their instructions, tools, or MCP servers; use only static SDK skill directories for system-owned children without a verified human owner; preserve Base V1 behavior.
+- Capability search: prefer an owner's exact-name package over equally matching shared packages from other publishers, including when the first result page is crowded.
+- Portal: open saved Agent updates in a bounded preview, show a stretch-and-spinner cue while older chat history loads across retro themes, and carry queued prompts between normal chat and Master of Agents panels.
+- PilotSwarm AKS: keep the deployment-specific model catalog mounted on worker, portal, and MCP deployments when their images are updated.
+- Live HorizonDB validation: allow the shared durable embedder several one-minute ticks to re-embed edited facts; keep the convergence assertions and bounded deadlines.
+- Validation: production build, all-provider gate, and browser regression coverage for the changed surfaces.
+
 ## 0.5.76 — 2026-09-15
 
 - Portal transcript: render durable model commentary as ordinary visible `Agent:` messages instead of hiding milestone and progress updates behind collapsed `Agent update` disclosures. The same classification applies to live delivery and history replay.

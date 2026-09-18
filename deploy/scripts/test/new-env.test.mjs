@@ -71,6 +71,9 @@ test("renderLocalEnv produces expected substitutions", () => {
   assert.match(out, /^AZURE_TENANT_ID=72f988bf-86f1-41af-91ab-2d7cd011db47$/m);
   assert.match(out, /^EDGE_MODE=afd$/m);
   assert.match(out, /^TLS_SOURCE=letsencrypt$/m);
+  assert.match(out, /^DEPLOY_POSTGRES=true$/m);
+  assert.match(out, /^PILOTSWARM_BLOB_USE_MANAGED_IDENTITY=1$/m);
+  assert.match(out, /^DATABASE_URL_SECRET_NAME=$/m);
 });
 
 test("scaffolder creates local/<name>/.env (happy path)", () => {

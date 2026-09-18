@@ -8,6 +8,7 @@ import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
+import { DATABASE_ENV_DEFAULTS, DATABASE_INPUT_KEYS, DATABASE_URL_KEYS, deploysPostgres } from "./database-env.mjs";
 
 // Repo root: this file lives at <repo>/deploy/scripts/lib/common.mjs
 const __filename = fileURLToPath(import.meta.url);
@@ -115,7 +116,8 @@ export function templateEnvPath() {
 //
 // process.env values override file values key-by-key (so a contributor can
 // `SUBSCRIPTION_ID=... node deploy.mjs ...` for ad-hoc tests). We do NOT
-// merge the entire process environment.
+// merge the entire process environment. Database URL overrides are BYO-only;
+// provisioned stamps use explicit file values or their composed stamp URLs.
 export function loadEnv(envName) {
   const envFile = envFilePath(envName);
 
@@ -126,13 +128,27 @@ export function loadEnv(envName) {
     );
   }
 
-  const merged = parseEnvFile(envFile);
+  // Compatibility defaults for newly introduced switches, not a cascade
+  // onto the mutable scaffolding template.
+  const merged = { ...DATABASE_ENV_DEFAULTS, ...parseEnvFile(envFile) };
 
-  // process.env override for keys already in the merged map.
-  for (const k of Object.keys(merged)) {
+  // Resolve provisioning intent before allowing any ambient database URL.
+  for (const k of new Set([...Object.keys(merged), ...DATABASE_INPUT_KEYS])) {
+    if (DATABASE_URL_KEYS.includes(k)) continue;
     if (process.env[k] !== undefined && process.env[k] !== "") {
       merged[k] = process.env[k];
     }
+  }
+  const deployPostgres = deploysPostgres(merged);
+  merged.DEPLOY_POSTGRES = String(deployPostgres);
+  for (const key of DATABASE_URL_KEYS) {
+    if (process.env[key] === undefined || process.env[key] === "") continue;
+    if (deployPostgres) {
+      log("warn", `Ignoring process.env.${key} while DEPLOY_POSTGRES=true; database URLs must come from the env file or stamp outputs.`);
+      continue;
+    }
+    log("warn", `Using process.env.${key} for the BYO database (value redacted).`);
+    merged[key] = process.env[key];
   }
 
   return {

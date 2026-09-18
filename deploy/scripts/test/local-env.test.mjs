@@ -15,6 +15,8 @@ import {
   RESERVED_ENV_NAMES,
   REPO_ROOT,
 } from "../lib/common.mjs";
+import { composeDerivedEnv } from "../lib/compose-env.mjs";
+import { DATABASE_URL_KEYS } from "../lib/database-env.mjs";
 
 const ENV_DIR = join(REPO_ROOT, "deploy", "envs");
 const LOCAL_DIR = join(ENV_DIR, "local");
@@ -103,7 +105,35 @@ test("loadEnv does NOT cascade values from template.env", () => {
     assert.equal(env.NAMESPACE, undefined);
     assert.equal(env.AZURE_TENANT_ID, undefined);
     assert.equal(env.EDGE_MODE, undefined);
+    assert.equal(env.DEPLOY_POSTGRES, "true", "only explicit compatibility defaults are added");
+    assert.equal(env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY, "1");
   } finally {
+    cleanup();
+  }
+});
+
+test("old local env accepts a process override for newly introduced database keys", () => {
+  cleanup();
+  const keys = ["DEPLOY_POSTGRES", "DATABASE_URL_SECRET_NAME", "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY", ...DATABASE_URL_KEYS];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    process.env.DEPLOY_POSTGRES = " 0 ";
+    process.env.DATABASE_URL_SECRET_NAME = "shared-runtime-url";
+    process.env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY = "true";
+    for (const key of DATABASE_URL_KEYS) process.env[key] = "postgresql://u:ambient-fixture-password@external.invalid/app";
+    const { env } = loadEnv(TEST_NAME);
+    assert.equal(env.DEPLOY_POSTGRES, "false");
+    assert.equal(env.DATABASE_URL_SECRET_NAME, "shared-runtime-url");
+    assert.equal(env.PILOTSWARM_BLOB_USE_MANAGED_IDENTITY, "true");
+    for (const key of DATABASE_URL_KEYS) assert.equal(env[key], process.env[key]);
+    assert.equal(env.NAMESPACE, undefined);
+  } finally {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
     cleanup();
   }
 });
@@ -125,4 +155,55 @@ test("loadEnv() rejects reserved env names", () => {
   for (const r of RESERVED_ENV_NAMES) {
     assert.throws(() => loadEnv(r), /reserved env name/);
   }
+});
+
+for (const blankUrlKeys of [false, true]) {
+  test(`provisioned env ignores ambient URLs (${blankUrlKeys ? "blank file keys" : "absent file keys"})`, (t) => {
+    cleanup();
+    const keys = ["DEPLOY_POSTGRES", ...DATABASE_URL_KEYS];
+    const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    t.after(() => {
+      for (const key of keys) {
+        if (before[key] === undefined) delete process.env[key];
+        else process.env[key] = before[key];
+      }
+      cleanup();
+    });
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, [
+      "RESOURCE_PREFIX=pststenv",
+      ...(blankUrlKeys ? DATABASE_URL_KEYS.map((key) => `${key}=`) : []),
+      "",
+    ].join("\n"));
+    process.env.DEPLOY_POSTGRES = "true";
+    for (const key of DATABASE_URL_KEYS) process.env[key] = "postgresql://u:ambient-fixture-password@external.invalid/app";
+    const { env } = loadEnv(TEST_NAME);
+    for (const key of DATABASE_URL_KEYS) assert.equal(env[key], blankUrlKeys ? "" : undefined);
+    Object.assign(env, {
+      POSTGRES_FQDN: "stamp.invalid", POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "stamp-uami",
+      PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+    });
+    composeDerivedEnv(env);
+    for (const key of DATABASE_URL_KEYS) assert.equal(new URL(env[key]).hostname, "stamp.invalid");
+  });
+}
+
+test("provisioned env preserves explicit file URLs instead of ambient overrides", (t) => {
+  cleanup();
+  const keys = ["DEPLOY_POSTGRES", ...DATABASE_URL_KEYS];
+  const before = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (before[key] === undefined) delete process.env[key];
+      else process.env[key] = before[key];
+    }
+    cleanup();
+  });
+  const fileUrl = "postgresql://file-user@file-host.invalid/app";
+  mkdirSync(dirname(TEST_FILE), { recursive: true });
+  writeFileSync(TEST_FILE, DATABASE_URL_KEYS.map((key) => `${key}=${fileUrl}`).join("\n"));
+  process.env.DEPLOY_POSTGRES = "true";
+  for (const key of DATABASE_URL_KEYS) process.env[key] = "postgresql://u:ambient-fixture-password@external.invalid/app";
+  const { env } = loadEnv(TEST_NAME);
+  for (const key of DATABASE_URL_KEYS) assert.equal(env[key], fileUrl);
 });

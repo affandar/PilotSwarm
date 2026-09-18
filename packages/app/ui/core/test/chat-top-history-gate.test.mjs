@@ -86,6 +86,26 @@ test("reaching the top of a transcript of LONG messages also loads older history
     );
 });
 
+test("the loading indicator starts only when a backward page is actually requested", async () => {
+    const { controller } = makeController({ tall: false });
+    let release;
+    controller.transport.getSessionEventsBefore = async () => new Promise((resolve) => { release = resolve; });
+    let started = 0;
+    const onLoadStarted = () => { started += 1; };
+
+    await controller.handleChatTopHistoryScrollIntent(0, { onLoadStarted });
+    assert.equal(started, 0, "the first wheel event only arms the loader");
+
+    const pending = controller.handleChatTopHistoryScrollIntent(0, { onLoadStarted });
+    assert.equal(started, 1, "show the spinner during the database request");
+    await controller.handleChatTopHistoryScrollIntent(0, { onLoadStarted });
+    assert.equal(started, 1, "concurrent wheel events must not restart the animation");
+    release([message(1, 5)]);
+    await pending;
+    await controller.handleChatTopHistoryScrollIntent(0, { onLoadStarted });
+    assert.equal(started, 1, "exhausted history has no request to show");
+});
+
 test("auto-load preserves the terminal reading anchor while browser DOM anchoring owns its offset", async () => {
     const terminal = makeController({ tall: false }).controller;
     terminal.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: false });

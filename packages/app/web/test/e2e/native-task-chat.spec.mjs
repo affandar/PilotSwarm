@@ -141,3 +141,41 @@ test("uninspected success collapses while a failed task expands with its failed 
     await expect(failed.locator(".ps-chat-call-status")).toHaveText("Failed");
     await expect(failed.locator(".ps-native-task-result")).toHaveText("Cannot read configuration");
 });
+
+test("Win95 activity cards recede against the white transcript in chat and MoA", async ({ page }) => {
+    const fixture = fixtureEvents();
+    fixture.events.push(
+        fixture.event(7, "tool.execution_start", {toolName:"spawn_agent",toolCallId:"spawn-1",arguments:{task:"Review the deployment"}}),
+        fixture.event(8, "tool.execution_complete", {toolName:"spawn_agent",toolCallId:"spawn-1",success:true,result:"Review started"}),
+        fixture.event(9, "tool.execution_start", {toolName:"view",toolCallId:"parent-read",arguments:{path:"README.md"}}),
+    );
+    await page.route("**/api/v1/me/profile**", route => route.fulfill({json:{ok:true,result:{isAdmin:false,profileSettings:{
+        themeId:"win95", moa:{version:2,tree:{id:"card-preview",type:"chat",sessionId:ID}},
+    }}}}));
+    await page.setViewportSize({width:1440,height:1000});
+    await mount(page,fixture);
+    for (const mode of ["chat","MoA"]) {
+        if(mode==="MoA") await page.getByRole("button",{name:"Master of Agents",exact:true}).click();
+        const scope=page.locator(mode==="MoA"?".ps-moa-workspace":".ps-chat-panel:visible");
+        await expect(scope.locator(".ps-activity-run-viewport")).toBeVisible();
+        await expect(scope.locator(".ps-native-task .ps-chat-call")).toBeVisible();
+        await expect(scope.locator(".ps-assistant-preview:not(.is-final) .ps-assistant-preview-viewport")).toBeVisible();
+        const colors=await scope.locator(".ps-native-tasks, .ps-activity-run-viewport, .ps-chat-call, .ps-assistant-preview:not(.is-final) .ps-assistant-preview-viewport").evaluateAll(nodes=>nodes.map(node=> {
+            const style=getComputedStyle(node);
+            return {surface:style.backgroundColor,text:style.color};
+        }));
+        const rgb=color=>(color.match(/[\d.]+/g)||[]).slice(0,3).map(Number).map(v=>color.startsWith("color(srgb ")?v*255:v);
+        const luminance=color=>rgb(color).map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+        for(const {surface,text} of colors) {
+            const channels=rgb(surface);
+            // Keep broad surfaces neutral and close to white, with readable
+            // text, but visibly shaded against white chat. Catch the old gray
+            // slabs, teal rows, and boxes disappearing into the transcript.
+            expect(Math.min(...channels)).toBeGreaterThanOrEqual(220);
+            expect(Math.max(...channels)).toBeLessThanOrEqual(245);
+            expect(Math.max(...channels)-Math.min(...channels)).toBe(0);
+            expect((luminance(surface)+.05)/(luminance(text)+.05)).toBeGreaterThanOrEqual(4.5);
+        }
+        await page.screenshot({path:test.info().outputPath(`win95-quiet-cards-${mode}.png`)});
+    }
+});

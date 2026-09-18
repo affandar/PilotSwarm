@@ -298,6 +298,8 @@ export class PilotSwarmWorker {
         // works the same way as for env-driven callers (CLI transport).
         const blobStore = createSessionBlobStore(
             {
+                PILOTSWARM_BLOB_USE_MANAGED_IDENTITY: options.blobUseManagedIdentity === undefined
+                    ? undefined : String(options.blobUseManagedIdentity),
                 PILOTSWARM_USE_MANAGED_IDENTITY: options.useManagedIdentity ? "1" : undefined,
                 AZURE_STORAGE_ACCOUNT_URL: options.blobAccountUrl,
                 AZURE_STORAGE_CONNECTION_STRING: options.blobConnectionString,
@@ -347,6 +349,7 @@ export class PilotSwarmWorker {
                 frameworkBaseDescriptor: this._frameworkBaseDescriptor ?? undefined,
                 appDefaultDescriptor: this._appDefaultDescriptor ?? undefined,
                 skillDirectories: this._loadedSkillDirs,
+                getBaseV2SkillDirectories: owner => this._getBaseV2SkillDirectories(owner),
                 customAgents: this._loadedAgents,
                 nativeSubagents: resolveNativeSubagents(options.nativeSubagents),
                 // The `load_skill` catalog, BY REFERENCE (cleared and refilled
@@ -1097,6 +1100,15 @@ export class PilotSwarmWorker {
         return sources;
     }
 
+    /** The SDK can discover skill dirs itself, so V2 must filter this path too. */
+    private _getBaseV2SkillDirectories(owner: { provider: string; subject: string } | null): string[] {
+        return this._loadedSkillDirs.filter(dir => {
+            const provenance = this._packageDirOwners.get(path.resolve(path.dirname(dir)));
+            if (!provenance) return true; // Deployment or direct configuration.
+            return Boolean(owner && provenance.owner?.provider === owner.provider && provenance.owner.subject === owner.subject);
+        });
+    }
+
     private _resetLoadedPluginState(): void {
         this._capabilitySources.length = 0;
         this._agentPackageMcpServersByPackage.clear();
@@ -1765,8 +1777,15 @@ export class PilotSwarmWorker {
                 // copy the same person owns); otherwise exclude.
                 if (ownOwnerKey && agentOwnerKey(prov.owner) === ownOwnerKey) pool.push(skill);
             }
-            // Own-package skills go LAST so they win a name collision with a
-            // shared/deployment skill (composeDeclaredSkillsPrompt is last-wins).
+            // V2 may automatically compose only deployment skills and the
+            // selected agent's own package skills. Shared skills from other
+            // publishers remain discoverable but cannot enter a static or
+            // unrelated agent's prompt through a declared name collision.
+            const deploymentSkills = pool.filter(skill => !this._skillPackageOwner(skill));
+            (agent as any).baseV2Prompt = composeDeclaredSkillsPrompt(agent.prompt, agent.skills,
+                [...deploymentSkills, ...ownSkills]).prompt;
+            // V1 retains its existing declared-skill composition exactly.
+            // Own-package skills go last so they win a name collision.
             const composed = composeDeclaredSkillsPrompt(agent.prompt, agent.skills, [...pool, ...ownSkills]);
             // Compose onto the agent itself: each copy of a shadowed name
             // keeps its own composed prompt instead of fighting over one
@@ -1803,6 +1822,7 @@ export class PilotSwarmWorker {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
+                ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",

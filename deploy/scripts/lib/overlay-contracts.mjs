@@ -25,6 +25,8 @@
 // deploy.mjs / new-env.mjs pick it up automatically via the contract
 // table.
 
+export { databaseOverlayOmittedKeys } from "./database-env.mjs";
+
 // Edge mode and TLS source value spaces. Mirrors `new-env.mjs` EDGE_MODES /
 // TLS_SOURCES — kept in sync via overlay-contracts.test.mjs.
 export const EDGE_MODES = ["afd", "private"];
@@ -64,6 +66,7 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "AZURE_TENANT_ID",
   "PORTAL_HOSTNAME",
   "PILOTSWARM_USE_MANAGED_IDENTITY",
+  "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY",
   "SPC_KEYS_HASH",
   "PORTAL_AUTH_PROVIDER",
   "PORTAL_AUTH_ENTRA_TENANT_ID",
@@ -77,7 +80,9 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
 ]);
 
 // Shared composed-key roster (populated by compose-env.mjs from prior
-// bicep outputs). Identical across all three overlays.
+// bicep outputs). Identical across all three overlays. On BYO deployments,
+// databaseOverlayOmittedKeys removes URLs (projected by CSI instead); it also
+// removes the AAD user when database managed identity is disabled.
 const SHARED_COMPOSED_ENV_KEYS = Object.freeze([
   "AZURE_STORAGE_ACCOUNT_URL",
   "PILOTSWARM_CMS_FACTS_DATABASE_URL",

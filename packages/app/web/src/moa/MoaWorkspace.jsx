@@ -1,9 +1,20 @@
 import React from "react";
+import { CompactViewNavigation } from "../navigation/CompactViewNavigation.jsx";
 import { createPortal } from "react-dom";
 import { SessionHeaderStatus, ChatPane, CanvasFrame, SessionPane, SessionComposer, SessionDetailBox, ScopedModalLayer as ModalLayer, ControllerContext, createWebPilotSwarmController, useControllerSelector } from "pilotswarm/ui-react";
 import { canvasKey, normalizeMoa, activeMoaDashboard, updateMoaDashboard, moveMoaDashboard, MOA_MAX_DASHBOARDS, emptyMoaPanel, moaLeaves, replaceMoaNode, MOA_MAX_PANELS, MOA_BREAKPOINT, selectSessionRows } from "pilotswarm/ui-core";
 import "./moa.css";
 import { panelRects, clockwisePanels, canSwipeFrom } from "./geometry.js";
+import { paneLayout, boxStyle, emptySessionPanes } from "./pane-layout.js";
+import { usePaneDrag } from "./use-pane-drag.js";
+
+// Only an explicit terminal signal clears bindings; catalog absence is not deletion.
+function clearSessionPanes(controller, sessionIds) {
+    const current = normalizeMoa(controller.getState().ui.moa);
+    const next = emptySessionPanes(current, sessionIds);
+    if (next !== current) controller.dispatch({ type: "ui/moa", value: next });
+}
+const sessionUnavailable = error => [403, 404].includes(Number(error?.status)) || ["NOT_FOUND", "FORBIDDEN"].includes(String(error?.code || "").toUpperCase());
 
 const draftListeners = new WeakMap();
 const draftSends = new WeakMap();
@@ -55,6 +66,33 @@ function restoreOutbox(store, key, controller) {
     retainedOutboxes.get(store).delete(key);
     controller.setSessionOutboxItems(key, [...new Map([...controller.getSessionOutbox(key), ...items].map(item => [item.id, item])).values()]);
     controller.maybeFlushQueuedOutbox(key);
+}
+
+// Each panel has its own controller, but queued prompts belong to the session.
+// Mirror the parent controller's outbox so the main chat and every panel show
+// the same envelopes (and therefore preserve their deduplication IDs).
+function linkSessionOutbox(parent, child, sessionId) {
+    const setChildItems = child.setSessionOutboxItems.bind(child);
+    let parentItems = parent.getState().outbox?.bySessionId?.[sessionId] || null;
+    setChildItems(sessionId, parentItems || []);
+    const unsubscribe = parent.subscribe(() => {
+        const current = parent.getState().outbox?.bySessionId?.[sessionId] || null;
+        if (current === parentItems) return;
+        parentItems = current;
+        setChildItems(sessionId, current || []);
+    });
+    const mirroredSet = (targetSessionId, items) => {
+        if (targetSessionId === sessionId) parent.setSessionOutboxItems(sessionId, items);
+        else setChildItems(targetSessionId, items);
+    };
+    child.setSessionOutboxItems = mirroredSet;
+    let linked = true;
+    return () => {
+        if (!linked) return;
+        linked = false;
+        unsubscribe();
+        if (child.setSessionOutboxItems === mirroredSet) child.setSessionOutboxItems = setChildItems;
+    };
 }
 
 // One icon treatment for MoA actions; names remain available to keyboard and
@@ -179,26 +217,32 @@ export function useMoa(controller) {
     const desktop = useDesktop();
     const stored = useControllerSelector(controller, s => s.ui.moa);
     const loaded = useControllerSelector(controller, s => s.ui.moaLoaded === true);
+    const goneIds = useControllerSelector(controller, s => s.sessions.goneIds);
+    React.useEffect(() => {
+        if (loaded && goneIds?.length) clearSessionPanes(controller, goneIds);
+    }, [controller, loaded, goneIds, stored]);
     const saveStatus = useControllerSelector(controller, s => s.ui.moaSaveStatus);
     const value = React.useMemo(() => normalizeMoa(stored), [stored]);
     const [active, setActive] = React.useState(false), [zen, setZen] = React.useState(false), [returnTo, setReturnTo] = React.useState(false);
     React.useEffect(() => { try { sessionStorage.removeItem("pilotswarm.moa.shared"); } catch {} }, []);
     const drafts = React.useRef(new Map());
+    const panels = React.useRef(new Map());
     const zenDrafts = React.useRef(new Map());
     const refreshScheduler = React.useMemo(() => createRefreshScheduler(2), []);
     const update = React.useCallback(next => controller.dispatch({ type: "ui/moa", value: next }), [controller]);
     const [mobileZen, setMobileZen] = React.useState(false);
     React.useEffect(() => { if (desktop) setMobileZen(false); }, [desktop]);
     const open = () => { if (loaded) {
-        if (returnTo) {
+        if (!active) {
             const state = controller.getState(), sessionId = state.sessions.activeSessionId;
             if (sessionId) publishDraft(drafts.current, sessionId, { prompt: state.ui.prompt, attachments: state.ui.promptAttachments || [] });
         }
+        controller.navigationGeneration = (controller.navigationGeneration || 0) + 1;
         setMobileZen(false); setActive(true); setReturnTo(false);
     } };
     const leave = () => { setActive(false); setZen(false); };
     const openMobileZen = () => { if (!desktop) { leave(); setMobileZen(true); } };
-    return { desktop, loaded, value, update, saveStatus, active, zen: active && zen, setZen, open, leave, returnTo, setReturnTo, drafts, zenDrafts, refreshScheduler, mobileZen: !desktop && mobileZen, openMobileZen, closeMobileZen: () => setMobileZen(false) };
+    return { desktop, loaded, value, update, saveStatus, active, zen: active && zen, setZen, open, leave, returnTo, setReturnTo, drafts, panels, restoreSessionDraft: sessionId => restoreDraft(controller, drafts.current.get(sessionId)), zenDrafts, refreshScheduler, mobileZen: !desktop && mobileZen, openMobileZen, closeMobileZen: () => setMobileZen(false) };
 }
 
 function Modal({ title, onClose, children, hideHeader = false, dismissible = true }) {
@@ -259,9 +303,14 @@ function SessionPicker({ controller, onChoose, onClose, onCreate, initial }) {
     </Modal>;
 }
 
-function LivePanel({ node, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, perChat, onArtifact, header, controlsHost, onControlAction, mobileStatusHost }) {
+function LivePanel({ node, panels, panelKey, mobile = false, visible = true, focused, parent, createTransport, drafts, draftKey, refreshScheduler, onPanelKey, composerHost, perChat, onArtifact, header, controlsHost, onControlAction, mobileStatusHost }) {
     const [ready, setReady] = React.useState(null), [error, setError] = React.useState(""), [retry, setRetry] = React.useState(0);
     const resources = React.useRef(null);
+    React.useEffect(() => {
+        if (!ready || !panels) return;
+        panels.current.set(panelKey, ready);
+        return () => { if (panels.current.get(panelKey) === ready) panels.current.delete(panelKey); };
+    }, [ready, panels, panelKey]);
     const themeId = useControllerSelector(parent, s => s.ui.themeId);
     const [actionsOpen, setActionsOpen] = React.useState(false);
     const focusedRef = React.useRef(focused); focusedRef.current = focused && !actionsOpen;
@@ -287,7 +336,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
     }, []);
     React.useEffect(() => {
         if (!visible) return;
-        let cancelled = false, offDraft, pendingSend, wrappedSend, wrappedSchedule;
+        let cancelled = false, offDraft, offOutbox, pendingSend, wrappedSend, wrappedSchedule;
         setError("");
         if (!resources.current) {
             const transport = createTransport();
@@ -296,9 +345,23 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
                 send: child.sendPrompt.bind(child), scheduleDispatch: child.scheduleOutboxDispatch.bind(child) };
         }
         const cached = resources.current, { child, transport } = cached;
+        let reportedGone = false;
+        const reportGone = () => {
+            if (cancelled || reportedGone) return;
+            reportedGone = true;
+            clearInterval(cached.timer); cached.timer = null;
+            child.detachActiveSession();
+            clearSessionPanes(parent, [node.sessionId]);
+            parent.handleSessionGone(node.sessionId);
+        };
+        // Lifecycle actions run in the panel's isolated controller. Forward
+        // terminal eviction to every binding, including inactive dashboards.
+        const offGone = child.subscribe(s => {
+            if (s.sessions.goneIds?.includes(node.sessionId)) reportGone();
+        });
         const generation = ++cached.generation;
         cached.activeGeneration = generation;
-        const ownsResources = () => cached.activeGeneration === generation && !cached.disposed;
+        const ownsResources = () => cached.activeGeneration === generation && !cached.disposed && !reportedGone;
         const retireIfUnused = () => {
             // loadSession attaches internally after its history request. A
             // request from an older generation may finish after every newer
@@ -312,6 +375,10 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             }
         };
         const handoffPendingOutbox = () => {
+            // A linked panel already writes every update to the parent. Moving
+            // those items into the panel-only retained store would hide them
+            // from the main chat until a panel is opened again.
+            if (offOutbox) return;
             const items = child?.getPendingOutboxItems(node.sessionId) || [];
             if (!items.length) return;
             const ids = new Set(items.map(item => item.id));
@@ -324,7 +391,7 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             // retry while a rapid A → B → A switch resumes this same cached
             // controller. An obsolete cleanup must never detach that newer
             // generation or clear its polling timer.
-            if (cached.generation !== generation || cached.disposed) return;
+            if (cached.generation !== generation) return;
             clearInterval(cached.timer); cached.timer = null; offDraft?.();
             if (child.sendPrompt === wrappedSend) child.sendPrompt = cached.send;
             if (child.scheduleOutboxDispatch === wrappedSchedule) child.scheduleOutboxDispatch = cached.scheduleDispatch;
@@ -334,8 +401,9 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             // A retry may already be in flight after sendPrompt returned.
             // Settle that exact envelope before handing it to the next view.
             await Promise.allSettled([...(child?.outboxFlushPromises?.values() || [])]);
-            if (cached.generation !== generation || cached.disposed) return;
+            if (cached.generation !== generation) return;
             handoffPendingOutbox();
+            offOutbox?.(); offOutbox = null;
             child.detachActiveSession();
         };
         refreshScheduler(async () => {
@@ -344,7 +412,8 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             if (cancelled || !ownsResources()) { retireIfUnused(); return suspend(); }
             const session = await transport.getSession(node.sessionId);
             if (cancelled || !ownsResources()) { retireIfUnused(); return suspend(); }
-            if (!session || session.sessionId !== node.sessionId) throw new Error("Session unavailable.");
+            if (!session) { reportGone(); return; }
+            if (session.sessionId !== node.sessionId) throw new Error("Unexpected session response.");
             const auth = transport.getAuthContext();
             child.dispatch({ type: "auth/context", principal: auth?.principal, authorization: auth?.authorization });
             child.dispatch({ type: "connection/ready", statusText: "Connected" });
@@ -352,6 +421,13 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
             child.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
             await child.loadSession(node.sessionId);
             if (cancelled || !ownsResources()) { retireIfUnused(); return suspend(); }
+            cached.outboxLink?.();
+            const unlink = linkSessionOutbox(parent, child, node.sessionId);
+            cached.outboxLink = unlink;
+            offOutbox = () => {
+                if (cached.outboxLink === unlink) cached.outboxLink = null;
+                unlink();
+            };
             child.dispatch({ type: "profileSettings/apply", settings: { themeId: parent.getState().ui.themeId } });
             child.setFocus("prompt");
             const draft = drafts.current.get(draftKey);
@@ -392,17 +468,23 @@ function LivePanel({ node, mobile = false, visible = true, focused, parent, crea
                 try {
                     const current = await transport.getSession(node.sessionId);
                     if (cancelled || !ownsResources()) return;
-                    if (!current || current.sessionId !== node.sessionId) throw new Error("Session unavailable.");
+                    if (!current) { reportGone(); return; }
+                    if (current.sessionId !== node.sessionId) throw new Error("Unexpected session response.");
                     child.dispatch({ type: "sessions/merged", session: current });
                     await child.syncSessionEvents(node.sessionId);
                 } catch (e) {
-                    if (!cancelled) { setError(e.status === 403 || e.status === 404 ? "Session unavailable or access changed." : "Connection interrupted. Retry to reconnect."); clearInterval(cached.timer); cached.timer = null; child.detachActiveSession(); }
+                    if (sessionUnavailable(e)) { reportGone(); return; }
+                    if (!cancelled) { setError("Connection interrupted. Retry to reconnect."); clearInterval(cached.timer); cached.timer = null; child.detachActiveSession(); }
                 } finally { cached.polling = false; }
             }, focusedRef.current ? 0 : 1).catch(() => {}), 4000);
             if (ownsResources()) setReady(child);
-        }, focused ? 0 : 1).catch(async e => { if (!cancelled) setError(e.status === 403 || e.status === 404 ? "Session unavailable or access required." : "Could not open this session. Retry to reconnect."); await suspend(); });
+        }, focused ? 0 : 1).catch(async e => {
+            if (sessionUnavailable(e)) reportGone();
+            else if (!cancelled) setError("Could not open this session. Retry to reconnect.");
+            await suspend();
+        });
         return () => {
-            cancelled = true;
+            cancelled = true; offGone();
             if (cached.activeGeneration === generation) cached.activeGeneration = null;
             suspend();
         };
@@ -496,20 +578,27 @@ function PinnedCanvas({ controller, node, onPanelKey }) {
     return <CanvasFrame onPanelKey={onPanelKey} key={`${node.sessionId}:${node.slot}`} controller={controller} sessionId={node.sessionId} slot={node.slot} latestRev={entry.latestRev} zoom={1} dataRev={entry.latestDataRev || 0} dataPayload={entry.dataPayload || null} dataPatch={entry.dataPatch || null} />;
 }
 
-function Split({ node, onResize, children }) {
-    const ref = React.useRef(null), ratioRef = React.useRef(node.ratio);
-    const [ratio, setRatio] = React.useState(node.ratio);
-    React.useLayoutEffect(() => { ratioRef.current = node.ratio; setRatio(node.ratio); }, [node.ratio]);
-    return <div ref={ref} className={`ps-moa-split ${node.direction}`}>
-        <div className="ps-moa-child" style={{ flex: `${ratio} 1 0` }}>{children[0]}</div>
-        <div className="ps-moa-divider" role="separator" tabIndex={0} aria-label="Resize MoA panels" aria-orientation={node.direction === "row" ? "vertical" : "horizontal"} aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(ratio)}
-            onKeyDown={e => { if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return; e.preventDefault(); e.stopPropagation(); const next = e.key === "Home" ? 10 : e.key === "End" ? 90 : Math.max(10, Math.min(90, ratioRef.current + (["ArrowLeft", "ArrowUp"].includes(e.key) ? -2 : 2))); setRatio(next); ratioRef.current = next; onResize(next); }}
-            onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); }}
-            onPointerMove={e => { if (!e.currentTarget.hasPointerCapture(e.pointerId)) return; const box = ref.current.getBoundingClientRect(); const next = Math.max(10, Math.min(90, 100 * (node.direction === "row" ? (e.clientX - box.left) / box.width : (e.clientY - box.top) / box.height))); ratioRef.current = next; setRatio(next); }}
-            onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) { e.currentTarget.releasePointerCapture(e.pointerId); onResize(ratioRef.current); } }}
-            onPointerCancel={() => { setRatio(node.ratio); ratioRef.current = node.ratio; }} />
-        <div className="ps-moa-child" style={{ flex: `${100 - ratio} 1 0` }}>{children[1]}</div>
-    </div>;
+function PaneDivider({ item, stage, onPreview, onResize }) {
+    const { node, box, bounds } = item;
+    const start = React.useRef(null), ratio = React.useRef(node.ratio);
+    const finish = event => {
+        if (!start.current || event.pointerId !== start.current.pointerId) return;
+        start.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        onResize(ratio.current); onPreview(null);
+    };
+    const cancel = () => { start.current = null; onPreview(null); };
+    return <div style={boxStyle(box)} data-moa-divider={node.id} className="ps-moa-divider" role="separator" tabIndex={0} aria-label="Resize MoA panels" aria-orientation={node.direction === "row" ? "vertical" : "horizontal"} aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(node.ratio)}
+        onKeyDown={e => { if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return; e.preventDefault(); e.stopPropagation(); onResize(e.key === "Home" ? 10 : e.key === "End" ? 90 : Math.max(10, Math.min(90, node.ratio + (["ArrowLeft", "ArrowUp"].includes(e.key) ? -2 : 2)))); }}
+        onPointerDown={e => { if (e.button !== 0 || e.isPrimary === false) return; e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId); start.current = { pointerId: e.pointerId }; ratio.current = node.ratio; }}
+        onPointerMove={e => {
+            if (!start.current || e.pointerId !== start.current.pointerId) return;
+            const rect = stage.current.getBoundingClientRect(), row = node.direction === "row";
+            const size = row ? rect.width : rect.height, axis = bounds[row ? "x" : "y"], extent = bounds[row ? "width" : "height"];
+            const offset = (row ? e.clientX - rect.left : e.clientY - rect.top) - axis[0] * size - axis[1] - 4;
+            ratio.current = Math.max(10, Math.min(90, 100 * offset / Math.max(1, extent[0] * size + extent[1] - 8)));
+            onPreview({ id: node.id, ratio: ratio.current });
+        }} onPointerUp={finish} onPointerCancel={cancel} onLostPointerCapture={() => { if (start.current) cancel(); }} />;
 }
 
 export function MoaWorkspace(props) {
@@ -518,7 +607,7 @@ export function MoaWorkspace(props) {
         {moa.value.dashboards.map(layout => <MoaDashboard key={layout.id} {...props} layout={layout} visible={Boolean(props.visible && layout.id === active.id)} />)}
     </div>;
 }
-function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
+function MoaDashboard({ controller, moa, viewNavigation, createTransport, layout, visible }) {
     const { value, update } = moa, mobile = !moa.desktop;
     const [mapOpen, setMapOpen] = React.useState(false);
     const [dashboardPicker, setDashboardPicker] = React.useState(false), [dashboardEdit, setDashboardEdit] = React.useState(null);
@@ -529,14 +618,22 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
     const [picker, setPicker] = React.useState(null), [menu, setMenu] = React.useState(null), [error, setError] = React.useState("");
     const closePicker = React.useCallback(() => setPicker(null), []), closeMenu = React.useCallback(() => setMenu(null), []);
     const [clearing, setClearing] = React.useState(false);
-    const layoutRef = React.useRef(null);
-    const [headerHost, setHeaderHost] = React.useState(null), [statusHost, setStatusHost] = React.useState(null);
-    React.useLayoutEffect(() => { setHeaderHost(document.getElementById("ps-moa-header-slot")); setStatusHost(document.getElementById("ps-moa-status-slot")); });
+    const layoutRef = React.useRef(null), stageRef = React.useRef(null);
+    const [resizeDraft, setResizeDraft] = React.useState(null), [undo, setUndo] = React.useState(null);
+    const [beforeHistoryHost, setBeforeHistoryHost] = React.useState(null), [afterHistoryHost, setAfterHistoryHost] = React.useState(null), [statusHost, setStatusHost] = React.useState(null);
+    React.useLayoutEffect(() => {
+        setBeforeHistoryHost(document.getElementById("ps-toolbar-before-history"));
+        setAfterHistoryHost(document.getElementById("ps-toolbar-after-history"));
+        setStatusHost(document.getElementById("ps-moa-status-slot"));
+    });
     const [controlsHost, setControlsHost] = React.useState(null);
     const [mobileStatusHost, setMobileStatusHost] = React.useState(null);
     const [composerHost, setComposerHost] = React.useState(null), [creating, setCreating] = React.useState(null);
     const nodes = moaLeaves(layout.tree), selected = nodes.some(n => n.id === focus) ? focus : nodes[0]?.id;
     const focusedSessionId = nodes.find(node => node.id === selected)?.sessionId;
+    React.useEffect(() => {
+        if (menu?.sessionId && !moaLeaves(layout.tree).some(n => n.id === menu.id && n.sessionId === menu.sessionId)) setMenu(null);
+    }, [layout.tree, menu]);
     React.useEffect(() => {
         if (visible && focusedSessionId) controller.dispatch({ type: "sessions/used", sessionId: focusedSessionId });
     }, [controller, visible, focusedSessionId]);
@@ -563,38 +660,73 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         const current = normalizeMoa(controller.getState().ui.moa).dashboards.find(d => d.id === layout.id);
         if (current) saveLayout({ tree: id ? replaceMoaNode(current.tree, id, next) : next, focusedPanelId: focusedPanelId ?? current.focusedPanelId });
     };
+    const treeSignature = JSON.stringify(layout.tree);
+    React.useEffect(() => { setResizeDraft(null); }, [mobile, visible, treeSignature]);
+    const applyDrop = (sourceId, result, expectedSignature = treeSignature) => {
+        const current = normalizeMoa(controller.getState().ui.moa).dashboards.find(d => d.id === layout.id);
+        if (!current || JSON.stringify(current.tree) !== expectedSignature) return;
+        setUndo({ tree: current.tree, focusedPanelId: current.focusedPanelId, after: JSON.stringify(result.tree), label: result.label });
+        saveLayout({ tree: result.tree, focusedPanelId: sourceId });
+    };
+    const dragging = usePaneDrag({ enabled: visible && !mobile && nodes.length > 1 && !resizeDraft && !picker && !menu && !dashboardPicker && !dashboardEdit && !creating && !clearing && !state.ui.modal,
+        tree: layout.tree, root: stageRef, onDrop: applyDrop });
+    React.useEffect(() => {
+        if (!undo) return;
+        if (undo.after !== treeSignature) { setUndo(null); return; }
+        const timer = setTimeout(() => setUndo(null), 12000);
+        return () => clearTimeout(timer);
+    }, [undo, treeSignature]);
+    let displayTree = layout.tree;
+    if (resizeDraft) {
+        const visit = node => node?.id === resizeDraft.id ? { ...node, ratio: resizeDraft.ratio } : node?.type === "split" ? { ...node, first: visit(node.first), second: visit(node.second) } : node;
+        displayTree = visit(displayTree);
+    }
+    const geometry = paneLayout(displayTree);
+    const titleFor = node => `${node?.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${node?.type === "empty" ? "Empty panel" : state.sessions.byId[node?.sessionId]?.title || "Session"}`;
     const split = (node, direction) => {
         if (nodes.length >= MOA_MAX_PANELS) { setError(`A MoA supports up to ${MOA_MAX_PANELS} panels.`); return; }
         const empty = emptyMoaPanel();
         replace(node.id, { id: crypto.randomUUID(), type: "split", direction, ratio: 50, first: node.id ? node : emptyMoaPanel(), second: empty }, empty.id); setMenu(null);
     };
-    const navigation = React.useRef(0);
-    React.useEffect(() => { if (!visible) navigation.current++; }, [visible]);
-    const zoom = async (node, artifact = null) => {
-        const request = ++navigation.current;
+    const zoom = (node, artifact = null) => {
         setError("");
-        try {
-            const session = await controller.transport.getSession(node.sessionId);
-            if (request !== navigation.current) return;
-            if (!session || session.sessionId !== node.sessionId) throw new Error("Session unavailable.");
-            controller.dispatch({ type: "sessions/merged", session });
-            controller.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
-            await controller.loadSession(node.sessionId);
-            if (request !== navigation.current || controller.getState().sessions.activeSessionId !== node.sessionId) return;
-            const draft = moa.drafts.current.get(node.sessionId);
-            if (draft) restoreDraft(controller, draft);
-            if (node.type === "canvas" && !artifact) {
-                await controller.ensureCanvasSnapshot(node.sessionId);
-                if (request !== navigation.current) return;
-                controller.dispatch({ type: "canvas/flip", sessionId: node.sessionId, slot: node.slot });
-                controller.dispatch({ type: "ui/canvasMaximized", on: true });
-            }
-            moa.leave(); moa.setReturnTo(true);
-            if (artifact) {
-                controller.dispatch({ type: "ui/canvasMaximized", on: false });
-                await controller.revealArtifact(artifact.sessionId, artifact.filename, mobile ? { fullscreen: true, preserveSession: true } : { pane: true, preserveSession: true });
-            }
-        } catch { setError("Could not open this session. It may be unavailable."); }
+        const source = moa.panels.current.get(`${layout.id}:${node.id}`)?.getState();
+        const cached = source?.history.bySessionId.get(node.sessionId);
+        const existing = controller.getState().history.bySessionId.get(node.sessionId);
+        // Reuse the panel window when it covers the main window. Never throw
+        // away older pages already loaded in the main conversation.
+        if (cached && (!existing || ((cached.lastSeq || 0) > (existing.lastSeq || 0)
+            && (cached.events?.[0]?.seq ?? Infinity) <= (existing.events?.[0]?.seq ?? Infinity)))) {
+            controller.dispatch({ type: "history/set", sessionId: node.sessionId, history: cached });
+        }
+        if (source?.sessions.byId[node.sessionId]) controller.dispatch({ type: "sessions/merged", session: source.sessions.byId[node.sessionId] });
+        controller.openWorkspace();
+        controller.dispatch({ type: "files/pane", open: false });
+        const loading = controller.loadSession(node.sessionId);
+        controller.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });
+        const generation = controller.navigationGeneration;
+        restoreDraft(controller, moa.drafts.current.get(node.sessionId));
+        if (source && node.type === "chat") {
+            controller.dispatch({ type: "ui/followBottom", pane: "chat", followBottom: source.ui.followBottom?.chat !== false });
+            controller.dispatch({ type: "ui/scroll", pane: "chat", offset: source.ui.scroll?.chat || 0 });
+        }
+        controller.dispatch({ type: "ui/canvasMaximized", on: node.type === "canvas" && !artifact });
+        if (node.type === "canvas" && !artifact) {
+            const cachedCanvas = source?.canvas.bySessionId[canvasKey(node.sessionId, node.slot)];
+            if (cachedCanvas) controller.dispatch({ type: "canvas/snapshot", sessionId: node.sessionId, slot: node.slot, rev: cachedCanvas.latestRev, ...cachedCanvas });
+            controller.dispatch({ type: "canvas/flip", sessionId: node.sessionId, slot: node.slot });
+        }
+        // The view is ready now. Network completion must not decide when to
+        // leave MoA, restore a draft, select a canvas or steal focus back.
+        moa.leave(); moa.setReturnTo(true);
+        if (artifact) Promise.resolve(controller.openChatArtifact?.(artifact.sessionId, artifact.filename)).catch(() => {
+            if (controller.navigationGeneration === generation && controller.getState().sessions.activeSessionId === node.sessionId)
+                controller.setStatus("Could not load this artifact. Retry, or use Back to return to MoA.");
+        });
+        loading.catch(() => {
+            if (controller.navigationGeneration === generation && controller.getState().sessions.activeSessionId === node.sessionId)
+                controller.setStatus("Could not refresh this session. Retry, or use Back to return to MoA.");
+        });
     };
     React.useEffect(() => {
         if (!visible) return;
@@ -645,20 +777,20 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
         <IconButton className="ps-moa-split-action" label="Split right" icon="right" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(node, "row")} />
         <IconButton className="ps-moa-split-action" label="Split below" icon="below" disabled={nodes.length >= MOA_MAX_PANELS} onClick={() => split(node, "column")} />
     </>;
-    function draw(node) {
-        if (node.type === "split") return <Split key={node.id} node={node} onResize={ratio => replace(node.id, { ...node, ratio })}>{[draw(node.first), draw(node.second)]}</Split>;
+    function draw(node, style) {
         const session = state.sessions.byId[node.sessionId], title = node.type === "empty" ? "Empty panel" : session?.title || "Session";
         const active = selected === node.id;
-        return <section key={node.id} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={() => setFocus(node.id)} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
-            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span>{active && <span className="ps-moa-focus-label">Focused</span>}</>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
+        return <section key={node.id} style={mobile ? undefined : style} hidden={mobile && !active} className={`ps-moa-panel ${active ? "is-focused" : ""} ${dragging.drag?.sourceId === node.id ? "is-drag-source" : ""}`} tabIndex={-1} data-moa-panel={visible ? node.id : undefined} data-session-id={visible ? node.sessionId : undefined} aria-label={`${node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}${title}`} onPointerDown={e => dragging.onPointerDown(e, node.id)} onLostPointerCapture={dragging.onLostPointerCapture} onPointerDownCapture={e => { if (e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onClickCapture={e => { dragging.onClickCapture(e); if (!e.isPropagationStopped()) setFocus(node.id); }} onFocusCapture={e => { if (e.target.matches?.(":focus-visible") || e.target.closest?.(".ps-moa-pane-composer")) setFocus(node.id); }} onContextMenu={e => { e.preventDefault(); if (dragging.drag) return; setFocus(node.id); node.type === "empty" ? setPicker(node) : setMenu(node); }}>
+            {node.type === "empty" ? <><header><span className="ps-moa-panel-title">{title}</span>{splitButtons(node)}<IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></header><div className="ps-moa-empty"><button className="ps-moa-add" aria-label="Choose session or canvas" onClick={() => setPicker(node)}>+</button></div></> : <LivePanel key={`${node.id}:${node.sessionId}`} panels={moa.panels} panelKey={`${layout.id}:${node.id}`} node={node} mobile={mobile} visible={visible} mobileStatusHost={active ? mobileStatusHost : null} onPanelKey={onPanelKey} focused={visible && active && !dashboardPicker && !dashboardEdit && !picker && !menu && !clearing && !creating && !state.ui.modal} parent={controller} createTransport={createTransport} drafts={moa.drafts} draftKey={node.sessionId} refreshScheduler={moa.refreshScheduler} composerHost={composerHost} perChat={value.composerMode !== "shared"} onArtifact={(sessionId, filename) => zoom(node, { sessionId, filename })} controlsHost={menu?.id === node.id ? controlsHost : null} onControlAction={closeMenu} header={{ title: <><span className="ps-moa-panel-title">{node.type === "canvas" ? `Canvas ${node.slot} · ` : ""}{title}</span></>, actions: <>{splitButtons(node)}<IconButton label="Focus panel" icon="focus" onClick={() => zoom(node)} /><IconButton label="Session control panel" icon="controls" onClick={() => setMenu(node)} /></> }} />}
 
         </section>;
     }
     const saveStatus = moa.saveStatus === "error" ? <span className="ps-moa-save" role="status"><IconButton label="Save failed · Retry" icon="retry" onClick={() => update(value)} /></span> : null;
-    const toolbar = <nav className="ps-moa-toolbar" aria-label="Master of Agents">
-            <IconButton label="Clear MoA layout" icon="clear" disabled={!layout.tree} onClick={() => setClearing(true)} />
-            <IconButton label="Enter zen" icon="zen" onClick={() => moa.setZen(true)} />
-        </nav>;
+    const clearButton = <IconButton label="Clear MoA layout" icon="clear" disabled={!layout.tree} onClick={() => setClearing(true)} />;
+    const zenButton = <IconButton label="Enter zen" icon="zen" onClick={() => moa.setZen(true)} />;
+    const toolbar = beforeHistoryHost && afterHistoryHost
+        ? <>{createPortal(clearButton, beforeHistoryHost)}{createPortal(zenButton, afterHistoryHost)}</>
+        : <nav className="ps-moa-toolbar" aria-label="Master of Agents">{clearButton}{zenButton}</nav>;
     const swipe = {
         onTouchStart: e => { swipeStart.current = e.touches.length === 1 && canSwipeFrom(e.target, e.currentTarget) ? { x: e.touches[0].clientX, y: e.touches[0].clientY, time: Date.now() } : null; },
         onTouchEnd: e => {
@@ -695,9 +827,21 @@ function MoaDashboard({ controller, moa, createTransport, layout, visible }) {
             <IconButton label="Switch MoA dashboard" icon="dropdown" aria-haspopup="dialog" aria-expanded={dashboardPicker} onClick={event => { if (Date.now() < suppressDashboardClickUntil.current) { suppressDashboardClickUntil.current = 0; event.preventDefault(); return; } setDashboardPicker(true); }} />
         </header>}
         {!moa.zen && saveStatus}
-        {visible && !mobile && (moa.zen ? <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} /> : (headerHost ? createPortal(toolbar, headerHost) : toolbar))}
+        {visible && !mobile && (moa.zen ? <div className="ps-moa-zen-controls">
+            <CompactViewNavigation navigation={viewNavigation} />
+            <IconButton className="ps-moa-zen-exit" label="Exit zen" icon="restore" onClick={() => moa.setZen(false)} />
+        </div> : toolbar)}
         {error && <div role="alert" className="ps-moa-error">{error}<IconButton label="Dismiss" icon="close" onClick={() => setError("")} /></div>}
-        <div {...(mobile ? swipe : {})} ref={layoutRef} id="moa-layout" role="region" aria-label="MoA panels" className="ps-moa-layout">{layout.tree ? (mobile ? nodes.map(draw) : draw(layout.tree)) : <section className="ps-moa-panel ps-moa-initial-panel"><header><span className="ps-moa-panel-title">Empty panel</span>{splitButtons({ id: null, type: "empty" })}</header><div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div></section>}</div>
+        <div {...(mobile ? swipe : {})} ref={layoutRef} id="moa-layout" role="region" aria-label="MoA panels" className="ps-moa-layout">{layout.tree ? <div ref={stageRef} className={`ps-moa-stage ${dragging.drag ? "is-dragging" : ""}`}>
+            {geometry.panels.slice().sort((a, b) => a.node.id.localeCompare(b.node.id)).map(({ node, box }) => draw(node, boxStyle(box)))}
+            {!mobile && geometry.dividers.map(item => <PaneDivider key={item.node.id} item={item} stage={stageRef} onPreview={setResizeDraft} onResize={ratio => replace(item.node.id, { ...item.node, ratio })} />)}
+            {dragging.drag && <div className="ps-moa-drop-preview" aria-label="Pane drop preview" data-drop-kind={dragging.drag.result?.kind || "none"}>
+                {dragging.drag.result && paneLayout(dragging.drag.result.tree).panels.filter(({ node, box }) => JSON.stringify(box) !== JSON.stringify(geometry.panels.find(p => p.node.id === node.id)?.box)).map(({ node, box }) => <div key={node.id} style={boxStyle(box)} className={`ps-moa-preview-pane ${node.id === dragging.drag.sourceId ? "is-source" : ""}`}><span>{titleFor(node)}</span></div>)}
+                <div className="ps-moa-drag-label" style={{ left: Math.min(dragging.drag.x + 16, window.innerWidth - 240), top: Math.min(dragging.drag.y + 16, window.innerHeight - 50) }}>{titleFor(nodes.find(n => n.id === dragging.drag.sourceId))}</div>
+                <div className="ps-moa-drag-hint" role="status"><strong>{dragging.drag.result?.label || "Drag onto another pane"}</strong><span>Centre: swap · Side: split 50/50 · Esc: cancel</span>{dragging.drag.result?.extensionLabel && <span>{dragging.drag.result.kind === "extend" ? "Release Shift to split the target in half" : `Hold Shift to ${dragging.drag.result.extensionLabel.toLowerCase()}`}</span>}</div>
+            </div>}
+            {visible && undo && <div className="ps-moa-layout-undo" role="status">{undo.label}<button className="ps-mini-button" onClick={() => { if (undo.after === JSON.stringify(normalizeMoa(controller.getState().ui.moa).dashboards.find(d => d.id === layout.id)?.tree)) saveLayout({ tree: undo.tree, focusedPanelId: undo.focusedPanelId }); setUndo(null); }}>Undo</button><IconButton label="Dismiss layout undo" icon="close" onClick={() => setUndo(null)} /></div>}
+        </div> : <section className="ps-moa-panel ps-moa-initial-panel"><header><span className="ps-moa-panel-title">Empty panel</span>{splitButtons({ id: null, type: "empty" })}</header><div className="ps-moa-empty" onContextMenu={e => { e.preventDefault(); setPicker({ id: null }); }}><button className="ps-moa-add" aria-label="Add first MoA panel" onClick={() => setPicker({ id: null })}>+</button></div></section>}</div>
         {value.composerMode === "shared" && <footer tabIndex={-1} className="ps-moa-composer-strip" aria-label="Selected session composer" data-session-id={nodes.find(n => n.id === selected)?.sessionId || ""}>
             <span className="ps-moa-composer-target">{nodes.find(n => n.id === selected)?.sessionId ? state.sessions.byId[nodes.find(n => n.id === selected).sessionId]?.title || "Selected session" : "Select a session to write a message"}</span>
             <div ref={setComposerHost} className="ps-moa-composer-host" />

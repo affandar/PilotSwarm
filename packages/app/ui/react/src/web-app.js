@@ -95,7 +95,8 @@ const SCROLL_BOTTOM_EPSILON_PX = 0.5;
 const PROGRAMMATIC_SCROLL_TOLERANCE_PX = SCROLL_BOTTOM_EPSILON_PX;
 // Minimum downward finger travel (px) while at the top of the chat pane before
 // a touch pull counts as a load-older-history request.
-const TOUCH_TOP_PULL_THRESHOLD_PX = 24;
+const TOUCH_TOP_PULL_THRESHOLD_PX = 56;
+const TOUCH_TOP_PULL_MAX_PX = 84;
 // How long after the last user-driven scroll event the pane still counts as
 // momentum-scrolling (native flick glide), during which programmatic scrollTop
 // restores are suppressed so they don't kill the glide.
@@ -1108,7 +1109,24 @@ function scrollBoundaryIdentity(lines, fromEnd = false) {
     return boundary.map(scrollLineIdentity).join("\u241e");
 }
 
-function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom = false } = {}) {
+// History loading belongs to the outer transcript. Let a tool result, activity
+// log or agent update consume the gesture first when it still has room.
+function nestedViewportCanScroll(viewport, target, deltaY) {
+    if (!deltaY) return false;
+    for (let node = target?.nodeType === 1 ? target : target?.parentElement;
+        node && node !== viewport; node = node.parentElement) {
+        const maxScroll = node.scrollHeight - node.clientHeight;
+        if (maxScroll <= 1 || !/^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) continue;
+        if (deltaY < 0 ? node.scrollTop > 1 : node.scrollTop < maxScroll - 1) return true;
+    }
+    return false;
+}
+
+function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, {
+    stickyBottom = false,
+    historyPullEnabled = false,
+    historySessionId = null,
+} = {}) {
     const normalizedLines = React.useMemo(() => normalizeLines(lines), [lines]);
     // Programmatic scrollTop assignments fire a 'scroll' event that would
     // otherwise call onScroll → dispatch ui/scroll → clobber the user's
@@ -1123,6 +1141,9 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     const previousContentRef = React.useRef(null);
     const historyScrollRef = React.useRef(null);
     React.useEffect(() => () => { historyScrollRef.current = null; }, []);
+    const [topPullDistance, setTopPullDistance] = React.useState(0);
+    const [loadingHistorySessionId, setLoadingHistorySessionId] = React.useState(null);
+    React.useEffect(() => { setTopPullDistance(0); }, [historySessionId]);
     // Touch scrolling relies on native momentum for speed: a hard flick keeps
     // scrolling long after the finger lifts. Re-asserting scrollTop from state
     // on every render (live events, status updates) kills that momentum at the
@@ -1310,7 +1331,7 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         const node = ref.current;
         const state = controller.getState();
         const sessionId = state.sessions.activeSessionId;
-        if (!node || !sessionId || historyScrollRef.current) return;
+        if (!node || !sessionId || !historyPullEnabled || historyScrollRef.current) return;
         const top = node.getBoundingClientRect().top;
         const element = [...node.children].find(child => child.textContent?.trim() && child.getBoundingClientRect().bottom > top + 6);
         const pending = {
@@ -1321,19 +1342,22 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         historyScrollRef.current = pending;
         const load = controller.handleChatTopHistoryScrollIntent?.(
             (node.scrollHeight - node.clientHeight) / SCROLL_ROW_HEIGHT,
-            { force: true, preserveDomAnchor: true },
+            { force: true, preserveDomAnchor: true,
+                onLoadStarted: () => setLoadingHistorySessionId(sessionId) },
         );
         Promise.resolve(load).catch(() => {}).finally(() => {
+            setLoadingHistorySessionId(current => current === sessionId ? null : current);
             if (historyScrollRef.current !== pending) return;
             const oldest = controller.getState().history.bySessionId.get(sessionId)?.events?.[0]?.seq;
             if (!(oldest < pending.oldestSeq)) historyScrollRef.current = null;
             else setViewportRevision(revision => revision + 1);
         });
-    }, [controller, ref]);
+    }, [controller, historyPullEnabled, ref]);
 
     const onWheel = React.useCallback((event) => {
         const node = ref.current;
         if (!node || paneKey !== "chat" || !event.deltaY || event.ctrlKey) return;
+        if (nestedViewportCanScroll(node, event.target, event.deltaY)) return;
         const pending = historyScrollRef.current;
         if (pending && event.deltaY > 0) historyScrollRef.current = null;
         else if (pending) {
@@ -1355,13 +1379,19 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
     // scroll events either — so mobile had no way to request older history.
     // A downward pull that starts while the pane is at (or near) the top fires
     // the same top-history intent, once per gesture.
-    const touchPullRef = React.useRef({ startY: null, fired: false });
+    const touchPullRef = React.useRef({ startY: null, lastY: null, distance: 0 });
     const onTouchStart = React.useCallback((event) => {
         userScrollRef.current.touching = true;
         if (historyScrollRef.current?.applied) historyScrollRef.current = null;
-        if (paneKey !== "chat") return;
-        touchPullRef.current = { startY: event.touches?.[0]?.clientY ?? null, fired: false };
-    }, [paneKey]);
+        const node = ref.current;
+        touchPullRef.current = {
+            startY: event.touches?.length === 1 && historyPullEnabled && loadingHistorySessionId !== historySessionId
+                && paneKey === "chat" && node?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX
+                ? event.touches?.[0]?.clientY ?? null : null,
+            lastY: event.touches?.[0]?.clientY ?? null,
+            distance: 0,
+        };
+    }, [historyPullEnabled, historySessionId, loadingHistorySessionId, paneKey, ref]);
     const onTouchEnd = React.useCallback(() => {
         userScrollRef.current.touching = false;
         // Momentum continues past the finger lift; onScroll keeps refreshing
@@ -1370,27 +1400,42 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         if (historyScrollRef.current?.applied) {
             historyScrollRef.current.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
         }
+        const distance = touchPullRef.current.distance;
+        touchPullRef.current = { startY: null, lastY: null, distance: 0 };
+        setTopPullDistance(0);
+        if (distance >= TOUCH_TOP_PULL_THRESHOLD_PX
+            && ref.current?.scrollTop <= PROGRAMMATIC_SCROLL_TOLERANCE_PX) requestHistoryPage();
+    }, [ref, requestHistoryPage]);
+    const onTouchCancel = React.useCallback(() => {
+        userScrollRef.current.touching = false;
+        touchPullRef.current = { startY: null, lastY: null, distance: 0 };
+        setTopPullDistance(0);
     }, []);
     const onTouchMove = React.useCallback((event) => {
         const node = ref.current;
         const pull = touchPullRef.current;
         if (!node || paneKey !== "chat" || event.touches?.length !== 1) return;
+        const y = event.touches[0].clientY;
+        const deltaY = pull.lastY == null ? 0 : pull.lastY - y;
+        pull.lastY = y;
+        if (nestedViewportCanScroll(node, event.target, deltaY)) {
+            // Movement within a box must not accumulate into a history pull.
+            if (pull.startY != null) pull.startY = y;
+            pull.distance = 0;
+            setTopPullDistance(0);
+            return;
+        }
         if (historyScrollRef.current) {
             historyScrollRef.current.releaseAt = performance.now() + HISTORY_SCROLL_GESTURE_GAP_MS;
             event.preventDefault();
             return;
         }
-        if (pull.fired || pull.startY == null) return;
+        if (pull.startY == null) return;
         if (node.scrollTop > PROGRAMMATIC_SCROLL_TOLERANCE_PX) return;
-        const y = event.touches?.[0]?.clientY;
-        if (y == null || y - pull.startY < TOUCH_TOP_PULL_THRESHOLD_PX) return;
-        pull.fired = true;
-        // A deliberate pull at the top of the pane is an unambiguous request:
-        // Request one page at the measured DOM boundary. The shared gesture
-        // guard absorbs repeated wheel events and the remainder of this pull.
-        event.preventDefault();
-        requestHistoryPage();
-    }, [paneKey, ref, requestHistoryPage]);
+        pull.distance = Math.min(TOUCH_TOP_PULL_MAX_PX, Math.max(0, y - pull.startY));
+        setTopPullDistance(pull.distance);
+        if (pull.distance > 0) event.preventDefault();
+    }, [paneKey, ref]);
 
     React.useEffect(() => {
         const node = ref.current;
@@ -1405,7 +1450,8 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         };
     }, [ref, onWheel, onTouchMove]);
 
-    return { normalizedLines, onScroll, onTouchStart, onTouchEnd };
+    return { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel,
+        topPullDistance, loadingOlderHistory: loadingHistorySessionId === historySessionId };
 }
 
 function Runs({ runs, theme }) {
@@ -1530,15 +1576,11 @@ function ChatActivityRun({ calls }) {
             followRef.current = getScrollDistanceToBottom(event.currentTarget) <= 24;
         },
         onWheel: (event) => {
-            event.stopPropagation();
             if (event.deltaY < 0) followRef.current = false;
         },
-        onTouchStart: (event) => {
-            event.stopPropagation();
+        onTouchStart: () => {
             followRef.current = false;
         },
-        onTouchMove: (event) => event.stopPropagation(),
-        onTouchEnd: (event) => event.stopPropagation(),
     }, calls.map((call) => React.createElement(ChatCallLine, { key: call.callKey, line: call }))),
     React.createElement("div", { className: "ps-activity-run-footer" },
         `Showing ${calls.length} ${calls.length === 1 ? "entry" : "entries"} · Scroll for earlier activity`));
@@ -3786,7 +3828,9 @@ const PreviewMessageContent = React.memo(function PreviewMessageContent({ conten
 });
 
 const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, theme, controller }) {
-    const [open, setOpen] = React.useState(false);
+    // Saved updates should be readable immediately. The viewport below keeps
+    // long updates scrollable without taking over the whole chat pane.
+    const [open, setOpen] = React.useState(line.text === "Agent update");
     const [revealed, setRevealed] = React.useState(
         !line.liveStartedAt || Date.now() - line.liveStartedAt >= 200,
     );
@@ -3795,6 +3839,10 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
     const followRef = React.useRef(true);
     const snapshotRef = React.useRef(null);
     const expanded = open || line.final;
+    React.useLayoutEffect(() => {
+        // A live preview can become a saved update in the same card.
+        if (line.text === "Agent update") setOpen(true);
+    }, [line.text]);
     // Keep already-mounted markdown/disclosures when closed, but don't parse
     // new hidden deltas. Reopening catches up in a single render.
     if (expanded) snapshotRef.current = line;
@@ -3857,15 +3905,12 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
         },
         onWheel: (event) => {
             if (!line.final) {
-                event.stopPropagation();
                 if (event.deltaY < 0) followRef.current = false;
             }
         },
-        onTouchStart: (event) => {
-            if (!line.final) { event.stopPropagation(); followRef.current = false; }
+        onTouchStart: () => {
+            if (!line.final) followRef.current = false;
         },
-        onTouchMove: (event) => { if (!line.final) event.stopPropagation(); },
-        onTouchEnd: (event) => { if (!line.final) event.stopPropagation(); },
         onKeyDown: (event) => {
             if (!line.final && ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
                 event.stopPropagation();
@@ -4225,7 +4270,7 @@ function focusRegionForPaneKey(paneKey, override = null) {
     return PANE_KEY_FOCUS_REGIONS[String(paneKey || "")] || null;
 }
 
-function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
+function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, lines, stickyLines = [], bottomStickyLines = [], reserveBottomSticky = false, scrollOffset = 0, scrollMode = "top", paneKey, controller, className = "", panelClassName = "", topContent = null, bottomContent = null, structuredBlocks = false, stickyBottom = false, historyPullEnabled = false, historySessionId = null, renderBody = null, focusRegion = null, panelRef = null, ariaLive = null }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const ref = React.useRef(null);
@@ -4238,7 +4283,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [panelRef]);
     const stickyRef = React.useRef(null);
     const syncingHorizontalRef = React.useRef(false);
-    const { normalizedLines, onScroll, onTouchStart, onTouchEnd } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom });
+    const { normalizedLines, onScroll, onTouchStart, onTouchEnd, onTouchCancel, topPullDistance, loadingOlderHistory } = useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller, { stickyBottom, historyPullEnabled, historySessionId });
     const normalizedSticky = React.useMemo(() => normalizeLines(stickyLines), [stickyLines]);
     const normalizedBottomSticky = React.useMemo(() => normalizeLines(bottomStickyLines), [bottomStickyLines]);
     const preserveHorizontalScroll = className.includes("is-preserve") && panelClassName.includes("has-preserved-sticky");
@@ -4327,7 +4372,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
     }, [preserveHorizontalScroll, syncScrollLeft]);
 
     return React.createElement(Panel, { title, titleRight, color, focused, actions, theme, className: panelClassName },
-        topContent,
+        typeof topContent === "function" ? topContent({ topPullDistance, loadingOlderHistory }) : topContent,
         normalizedSticky.length > 0
             ? React.createElement("div", {
                 ref: stickyRef,
@@ -4337,7 +4382,7 @@ function ScrollLinesPanel({ title, titleRight = null, color, focused, actions, l
                 normalizedSticky.map((line, index) => React.createElement(Line, { key: `sticky:${index}`, line, theme })),
             )
             : null,
-        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel: onTouchEnd },
+        React.createElement("div", { ref: setPanelNode, className: `ps-scroll-panel ${className}${scrollShadow.down ? " is-scrolled-down" : ""}${scrollShadow.up ? " is-scrolled-up" : ""}`.trim(), "data-session-scroll": focusRegion === "sessions" ? "1" : undefined, "aria-live": ariaLive || undefined, "aria-atomic": ariaLive ? "false" : undefined, onScroll: handleBodyScroll, onMouseDown: claimFocus, onTouchStart, onTouchEnd, onTouchCancel },
             typeof renderBody === "function"
                 ? renderBody(normalizedLines, theme)
                 : structuredBlocks
@@ -6903,6 +6948,39 @@ function SessionHeaderStatus({ controller }) {
         queue ? React.createElement("span", { className: "ps-mobile-queue", title: queue }, queue) : null);
 }
 
+function HistoryUpGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("path", { d: "M12 19V5m-5 5 5-5 5 5" }));
+}
+
+function HistorySpinnerGlyph() {
+    return React.createElement(Glyph, null,
+        React.createElement("path", { d: "M20.5 12a8.5 8.5 0 1 1-8.5-8.5" }));
+}
+
+function HistoryLoadIndicator({ loading, manual, pullDistance, onManualLoad }) {
+    const ready = pullDistance >= TOUCH_TOP_PULL_THRESHOLD_PX;
+    const label = loading ? "Loading earlier messages…"
+        : manual ? "Load older messages"
+            : ready ? "Release to load earlier messages"
+                : "Pull for earlier messages";
+    return React.createElement("div", {
+        className: `ps-history-load${loading ? " is-loading" : ""}${manual ? " is-manual" : ""}${ready ? " is-ready" : ""}`,
+        style: pullDistance > 0 ? { "--ps-history-pull": `${Math.min(pullDistance, TOUCH_TOP_PULL_MAX_PX)}px` } : undefined,
+        role: "status", "aria-live": "polite",
+    },
+        React.createElement("span", { className: "ps-history-track", "aria-hidden": "true" },
+            React.createElement("span", { className: "ps-history-tick is-first" }),
+            React.createElement("span", { className: "ps-history-tick is-second" }),
+            React.createElement("span", { className: "ps-history-marker" },
+                loading ? React.createElement(HistorySpinnerGlyph) : React.createElement(HistoryUpGlyph),
+                loading ? React.createElement("span", { className: "ps-history-text-spinner" },
+                    ["|", "/", "—", "\\"].map((frame, index) => React.createElement("span", { key: index }, frame))) : null)),
+        manual && !loading
+            ? React.createElement("button", { type: "button", className: "ps-mini-button ps-load-older-button", onClick: onManualLoad }, label)
+            : React.createElement("span", { className: "ps-history-label" }, label));
+}
+
 function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
@@ -6985,7 +7063,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
     );
-    const [loadingOlder, setLoadingOlder] = React.useState(false);
+    const [manualLoadingSessionId, setManualLoadingSessionId] = React.useState(null);
     // Scroll-up expands the transcript automatically until the soft cap, then
     // refuses — and the portal had no control to ask for more, so a busy
     // session's history became unreachable from the browser. Surface the
@@ -7084,25 +7162,27 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
         paneKey: "chat",
+        historySessionId: viewState.activeSessionId,
+        historyPullEnabled: Boolean(viewState.activeHistory?.hasOlderEvents && !showLoadOlder),
         ariaLive: "polite",
         className: "is-wrapped",
         panelClassName: "ps-chat-panel",
         panelRef,
         bottomContent: composer,
-        topContent: showLoadOlder
-            ? React.createElement("div", { className: "ps-load-older-bar" },
-                React.createElement("button", {
-                    type: "button",
-                    className: "ps-load-older-button",
-                    disabled: loadingOlder,
-                    onClick: () => {
-                        setLoadingOlder(true);
-                        controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY)
-                            .catch(() => {})
-                            .finally(() => setLoadingOlder(false));
-                    },
-                }, loadingOlder ? "Loading older messages…" : "↑ Load older messages"))
-            : null,
+        topContent: ({ topPullDistance, loadingOlderHistory }) => {
+            const loading = loadingOlderHistory || manualLoadingSessionId === viewState.activeSessionId;
+            if (!showLoadOlder && topPullDistance <= 0 && !loading) return null;
+            return React.createElement(HistoryLoadIndicator, {
+                loading, manual: showLoadOlder, pullDistance: loading ? 0 : topPullDistance,
+                onManualLoad: () => {
+                    const sessionId = viewState.activeSessionId;
+                    setManualLoadingSessionId(sessionId);
+                    controller.handleCommand(UI_COMMANDS.EXPAND_HISTORY)
+                        .catch(() => {})
+                        .finally(() => setManualLoadingSessionId(current => current === sessionId ? null : current));
+                },
+            });
+        },
         structuredBlocks: true,
         renderBody: null,
     });
@@ -9263,13 +9343,21 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         // A pane-splitter drag or a font-size change re-wraps the text with
         // no window resize; watch the box itself.
         const node = inputRef.current;
+        let frame = 0;
         const observer = node && typeof ResizeObserver !== "undefined"
-            ? new ResizeObserver(() => growInput(true))
+            ? new ResizeObserver(() => {
+                // growInput writes the same box's height. Defer those writes
+                // out of ResizeObserver delivery to prevent WebKit's resize
+                // loop error when a narrow pane wraps the placeholder.
+                cancelAnimationFrame(frame);
+                frame = requestAnimationFrame(() => growInput(true));
+            })
             : null;
         if (observer && node) observer.observe(node);
         return () => {
             window.removeEventListener("resize", onResize);
             observer?.disconnect();
+            cancelAnimationFrame(frame);
         };
     }, [growInput]);
 
@@ -9732,7 +9820,7 @@ function IconButton({ icon, label, onClick, disabled = false, active = false, pr
     tooltipNode);
 }
 
-function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
+function Toolbar({ controller, mobile, moa = null, viewNavigation = null, canvasPaneOpen = false, onToggleCanvasPane = null, mobilePane = "workspace", onSelectMobilePane = null, mobileMainLayout = "split" }) {
     const [headerSlot, setHeaderSlot] = React.useState(null);
     React.useEffect(() => {
         if (typeof document === "undefined") return;
@@ -9886,6 +9974,15 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         },
     });
 
+    if (!mobile && moa?.desktop !== false && viewNavigation) for (const direction of ["back", "forward"]) buttonDefs.push({
+        key: direction,
+        icon: React.createElement("svg", { viewBox: "0 0 20 20", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
+            React.createElement("path", { d: direction === "back" ? "M16 10H4m5-5-5 5 5 5" : "M4 10h12m-5-5 5 5-5 5" })),
+        label: viewNavigation[`${direction}Label`],
+        disabled: !viewNavigation[direction === "back" ? "canBack" : "canForward"],
+        onClick: viewNavigation[direction],
+    });
+
     const renderButton = (def) => {
         const button = React.createElement(IconButton, {
             key: def.badge ? undefined : def.key,
@@ -9954,18 +10051,11 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         );
     }
 
-    // Two kinds of button, two clusters (desktop only):
-    //
-    //   left  : the workspace's — new, filter, canvas, diagnostics
-    //   right : modes [workspace, budget, admin] │ theme · sign-out
-    //
-    // The whole left cluster belongs to the workspace — new session, filter,
-    // canvas and diagnostics all act on it — so it exists only in Workspace
-    // mode. Budget and the Admin Console replace the workspace; nothing on
-    // the left applies there. Modes are exclusive (the controller closes one
-    // when the other opens) and the Workspace button is the way back.
+    // Keep navigation in one permanent slot in every desktop mode. Context
+    // controls occupy equal-width flanks; empty flanks still reserve space.
     const mode = moa?.active ? "moa" : adminVisible ? "admin" : (budgetOpen ? "budget" : "workspace");
     const ACTIONS = ["new", "filter"];
+    const HISTORY = ["back", "forward"];
     const PANELS = ["canvas", "diagnostics"];
     const MODES = ["workspace", "moa", "budget", "admin"];
 
@@ -9975,7 +10065,7 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
     // it — is the confusing half of every full-screen mode. The Canvas toggle
     // is exempt: it already means "put the canvas away", and closing drops
     // the flag in the reducer.
-    const withRestore = (def) => ((!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
+    const withRestore = (def) => (HISTORY.includes(def.key) || (!canvasMaximized || def.key === "canvas") && !(moa?.active && ["workspace", "budget", "admin"].includes(def.key)) ? def : {
         ...def,
         onClick: (...args) => {
             controller.dispatch({ type: "ui/canvasMaximized", on: false });
@@ -9990,10 +10080,6 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
         .map(renderButton);
     const divider = (key) => React.createElement("span", { key, className: "ps-toolbar-divider", "aria-hidden": "true" });
 
-    // One run, no bar: all four act on the workspace.
-    const leftCluster = mode === "workspace"
-        ? [...pick(ACTIONS), ...pick(PANELS)]
-        : [];
     const rightCluster = [
         ...pick(MODES),
         divider("mode-divider"),
@@ -10001,28 +10087,21 @@ function Toolbar({ controller, mobile, moa = null, canvasPaneOpen = false, onTog
     ];
 
     const toolbar = React.createElement("div", { className: `ps-toolbar${moa?.active ? " is-moa" : ""}` },
-        // Three columns: left rail | main controls | right rail. Full-screen
-        // canvas uses the otherwise-empty left rail for the normal actions so
-        // they do not crowd the canvas metadata and controls across the top.
         React.createElement("div", { className: "ps-toolbar-side is-left" },
-            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : canvasMaximized ? leftCluster : null),
-        React.createElement("div", { className: "ps-toolbar-actions" },
-            moa?.active ? React.createElement("div", { id: "ps-moa-header-slot" }) : canvasMaximized ? null : leftCluster),
-        React.createElement("div", { className: "ps-toolbar-side is-right" },
-            // The portal header parks its version/status meta here, LEFT of
-            // the tool buttons, and its sign-out glyph in the slot after
-            // them — one right-aligned cluster: meta · mode · theme · out.
-            React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
-            // While the canvas is full screen its header controls (rev, zoom,
-            // zen, restore) portal INTO this slot from CanvasPane — zoom state
-            // lives there, so the controls come to the toolbar rather than
-            // their state moving out.
-            canvasMaximized
+            moa?.active ? React.createElement("div", { id: "ps-moa-status-slot" }) : null,
+            // Canvas controls retain their state in CanvasPane. Their portal
+            // gets the flexible rail, so names/revisions cannot move history.
+            canvasMaximized && !moa?.active
                 ? React.createElement("span", { className: "ps-toolbar-canvas-slot", id: "ps-toolbar-canvas-slot" })
-                : null,
-            canvasMaximized
-                ? React.createElement("span", { className: "ps-toolbar-divider", "aria-hidden": "true" })
-                : null,
+                : null),
+        React.createElement("div", { className: "ps-toolbar-actions ps-toolbar-navigation", role: "navigation", "aria-label": moa?.active ? "Master of Agents" : "View navigation" },
+            React.createElement("div", { className: "ps-toolbar-context is-before", id: "ps-toolbar-before-history" },
+                mode === "workspace" ? pick(ACTIONS) : null),
+            React.createElement("div", { className: "ps-toolbar-history" }, pick(HISTORY)),
+            React.createElement("div", { className: "ps-toolbar-context is-after", id: "ps-toolbar-after-history" },
+                mode === "workspace" ? pick(PANELS) : null)),
+        React.createElement("div", { className: "ps-toolbar-side is-right" },
+            React.createElement("span", { className: "ps-toolbar-meta-slot", id: "ps-toolbar-meta-slot" }),
             React.createElement("div", { className: "ps-toolbar-actions is-tools" }, rightCluster),
             React.createElement("span", { className: "ps-toolbar-signout-slot", id: "ps-toolbar-signout-slot" })),
     );
@@ -14787,7 +14866,7 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
     return new PilotSwarmUiController({ store, transport });
 }
 
-export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) {
+export function PilotSwarmWebApp({ controller, suspended = false, moa = null, viewNavigation = null }) {
     const viewportRef = React.useRef(null);
     const mainGridRef = React.useRef(null);
     const viewport = useMeasuredViewport(viewportRef, suspended);
@@ -14923,7 +15002,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
     const appliedProfileSettingsJsonRef = React.useRef(null);
     const defaultProfileSettingsRef = React.useRef(null);
     const [mobilePane, setMobilePane] = React.useState("workspace");
-    const mobile = (viewport.width || window.innerWidth || 0) < MOBILE_BREAKPOINT;
+    // Match the CSS and MoA breakpoint. The padded shell is narrower than
+    // the browser and otherwise flips to mobile while the header is desktop.
+    const mobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
     const readOnlyChatPane = state.activeSessionIsGroup;
     const effectivePromptRows = readOnlyChatPane ? 0 : state.promptRows;
 
@@ -15551,7 +15632,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         : null;
 
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
-        React.createElement(Toolbar, { controller, mobile: false, moa }),
+        React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
         React.createElement(ModalLayer, { controller }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
@@ -15559,7 +15640,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null }) 
         // plus the Main layout cycle), so it renders on every pane — hiding it
         // anywhere would trap the user with no way back.
         React.createElement(Toolbar, {
-            controller, moa,
+            controller, moa, viewNavigation,
             mobile,
             canvasPaneOpen: mobileCanvasOpen,
             onToggleCanvasPane: toggleMobileCanvas,

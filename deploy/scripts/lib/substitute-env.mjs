@@ -22,11 +22,12 @@ const KEY_LINE_RE = /^([A-Z_][A-Z0-9_]*)=(.*)$/;
 
 // Substitute one overlay .env. Returns { substituted: string[], unresolved: string[] }.
 // Throws (with a single sorted summary line) if any keys are unresolved.
-export function substituteOverlayEnv({ srcPath, dstPath, envMap }) {
+export function substituteOverlayEnv({ srcPath, dstPath, envMap, omittedKeys = [] }) {
   const raw = readFileSync(srcPath, "utf8");
   const outLines = [];
   const substituted = [];
   const unresolved = new Set();
+  const omitted = new Set(omittedKeys);
 
   for (const line of raw.split(/\r?\n/)) {
     const m = line.match(KEY_LINE_RE);
@@ -35,6 +36,7 @@ export function substituteOverlayEnv({ srcPath, dstPath, envMap }) {
       continue;
     }
     const [, key] = m;
+    if (omitted.has(key)) continue;
     const v = envMap[key];
     if (v === undefined || v === null || v === "") {
       unresolved.add(key);

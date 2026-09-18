@@ -1,3 +1,5 @@
+import { useViewNavigation } from "./navigation/use-view-navigation.js";
+import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
@@ -574,16 +576,18 @@ function PortalMobileStatus({ statusText, onDismiss }) {
  * with the canvas. It stays a real <button> with a visible focus ring so
  * keyboard users can still reach it.
  */
-function PortalChromelessStrip({ branding, onShowChrome }) {
+function PortalChromelessStrip({ branding, onShowChrome, viewNavigation }) {
     return React.createElement("div", { className: "portal-chromeless-strip" },
         React.createElement("span", { className: "portal-chromeless-strip-label" },
             `${getWorkspaceTitle(branding)} · Live canvas`),
+        React.createElement("div", { className: "portal-chromeless-strip-actions" },
+        React.createElement(CompactViewNavigation, { navigation: viewNavigation }),
         React.createElement("button", {
             type: "button",
             className: "portal-chromeless-strip-restore",
             onClick: onShowChrome,
             title: "Show the header and workspace chrome",
-        }, "Show chrome"));
+        }, "Show chrome")));
 }
 
 function PortalWorkspace({ auth, portal, shellStyle }) {
@@ -606,6 +610,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         docs: portal?.docs || null,
     }), [portal?.branding?.splash, portal?.branding?.splashMobile, portal?.branding?.title, portal?.docs, transport]);
     const moa = useMoa(controller);
+    const viewNavigation = useViewNavigation(controller, moa);
     const createPanelTransport = React.useCallback(() => new BrowserPortalTransport({
         getAccessToken: auth.getAccessToken, getResourceToken: auth.getResourceToken,
         onUnauthorized: auth.handleUnauthorized,
@@ -688,6 +693,7 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         chromeHidden
             ? React.createElement(PortalChromelessStrip, {
                 branding: portal?.branding,
+                viewNavigation: moa.desktop ? viewNavigation : null,
                 onShowChrome: () => {
                     setChromeHidden(false);
                     // Keep the address bar honest: a reload, or the URL copied
@@ -722,9 +728,9 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
                 onDismiss: () => setDismissedStatus(statusText),
             }),
         React.createElement("main", { className: "portal-main" },
-            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa }),
+            React.createElement(PilotSwarmWebApp, { controller, suspended: moa.active || moa.mobileZen, moa, viewNavigation }),
             moa.mobileZen ? React.createElement(MobileZen, { controller, onClose: moa.closeMobileZen, drafts: moa.zenDrafts, createTransport: createPanelTransport }) : null,
-            moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, visible: moa.active, createTransport: createPanelTransport }) : null),
+            moa.loaded ? React.createElement(MoaWorkspace, { controller, moa, viewNavigation, visible: moa.active, createTransport: createPanelTransport }) : null),
     );
 }
 

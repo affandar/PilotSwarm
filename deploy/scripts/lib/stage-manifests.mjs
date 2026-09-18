@@ -20,6 +20,9 @@ import { join } from "node:path";
 import { REPO_ROOT, log } from "./common.mjs";
 import { substituteOverlayEnv } from "./substitute-env.mjs";
 import { computeSpcKeysHash } from "./spc-keys-hash.mjs";
+import { DATABASE_ENV_DEFAULTS, validateDatabaseConfig } from "./database-env.mjs";
+import { databaseOverlayOmittedKeys } from "./overlay-contracts.mjs";
+import { stageDatabaseSecrets } from "./database-secrets.mjs";
 
 // Files inside the staged GitOps tree that contain `__PLACEHOLDER__`-style
 // tokens which need substitution against the env map. Each entry maps a
@@ -167,6 +170,8 @@ export function resolveOverlayName({ service, envName, env }) {
 // Stage <service> into <stagingDir>/gitops/<service>/. Returns the absolute
 // path to the staged service tree (which is what publish-manifests uploads).
 export function stageManifests({ service, envName, env, stagingDir }) {
+  const runtimeService = service === "worker" || service === "portal";
+  if (runtimeService) validateDatabaseConfig(env, { requireVersions: true });
   const srcRoot = join(REPO_ROOT, "deploy", "gitops", service);
   if (!existsSync(srcRoot)) {
     throw new Error(`GitOps tree missing for service '${service}': ${srcRoot}`);
@@ -242,9 +247,11 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   const { substituted } = substituteOverlayEnv({
     srcPath: overlaySrc,
     dstPath: overlayDst,
-    envMap: env,
+    envMap: { ...DATABASE_ENV_DEFAULTS, ...env },
+    omittedKeys: runtimeService ? databaseOverlayOmittedKeys(env) : [],
   });
   log("ok", `Substituted ${substituted.length} overlay .env keys → ${overlayDst}`);
+  if (runtimeService) stageDatabaseSecrets({ service, env, stagedServiceRoot, overlayName });
 
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).

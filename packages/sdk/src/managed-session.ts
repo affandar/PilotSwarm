@@ -1144,8 +1144,8 @@ export class ManagedSession {
         const listSessionsTool = defineTool("list_sessions", {
             description:
                 "List all active sessions in the system. " +
-                "Returns each session's ID, title, owner, status, parent, and iteration count. " +
-                "Use this to discover other running sessions or find sibling agents. " +
+                "Returns each session's ID, title, owner, status, parent, iteration count, and creation and last-update timestamps in UTC (ISO 8601), or unknown when unavailable. " +
+                "Use Created to identify new sessions and Updated to identify recent activity; an update does not mean a session is new. Use this to discover other running sessions or find sibling agents. " +
                 "Leave owner filters unset for normal discovery and system-session checks; only set them when the user explicitly asks to scope by owner, user, system, or unowned sessions.",
             parameters: {
                 type: "object",
@@ -2369,8 +2369,8 @@ export class ManagedSession {
         const listSessionsTool = defineTool("list_sessions", {
             description:
                 "List all active sessions in the system. " +
-                "Returns each session's ID, title, owner, status, parent, and iteration count. " +
-                "Use this to discover other running sessions or find sibling agents. " +
+                "Returns each session's ID, title, owner, status, parent, iteration count, and creation and last-update timestamps in UTC (ISO 8601), or unknown when unavailable. " +
+                "Use Created to identify new sessions and Updated to identify recent activity; an update does not mean a session is new. Use this to discover other running sessions or find sibling agents. " +
                 "Leave owner filters unset for normal discovery and system-session checks; only set them when the user explicitly asks to scope by owner, user, system, or unowned sessions.",
             parameters: {
                 type: "object",

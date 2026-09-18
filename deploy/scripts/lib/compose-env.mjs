@@ -17,8 +17,26 @@
 // log lines.
 
 import { log } from "./common.mjs";
+import { deploysPostgres } from "./database-env.mjs";
 
 export function composeDerivedEnv(env) {
+  // Bring-your-own database: base-infra provisions no
+  // server, so any POSTGRES_* value here is empty or a stale leftover that the
+  // per-env Bicep outputs cache merged in from an earlier provisioned run
+  // (bicep-outputs-cache.mjs deliberately keeps prior keys). Composing from
+  // those would silently point the worker back at the OLD server, so drop
+  // them. Database-consuming stages validate the explicit settings later;
+  // build-only and infra-only commands must not require runtime credentials.
+  const byoDatabase = !deploysPostgres(env);
+  if (byoDatabase) {
+    for (const k of ["POSTGRES_FQDN", "POSTGRES_AAD_ADMIN_PRINCIPAL_NAME"]) {
+      if (env[k]) {
+        log("info", `DEPLOY_POSTGRES=false: ignoring stale ${k}; it will not be composed into a connection string.`);
+        delete env[k];
+      }
+    }
+  }
+
   // DATABASE_URL — overlay ConfigMap value, NOT a KV secret in the
   // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
   // Embeds the deterministic bootstrap admin password from postgres.bicep.
