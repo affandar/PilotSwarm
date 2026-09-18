@@ -61,6 +61,36 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 Credential references and `defaultModel` in a catalog remain supported only as
 a one-time legacy bootstrap path. New catalogs should contain neither.
 
+### Azure Responses API
+
+Set `wireApi: "responses"` on an Azure provider type when its model requires
+the Responses API. Use the account endpoint ending in `/openai`, without a
+`/deployments/<model>` suffix:
+
+```json
+{
+  "providers": [{
+    "id": "azure-responses",
+    "type": "azure",
+    "baseUrl": "https://YOUR-ACCOUNT.cognitiveservices.azure.com/openai",
+    "wireApi": "responses",
+    "models": [{ "name": "YOUR-DEPLOYMENT-NAME" }]
+  }]
+}
+```
+
+Add the credential through a runtime provider instance as described above.
+Explicit Responses routing preserves this endpoint and omits the legacy Azure
+deployment URL and API-version options; the SDK sends requests to
+`/openai/v1/responses`. The setting also works with legacy bootstrap catalogs
+and the worker's legacy `provider` option.
+
+If `wireApi` is omitted or is `"completions"`, existing Azure chat-completions
+routing is unchanged. Choose reasoning-effort settings supported by the actual
+model deployment. A successful hand-written inference request is not proof that
+the worker can complete a turn: exercise an actual deployed session after
+changing provider configuration.
+
 ### Portal Auth Add-Ons
 
 The shipped browser portal supports provider-based auth.
