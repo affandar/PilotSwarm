@@ -73,6 +73,9 @@ function recordingMgmt(calls) {
         setSessionModel: track("setSessionModel", undefined),
         completeSession: track("completeSession", undefined),
         cancelPendingMessage: track("cancelPendingMessage", undefined),
+        raiseSignal: track("raiseSignal", { signalId: "build-7", name: "build_ready", raisedAt: "2026-09-16T09:00:00.000Z", status: "queued" }),
+        sendSessionEvent: track("sendSessionEvent", undefined),
+        getSessionSignalState: track("getSessionSignalState", { version: 1, interrupted: false, buffered: [] }),
         restartSystemSession: track("restartSystemSession", {}),
         pruneDeletedSummaries: track("pruneDeletedSummaries", 3),
     };
@@ -416,6 +419,41 @@ async function main() {
         });
         record("direct send_command set_model → refused", raw.isError === true
             && String(parse(raw).error).includes("Use switch_model"));
+        await client.close();
+    }
+
+    // Durable signals use the same management surface in direct and web mode.
+    for (const webMode of [false, true]) {
+        const calls = [];
+        const ctx = makeCtx(calls, { webMode });
+        const client = await connect(ctx);
+        const res = await client.callTool({
+            name: "raise_signal",
+            arguments: { session_id: UUID, name: "build_ready", data: [1, null, { cmd: "data only" }],
+                payload_ref: "artifact:build.json", signal_id: "build-7", wake: false },
+        });
+        const call = calls.find(([name]) => name === "raiseSignal");
+        record(`signal ${webMode ? "web" : "direct"} → management, typed options and queued receipt`,
+            !res.isError && call?.[1] === UUID && call?.[2] === "build_ready"
+            && call?.[3]?.payloadRef === "artifact:build.json" && call?.[3]?.signalId === "build-7"
+            && call?.[3]?.wake === false && Array.isArray(call?.[3]?.data)
+            && parse(res).status === "queued");
+        const event = await client.callTool({
+            name: "send_session_event", arguments: { session_id: UUID, event_name: "legacy", data: { type: "cmd" } },
+        });
+        record(`signal ${webMode ? "web" : "direct"} → compatibility uses management wrapper`,
+            !event.isError && calls.some(([name, id, eventName, data]) => name === "sendSessionEvent"
+                && id === UUID && eventName === "legacy" && data.type === "cmd"));
+        const read = await client.callTool({ name: "get_session_signals", arguments: { session_id: UUID } });
+        record(`signal ${webMode ? "web" : "direct"} → metadata inspection`,
+            !read.isError && parse(read).version === 1
+            && calls.some(([name, id]) => name === "getSessionSignalState" && id === UUID));
+        const invalid = await client.callTool({ name: "raise_signal", arguments: { session_id: UUID, name: "Bad Name" } });
+        record("invalid signal name → schema rejection", invalid.isError === true);
+        ctx.mgmt.raiseSignal = async () => { throw Object.assign(new Error("Signal data exceeds 32768 UTF-8 bytes."), { code: "SIGNAL_TOO_LARGE", status: 413 }); };
+        const large = await client.callTool({ name: "raise_signal", arguments: { session_id: UUID, name: "build_ready" } });
+        record("signal size refusal → structured code/status", large.isError === true
+            && parse(large).code === "SIGNAL_TOO_LARGE" && parse(large).status === 413);
         await client.close();
     }
 

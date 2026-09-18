@@ -1709,6 +1709,7 @@ export class SessionManager {
         // their own canvases (slots 1-5), independent of the parent's.
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
+            durableSignals: effectiveSerializableConfig.durableSignals === true,
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs()
@@ -2377,7 +2378,7 @@ export class SessionManager {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await client.resumeSession(sessionId, {
-                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
+                                tools: [...ManagedSession.systemToolDefs({ durableSignals: config.durableSignals === true }), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);

@@ -80,6 +80,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionGraphSearches",
     "getSessionMetricSummary",
     "getSessionRetrievalUsage",
+    "getSessionSignalState",
     "getSessionSkillUsage",
     "getSessionStatus",
     "getSessionTokensByModel",
@@ -121,6 +122,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
     "pruneDeletedSummaries",
+    "raiseSignal",
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
@@ -832,6 +834,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read the pending signal wait, interruption flag, and buffered signal metadata (never inline payloads). Requires a signal-compatible execution.
+     * @remarks `GET /sessions/:sessionId/signals` — access: `session:read`
+     */
+    getSessionSignalState(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Skill usage for one session.
      * @remarks `GET /management/sessions/:sessionId/skill-usage` — access: `session:read`
      */
@@ -1157,6 +1167,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Queue a typed durable signal. Starts an unstarted session without a prompt; wake defaults to false. Returns a queued receipt, not a consumption acknowledgement.
+     * @remarks `POST /sessions/:sessionId/signals/:name` — access: `session:write`
+     */
+    raiseSignal(params: {
+        sessionId: string;
+        name: string;
+        data?: any;
+        payloadRef?: any;
+        signalId?: any;
+        wake?: any;
+    }): Promise<any>;
+
+    /**
      * Artifact content as base64 (JSON envelope; maxBytes caps the read, truncated flag set when hit).
      * @remarks `GET /sessions/:sessionId/artifacts/:filename/base64` — access: `session:read`
      */
@@ -1334,7 +1357,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Send a custom event into the session.
+     * Deprecated compatibility wrapper for raiseSignal(eventName, { data }); never a raw prompt or command.
      * @remarks `POST /sessions/:sessionId/events` — access: `session:write`
      */
     sendSessionEvent(params: {
@@ -1587,7 +1610,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Abort the in-flight turn.
+     * Abort the in-flight turn or cancel the observed parked signal wait without cancelling the session.
      * @remarks `POST /management/sessions/:sessionId/stop-turn` — access: `session:write`
      */
     stopSessionTurn(params: {
@@ -1799,6 +1822,7 @@ export function createManagementOps(
         getSessionGraphSearches: (params: Record<string, unknown> = {}) => callOp("getSessionGraphSearches", params),
         getSessionMetricSummary: (params: Record<string, unknown> = {}) => callOp("getSessionMetricSummary", params),
         getSessionRetrievalUsage: (params: Record<string, unknown> = {}) => callOp("getSessionRetrievalUsage", params),
+        getSessionSignalState: (params: Record<string, unknown> = {}) => callOp("getSessionSignalState", params),
         getSessionSkillUsage: (params: Record<string, unknown> = {}) => callOp("getSessionSkillUsage", params),
         getSessionStatus: (params: Record<string, unknown> = {}) => callOp("getSessionStatus", params),
         getSessionTokensByModel: (params: Record<string, unknown> = {}) => callOp("getSessionTokensByModel", params),
@@ -1840,6 +1864,7 @@ export function createManagementOps(
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
+        raiseSignal: (params: Record<string, unknown> = {}) => callOp("raiseSignal", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),

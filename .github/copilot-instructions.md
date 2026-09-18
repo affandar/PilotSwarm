@@ -151,6 +151,21 @@ Anything that **changes the sequence of `yield` statements** must itself be dete
 ### Deployment note:
 Changing the orchestration code (adding/removing/reordering yields) requires a new version. Freeze the released handler in `orchestration_<version>/`, open the next version in `orchestration/`, and keep both registered so in-flight sessions replay against their original yield sequence while new sessions use the latest version. Do not reset durable state solely for an orchestration upgrade; a reset is reserved for an explicitly approved destructive operation.
 
+### Durable signals
+
+Signal-aware sessions require orchestration 1.0.80+ and capability-routed
+`pilotswarm.signals.v1` turn activities. Keep old run-turn descriptors and
+declarations unchanged. `raiseSignal` is the start-aware, validated path;
+`sendEvent`/`sendSessionEvent` are signal wrappers, never raw queue escape hatches.
+Preserve a signal wait's ID and absolute deadline through user interruption and
+continue-as-new. Payloads stay in bounded durable slots, while status and audit
+events expose metadata only. Keep public clients, API/MCP, tuner inspection,
+shared UI, and the [signal guide](../docs/developer/building/durable-signals.md)
+in parity. Webhook ingress and `wait_for_any` are not part of Phase 1.
+The existing Stop action also cancels parked, non-interrupted signal waits,
+not ordinary timers. CMS-only list timestamps must not clear authoritative
+signal-wait metadata; a current rich status snapshot can clear an ended wait.
+
 ### Docker / AKS Build Convention
 
 The AKS cluster runs on AMD64 Linux nodes. **All Docker image builds must use `docker buildx build --platform linux/amd64`** — not plain `docker build` — because development happens on macOS ARM64 (Apple Silicon). Without the platform flag, the pushed image has the wrong architecture and pods fail with `ImagePullBackOff` / `no match for platform in manifest`.

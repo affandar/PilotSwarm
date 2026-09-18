@@ -25,6 +25,11 @@ These keys work whenever focus is not in the prompt editor.
 | `d` | Mark the selected session done |
 | `Shift+D` | Delete the selected session |
 
+`Ctrl+X` (or `Ctrl+Esc` where supported by the terminal) stops the current turn
+or cancels a parked signal wait without ending the session. It also works in
+the prompt editor. Ordinary timers, cron waits, and provider-budget waits are
+not signal-wait Stop targets.
+
 ## Sessions Pane
 
 | Key | Action |

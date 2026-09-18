@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -692,12 +692,13 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[] },
         ) {
+            const turnRoutingContract = config.durableSignals === true ? "signals-v1" : routingContract;
             return routeHandoffActivity(ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
-                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
+                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", turnRoutingContract),
                 {
                     sessionId,
                     prompt,
@@ -737,7 +738,7 @@ export function createSessionProxy(
                         : {}),
                 },
                 affinityKey,
-            ), routingContract);
+            ), turnRoutingContract);
         },
         dehydrate(reason: string, eventData?: Record<string, unknown>) {
             return ctx.scheduleActivityOnSession(
@@ -802,6 +803,7 @@ export function buildRunTurnConfig(
     inputConfig: SerializableSessionConfig,
     hostname: string,
     fallbackAgentIdentity?: string,
+    durableSignals = false,
 ): SerializableSessionConfig {
     const runConfig: SerializableSessionConfig = {
         ...inputConfig,
@@ -810,6 +812,8 @@ export function buildRunTurnConfig(
             `Running on host "${hostname}".`,
         ]),
     };
+    if (durableSignals) runConfig.durableSignals = true;
+    else delete runConfig.durableSignals;
 
     if (!runConfig.agentIdentity && fallbackAgentIdentity) {
         runConfig.agentIdentity = fallbackAgentIdentity;
@@ -1187,6 +1191,7 @@ export function registerActivities(
             transcriptEpoch?: number;
             /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
             epochStart?: boolean;
+            durableSignals?: boolean;
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -1248,7 +1253,7 @@ export function registerActivities(
             }
         }
 
-        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity);
+        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity, input.durableSignals === true);
         if (catalogSessionRow?.model) {
             const staleConfiguredModel = String(input.config.model || "").trim();
             if (staleConfiguredModel && staleConfiguredModel !== catalogSessionRow.model) {
@@ -3565,6 +3570,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     cycleOrigin: input.cycleOrigin,
                     turnIndex: input.turnIndex,
                     controlToolBridge,
+                    ...(input.durableSignals ? { durableSignals: true } : {}),
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                 });
             };
@@ -3744,6 +3750,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 const statusMap: Record<string, string> = {
                     completed: "idle", // orchestration decides idle vs completed; default to idle
                     wait: "waiting",
+                    "signal-wait": result.type === "signal-wait" && result.action === "wait" ? "waiting" : "idle",
                     cron: "running",
                     input_required: "input_required",
                     error: "error",
@@ -3768,6 +3775,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.waitReason = null;
                 } else if (result.type === "wait") {
                     updates.waitReason = (result as any).reason ?? null;
+                    updates.lastError = null;
+                } else if (result.type === "signal-wait" && result.action === "wait") {
+                    updates.waitReason = `Waiting for signal: ${result.names.join(", ")} (${result.reason})`;
                     updates.lastError = null;
                 } else if (result.type === "input_required") {
                     updates.waitReason = (result as any).question ?? null;
@@ -4008,6 +4018,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
+    const runSignalTurnHandler = (ctx: any, input: Parameters<typeof runTurnHandler>[1]) =>
+        runTurnHandler(ctx, { ...input, durableSignals: true });
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn, runSignalTurnHandler);
+    runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn2, runSignalTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

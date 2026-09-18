@@ -20,6 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { WebPilotSwarmManagementClient } from "../../dist/web/web-management-client.js";
+import { WebPilotSwarmSession } from "../../dist/web/web-client.js";
 import { createManagementOps } from "../../dist/web/generated-op-methods.js";
 import { WEB_MODE_UNSUPPORTED } from "../../api/src/protocol.js";
 
@@ -41,6 +42,11 @@ const USER = { provider: "entra", subject: "u1" };
  * them at request time, so the shape here is what the shim itself emits.
  */
 const SHIM_CASES = [
+    { call: (c) => c.raiseSignal("s1", "build_ready", { data: [1, null], payloadRef: "artifact:log", signalId: "r1", wake: false }, { kind: "system" }),
+        op: "raiseSignal", params: { sessionId: "s1", name: "build_ready", data: [1, null], payloadRef: "artifact:log", signalId: "r1", wake: false } },
+    { call: (c) => c.getSessionSignalState("s1"), op: "getSessionSignalState", params: { sessionId: "s1" } },
+    { call: (c) => c.sendSessionEvent("s1", "legacy", { type: "cmd" }, { kind: "system" }),
+        op: "raiseSignal", params: { sessionId: "s1", name: "legacy", data: { type: "cmd" } } },
     // — facts —
     { call: (c) => c.readFacts({ keyPattern: "k*", scope: "shared" }), op: "readFacts", params: { keyPattern: "k*", scope: "shared" } },
     { call: (c) => c.storeFact({ key: "k", value: 1 }), op: "storeFact", params: { input: { key: "k", value: 1 } } },
@@ -123,4 +129,26 @@ test("direct-only plumbing refuses loudly with WEB_MODE_UNSUPPORTED", () => {
             `${method} should throw a typed WEB_MODE_UNSUPPORTED error`,
         );
     }
+});
+
+test("web session signals do not claim a pending user turn or forward direct sender attribution", async () => {
+    const calls = [];
+    const receipt = { signalId: "r1", name: "build_ready", raisedAt: "2026-09-16T09:00:00.000Z", status: "queued" };
+    const session = new WebPilotSwarmSession("s1", {
+        call: async (name, params) => { calls.push({ name, params }); return receipt; },
+    });
+    assert.deepEqual(await session.raiseSignal("build_ready", { data: null }, { kind: "system" }), receipt);
+    assert.deepEqual(calls, [{ name: "raiseSignal", params: { sessionId: "s1", name: "build_ready", data: null } }]);
+    await assert.rejects(session.wait(), /No pending turn/);
+    await session.sendEvent("legacy", { prompt: "signal data", cmd: "cancel" });
+    assert.deepEqual(calls[1], { name: "raiseSignal",
+        params: { sessionId: "s1", name: "legacy", data: { prompt: "signal data", cmd: "cancel" } } });
+});
+
+test("web signal options reject identity/config injection and non-JSON payloads before transport", async () => {
+    const { client, calls } = clientWithFakeApi();
+    for (const options of [{ source: { kind: "system" } }, { raisedAt: "forged" }, { data: NaN }, { wake: "true" }]) {
+        await assert.rejects(client.raiseSignal("s1", "build_ready", options), { code: "INVALID_SIGNAL" });
+    }
+    assert.deepEqual(calls, []);
 });

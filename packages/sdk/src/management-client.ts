@@ -47,6 +47,20 @@ import { FeatureFlagError } from "./feature-flags.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
+import { PilotSwarmClient, requireSignalExecution } from "./client.js";
+import {
+    SIGNAL_STATE_KEY,
+    SIGNAL_BUFFER_LIMIT,
+    SIGNAL_MAX_INLINE_BYTES,
+    SIGNAL_MIN_ORCHESTRATION_VERSION,
+    parseSessionSignal,
+    validateSignalWaitInput,
+    type PendingSignalWait,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+    type SessionSignalState,
+    type JsonValue,
+} from "./session-signals.js";
 import type {
     SessionMetricSummary,
     TokensByModelRow,
@@ -354,6 +368,8 @@ export interface PilotSwarmSessionView {
     summaryUpdatedAt?: number;
     error?: string;
     waitReason?: string;
+    signalWait?: PendingSignalWait;
+    signalWaitInterrupted?: boolean;
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;
@@ -695,6 +711,15 @@ export class PilotSwarmManagementClient {
         }
         this.config = options;
         this._artifactStore = options.artifactStore ?? null;
+    }
+
+    /** @internal Read-only facade over worker-owned handles; opens no providers. */
+    static _signalReader(catalog: SessionCatalog, duroxideClient: any): Pick<PilotSwarmManagementClient, "getSessionSignalState"> {
+        const client = new PilotSwarmManagementClient({ store: "" });
+        client._catalog = catalog;
+        client._duroxideClient = duroxideClient;
+        client._started = true;
+        return { getSessionSignalState: (sessionId) => client.getSessionSignalState(sessionId) };
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -1253,6 +1278,8 @@ export class PilotSwarmManagementClient {
             summaryUpdatedAt: row.summaryUpdatedAt?.getTime(),
             error: effectiveError,
             waitReason: normalizedCustomStatus.waitReason,
+            signalWait: terminalOrchestration ? undefined : normalizedCustomStatus.signalWait,
+            signalWaitInterrupted: terminalOrchestration ? undefined : normalizedCustomStatus.signalWaitInterrupted,
             cronActive,
             cronInterval,
             cronKind,
@@ -1761,6 +1788,8 @@ export class PilotSwarmManagementClient {
      * against the in-flight runTurn activity, then polls the KV
      * command-response channel for the outcome. Valid for system sessions
      * too; only group/container rows are not sessions and cannot be stopped.
+     * A parked signal wait uses a wait-id-scoped cancel command on messages,
+     * so a delayed Stop cannot cancel its replacement.
      *
      * Outcomes:
      *  - stopped / stop_forced: the turn was aborted mid-flight; session idle.
@@ -1777,8 +1806,17 @@ export class PilotSwarmManagementClient {
         if (!row || row.deletedAt) {
             return { outcome: "no_active_turn", detail: "session not found" };
         }
-        const turnIndex = row.activeTurnIndex;
-        if (row.state !== "running" || turnIndex == null) {
+        const turnIndex = row.state === "running" ? row.activeTurnIndex ?? undefined : undefined;
+        let waitId: string | undefined;
+        if (turnIndex === undefined && (row.state === "waiting" || row.state === "running")) {
+            const status = await this.getSessionStatus(sessionId);
+            const pending = status.customStatus?.signalWait;
+            if (pending?.waitId && !status.customStatus?.signalWaitInterrupted) {
+                const execution = await requireSignalExecution(this._duroxideClient, sessionId);
+                if (!isTerminalOrchestrationStatus(execution.status)) waitId = pending.waitId;
+            }
+        }
+        if (turnIndex === undefined && !waitId) {
             return {
                 outcome: "no_active_turn",
                 detail: `session is not running a turn (state=${row.state})`,
@@ -1787,11 +1825,16 @@ export class PilotSwarmManagementClient {
 
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "stopSessionTurn");
-        const id = buildLifecycleCommandId("stop-turn");
+        const id = buildLifecycleCommandId(waitId ? "stop-signal-wait" : "stop-turn");
         await this._duroxideClient.enqueueEvent(
             orchId,
-            stopTurnQueueName(turnIndex),
-            JSON.stringify({
+            waitId ? "messages" : stopTurnQueueName(turnIndex!),
+            JSON.stringify(waitId ? {
+                type: "cmd",
+                cmd: "cancel_signal_wait",
+                id,
+                args: { waitId, reason: opts?.reason ?? "Stopped by user" },
+            } : {
                 id,
                 reason: opts?.reason ?? "Stopped by user",
                 requestedAt: Date.now(),
@@ -1804,12 +1847,12 @@ export class PilotSwarmManagementClient {
             const resp = await this.getCommandResponse(sessionId, id).catch(() => null);
             if (resp) {
                 if (resp.error) {
-                    return { outcome: "no_active_turn", turnIndex, detail: resp.error };
+                    return { outcome: "no_active_turn", ...(turnIndex !== undefined ? { turnIndex } : {}), detail: resp.error };
                 }
                 const result = (resp.result ?? {}) as Partial<StopTurnResult>;
                 return {
                     outcome: result.outcome ?? "stopped",
-                    turnIndex: result.turnIndex ?? turnIndex,
+                    ...(turnIndex !== undefined ? { turnIndex: result.turnIndex ?? turnIndex } : {}),
                     ...(result.detail ? { detail: result.detail } : {}),
                 };
             }
@@ -1820,7 +1863,7 @@ export class PilotSwarmManagementClient {
         // response will ever appear.
         return {
             outcome: "timeout",
-            turnIndex,
+            ...(turnIndex !== undefined ? { turnIndex } : {}),
             detail: "no stop response before timeout; refresh session state",
         };
     }
@@ -2198,6 +2241,80 @@ export class PilotSwarmManagementClient {
             customStatusVersion: status.customStatusVersion || 0,
             orchestrationStatus: status.status,
         };
+    }
+
+    /**
+     * Read durable signal metadata. Direct mode is trusted; Web API and
+     * inspect-tool callers apply session:read before invoking this method.
+     * An unknown/legacy execution must not look like an empty supported one.
+     */
+    async getSessionSignalState(sessionId: string): Promise<SessionSignalState> {
+        this._ensureStarted();
+        const row = await this._catalog!.getSession(sessionId);
+        if (!row || row.deletedAt) {
+            throw Object.assign(new Error(`Session ${sessionId} was not found.`), { code: "NOT_FOUND", status: 404 });
+        }
+        const orchId = `session-${sessionId}`;
+        const status = await this._duroxideClient.getStatus(orchId);
+        if (!status?.status || status.status === "NotFound" || status.status === "Unknown") {
+            throw Object.assign(new Error(
+                `Session ${sessionId} has no confirmed signal-compatible execution. `
+                + `Raise a signal to start a new pending session on workers supporting ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later.`,
+            ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+        }
+        await requireSignalExecution(this._duroxideClient, sessionId);
+        const raw = await this._duroxideClient.getValue(orchId, SIGNAL_STATE_KEY);
+        if (raw == null) return { version: 1, interrupted: false, buffered: [] };
+        try {
+            const state = typeof raw === "string" ? JSON.parse(raw) : raw;
+            if (state?.version !== 1 || typeof state.interrupted !== "boolean"
+                || !Array.isArray(state.buffered) || state.buffered.length > SIGNAL_BUFFER_LIMIT) {
+                throw new Error("Invalid signal state");
+            }
+            const pending = state.pendingWait;
+            if (pending !== undefined) {
+                if (!pending || typeof pending.waitId !== "string" || !pending.waitId || typeof pending.reason !== "string") {
+                    throw new Error("Invalid signal wait");
+                }
+                validateSignalWaitInput({ names: pending.names, reason: pending.reason });
+                for (const timestamp of [pending.startedAt, ...(pending.deadline !== undefined ? [pending.deadline] : [])]) {
+                    if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp))
+                        || new Date(timestamp).toISOString() !== timestamp) throw new Error("Invalid signal wait timestamp");
+                }
+            }
+            return {
+                version: 1,
+                interrupted: state.interrupted,
+                ...(pending ? {
+                    pendingWait: {
+                        waitId: pending.waitId,
+                        names: [...pending.names],
+                        reason: pending.reason,
+                        startedAt: pending.startedAt,
+                        ...(pending.deadline !== undefined ? { deadline: pending.deadline } : {}),
+                    },
+                } : {}),
+                buffered: state.buffered.map((entry: any) => {
+                    const summary = parseSessionSignal({
+                        version: entry.version,
+                        signalId: entry.signalId,
+                        name: entry.name,
+                        source: entry.source,
+                        raisedAt: entry.raisedAt,
+                        ...(entry.payloadRef !== undefined ? { payloadRef: entry.payloadRef } : {}),
+                        wake: entry.wake,
+                    });
+                    if (entry.dataBytes !== undefined
+                        && (!Number.isInteger(entry.dataBytes) || entry.dataBytes < 0 || entry.dataBytes > SIGNAL_MAX_INLINE_BYTES)) {
+                        throw new Error("Invalid signal data size");
+                    }
+                    return { ...summary, ...(entry.dataBytes !== undefined ? { dataBytes: entry.dataBytes } : {}) };
+                }),
+            };
+        } catch {
+            throw Object.assign(new Error(`Session ${sessionId} has invalid durable signal metadata.`),
+                { code: "SIGNAL_STATE_INVALID" });
+        }
     }
 
     /**
@@ -2975,6 +3092,22 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify(payload),
         );
+    }
+
+    /**
+     * Queue a typed signal, starting an unstarted session from its persisted
+     * creation/lineage contract without sending a prompt or marking a turn running.
+     * `sender` is trusted transport attribution, not part of the public options.
+     */
+    async raiseSignal(sessionId: string, name: string, options: RaiseSignalOptions = {}, sender?: MessageSender): Promise<RaiseSignalResult> {
+        this._ensureStarted();
+        return PilotSwarmClient._fromRuntime(this.config, this._catalog!, this._duroxideClient)
+            ._raiseSignal(sessionId, name, options, sender);
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
+    async sendSessionEvent(sessionId: string, eventName: string, data: unknown, sender?: MessageSender): Promise<void> {
+        await this.raiseSignal(sessionId, eventName, { data: data as JsonValue }, sender);
     }
 
     /**

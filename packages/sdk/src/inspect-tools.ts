@@ -51,6 +51,7 @@ import { projectUserAccounting, projectFleetAccounting } from "../api/src/admin-
 // MANAGER_AGENT_IDS lives there so the declaration and the per-turn handler
 // in managed-session gate on the SAME list.
 import { createAgentManagerTools, MANAGER_AGENT_IDS } from "./agent-manager-tools.js";
+import { PilotSwarmManagementClient } from "./management-client.js";
 
 /**
  * Agent ids that hold the manager bundle.
@@ -1423,6 +1424,29 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
     ];
 
     if (duroxideClient) {
+        const signalReader = PilotSwarmManagementClient._signalReader(catalog, duroxideClient);
+        const readSessionSignalsTool = defineTool("read_session_signals", {
+            description:
+                "Read the pending durable signal wait, interruption flag, and buffered signal metadata for a session. "
+                + "Inline payloads are omitted. Use read_agent_events for session.signal_* lifecycle history. "
+                + "Legacy or unstarted executions report unsupported rather than an empty signal state.",
+            parameters: {
+                type: "object" as const,
+                properties: { session_id: { type: "string" } },
+                required: ["session_id"],
+            },
+            handler: async (args: { session_id: string }) => {
+                const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_session_signals", id);
+                if (denied) return denied;
+                try {
+                    return await signalReader.getSessionSignalState(id);
+                } catch (err: any) {
+                    return { error: `read_session_signals: ${err?.message || String(err)}`, ...(err?.code ? { code: err.code } : {}) };
+                }
+            },
+        });
+
         const readOrchestrationStatsTool = defineTool("read_orchestration_stats", {
             description:
                 "Read duroxide runtime stats for the orchestration backing a session: " +
@@ -1566,7 +1590,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         });
 
-        tools.push(readOrchestrationStatsTool, readExecutionHistoryTool, listOrchestrationsByStatusTool);
+        tools.push(readSessionSignalsTool, readOrchestrationStatsTool, readExecutionHistoryTool, listOrchestrationsByStatusTool);
     }
 
     // ── The WRITE bundle ─────────────────────────────────────────────────

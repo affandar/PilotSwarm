@@ -1,10 +1,16 @@
+import { SIGNAL_ACTIVITY_CAPABILITY } from "./session-signals.js";
+
 /** Capability routing for the complete named-agent handoff contract.
  *
  * Old orchestration callers omit this contract and retain their exact activity
  * names, inputs and descriptors. Orchestrations 1.0.75 and later opt into it.
  */
 export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
-export type ActivityRoutingContract = "agent-handoff-v2";
+export type ActivityRoutingContract = "agent-handoff-v2" | "signals-v1";
+export const SIGNAL_ACTIVITY_NAMES = {
+    runTurn: "runTurnSignalsV1",
+    runTurn2: "runTurnSignalsEpochV1",
+} as const;
 export const HANDOFF_ACTIVITY_NAMES = {
     runTurn: "runTurnV3",
     runTurn2: "runTurnEpochV3",
@@ -16,6 +22,9 @@ export const HANDOFF_ACTIVITY_NAMES = {
 } as const;
 
 export function routedActivityName(name: keyof typeof HANDOFF_ACTIVITY_NAMES, contract?: ActivityRoutingContract): string {
+    if (contract === "signals-v1" && (name === "runTurn" || name === "runTurn2")) {
+        return SIGNAL_ACTIVITY_NAMES[name];
+    }
     return contract ? HANDOFF_ACTIVITY_NAMES[name] : name;
 }
 
@@ -24,7 +33,7 @@ export function routeHandoffActivity(task: any, contract?: ActivityRoutingContra
     if (typeof task.withTag !== "function") {
         throw new Error("Agent handoff requires Duroxide activity tag routing support");
     }
-    return task.withTag(AGENT_HANDOFF_CAPABILITY);
+    return task.withTag(contract === "signals-v1" ? SIGNAL_ACTIVITY_CAPABILITY : AGENT_HANDOFF_CAPABILITY);
 }
 
 /** Retain legacy handlers for already-scheduled work while registering the new contract. */

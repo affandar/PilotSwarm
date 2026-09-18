@@ -1086,8 +1086,18 @@ export class PortalRuntime {
                     ...(safeParams.options?.expectedQuestion !== undefined ? { expectedQuestion: safeParams.options.expectedQuestion } : {}),
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
                 });
+            case "raiseSignal":
+                return this.transport.mgmt.raiseSignal(safeParams.sessionId, safeParams.name, {
+                    ...(safeParams.data !== undefined ? { data: safeParams.data } : {}),
+                    ...(safeParams.payloadRef !== undefined ? { payloadRef: safeParams.payloadRef } : {}),
+                    ...(safeParams.signalId !== undefined ? { signalId: safeParams.signalId } : {}),
+                    ...(safeParams.wake !== undefined ? { wake: safeParams.wake } : {}),
+                }, this._buildSender(authContext, gate.snapshot, { isAdmin }));
+            case "getSessionSignalState":
+                return this.transport.mgmt.getSessionSignalState(safeParams.sessionId);
             case "sendSessionEvent":
-                return this.transport.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data);
+                return this.transport.mgmt.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data,
+                    this._buildSender(authContext, gate.snapshot, { isAdmin }));
 
             // ── Session sharing (security model) ────────────────────────
             case "getSessionAccess": {

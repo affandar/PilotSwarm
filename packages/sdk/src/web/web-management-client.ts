@@ -6,6 +6,14 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import type { MessageSender } from "../message-sender.js";
+import {
+    validateSignalName,
+    validateRaiseSignalOptions,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+    type SessionSignalState,
+} from "../session-signals.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -302,6 +310,23 @@ export class WebPilotSwarmManagementClient {
 
     async sendAnswer(sessionId: string, answer: string, options?: { expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         await this._api.call("sendAnswer", { sessionId, answer, options });
+    }
+
+    async raiseSignal(sessionId: string, name: string, options: RaiseSignalOptions = {}, _sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this._api.call("raiseSignal", {
+            sessionId,
+            name: validateSignalName(name),
+            ...validateRaiseSignalOptions(options),
+        });
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
+    async sendSessionEvent(sessionId: string, eventName: string, data: unknown, _sender?: MessageSender): Promise<void> {
+        await this.raiseSignal(sessionId, eventName, validateRaiseSignalOptions({ data }));
+    }
+
+    async getSessionSignalState(sessionId: string): Promise<SessionSignalState> {
+        return this._api.call("getSessionSignalState", { sessionId });
     }
 
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {

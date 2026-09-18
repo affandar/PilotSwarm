@@ -14,6 +14,21 @@ import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
  *   export_execution_history  export history → artifact
  */
 export function registerObservabilityTools(server: McpServer, ctx: ServerContext) {
+    server.registerTool(
+        "get_session_signals",
+        {
+            title: "Get Session Signals",
+            description:
+                "Read a session's durable signal wait, interruption flag, and buffered signal metadata. "
+                + "Inline data is omitted. Requires a signal-compatible execution; use get_session_events "
+                + "for session.signal_* lifecycle history.",
+            inputSchema: {
+                session_id: sessionIdShape().describe("The session to inspect"),
+            },
+        },
+        withToolErrors(async ({ session_id }) => jsonResult(await ctx.mgmt.getSessionSignalState(session_id))),
+    );
+
     // 1. get_session_metrics — one tool, one session, many axes
     server.registerTool(
         "get_session_metrics",

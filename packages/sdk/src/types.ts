@@ -3,6 +3,7 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
+import type { PendingSignalWait, SignalWaitRequest } from "./session-signals.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -20,6 +21,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
+    | ({ type: "signal-wait"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest)
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -58,6 +60,7 @@ type TurnResultVariant =
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "signal-wait"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -84,6 +87,8 @@ export interface CapturedEvent {
 // ─── Turn Options ────────────────────────────────────────────────
 
 export interface TurnOptions {
+    /** @internal Enabled only by the capability-routed signal-aware activity. */
+    durableSignals?: boolean;
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
@@ -178,6 +183,8 @@ export interface TurnOptions {
 
 /** Serializable config — travels through duroxide (no functions). */
 export interface SerializableSessionConfig {
+    /** @internal Worker-owned declaration gate; never trusted from session creation input. */
+    durableSignals?: boolean;
     model?: string;
     reasoningEffort?: ReasoningEffort | null;
     /** Context-window tier ("default" = smaller window; "long_context" = the model's long-context tier). */
@@ -397,6 +404,8 @@ export interface ChildSessionResult {
 export interface PilotSwarmSessionInfo {
     sessionId: string;
     status: PilotSwarmSessionStatus;
+    signalWait?: PendingSignalWait;
+    signalWaitInterrupted?: boolean;
     /** LLM model used for this session. */
     model?: string;
     /** LLM-generated 3-5 word summary of the session. */
@@ -594,6 +603,10 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
+    /** Durable signal wait and deduplication window (1.0.80+). Payloads stay in KV slots. */
+    pendingSignalWait?: PendingSignalWait;
+    signalWaitInterrupted?: boolean;
+    recentSignalIds?: string[];
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -1268,6 +1281,7 @@ export interface SessionResponsePayload {
     waitReason?: string;
     waitSeconds?: number;
     waitStartedAt?: number;
+    signalWait?: PendingSignalWait;
     emittedAt: number;
     model?: string;
 }
@@ -1292,6 +1306,8 @@ export interface SessionStatusSignal {
     waitReason?: string;
     waitSeconds?: number;
     waitStartedAt?: number;
+    signalWait?: PendingSignalWait;
+    signalWaitInterrupted?: boolean;
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;

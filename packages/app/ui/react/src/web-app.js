@@ -66,6 +66,7 @@ import {
     selectSessionOwnerFilterModal,
     selectSessionRows,
     selectSessionStatusSummary,
+    selectSessionSignalWait,
     selectStatusBar,
     selectThemePickerModal,
     selectConfirmModal,
@@ -4432,11 +4433,13 @@ const SESSION_DETAIL_NONE = "—";
  * authoritative on its own and always shows.
  */
 export function visibleWaitReason(session, statusLabel) {
+    const status = String(statusLabel || "");
+    const signalWait = selectSessionSignalWait(session);
+    if (signalWait && (signalWait.interrupted || status === "waiting")) return signalWait.text;
     const reason = typeof session?.waitReason === "string" && session.waitReason.trim()
         ? clampWaitReason(session.waitReason)
         : null;
     if (!reason) return null;
-    const status = String(statusLabel || "");
     // "waiting", and "waiting on 7" / "waiting on children" for a parent whose
     // descendants are still going.
     const waiting = status === "waiting"
@@ -4502,6 +4505,7 @@ export function clampWaitReason(
  * the wake-up instruction read as a stall reason.
  */
 export function waitReasonLabel(session) {
+    if (selectSessionSignalWait(session)) return "Signal";
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
@@ -4561,6 +4565,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         : (childCount > 0 ? String(childCount) : null);
 
     const statusSummary = selectSessionStatusSummary(session);
+    const signalWait = selectSessionSignalWait(session);
 
     // Why this session is stopped, where the person is standing.
     //
@@ -4592,8 +4597,8 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         // Clipped on screen, whole on hover: for a cron the full text is the
         // wake-up instruction, and someone reading the box is often trying to
         // find out exactly what the next tick will do.
-        ...(!pause && typeof session?.waitReason === "string" && session.waitReason.trim()
-            ? { title: session.waitReason.trim() }
+        ...(!pause && (signalWait || (typeof session?.waitReason === "string" && session.waitReason.trim()))
+            ? { title: signalWait?.text || session.waitReason.trim() }
             : {}),
     },
         // The sentence already says when it clears wherever it can; `clears`
@@ -4635,7 +4640,7 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
                 key: "halt",
                 className: `ps-session-detail-mark${pause ? " is-paused" : ""}`,
                 title: pause ? pause.reason : waitReason,
-            }, pause ? "paused" : "waiting"));
+            }, pause ? "paused" : signalWait?.interrupted ? "signal interrupted" : "waiting"));
         }
         return React.createElement("div", { className: "ps-session-detail-box is-collapsed" },
             React.createElement("button", {
@@ -9259,13 +9264,17 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
             ? state.outbox.bySessionId[activeSessionId]
             : [];
+        const canStopTurn = canStopSessionTurn(activeSession);
         return {
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
-            canStopTurn: canStopSessionTurn(activeSession),
+            canStopTurn,
+            stopTurnLabel: canStopTurn && activeSession.status === "waiting"
+                ? "Stop waiting for a signal"
+                : "Stop the current turn",
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -9614,8 +9623,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
-                    "aria-label": "Stop the current turn",
+                    title: `${promptState.stopTurnLabel} (the session stays alive and returns to idle)`,
+                    "aria-label": promptState.stopTurnLabel,
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,
