@@ -6,6 +6,9 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import {
+    type RuntimeModel,
+} from "../model-catalog.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -496,8 +499,8 @@ export class WebPilotSwarmManagementClient {
 
     // ── Models (async in web mode — always `await`) ─────────────────────
 
-    async listModels(): Promise<any[]> {
-        return this._api.call("listModels");
+    async listModels(): Promise<RuntimeModel[]> {
+        return this.ops.listModels();
     }
 
     async getModelsByProvider(): Promise<any[]> {
@@ -826,8 +829,8 @@ export class WebPilotSwarmManagementClient {
         return this.ops.getModelDefaults();
     }
 
-    async listRuntimeModels(_viewer?: unknown): Promise<any> {
-        return this.ops.listModels();
+    async listRuntimeModels(_viewer?: unknown): Promise<RuntimeModel[]> {
+        return this.listModels();
     }
 
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
@@ -946,7 +949,7 @@ export class WebPilotSwarmManagementClient {
 /**
  * Signature divergences excluded from the proof.
  *
- * These three are one family: model-catalog reads that direct mode answers
+ * These four are one family: model-catalog reads that direct mode answers
  * synchronously from its loaded provider registry and web mode necessarily
  * answers async over HTTP. The async web forms shipped in released versions,
  * so they stay. A direct-typed caller in web mode receives a Promise where it
@@ -958,7 +961,11 @@ export class WebPilotSwarmManagementClient {
  * structurally satisfies any signature — i.e. by refusing loudly, which is
  * the intended contract, not by matching.
  */
-type KnownDivergences = "getDefaultModel" | "getModelsByProvider" | "listModels";
+type KnownDivergences =
+    | "getDefaultModel"
+    | "getModelsByProvider"
+    | "listModels"
+    | "listRuntimeModels";
 
 type PublicSurface<T> = Pick<T, Exclude<keyof T, KnownDivergences>>;
 type AssertExtends<A extends B, B> = A;
@@ -986,8 +993,24 @@ type SyncOrAsync<M extends (...args: never[]) => unknown> =
 export type SharedManagementSurface =
     PublicSurface<DirectClient>
     & {
-        /** Sync in direct mode, async over HTTP — always `await` the result. */
-        listModels: SyncOrAsync<DirectClient["listModels"]>;
+        /**
+         * Sync provider-type summaries in direct mode, or normalized runtime
+         * wire entries asynchronously over HTTP — always `await` the result.
+         */
+        listModels: (
+            ...args: Parameters<DirectClient["listModels"]>
+        ) => (
+            ReturnType<DirectClient["listModels"]>
+            | RuntimeModel[]
+            | Promise<ReturnType<DirectClient["listModels"]> | RuntimeModel[]>
+        );
+        /** Viewer-scoped runtime catalog in both modes. */
+        listRuntimeModels: (
+            ...args: Parameters<DirectClient["listRuntimeModels"]>
+        ) => Promise<
+            Awaited<ReturnType<DirectClient["listRuntimeModels"]>>
+            | RuntimeModel[]
+        >;
         /** Sync in direct mode, async over HTTP — always `await` the result. */
         getModelsByProvider: SyncOrAsync<DirectClient["getModelsByProvider"]>;
         /** Sync in direct mode, async over HTTP — always `await` the result. */
