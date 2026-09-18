@@ -19,7 +19,7 @@ async function harness() {
     const row = { sessionId: "s1", state: "idle", owner: { provider: "dev", subject: "owner" },
         createdAt: new Date(0), updatedAt: new Date(0) };
     const grants = new Map([["reader", "read"], ["writer", "write"]]);
-    let version = "1.0.79";
+    let version = "1.0.80";
     const mgmt = new PilotSwarmManagementClient({});
     mgmt._started = true;
     mgmt._catalog = {

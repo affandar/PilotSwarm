@@ -51,7 +51,8 @@ export function publishSignalState(
 function readySignalIndex(runtime: DurableSessionRuntime, buffered: SessionSignalV1[]): number {
     if (runtime.state.pendingShutdown) return -1;
     const wait = runtime.state.pendingSignalWait;
-    if (wait && !runtime.state.signalWaitInterrupted) {
+    const matchingWake = wait && buffered.some(signal => signal.wake && wait.names.includes(signal.name));
+    if (wait && (!runtime.state.signalWaitInterrupted || matchingWake)) {
         const match = buffered.findIndex(signal => wait.names.includes(signal.name));
         if (match >= 0) return match;
     }
@@ -226,12 +227,14 @@ export function* takeReadySignal(runtime: DurableSessionRuntime): Generator<any,
     const [signal] = buffered.splice(index, 1);
     const { state } = runtime;
     const wait = state.pendingSignalWait;
-    const matches = wait && !state.signalWaitInterrupted && wait.names.includes(signal.name);
+    // A matching wake still satisfies a saved wait while an interrupt is
+    // budget-blocked. Its accepted user input rides along in budgetStash.
+    const matches = wait && wait.names.includes(signal.name);
     const now: number = yield runtime.ctx.utcNow();
     if (matches) {
         state.pendingSignalWait = null;
         state.signalWaitInterrupted = false;
-        if (state.activeTimer?.type === "signal-timeout") state.activeTimer = null;
+        state.activeTimer = null;
     } else {
         yield* interruptSignalWait(runtime, "signal");
         // A waking signal interrupts an ordinary timer just like queued input;

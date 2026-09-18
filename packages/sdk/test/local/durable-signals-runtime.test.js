@@ -2,9 +2,13 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration_1_0_79/index.ts";
 import { durableSessionOrchestration_1_0_78 } from "../../src/orchestration_1_0_78/index.ts";
+import { PilotSwarmClient } from "../../src/client.ts";
+import { commandResponseKey } from "../../src/types.ts";
 import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 import { SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_MAX_INLINE_BYTES, SIGNAL_STATE_KEY, createSessionSignal } from "../../src/session-signals.ts";
 
@@ -23,6 +27,8 @@ async function withRuntimeTest(body) {
     const listeners = new Set();
     let forceCan = false;
     let waitTimeout;
+    let waitingStateHook;
+    let turnResults = [];
 
     async function createWorker(label, supportsSignals = true) {
         const provider = await SqliteProvider.open(path);
@@ -41,6 +47,7 @@ async function withRuntimeTest(body) {
         });
         runtime.registerOrchestrationVersioned(NAME, "1.0.78", durableSessionOrchestration_1_0_78);
         runtime.registerOrchestrationVersioned(NAME, "1.0.79", durableSessionOrchestration_1_0_79);
+        runtime.registerOrchestrationVersioned(NAME, "1.0.80", durableSessionOrchestration_1_0_80);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
             "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions,
             HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn2,
@@ -54,11 +61,15 @@ async function withRuntimeTest(body) {
                     case "getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
                     case "getOrchestrationStats": return { historySizeBytes: forceCan ? 800 * 1024 : 0 };
                     case HANDOFF_ACTIVITY_NAMES.listChildSessions: return [];
+                    case "updateCmsState":
+                        if (input.state === "waiting" && waitingStateHook) await waitingStateHook(input);
+                        return null;
                     case HANDOFF_ACTIVITY_NAMES.runTurn:
                     case HANDOFF_ACTIVITY_NAMES.runTurn2:
                     case SIGNAL_ACTIVITY_NAMES.runTurn:
                     case SIGNAL_ACTIVITY_NAMES.runTurn2:
                         turns.push({ worker: label, name, tag: ctx.tag(), affinity: ctx.sessionId, ...input });
+                        if (turnResults.length) return { snapshotVersion: turns.length, ...turnResults.shift() };
                         if (input.prompt === "Wait for ready") return {
                             type: "signal-wait", action: "wait", names: ["ready"], reason: "External completion",
                             ...(waitTimeout !== undefined ? { timeoutSeconds: waitTimeout } : {}),
@@ -112,15 +123,18 @@ async function withRuntimeTest(body) {
         signal: createSessionSignal(name, options, { kind: "api", actorId: "fixture-operator" },
             { signalId: id, raisedAt: new Date().toISOString() }),
     });
-    const start = (client, input = {}, version = "1.0.79") => client.startOrchestrationVersioned(IID, NAME, {
+    const start = (client, input = {}, version = "1.0.80") => client.startOrchestrationVersioned(IID, NAME, {
         sessionId: SID, config: {}, isSystem: true, blobEnabled: true, idleTimeout: -1, prompt: "Wait for ready", ...input,
     }, version);
     try {
         await body({
             createWorker, stop, statusUntil, eventUntil, enqueueSignal, start, turns, events,
             instanceId: IID,
+            sessionId: SID,
             forceCan: () => { forceCan = true; },
             timeout: seconds => { waitTimeout = seconds; },
+            onWaitingState: hook => { waitingStateHook = hook; },
+            scriptTurns: results => { turnResults = [...results]; },
         });
     } finally {
         await Promise.all([...running].map(runtime => runtime.shutdown(3000)));
@@ -129,6 +143,120 @@ async function withRuntimeTest(body) {
 }
 
 describe.concurrent("durable signals on the native runtime", () => {
+    it("replays main's 1.0.79 unchanged, rejects signals there, then upgrades at CAN to 1.0.80", { timeout: 60_000 }, async () => {
+        await withRuntimeTest(async ({ createWorker, stop, statusUntil, start, turns, forceCan, instanceId, sessionId }) => {
+            const original = await createWorker("main", false);
+            await start(original.client, { prompt: "Ordinary request", blobEnabled: false }, "1.0.79");
+            await statusUntil(original.client, status => status?.status === "idle" && status.responseVersion >= 1);
+            const api = PilotSwarmClient._fromRuntime({ waitThreshold: 30 }, {
+                getSession: async () => ({ sessionId, state: "idle", orchestrationId: instanceId }),
+            }, original.client);
+            await expect(api._raiseSignal(sessionId, "ready", { signalId: "legacy-refused", wake: true }))
+                .rejects.toMatchObject({ code: "SIGNALS_UNSUPPORTED" });
+            expect(await original.client.getValue(instanceId, SIGNAL_STATE_KEY)).toBeNull();
+            await stop(original.runtime);
+
+            const upgraded = await createWorker("upgraded");
+            forceCan();
+            await upgraded.client.enqueueEvent(instanceId, "messages", { prompt: "Continue the existing execution" });
+            // This ordinary legacy turn kept its affinity: a different worker
+            // must wait for the native ownership lease (about 30 seconds).
+            await statusUntil(upgraded.client, async status => status?.status === "idle"
+                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.80", 45_000);
+            expect(turns.map(turn => turn.name)).toEqual([HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn]);
+            expect(turns.every(turn => !turn.config.durableSignals)).toBe(true);
+            const receipt = await api._raiseSignal(sessionId, "ready", { signalId: "upgraded-wake", wake: true });
+            expect(receipt.status).toBe("queued");
+            await statusUntil(upgraded.client, status => status?.status === "idle" && status.responseVersion >= 3);
+            expect(turns).toHaveLength(3);
+            expect(turns[2]).toMatchObject({ name: SIGNAL_ACTIVITY_NAMES.runTurn, tag: SIGNAL_ACTIVITY_CAPABILITY });
+            expect(turns[2].prompt).toContain('"signalId": "upgraded-wake"');
+        });
+    });
+
+    it("consumes a pre-deadline queued signal after the waiting activity finishes past the deadline", { timeout: 30_000 }, async () => {
+        await withRuntimeTest(async ({ createWorker, start, statusUntil, enqueueSignal, events, turns, timeout, onWaitingState }) => {
+            const entered = Promise.withResolvers();
+            const release = Promise.withResolvers();
+            onWaitingState(async () => {
+                entered.resolve();
+                await release.promise;
+            });
+            timeout(2);
+            const worker = await createWorker("delayed-wait");
+            try {
+                await start(worker.client, { blobEnabled: false });
+                const waiting = await statusUntil(worker.client, status => status?.status === "waiting" && status.signalWait);
+                await entered.promise;
+                const deadline = Date.parse(waiting.signalWait.deadline);
+                await enqueueSignal(worker.client, "accepted-before-deadline", "ready");
+                expect(Date.now()).toBeLessThan(deadline);
+                // Hold only until the persisted deadline; this is the tested
+                // delayed-activity boundary, not a timing retry or grace sleep.
+                await delay(Math.max(0, deadline - Date.now() + 1));
+                release.resolve();
+                await statusUntil(worker.client, status => status?.responseVersion >= 1 && !status.signalWait);
+                expect(turns).toHaveLength(2);
+                expect(turns[1].prompt).toContain('"signalId": "accepted-before-deadline"');
+                expect(events.some(event => event.eventType === "session.signal_wait_timeout")).toBe(false);
+                expect(events.filter(event => event.eventType === "session.signal_consumed")).toMatchObject([
+                    { data: { signalId: "accepted-before-deadline", waitId: waiting.signalWait.waitId, mode: "wait" } },
+                ]);
+            } finally {
+                release.resolve();
+            }
+        });
+    });
+
+    it("a matching wake satisfies a budget-interrupted wait and delivers the saved user prompt", { timeout: 30_000 }, async () => {
+        await withRuntimeTest(async ({ createWorker, start, statusUntil, enqueueSignal, turns, events, scriptTurns, instanceId }) => {
+            scriptTurns([
+                { type: "signal-wait", action: "wait", names: ["ready"], reason: "Wait for ready" },
+                { type: "wait", budget: true, seconds: 60, reason: "Budget pause" },
+                completed,
+            ]);
+            const worker = await createWorker("budget-wake");
+            await start(worker.client, { blobEnabled: false });
+            const initial = await statusUntil(worker.client, status => status?.signalWait && status.status === "waiting");
+            await worker.client.enqueueEvent(instanceId, "messages", { prompt: "Accepted user update" });
+            await statusUntil(worker.client, status => status?.signalWaitInterrupted && status.waitReason === "Budget pause");
+            await enqueueSignal(worker.client, "budget-ready", "ready", { wake: true });
+            await statusUntil(worker.client, status => status?.responseVersion >= 1 && !status.signalWait);
+            expect(turns).toHaveLength(3);
+            expect(turns[2].stashedPrompts).toContain("Accepted user update");
+            expect(events.filter(event => event.eventType === "session.signal_consumed")).toMatchObject([
+                { data: { signalId: "budget-ready", mode: "wait", waitId: initial.signalWait.waitId } },
+            ]);
+            expect(JSON.parse(await worker.client.getValue(instanceId, SIGNAL_STATE_KEY))).toEqual({
+                version: 1, interrupted: false, buffered: [],
+            });
+        });
+    });
+
+    it("Stop resumes an existing recurring schedule after cancelling its signal wait", { timeout: 45_000 }, async () => {
+        await withRuntimeTest(async ({ createWorker, start, statusUntil, turns, scriptTurns, instanceId }) => {
+            scriptTurns([
+                { ...completed, queuedActions: [{ type: "cron", action: "set", intervalSeconds: 15, reason: "Recurring work" }] },
+                { type: "signal-wait", action: "wait", names: ["ready"], reason: "Await event first" },
+                completed,
+            ]);
+            const worker = await createWorker("stop-cron");
+            await start(worker.client, { prompt: "Monitor", blobEnabled: false });
+            await statusUntil(worker.client, status => status?.cronActive && status.status === "waiting");
+            await worker.client.enqueueEvent(instanceId, "messages", { prompt: "Wait for the event" });
+            const waiting = await statusUntil(worker.client, status => status?.signalWait && status.status === "waiting");
+            await worker.client.enqueueEvent(instanceId, "messages", {
+                type: "cmd", cmd: "cancel_signal_wait", id: "native-stop", args: { waitId: waiting.signalWait.waitId },
+            });
+            const response = JSON.parse(await worker.client.waitForValue(instanceId, commandResponseKey("native-stop"), 10_000));
+            expect(response.result.outcome).toBe("stopped");
+            await statusUntil(worker.client, status => !status?.signalWait && status?.cronActive && status.waitReason === "Recurring work");
+            await statusUntil(worker.client, status => status?.responseVersion >= 2, 25_000);
+            expect(turns).toHaveLength(3);
+            expect(turns[2].cycleOrigin).toBe("cron");
+        });
+    });
+
     it("preserves waits, buffers and deduplication through CAN and a new worker/provider", { timeout: 45_000 }, async () => {
         await withRuntimeTest(async ({ createWorker, stop, statusUntil, eventUntil, enqueueSignal, start, turns, events, forceCan, instanceId: IID }) => {
             const first = await createWorker("first");

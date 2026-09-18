@@ -131,6 +131,45 @@ test("portal details render indefinite, timed, and interrupted signal waits as t
     }
 });
 
+test("desktop and mobile portal composers render Stop for parked signal waits, not other waits", () => {
+    const desktopWidth = globalThis.window.innerWidth;
+    const wait = { waitId: "w1", names: ["approval"], reason: "Review", startedAt: "2026-09-16T09:00:00.000Z" };
+    try {
+        for (const width of [1440, 390]) {
+            globalThis.window.innerWidth = width;
+            for (const [extra, label] of [
+                [{ signalWait: wait }, "Stop waiting for a signal"],
+                [{ signalWait: { ...wait, deadline: "2026-09-16T09:30:00.000Z" } }, "Stop waiting for a signal"],
+                [{ isSystem: true, signalWait: wait }, "Stop waiting for a signal"],
+                [{ status: "running" }, "Stop the current turn"],
+                [{ waitSeconds: 60 }, null],
+                [{ cronActive: true, cronInterval: 60 }, null],
+                [{ signalWait: wait, signalWaitInterrupted: true, waitReason: "Provider budget", waitSeconds: 60 }, null],
+                [{ signalWait: { ...wait, waitId: "" } }, null],
+                [{ signalWait: { ...wait, waitId: 1 } }, null],
+                [{ signalWait: wait, status: "completed" }, null],
+                [{ signalWait: wait, isGroup: true }, null],
+            ]) {
+                const controller = makeController();
+                controller.dispatch({ type: "sessions/loaded", sessions: [{
+                    sessionId: "s1", title: "Stop review", status: "waiting", ...extra,
+                }] });
+                controller.dispatch({ type: "sessions/selected", sessionId: "s1" });
+                const html = render(controller);
+                const stop = html.match(/<button\b[^>]*class="ps-stop-button[^"]*"[^>]*>/g) || [];
+                assert.equal(stop.length, label ? 1 : 0, `${width}px: ${JSON.stringify(extra)}`);
+                if (label) {
+                    assert.ok(stop[0].includes(`aria-label="${label}"`));
+                    assert.ok(stop[0].includes(`title="${label} (the session stays alive and returns to idle)"`));
+                    assert.doesNotMatch(stop[0], /disabled/);
+                }
+            }
+        }
+    } finally {
+        globalThis.window.innerWidth = desktopWidth;
+    }
+});
+
 test("portal signal Activity escapes markup and never turns payload references into links", () => {
     const controller = makeController();
     controller.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "s1", title: "Signals", status: "waiting" }] });

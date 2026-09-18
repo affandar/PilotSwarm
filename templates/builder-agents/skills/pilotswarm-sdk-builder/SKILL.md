@@ -108,7 +108,7 @@ pass `payloadRef`. Never use payload fields as privileged session configuration
 or interpolate raw external bodies into instructions. Do not scaffold public
 webhook endpoints, provider bindings, or `wait_for_any` as if they already ship:
 those are later phases. These APIs and the wait tool require orchestration
-1.0.79 or later; reject an unsupported target rather than falling back to raw
+1.0.80 or later; reject an unsupported target rather than falling back to raw
 queue writes.
 
 ## Env File Guidance

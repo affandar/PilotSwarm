@@ -2,7 +2,7 @@
 
 Durable signals let an authorized caller resume a session waiting for an
 external event, without polling or running model turns while it is parked.
-They require orchestration **1.0.79 or later** and a signal-capable worker.
+They require orchestration **1.0.80 or later** and a signal-capable worker.
 
 This is Phase 1 of [#79](https://github.com/affandar/PilotSwarm/issues/79).
 It does **not** expose public webhook URLs, provider connectors, event-triggered
@@ -40,8 +40,11 @@ wait_for_signal({ action: "cancel" });
 ```
 
 Another blocking tool (`wait`, `ask_user`, or `wait_for_agents`) replaces the
-signal wait. A provider-budget refusal does not cancel it. Recurring schedules
-remain configured and resume when the signal wait ends.
+signal wait. A provider-budget refusal does not cancel it. A matching
+`wake: true` signal can satisfy the saved wait during that budget pause; the
+accepted user input stays attached to the next permitted turn. Nonmatching
+signal bursts do not replace the budget retry timer. Recurring schedules remain
+configured and resume when the signal wait ends, including after Stop.
 
 Stop cancels a parked signal wait without deleting the session or its buffer.
 The stop request targets the observed wait ID, so a stale request cannot cancel
@@ -156,16 +159,25 @@ the corresponding management/Web API/MCP reads.
 
 ## Rollout and coverage
 
-The 1.0.78 handler is frozen. Older executions keep their prior scheduling
+Main's non-signal 1.0.79 handler is frozen, alongside earlier versions. Older
+executions keep their prior scheduling
 behavior until their existing continue-as-new upgrade boundary; a raise to an
 older decoder fails explicitly rather than disappearing into its queue.
 Signal-aware run-turn and epoch-start activities require
 `pilotswarm.signals.v1`, so an old worker cannot claim them. Older run-turn
 activities retain their original names, payloads, and tool declarations.
 
+An earlier, unmerged draft of this feature used 1.0.79 before main independently
+assigned that version to different behavior. Draft-test histories from that
+implementation are not main's 1.0.79 histories: use a fresh isolated test
+database when moving those experiments to the corrected 1.0.80 build.
+
 `durable-signals.test.js` covers envelopes, limits, FIFO, deduplication,
 interrupt/re-arm, timeout and Stop/replacement semantics. The native-runtime
 suite additionally exercises real Duroxide queues, replay, continue-as-new,
 maximum-size buffered payloads, capability routing, and a replacement
-worker/provider. These fixtures do not call a real model or replace the
+worker/provider. Review regressions cover delayed timeout dispatch,
+budget-interrupted wakes, recurring schedule restoration, first-turn tool
+requirements, maximum-name inspection, and UI snapshot authority. These
+fixtures do not call a real model or replace the
 credentialed PostgreSQL/Copilot integration gate.

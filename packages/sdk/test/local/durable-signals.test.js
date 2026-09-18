@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { computeCronAtNextFire } from "../../src/cron-at.ts";
 import { MAX_DRAIN_PER_TURN, MAX_ITERATIONS_PER_EXECUTION } from "../../src/orchestration/state.ts";
 import { createSessionProxy } from "../../src/session-proxy.ts";
 import { AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
@@ -33,7 +34,7 @@ const signal = (id = "signal-1", name = "ready", options = {}) => createSessionS
 );
 
 class Driver {
-    constructor({ input = {}, messages = [], turns = [], kv = new Map(), now = START } = {}) {
+    constructor({ input = {}, messages = [], turns = [], kv = new Map(), now = START, agentDefinition } = {}) {
         this.kv = kv;
         this.now = now;
         this.queues = new Map([["messages", [...messages]]]);
@@ -44,6 +45,7 @@ class Driver {
         this.continues = [];
         this.guid = 0;
         this.status = null;
+        this.agentDefinition = agentDefinition;
         this.activity = (name, input, sessionId) => ({
             kind: "activity", name, input, sessionId,
             withTag(tag) { this.tag = tag; return this; },
@@ -69,7 +71,7 @@ class Driver {
             continueAsNewVersioned: (nextInput, version) => ({ kind: "continue", input: nextInput, version }),
         };
         this.input = { sessionId: "signal-session", config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, ...input };
-        this.gen = durableSessionOrchestration_1_0_79(this.ctx, this.input);
+        this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.input);
     }
 
     enqueue(value, queue = "messages") {
@@ -116,6 +118,9 @@ class Driver {
                     case "listChildSessionsV2": return [];
                     case "getOrchestrationStats": return { historySizeBytes: 0 };
                     case "getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
+                    case "resolveAgentConfigV2": return this.agentDefinition;
+                    case "computeCronAtNextFire":
+                        return computeCronAtNextFire(effect.input.schedule, effect.input.afterUtcMs, effect.input.lastOccurrenceKey);
                     case "abortTurn": return { outcome: "stopped" };
                     case "updateCmsState":
                     case "loadKnowledgeIndex":
@@ -133,8 +138,8 @@ class Driver {
             if (this.pending) {
                 if (this.pending.kind === "continue") {
                     this.continues.push(structuredClone(this.pending.input));
-                    expect(this.pending.version).toBe("1.0.79");
-                    this.gen = durableSessionOrchestration_1_0_79(this.ctx, this.pending.input);
+                    expect(this.pending.version).toBe("1.0.80");
+                    this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.pending.input);
                     this.pending = null;
                     continue;
                 }
@@ -185,7 +190,8 @@ describe.concurrent("durable signal envelopes", () => {
         expect(validateSignalWaitInput({ action: "cancel" })).toEqual({ action: "cancel" });
         expect(supportsSignalOrchestration("1.0.78")).toBe(false);
         expect(supportsSignalOrchestration(undefined)).toBe(false);
-        expect(supportsSignalOrchestration("1.0.79")).toBe(true);
+        expect(supportsSignalOrchestration("1.0.79")).toBe(false);
+        expect(supportsSignalOrchestration("1.0.80")).toBe(true);
     });
 
     it("frames data without allowing payload delimiters to become system context", () => {
@@ -215,6 +221,62 @@ describe.concurrent("durable signal envelopes", () => {
 });
 
 describe.concurrent("durable signal orchestration", () => {
+    it.each([0, MAX_DRAIN_PER_TURN])("drains a pre-arrival match before an elapsed timeout behind %i unrelated messages", (preceding) => {
+        const driver = new Driver({
+            input: {
+                iteration: 1,
+                pendingSignalWait: {
+                    waitId: "restored-wait", names: ["ready"], reason: "Recovery",
+                    startedAt: new Date(START).toISOString(),
+                    deadline: new Date(START + 1000).toISOString(),
+                },
+            },
+            now: START + 2000,
+            messages: [
+                ...Array.from({ length: preceding }, (_, index) => ({ signal: signal(`before-${index}`, "other") })),
+                { signal: signal("queued-before-deadline") },
+            ],
+        });
+        driver.run();
+        expect(driver.turns).toHaveLength(1);
+        expect(driver.turns[0].prompt).toContain('"signalId": "queued-before-deadline"');
+        expect(driver.events.some(event => event.eventType === "session.signal_wait_timeout")).toBe(false);
+        expect(driver.signals.pendingWait).toBeUndefined();
+    });
+
+    it("processes a queued Stop before an elapsed signal timeout", () => {
+        const driver = new Driver({
+            input: {
+                iteration: 1,
+                pendingSignalWait: {
+                    waitId: "elapsed-wait", names: ["ready"], reason: "Stop wins",
+                    startedAt: new Date(START).toISOString(),
+                    deadline: new Date(START + 1000).toISOString(),
+                },
+            },
+            now: START + 2000,
+            messages: [{ type: "cmd", cmd: "cancel_signal_wait", id: "stop-before-timeout", args: { waitId: "elapsed-wait" } }],
+        });
+        driver.run();
+        expect(driver.turns).toHaveLength(0);
+        expect(driver.events.some(event => event.eventType === "session.signal_wait_timeout")).toBe(false);
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(JSON.parse(driver.kv.get(commandResponseKey("stop-before-timeout"))).result.outcome).toBe("stopped");
+    });
+
+    it("enforces a named agent's initial required tool on its first signal-driven turn only", () => {
+        const driver = new Driver({
+            input: { isSystem: false, agentId: "grounded-agent" },
+            agentDefinition: { name: "grounded-agent", tools: ["initialize"], initialRequiredTool: "initialize" },
+            messages: [{ signal: signal("first-turn", "ready", { wake: true }) }],
+        });
+        driver.run();
+        expect(driver.turns[0]).toMatchObject({ turnIndex: 0, requiredTool: "initialize" });
+        driver.enqueue({ prompt: "An ordinary later message" });
+        driver.run();
+        expect(driver.turns[1].requiredTool).toBeUndefined();
+    });
+
     it("parks indefinitely without polling or model turns, then consumes an attributed signal", () => {
         const driver = new Driver({ input: { prompt: "Wait for completion" }, turns: [waiting()] });
         expect(driver.run()).toMatchObject({ kind: "dequeue", queue: "messages" });
@@ -350,6 +412,86 @@ describe.concurrent("durable signal orchestration", () => {
         expect(driver.events.filter(event => event.eventType === "session.signal_wait_cancelled")).toHaveLength(0);
     });
 
+    it.each([false, true])("a matching wake settles the budget-interrupted wait without losing accepted input (refused again: %s)", (refusedAgain) => {
+        const refusal = { type: "wait", budget: true, seconds: 60, reason: "Budget refusal" };
+        const driver = new Driver({
+            input: { prompt: "Wait" },
+            turns: [waiting(), refusal, ...(refusedAgain ? [refusal] : []), completed],
+        });
+        driver.run();
+        const original = driver.signals.pendingWait;
+        driver.enqueue({ prompt: "Status update" });
+        driver.run();
+        expect(driver.signals.interrupted).toBe(true);
+        driver.enqueue({ signal: signal("matching-budget-wake", "ready", { wake: true }) });
+        driver.run();
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(driver.turns[2].stashedPrompts).toContain("Status update");
+        const consumed = driver.events.filter(event => event.eventType === "session.signal_consumed");
+        expect(consumed).toMatchObject([{ data: { mode: "wait", waitId: original.waitId } }]);
+        if (refusedAgain) {
+            driver.now += 61_000;
+            driver.run();
+            expect(driver.turns[3].stashedPrompts[0]).toBe("Status update");
+            expect(driver.turns[3].stashedPrompts.join("\n")).toContain('"signalId": "matching-budget-wake"');
+        }
+        const finishedTurns = driver.turns.length;
+        driver.enqueue({ signal: signal("matching-budget-wake", "ready", { wake: true }) });
+        driver.run();
+        driver.now += 61_000;
+        driver.run();
+        expect(driver.turns).toHaveLength(finishedTurns);
+        expect(driver.events.some(event => event.eventType === "session.signal_duplicate")).toBe(true);
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(driver.signals.buffered).toEqual([]);
+    });
+
+    it("preserves the budget retry timer when a full batch of nonmatching signals drains", () => {
+        const driver = new Driver({
+            input: { prompt: "Wait" },
+            turns: [waiting(), { type: "wait", budget: true, seconds: 60, reason: "Budget refusal" }, completed],
+        });
+        driver.run();
+        const wait = driver.signals.pendingWait;
+        driver.enqueue({ prompt: "Accepted input waiting for budget" });
+        driver.run();
+        expect(driver.signals.interrupted).toBe(true);
+        for (let index = 0; index < MAX_DRAIN_PER_TURN; index++) {
+            driver.enqueue({ signal: signal(`budget-burst-${index}`, "other") });
+        }
+        expect(driver.run()).toMatchObject({ kind: "race" });
+        expect(driver.signals.interrupted).toBe(true);
+        expect(driver.turns).toHaveLength(2);
+        driver.now += 61_000;
+        driver.run();
+        expect(driver.turns).toHaveLength(3);
+        expect(driver.turns[2].stashedPrompts).toContain("Accepted input waiting for budget");
+        expect(driver.signals.pendingWait).toEqual(wait);
+        expect(driver.signals.interrupted).toBe(false);
+    });
+
+    it("keeps oldest-matching FIFO when a later wake releases a budget-interrupted wait", () => {
+        const driver = new Driver({
+            input: { prompt: "Wait" },
+            turns: [waiting(), { type: "wait", budget: true, seconds: 60, reason: "Budget refusal" }, completed],
+        });
+        driver.run();
+        const waitId = driver.signals.pendingWait.waitId;
+        driver.enqueue({ prompt: "Accepted input" });
+        driver.run();
+        driver.enqueue({ signal: signal("older-buffered-match") });
+        driver.run();
+        expect(driver.signals.interrupted).toBe(true);
+        driver.enqueue({ signal: signal("later-matching-wake", "ready", { wake: true }) });
+        driver.run();
+        expect(driver.events.filter(event => event.eventType === "session.signal_consumed")).toMatchObject([
+            { data: { signalId: "older-buffered-match", mode: "wait", waitId } },
+            { data: { signalId: "later-matching-wake", mode: "wake" } },
+        ]);
+        expect(driver.turns[2].stashedPrompts).toContain("Accepted input");
+        expect(driver.signals.pendingWait).toBeUndefined();
+    });
+
     it("does not interrupt the signal wait for a cancelled queued user message", () => {
         const driver = new Driver({ input: { prompt: "Wait" }, turns: [waiting(["ready"], 60)] });
         driver.run();
@@ -441,6 +583,49 @@ describe.concurrent("durable signal orchestration", () => {
         driver.run();
         expect(driver.signals.pendingWait).toBeUndefined();
         expect(driver.events.some(event => event.eventType === "session.signal_wait_cancelled" && event.data.disposition === "stopped")).toBe(true);
+    });
+
+    it.each(["cron", "cron_at"])("Stop resumes the configured %s schedule after cancelling a signal wait", (kind) => {
+        const action = kind === "cron"
+            ? { type: "cron", action: "set", intervalSeconds: 60, reason: "Monitor" }
+            : { type: "cron_at", action: "set", schedule: { minute: 1, tz: "UTC", reason: "Monitor", firesCompleted: 0, maxFires: 1 } };
+        const driver = new Driver({
+            input: { prompt: "Monitor" },
+            turns: [{ ...completed, queuedActions: [action] }, waiting(), completed],
+        });
+        driver.run();
+        expect(driver.status.cronActive).toBe(true);
+        driver.enqueue({ prompt: "Wait for ready first" });
+        driver.run();
+        const waitId = driver.signals.pendingWait.waitId;
+        driver.enqueue({ type: "cmd", cmd: "cancel_signal_wait", id: "stop-cron-wait", args: { waitId } });
+        expect(driver.run()).toMatchObject({ kind: "race" });
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(driver.status.cronActive).toBe(true);
+        driver.now += 61_000;
+        driver.run();
+        expect(driver.events.some(event => event.eventType === `session.${kind}_fired`)).toBe(true);
+        expect(driver.turns).toHaveLength(3);
+    });
+
+    it("cancels the observed wait without replacing an interrupting turn's budget retry timer", () => {
+        const driver = new Driver({
+            input: { prompt: "Wait" },
+            turns: [waiting(), { type: "wait", budget: true, seconds: 60, reason: "Budget refusal" }, completed],
+        });
+        driver.run();
+        const waitId = driver.signals.pendingWait.waitId;
+        driver.enqueue({ prompt: "Accepted before Stop was processed" });
+        driver.run();
+        driver.enqueue({ type: "cmd", cmd: "cancel_signal_wait", id: "racing-stop", args: { waitId } });
+        expect(driver.run()).toMatchObject({ kind: "race" });
+        expect(driver.signals.pendingWait).toBeUndefined();
+        expect(driver.status).toMatchObject({ status: "waiting", waitReason: "Budget refusal" });
+        driver.now += 61_000;
+        driver.run();
+        expect(driver.turns).toHaveLength(3);
+        expect(driver.turns[2].stashedPrompts).toContain("Accepted before Stop was processed");
+        expect(driver.signals.pendingWait).toBeUndefined();
     });
 
     it("rejects malformed queue envelopes visibly and fails loudly on corrupted durable state", () => {

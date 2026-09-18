@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     appReducer, createInitialState, createStore, PilotSwarmUiController,
+    buildHelpModalRows, canStopSessionTurn, selectStatusBar,
     formatCronTimestampForClient, selectChatPaneChrome, selectLiveActivityLines,
     selectSessionRows, selectSessionSignalWait, selectSessionStatusSummary,
 } from "../src/index.js";
@@ -24,6 +25,49 @@ function stateWith(session, mode = "local") {
     let state = appReducer(createInitialState({ mode }), { type: "sessions/loaded", sessions: [session] });
     return appReducer(state, { type: "sessions/selected", sessionId: "s1" });
 }
+
+test("Stop and the TUI hint include valid parked signal waits without changing running-turn eligibility", () => {
+    for (const isSystem of [false, true]) {
+        for (const signalWait of [WAIT, TIMED_WAIT]) {
+            const session = row({ signalWait, isSystem });
+            assert.equal(canStopSessionTurn(session), true);
+            for (const mode of ["local", "remote"]) {
+                const state = stateWith(session, mode);
+                for (const focusRegion of ["sessions", "chat", "prompt"]) {
+                    const focused = { ...state, ui: { ...state.ui, focusRegion } };
+                    assert.match(selectStatusBar(focused).right, /^ctrl-x stop signal wait · /);
+                }
+            }
+        }
+        const running = row({ isSystem, status: "running", signalWaitInterrupted: true });
+        assert.equal(canStopSessionTurn(running), true);
+        assert.match(selectStatusBar(stateWith(running)).right, /^ctrl-x stop · /);
+        assert.equal(canStopSessionTurn({ status: "running", isSystem }), true);
+    }
+    assert.ok(buildHelpModalRows().some(runs => /ctrl-x.*stop the current turn or signal wait/.test(flatten(runs))));
+});
+
+test("Stop excludes non-signal waits, interrupted waits, invalid wait IDs, groups, and terminal sessions", () => {
+    const ineligible = [
+        null, undefined,
+        { status: "waiting", waitSeconds: 60 },
+        { status: "waiting", cronActive: true, cronInterval: 60 },
+        row({ isGroup: true }),
+        row({ isGroup: true, status: "running" }),
+        row({ signalWaitInterrupted: true, waitSeconds: 60, waitReason: BUDGET_REASON }),
+        row({ pauseState: { kind: "limit", provider: "personal" }, waitReason: BUDGET_REASON }),
+        row({ signalWait: { ...WAIT, names: [] } }),
+        ...[undefined, null, false, 1, {}, [], "", " \t\n", "\u0000", "bad\nid"]
+            .map(waitId => row({ signalWait: { ...WAIT, waitId } })),
+        ...["idle", "unknown", "pending", "input_required", "completed", "cancelled", "terminated", "failed", "error"]
+            .map(status => row({ status })),
+        ...["Completed", "Terminated", "Failed"].map(orchestrationStatus => row({ orchestrationStatus })),
+    ];
+    for (const session of ineligible) {
+        assert.equal(canStopSessionTurn(session), false, JSON.stringify(session));
+        if (session) assert.doesNotMatch(selectStatusBar(stateWith(session)).right, /ctrl-x stop/);
+    }
+});
 
 test("indefinite signal waits have exact shared text, not a zero-second timer", () => {
     const session = row({ waitSeconds: 0 });
@@ -221,10 +265,94 @@ for (const path of ["list", "detail"]) {
             assert.equal(selectSessionSignalWait(h.current()), null);
         }
     });
+
+    test(`${path}: newer authoritative snapshots clear waits and stale metadata cannot revive them`, async () => {
+        for (const status of ["idle", "running", "waiting"]) {
+            const h = harness(row({ signalWait: TIMED_WAIT, waitSeconds: 1800 }));
+            await h.apply({ status, statusVersion: 11, updatedAt: T - 1 });
+            assert.equal(h.current().signalWait, null, `wait ended into ${status}`);
+            assert.equal(h.current().signalWaitInterrupted, false);
+            assert.equal(h.current().waitStartedAt, null);
+            assert.equal(h.current().waitSeconds, null);
+            await h.apply({ status: "waiting", statusVersion: 10, updatedAt: T + 50_000, signalWait: TIMED_WAIT });
+            assert.equal(h.current().signalWait, null, "an older version cannot revive the ended wait");
+            assert.equal(h.current().status, status);
+        }
+    });
 }
+
+for (const [label, initial] of [
+    ["indefinite", row()],
+    ["timed", row({ signalWait: TIMED_WAIT, waitSeconds: 1800 })],
+    ...[WAIT, TIMED_WAIT].map(signalWait => [
+        `budget-interrupted ${signalWait.deadline ? "timed" : "indefinite"}`,
+        row({ signalWait, signalWaitInterrupted: true, waitStartedAt: T + 1, waitSeconds: 60,
+            waitReason: BUDGET_REASON, pauseState: { kind: "limit", provider: "personal" } }),
+    ]),
+]) {
+    test(`catalog refresh preserves the ${label} wait until an authoritative detail retires it`, async () => {
+        const store = createStore(appReducer, stateWith(initial));
+        const before = store.getState().sessions.byId.s1;
+        let afterCatalog;
+        let detail = { sessionId: "s1", status: "idle", statusVersion: 11, updatedAt: T + 2 };
+        const controller = new PilotSwarmUiController({ store, transport: {
+            listSessions: async () => [{ sessionId: "s1", title: "Catalog rename", status: "idle", updatedAt: T + 50_000 }],
+            getSession: async () => {
+                afterCatalog = store.getState().sessions.byId.s1;
+                return detail;
+            },
+            getSessionEvents: async () => [],
+            subscribeSession: () => () => {},
+        } });
+        try {
+            await controller.refreshSessions();
+            assert.equal(afterCatalog.title, "Catalog rename", "the actual sessions/loaded refresh landed");
+            for (const field of ["status", "statusVersion", "signalWait", "signalWaitInterrupted",
+                "waitStartedAt", "waitSeconds", "waitReason", "pauseState"]) {
+                assert.deepEqual(afterCatalog[field], before[field], `CMS-only refresh preserves ${field}`);
+            }
+            if (initial.signalWaitInterrupted) {
+                assert.equal(selectSessionSignalWait(afterCatalog), null, "the budget wait still owns the display");
+            } else {
+                assert.equal(canStopSessionTurn(afterCatalog), true, "Stop remains available between list and detail reads");
+            }
+            assert.equal(store.getState().sessions.byId.s1.signalWait, null, "the newer rich detail clears the wait");
+            assert.equal(store.getState().sessions.byId.s1.waitSeconds, null);
+            detail = { ...initial, updatedAt: T + 100_000 };
+            await controller.syncSessionDetail("s1");
+            assert.equal(store.getState().sessions.byId.s1.signalWait, null, "stale detail cannot revive metadata");
+        } finally {
+            controller.detachActiveSession();
+        }
+    });
+}
+
+test("list rows with missing or invalid status versions cannot use timestamps as wait-cancellation evidence", () => {
+    for (const statusVersion of [undefined, null, "", 0, -1, false, NaN, 1.5]) {
+        const state = appReducer(stateWith(row()), { type: "sessions/loaded", sessions: [{
+            sessionId: "s1", status: "idle", statusVersion, updatedAt: T + 50_000,
+        }] });
+        assert.deepEqual(state.sessions.byId.s1.signalWait, WAIT);
+        assert.equal(state.sessions.byId.s1.statusVersion, 10);
+    }
+});
+
+test("an explicit-null list snapshot can retire an unversioned wait without stale reads reviving it", () => {
+    let state = stateWith(row({ statusVersion: undefined }));
+    state = appReducer(state, { type: "sessions/loaded", sessions: [{
+        sessionId: "s1", status: "idle", signalWait: null, updatedAt: T + 2,
+    }] });
+    assert.equal(state.sessions.byId.s1.signalWait, null);
+    state = appReducer(state, { type: "sessions/loaded", sessions: [row({ statusVersion: undefined, updatedAt: T + 1 })] });
+    assert.equal(state.sessions.byId.s1.signalWait, null);
+});
 
 test("timestamp-only detail snapshots retain a stale wait and allow a newer wake", async () => {
     const store = createStore(appReducer, stateWith(row({ statusVersion: undefined })));
+    store.dispatch({ type: "sessions/loaded", sessions: [{
+        sessionId: "s1", status: "idle", updatedAt: T + 50_000,
+    }] });
+    assert.deepEqual(store.getState().sessions.byId.s1.signalWait, WAIT, "a CMS timestamp is not status authority");
     let snapshot = { sessionId: "s1", status: "idle", updatedAt: T };
     const controller = new PilotSwarmUiController({ store, transport: { getSession: async () => snapshot } });
     await controller.syncSessionDetail("s1");

@@ -143,6 +143,15 @@ list. If the user has no stored selection/expansion profile yet, the main
 PilotSwarm system session is selected and all expandable group/parent rows start
 collapsed.
 
+Durable signal waits retain their shared metadata through CMS-only list
+refreshes: `updatedAt` alone is not evidence that a wait ended. A rich detail
+read, valid `statusVersion`, or explicit signal metadata (including `null`)
+establishes authority; freshness checks still prevent stale reads from erasing
+or reviving a wait. Preserve an interrupting provider-budget wait's own
+status/reason/timer alongside the saved signal wait. Shared Stop eligibility
+includes running turns and valid, non-interrupted signal waits with status
+`waiting`; ordinary timers and cron waits do not become Stop targets.
+
 ### Admin model-provider flow
 
 ```text

@@ -153,7 +153,7 @@ Changing the orchestration code (adding/removing/reordering yields) requires a n
 
 ### Durable signals
 
-Signal-aware sessions require orchestration 1.0.79+ and capability-routed
+Signal-aware sessions require orchestration 1.0.80+ and capability-routed
 `pilotswarm.signals.v1` turn activities. Keep old run-turn descriptors and
 declarations unchanged. `raiseSignal` is the start-aware, validated path;
 `sendEvent`/`sendSessionEvent` are signal wrappers, never raw queue escape hatches.
@@ -162,6 +162,9 @@ continue-as-new. Payloads stay in bounded durable slots, while status and audit
 events expose metadata only. Keep public clients, API/MCP, tuner inspection,
 shared UI, and the [signal guide](../docs/developer/building/durable-signals.md)
 in parity. Webhook ingress and `wait_for_any` are not part of Phase 1.
+The existing Stop action also cancels parked, non-interrupted signal waits,
+not ordinary timers. CMS-only list timestamps must not clear authoritative
+signal-wait metadata; a current rich status snapshot can clear an ended wait.
 
 ### Docker / AKS Build Convention
 

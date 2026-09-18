@@ -186,7 +186,7 @@ Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSig
 | Layer | Change |
 |---|---|
 | `session-signals.ts` / `types.ts` | Versioned envelopes, validated options, wait/state types, limits, safe framing |
-| `orchestration/` (**1.0.79**, with 1.0.78 frozen) | Typed decoding, bounded FIFO/deduplication, wait/timeout/interrupt/re-arm, CAN carry and absolute deadline restoration |
+| `orchestration/` (**1.0.80**, with main's non-signal 1.0.79 frozen) | Typed decoding, bounded FIFO/deduplication, wait/timeout/interrupt/re-arm, CAN carry and absolute deadline restoration |
 | `managed-session.ts` / `session-proxy.ts` / `worker.ts` | Signal-aware declarations and handlers, CMS events, capability-tagged turn/epoch activities |
 | Management/session/web clients, Web API, MCP | `raiseSignal`, redacted state reads, compatibility event wrappers, target authorization and version checks |
 | Tuner / shared UI | `read_session_signals`, pending names/deadlines, Activity and sequence lifecycle entries |
@@ -207,7 +207,7 @@ model; the normal credentialed integration gate remains necessary.
 
 ## Phasing
 
-- **1 — core durable signals** (implemented): SDK + 1.0.79, typed envelopes, buffering/deduplication, optional-deadline `wait_for_signal`, authenticated raise/read surfaces, status/events and shared UI.
+- **1 — core durable signals** (implemented): SDK + 1.0.80, typed envelopes, buffering/deduplication, optional-deadline `wait_for_signal`, authenticated raise/read surfaces, status/events and shared UI.
 - **2 — explicit races**: `wait_for_any`, one typed winner, deterministic Stop/cancel → accepted input → signal → timer precedence, and durable loser disposition.
 - **3 — generic webhooks**: capability endpoint mint/list/revoke, token hashing, secret references, expiry/use limits, HMAC, durable receipts/outbox, rate limits, audit and lifecycle/manual-raise UI.
 - **4 — provider connectors**: GitHub/Azure DevOps exact-body authentication and normalization, trusted bindings, session templates, coalescing and dead-letter operations.

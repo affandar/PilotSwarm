@@ -63,14 +63,15 @@ export function selectSessionSignalWait(session) {
     };
 }
 
+function statusVersion(value) {
+    if (value == null || value === "" || typeof value === "boolean") return null;
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
 function snapshotOrder(previous, next) {
-    const version = (value) => {
-        if (value == null || value === "" || typeof value === "boolean") return null;
-        const number = Number(value);
-        return Number.isSafeInteger(number) && number > 0 ? number : null;
-    };
-    const previousVersion = version(previous?.statusVersion);
-    const nextVersion = version(next?.statusVersion);
+    const previousVersion = statusVersion(previous?.statusVersion);
+    const nextVersion = statusVersion(next?.statusVersion);
     if (previousVersion != null && nextVersion != null) return Math.sign(nextVersion - previousVersion);
     const timestamp = (value) => typeof value === "number" ? value : Date.parse(value || "");
     const before = timestamp(previous?.updatedAt);
@@ -79,16 +80,37 @@ function snapshotOrder(previous, next) {
 }
 
 /**
- * Full list/detail snapshots only, not partial event/UI patches. Optional
- * fields disappear on the wire when a wait ends. Clear them together on a
- * fresh snapshot, but do not let a stale/less-rich read erase or revive a wait.
+ * Full list/detail snapshots only, not partial event/UI patches. Omission
+ * clears a wait only in a rich status snapshot: a valid statusVersion,
+ * explicit signal metadata (including null), or a caller-confirmed detail
+ * read. CMS-only list timestamps do not establish signal lifecycle authority.
  * Sessions that have never carried this metadata are completely unchanged.
  */
-export function reconcileSignalWaitSnapshot(previous, next) {
+export function reconcileSignalWaitSnapshot(previous, next, { authoritative = false } = {}) {
     if (previous?.signalWait == null && next?.signalWait == null) return next;
-    const order = snapshotOrder(previous, next);
     const terminal = ["completed", "cancelled", "terminated", "failed"].includes(next?.status)
         || ["Completed", "Terminated", "Failed"].includes(next?.orchestrationStatus);
+    if (!terminal && !authoritative && statusVersion(next?.statusVersion) == null
+        && next.signalWait === undefined && next.signalWaitInterrupted === undefined) {
+        // CMS rows carry catalog changes, not live wait state. Keep the
+        // runtime fields together: an interrupted signal's provider-budget
+        // wait still owns its status/reason/timer. Retain the status timestamp
+        // too, so a catalog rename cannot make the next rich read look stale.
+        return {
+            ...next,
+            status: previous.status,
+            statusVersion: previous.statusVersion,
+            updatedAt: previous.updatedAt,
+            orchestrationStatus: previous.orchestrationStatus,
+            signalWait: previous.signalWait,
+            signalWaitInterrupted: previous.signalWaitInterrupted,
+            waitReason: previous.waitReason,
+            waitStartedAt: previous.waitStartedAt,
+            waitSeconds: previous.waitSeconds,
+            pauseState: previous.pauseState,
+        };
+    }
+    const order = snapshotOrder(previous, next);
     if (previous?.signalWait !== undefined && order != null
         && (order < 0 || (order === 0 && !terminal))) {
         return {

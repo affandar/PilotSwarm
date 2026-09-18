@@ -36,8 +36,6 @@ import {
     type PendingChildDigest,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
-import { armSignalWait, hasReadySignal, receiveSignal, takeReadySignal } from "./signals.js";
-import { formatSignalPrompt } from "../session-signals.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
@@ -140,7 +138,7 @@ function popFirstFifoItemMatching(runtime: DurableSessionRuntime, predicate: (it
     return null;
 }
 
-function popInteractiveFifoItem(runtime: DurableSessionRuntime): any | null {
+function popNextDispatchFifoItem(runtime: DurableSessionRuntime): any | null {
     const interactive = popFirstFifoItemMatching(
         runtime,
         (item) => item?.kind === "prompt" || item?.kind === "answer",
@@ -149,7 +147,7 @@ function popInteractiveFifoItem(runtime: DurableSessionRuntime): any | null {
         runtime.ctx.traceInfo(`[fifo] dispatching interactive ${interactive.kind} before queued timers`);
         return interactive;
     }
-    return null;
+    return popFifoItem(runtime);
 }
 
 function hasFifoItems(runtime: DurableSessionRuntime): boolean {
@@ -259,7 +257,6 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         !hasReadyPendingChildDigest(runtime) &&
         state.pendingToolActions.length === 0 &&
         !state.pendingPrompt &&
-        !hasReadySignal(runtime) &&
         !hasFifoItems(runtime)
     );
 }
@@ -291,10 +288,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if ((state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready))
-            && !hasReadySignal(runtime)
-            && !(state.pendingSignalWait && (stash.length > 0 || hasFifoItems(runtime)
-                || state.pendingPrompt || state.pendingToolActions.length > 0 || hasReadyPendingChildDigest(runtime)))) {
+        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
                 batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
@@ -302,9 +296,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             });
             if (!candidate) continue;
 
-            // Even after recovery past a signal deadline, queued input gets
-            // a dequeue boundary before the timeout can be committed.
-            if (candidate.remainingMs === 0 && candidate.timer?.type !== "signal-timeout") {
+            if (candidate.remainingMs === 0) {
                 if (candidate.kind === "active" && candidate.timer) {
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: now });
                     state.activeTimer = null;
@@ -316,7 +308,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             const msgTask = ctx.dequeueEvent("messages");
-            const timerTask = ctx.scheduleTimer(candidate.remainingMs === 0 ? NON_BLOCKING_TIMER_MS : candidate.remainingMs);
+            const timerTask = ctx.scheduleTimer(candidate.remainingMs);
             const race: any = yield ctx.race(msgTask, timerTask);
 
             if (race.index === 1) {
@@ -394,11 +386,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             // starting). Later cmds still pre-empt: the loop re-enters drain
             // between stages and this pass is non-blocking while regen is set.
             if (state.regen) return;
-            continue;
-        }
-
-        if (Object.hasOwn(msg, "signal")) {
-            yield* receiveSignal(runtime, msg.signal);
             continue;
         }
 
@@ -612,11 +599,6 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             continue;
         }
 
-        if (Object.hasOwn(msg, "signal")) {
-            yield* receiveSignal(runtime, msg.signal);
-            continue;
-        }
-
         const childUpdate = parseChildUpdate(msg.prompt);
         if (childUpdate) {
             const key = `${childUpdate.sessionId}|${childUpdate.updateType}|${childUpdate.content ?? ""}`;
@@ -744,17 +726,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // Priority 3: FIFO — next item in arrival order, with prompt batching.
-    const interactive = popInteractiveFifoItem(runtime);
-    if (!interactive) {
-        const signal = yield* takeReadySignal(runtime);
-        if (signal) {
-            const requiredTool = state.pendingRequiredTool;
-            state.pendingRequiredTool = undefined;
-            yield* processPrompt(runtime, formatSignalPrompt(signal), true, requiredTool);
-            return true;
-        }
-    }
-    const item = interactive ?? popFifoItem(runtime);
+    const item = popNextDispatchFifoItem(runtime);
     if (item) {
         switch (item.kind) {
             case "prompt": {
@@ -868,11 +840,6 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     // Priority 4: buffered child digest — only after user/FIFO work is drained.
     if (state.pendingChildDigest?.ready && state.pendingChildDigest.updates.length > 0 && !state.waitingForAgentIds) {
         yield* processPendingChildDigest(runtime);
-        return true;
-    }
-
-    if (state.pendingSignalWait && state.signalWaitInterrupted && !state.activeTimer) {
-        yield* armSignalWait(runtime);
         return true;
     }
 

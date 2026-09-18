@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { PilotSwarmClient, PilotSwarmSession } from "../../dist/client.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
-import { SIGNAL_STATE_KEY, SIGNAL_MAX_INLINE_BYTES } from "../../dist/session-signals.js";
+import { SIGNAL_STATE_KEY, SIGNAL_MAX_INLINE_BYTES, validateSignalWaitInput } from "../../dist/session-signals.js";
 import { DURABLE_SESSION_ORCHESTRATION_NAME, DURABLE_SESSION_LATEST_VERSION } from "../../dist/orchestration-registry.js";
 
 const WAIT = {
@@ -30,7 +30,7 @@ function harness(options = {}) {
     const rows = new Map([...(options.ancestors ?? []).map(value => [value.sessionId, value]), [row.sessionId, row]]);
     const calls = [], starts = [], enqueues = [], updates = [], valueReads = [], responses = new Map();
     let status = options.status ?? "NotFound";
-    let version = Object.hasOwn(options, "version") ? options.version : "1.0.79";
+    let version = Object.hasOwn(options, "version") ? options.version : "1.0.80";
     let customStatus = options.customStatus ?? {};
     const catalog = {
         getSession: async id => { calls.push(["row", id]); return rows.get(id) ?? null; },
@@ -276,7 +276,7 @@ for (const surface of ["session", "management"]) {
     });
 }
 
-for (const version of ["1.0.78", "1.0.8", undefined, "latest"]) {
+for (const version of ["1.0.78", "1.0.79", "1.0.8", undefined, "latest"]) {
     test(`unsupported execution ${version} refuses both signal enqueue and an empty state read`, async () => {
         const h = harness({ status: "Running", version });
         await assert.rejects(h.session.raiseSignal("build_ready"), { code: "SIGNALS_UNSUPPORTED", status: 409 });
@@ -352,6 +352,19 @@ test("signal state exposes only metadata, never raw buffer slots or inline paylo
         version: 1, interrupted: true, pendingWait: WAIT, buffered: [SUMMARY],
     });
     assert.deepEqual(h.valueReads, [SIGNAL_STATE_KEY]);
+});
+
+test("a maximum-name wait's generated reason survives signal-state inspection", async () => {
+    const names = Array.from({ length: 8 }, (_, index) => String.fromCharCode(97 + index).repeat(64));
+    const request = validateSignalWaitInput({ names });
+    assert.ok(Buffer.byteLength(JSON.stringify(request.reason), "utf8") <= 512);
+    const h = harness({
+        status: "Running",
+        signalState: JSON.stringify({ version: 1, interrupted: false, pendingWait: { ...WAIT, names, reason: request.reason }, buffered: [] }),
+    });
+    const state = await h.mgmt.getSessionSignalState("s1");
+    assert.deepEqual(state.pendingWait.names, names);
+    assert.equal(state.pendingWait.reason, request.reason);
 });
 
 test("corrupt or unreadable signal state is not reported as empty", async () => {

@@ -9,8 +9,6 @@ import type {
     TurnAction,
 } from "../types.js";
 import { describeCronAt } from "../cron-at.js";
-import { cancelSignalWait } from "./signals.js";
-import { schedulePostTurnContinuation } from "./turn.js";
 import { normalizeMessageSender } from "../message-sender.js";
 import {
     COMMAND_VERSION_KEY,
@@ -45,7 +43,6 @@ export function publishStatus(
     extra: Record<string, unknown> = {},
 ): void {
     const { state } = runtime;
-    if (status === "idle" && state.pendingSignalWait && !state.signalWaitInterrupted) status = "waiting";
     const signal: SessionStatusSignal = {
         status,
         iteration: state.iteration,
@@ -71,14 +68,6 @@ export function publishStatus(
             }
             : { cronActive: false }),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
-        ...(state.pendingSignalWait ? {
-            signalWait: state.pendingSignalWait,
-            signalWaitInterrupted: state.signalWaitInterrupted,
-            ...(status === "waiting" && !state.signalWaitInterrupted ? {
-                waitReason: `Waiting for signal: ${state.pendingSignalWait.names.join(", ")} (${state.pendingSignalWait.reason})`,
-                waitStartedAt: Date.parse(state.pendingSignalWait.startedAt),
-            } : {}),
-        } : {}),
         ...extra,
         // A late answer may finish another turn while this question remains open.
         // Keep the question independently of latestResponse and its newer iteration.
@@ -288,13 +277,10 @@ export function* applyCronAtAction(
 }
 
 export function* drainLeadingQueuedScheduleActions(runtime: DurableSessionRuntime, sourcePrompt?: string): Generator<any, void, any> {
-    while (runtime.state.pendingToolActions[0]?.type === "cron" || runtime.state.pendingToolActions[0]?.type === "cron_at"
-        || (runtime.state.pendingToolActions[0]?.type === "signal-wait" && runtime.state.pendingToolActions[0].action === "cancel")) {
+    while (runtime.state.pendingToolActions[0]?.type === "cron" || runtime.state.pendingToolActions[0]?.type === "cron_at") {
         const action = runtime.state.pendingToolActions.shift()!;
         if (action.type === "cron") {
             applyCronAction(runtime, action as Extract<TurnAction, { type: "cron" }>, sourcePrompt);
-        } else if (action.type === "signal-wait") {
-            yield* cancelSignalWait(runtime, "cancelled");
         } else {
             yield* applyCronAtAction(runtime, action as Extract<TurnAction, { type: "cron_at" }>, sourcePrompt);
         }
@@ -506,9 +492,6 @@ export function buildContinueInput(
         ...(input.agentId ? { agentId: input.agentId } : {}),
         retryCount: 0,
         ...(state.pendingInputQuestion ? { pendingInputQuestion: state.pendingInputQuestion } : {}),
-        ...(state.pendingSignalWait ? { pendingSignalWait: state.pendingSignalWait } : {}),
-        ...(state.signalWaitInterrupted ? { signalWaitInterrupted: true } : {}),
-        ...(state.recentSignalIds.length ? { recentSignalIds: [...state.recentSignalIds] } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,
@@ -550,7 +533,7 @@ export function* versionedContinueAsNew(
     canInput: OrchestrationInput,
 ): Generator<any, void, any> {
     const { state } = runtime;
-    if (state.activeTimer && state.activeTimer.type !== "signal-timeout") {
+    if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
         (canInput as any).activeTimerState = {
@@ -821,42 +804,10 @@ export function* handleCommand(
             publishStatus(runtime, "idle");
             return;
         }
-        case "cancel_signal_wait": {
-            const waitId = runtime.state.pendingSignalWait?.waitId;
-            const matched = waitId !== undefined && waitId === cmdMsg.args?.waitId;
-            if (matched) {
-                yield* cancelSignalWait(runtime, "stopped");
-                if (!runtime.state.activeTimer) {
-                    yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
-                }
-            }
-            yield* writeCommandResponse(runtime, {
-                id: cmdMsg.id,
-                cmd: cmdMsg.cmd,
-                result: matched ? { outcome: "stopped", waitId } : { outcome: "no_active_turn" },
-            });
-            if (!matched) return;
-            const timer = runtime.state.activeTimer;
-            if (timer) {
-                // Input accepted after the Stop request may now be budget-paused.
-                // Cancelling its saved signal wait must not erase that retry.
-                const now: number = yield runtime.ctx.utcNow();
-                publishStatus(runtime, "waiting", {
-                    waitReason: timer.reason,
-                    waitStartedAt: timer.deadlineMs - timer.originalDurationMs,
-                    waitSeconds: Math.max(0, Math.ceil((timer.deadlineMs - now) / 1000)),
-                });
-            } else {
-                publishStatus(runtime, "idle");
-                yield* schedulePostTurnContinuation(runtime);
-            }
-            return;
-        }
         case "done":
         case "cancel":
         case "delete": {
             runtime.ctx.traceInfo(`[orch] ${cmdMsg.cmd} command received — beginning graceful ${cmdMsg.cmd}`);
-            yield* cancelSignalWait(runtime, "session_terminated");
             yield* beginGracefulShutdown(runtime, cmdMsg.cmd as ShutdownMode, cmdMsg);
             return;
         }

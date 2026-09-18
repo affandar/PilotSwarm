@@ -267,10 +267,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             requestExit();
             return;
         }
-        // Stop the current turn — the TUI equivalent of the portal Stop button.
+        // Stop the current turn or parked signal wait — same as portal Stop.
         // ctrl-x is reliable across terminals; ctrl-esc also fires where the
         // terminal sends it distinctly from a bare Esc. The controller no-ops
-        // (status message) when no turn is running.
+        // (status message) when neither is active.
         if (key.ctrl && (input === "x" || key.escape)) {
             controller.handleCommand(UI_COMMANDS.STOP_TURN).catch(() => {});
             return;

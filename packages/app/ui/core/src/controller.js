@@ -37,6 +37,7 @@ import {
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
+    canStopSessionTurn,
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
     selectActivityPane,
@@ -452,7 +453,8 @@ function shouldPreserveStaleCronVisual(previousSession, nextSession) {
 
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
-    nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession);
+    // This path receives getSession detail, not a CMS-only catalog row.
+    nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession, { authoritative: true });
 
     const patch = { sessionId: nextSession.sessionId };
     let changed = false;
@@ -10471,9 +10473,9 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Stop the active session's in-flight LLM turn without touching session
-     * lifecycle. Applies to user AND system sessions; only group/container
-     * rows are rejected. No confirmation modal — the action is non-destructive
+     * Stop the active session's in-flight LLM turn or parked signal wait
+     * without touching session lifecycle. Applies to user AND system sessions;
+     * only group/container rows are rejected. No confirmation modal — the action is non-destructive
      * (the session returns to idle and accepts the next prompt).
      */
     async stopActiveSessionTurn() {
@@ -10492,19 +10494,20 @@ export class PilotSwarmUiController {
         if (!this._stopTurnInFlight) this._stopTurnInFlight = new Set();
         if (this._stopTurnInFlight.has(sessionId)) return;
         this._stopTurnInFlight.add(sessionId);
-        this.dispatch({ type: "ui/status", text: `Stopping turn for ${sessionId.slice(0, 8)}…` });
+        const target = session.status === "waiting" && canStopSessionTurn(session) ? "signal wait" : "turn";
+        this.dispatch({ type: "ui/status", text: `Stopping ${target} for ${sessionId.slice(0, 8)}…` });
         try {
             const result = await this.transport.stopSessionTurn(sessionId, { reason: "Stopped by user" });
             const outcome = result?.outcome || "stopped";
             if (outcome === "no_active_turn") {
-                this.dispatch({ type: "ui/status", text: "No active turn to stop" });
+                this.dispatch({ type: "ui/status", text: "No active turn or signal wait to stop" });
             } else if (outcome === "timeout") {
-                this.dispatch({ type: "ui/status", text: "Stop requested — waiting for the turn to unwind" });
+                this.dispatch({ type: "ui/status", text: `Stop requested — waiting for the ${target} to ${target === "turn" ? "unwind" : "cancel"}` });
             } else {
-                this.dispatch({ type: "ui/status", text: `Stopped turn for ${sessionId.slice(0, 8)}` });
+                this.dispatch({ type: "ui/status", text: `Stopped ${target} for ${sessionId.slice(0, 8)}` });
             }
         } catch (err) {
-            this.dispatch({ type: "ui/status", text: `Stop turn failed: ${err?.message || err}` });
+            this.dispatch({ type: "ui/status", text: `Stop ${target} failed: ${err?.message || err}` });
         } finally {
             this._stopTurnInFlight.delete(sessionId);
         }

@@ -162,7 +162,7 @@ object itself, not `{ options: ... }`.
   Inspect `session.signal_*` events through the existing event APIs for
   lifecycle outcomes.
 - Writes refuse deleted, terminal, and service sessions. An execution older
-  than **1.0.79**, or one whose version cannot be confirmed, is not a signal
+  than **1.0.80**, or one whose version cannot be confirmed, is not a signal
   target: `SIGNALS_UNSUPPORTED` (`409`). Create a new session on upgraded
   workers rather than attempting to feed the legacy decoder.
 - Validation failures are `INVALID_SIGNAL` (`400`) or `SIGNAL_TOO_LARGE`

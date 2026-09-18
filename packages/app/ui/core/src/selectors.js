@@ -1705,12 +1705,20 @@ export function selectSessionFilterExceptionNotice(state) {
 }
 
 /**
- * True when the session row is actively running a turn that Stop can target.
+ * True when Stop can target a running turn or a parked, non-interrupted
+ * signal wait with a usable wait ID. Ordinary timers are not Stop targets.
  * Applies to user AND system sessions; group/container rows are not sessions.
  */
 export function canStopSessionTurn(session) {
     if (!session || session.isGroup) return false;
-    return (session.status || "") === "running";
+    if (session.status === "running") return true;
+    const waitId = session.signalWait?.waitId;
+    return session.status === "waiting"
+        && isSignalWaiting(session)
+        && !normalizeSessionPause(session)
+        && !["Completed", "Terminated", "Failed"].includes(session.orchestrationStatus)
+        && typeof waitId === "string" && waitId.trim().length > 0
+        && !/[\u0000-\u001f\u007f-\u009f]/u.test(waitId);
 }
 
 // The moment an event of one of these types was recorded, in ms, or null.
@@ -6035,10 +6043,10 @@ export function selectStatusBar(state) {
     };
 
     let right = hints[focus] || hints[FOCUS_REGIONS.SESSIONS];
-    // Surface the Stop-turn hint at the front (so truncation never eats it)
-    // exactly while a turn is running; it stays listed, grayed, in `?` help.
-    if (canStopSessionTurn(selectActiveSession(state))) {
-        right = `ctrl-x stop · ${right}`;
+    // Keep Stop first so truncation never hides a running-turn/signal-wait
+    // target. The same binding stays listed, grayed, in `?` help.
+    if (canStopSessionTurn(activeSession)) {
+        right = `ctrl-x stop${activeSession.status === "waiting" ? " signal wait" : ""} · ${right}`;
     }
     return {
         left: state.ui.statusText,
@@ -9190,7 +9198,7 @@ const KEYBINDING_HELP = [
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
         ["c / d / D", "cancel / done / delete session"],
-        ["ctrl-x  (ctrl-esc)", "stop the current turn", { dim: true }],
+        ["ctrl-x  (ctrl-esc)", "stop the current turn or signal wait", { dim: true }],
         ["T / N / M / A", "theme / new+model / switch model / admin"],
         ["?", "toggle this help"],
         ["q", "quit (double-tap)"],

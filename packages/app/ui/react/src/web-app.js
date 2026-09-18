@@ -9184,13 +9184,17 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         const outbox = activeSessionId && state.outbox?.bySessionId?.[activeSessionId]
             ? state.outbox.bySessionId[activeSessionId]
             : [];
+        const canStopTurn = canStopSessionTurn(activeSession);
         return {
             value: state.ui.prompt,
             cursor: state.ui.promptCursor,
             focused: state.ui.focusRegion === "prompt",
             modalOpen: Boolean(state.ui.modal),
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
-            canStopTurn: canStopSessionTurn(activeSession),
+            canStopTurn,
+            stopTurnLabel: canStopTurn && activeSession.status === "waiting"
+                ? "Stop waiting for a signal"
+                : "Stop the current turn",
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
             pendingCount: outbox.filter((item) => item?.phase === "pending").length,
@@ -9531,8 +9535,8 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
                 ? React.createElement("button", {
                     type: "button",
                     className: `ps-stop-button${stoppingTurn ? " is-stopping" : ""}`,
-                    title: "Stop the current turn (the session stays alive and returns to idle)",
-                    "aria-label": "Stop the current turn",
+                    title: `${promptState.stopTurnLabel} (the session stays alive and returns to idle)`,
+                    "aria-label": promptState.stopTurnLabel,
                     disabled: stoppingTurn,
                     onPointerDown: (event) => event.preventDefault(),
                     onClick: stopTurn,

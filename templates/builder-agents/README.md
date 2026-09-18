@@ -63,7 +63,7 @@ Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval r
 For external-event coordination, use `wait_for_signal` with authenticated
 `raiseSignal` producers rather than a polling loop. The SDK builder skill
 covers optional deadlines, stable delivery IDs, bounded buffering, untrusted
-payloads, and the 1.0.79 compatibility gate. Public webhooks, provider connectors,
+payloads, and the 1.0.80 compatibility gate. Public webhooks, provider connectors,
 and event-triggered session templates remain later phases. See
 [durable signals](../../docs/developer/building/durable-signals.md).
 

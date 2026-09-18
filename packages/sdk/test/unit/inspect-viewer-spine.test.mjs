@@ -87,7 +87,7 @@ test("signal inspection is tuner-only, owner-scoped, redacted, and uses the mana
     const reads = [];
     const duroxideClient = {
         getStatus: async () => ({ status: "Running" }),
-        getInstanceInfo: async () => ({ orchestrationVersion: "1.0.79" }),
+        getInstanceInfo: async () => ({ orchestrationVersion: "1.0.80" }),
         getValue: async (id, key) => {
             reads.push([id, key]);
             return JSON.stringify({ version: 1, interrupted: false, buffered: [] });
@@ -105,7 +105,7 @@ test("signal inspection is tuner-only, owner-scoped, redacted, and uses the mana
     assert.deepEqual(await tool.handler({ session_id: "session-alice-own" }),
         { version: 1, interrupted: false, buffered: [] });
     assert.deepEqual(reads, [["session-alice-own", "signals.state.v1"]]);
-    duroxideClient.getInstanceInfo = async () => ({ orchestrationVersion: "1.0.78" });
+    duroxideClient.getInstanceInfo = async () => ({ orchestrationVersion: "1.0.79" });
     const legacy = await tool.handler({ session_id: "bob-shared" });
     assert.equal(legacy.code, "SIGNALS_UNSUPPORTED");
     assert.equal(reads.length, 1);

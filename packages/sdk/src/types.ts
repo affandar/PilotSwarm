@@ -601,7 +601,7 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
-    /** Durable signal wait and deduplication window (1.0.79+). Payloads stay in KV slots. */
+    /** Durable signal wait and deduplication window (1.0.80+). Payloads stay in KV slots. */
     pendingSignalWait?: PendingSignalWait;
     signalWaitInterrupted?: boolean;
     recentSignalIds?: string[];

@@ -397,7 +397,7 @@ with `get_capabilities` to see the shape of this server.
 | `raise_signal` | Queue `{ session_id, name, data?, payload_ref?, signal_id?, wake? }` through the management client in direct or web mode; returns `{ signalId, name, raisedAt, status: "queued" }` |
 | `send_session_event` | Deprecated direct/web compatibility wrapper: `event_name` becomes the signal name, `data` stays untrusted data, and `wake` defaults to false |
 
-Signals require a session execution on orchestration **1.0.79+**. Raising a
+Signals require a session execution on orchestration **1.0.80+**. Raising a
 signal starts a new pending session without inventing a chat prompt or model
 turn. First sends wait up to ten seconds for worker initialization and verify
 the actual execution version before enqueueing; a timeout queues no signal.
