@@ -17,5 +17,7 @@ export { isThemeLight } from "./themes/helpers.js";
 export * from "./themes/index.js";
 export { validateCanvasAction, formatCanvasActionPrompt, parseCanvasActionContent, isCanvasActionContent, createCanvasActionLimiter, CANVAS_ACTION_PREFIX } from "./canvas-actions.js";
 export * from "./table-layout.js";
+export * from "./worker-timeline-lane-order.js";
+export * from "./worker-timeline-zoom.js";
 
 export * from "./moa.js";
