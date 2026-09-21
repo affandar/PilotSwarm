@@ -58,11 +58,10 @@ param dTime string = utcNow()
 @maxValue(730)
 param logAnalyticsRetentionDays int = 30
 
-@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE. private = AKS web-app-routing on an internal LoadBalancer with Private DNS. port-forward = no ingress addon, load-balancer service, AppGw, Front Door, or DNS; the ClusterIP portal is accessed through kubectl port-forward.')
+@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; current enterprise + OSS public path). private = no AppGw, no AGIC, no AFD; AKS web-app-routing addon (NGINX) on an internal LoadBalancer instead. Caller is responsible for arranging in-VNet / VPN / Bastion access and DNS resolution (Portal bicep provisions a Private DNS Zone for this).')
 @allowed([
   'afd'
   'private'
-  'port-forward'
 ])
 param edgeMode string = 'afd'
 
@@ -482,7 +481,6 @@ module KeyVault './keyvault.bicep' = {
     appGwPrincipalId: Uami.outputs.appGwIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
     localDeploymentPrincipalType: localDeploymentPrincipalType
-    grantLocalCertificateManagement: edgeMode == 'port-forward'
   }
 }
 

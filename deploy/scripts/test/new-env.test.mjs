@@ -50,20 +50,6 @@ test("deriveTargets follows enterprise naming patterns", () => {
   assert.equal(t.LOCATION, "westus3");
 });
 
-test("deriveTargets uses localhost and no DNS inputs for port-forward", () => {
-  const t = deriveTargets({
-    name: "foo",
-    subscription: "sub-id",
-    location: "westus3",
-    regionShort: "wus3",
-    edgeMode: "port-forward",
-    tlsSource: "akv-selfsigned",
-  });
-  assert.equal(t.PORTAL_HOSTNAME, "localhost");
-  assert.equal(t.HOST, "");
-  assert.equal(t.PRIVATE_DNS_ZONE, "");
-});
-
 test("renderLocalEnv produces expected substitutions", () => {
   const targets = deriveTargets({
     name: "foo",
@@ -412,26 +398,6 @@ test("scaffolder accepts private + akv-selfsigned with HOST and PRIVATE_DNS_ZONE
     assert.match(content, /^HOST=portal$/m);
     assert.match(content, /^PRIVATE_DNS_ZONE=pilotswarm\.internal$/m);
     assert.match(content, /^PORTAL_HOSTNAME=portal\.pilotswarm\.internal$/m);
-  } finally {
-    cleanup();
-  }
-});
-
-test("scaffolder accepts port-forward + akv-selfsigned without DNS inputs", () => {
-  cleanup();
-  try {
-    const r = runScript([
-      ...FULL_ARGS(),
-      "--edge-mode", "port-forward",
-      "--tls-source", "akv-selfsigned",
-    ]);
-    assert.equal(r.status, 0, r.stderr || r.stdout);
-    const content = readFileSync(TEST_FILE, "utf8");
-    assert.match(content, /^EDGE_MODE=port-forward$/m);
-    assert.match(content, /^TLS_SOURCE=akv-selfsigned$/m);
-    assert.match(content, /^HOST=unused$/m);
-    assert.match(content, /^PRIVATE_DNS_ZONE=unused$/m);
-    assert.match(content, /^PORTAL_HOSTNAME=localhost$/m);
   } finally {
     cleanup();
   }

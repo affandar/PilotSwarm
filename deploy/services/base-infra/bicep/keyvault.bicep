@@ -33,9 +33,6 @@ param localDeploymentPrincipalId string = ''
 ])
 param localDeploymentPrincipalType string = 'User'
 
-@description('Grant the local deployment principal Key Vault Certificates Officer so it can create the localhost certificate used by port-forward mode.')
-param grantLocalCertificateManagement bool = false
-
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
@@ -108,27 +105,6 @@ resource assignKvSecretsOfficerToLocalDeployer 'Microsoft.Authorization/roleAssi
     principalId: localDeploymentPrincipalId
     principalType: localDeploymentPrincipalType
     roleDefinitionId: kvSecretsOfficerDef.id
-  }
-}
-
-// Port-forward deployments create their localhost certificate from the
-// deployment host after BaseInfra completes. Grant the same local principal
-// certificate data-plane access; enterprise deployments leave the principal
-// empty and therefore create neither local-deployer assignment.
-var kvCertificatesOfficerRoleId = 'a4417e6f-fecd-4de8-b567-7b0420556985'
-
-resource kvCertificatesOfficerDef 'Microsoft.Authorization/roleDefinitions@2022-04-01' existing = {
-  scope: keyVault
-  name: kvCertificatesOfficerRoleId
-}
-
-resource assignKvCertificatesOfficerToLocalDeployer 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (grantLocalCertificateManagement && !empty(localDeploymentPrincipalId)) {
-  name: guid(keyVault.id, localDeploymentPrincipalId, kvCertificatesOfficerRoleId)
-  scope: keyVault
-  properties: {
-    principalId: localDeploymentPrincipalId
-    principalType: localDeploymentPrincipalType
-    roleDefinitionId: kvCertificatesOfficerDef.id
   }
 }
 

@@ -29,7 +29,7 @@ export { databaseOverlayOmittedKeys } from "./database-env.mjs";
 
 // Edge mode and TLS source value spaces. Mirrors `new-env.mjs` EDGE_MODES /
 // TLS_SOURCES — kept in sync via overlay-contracts.test.mjs.
-export const EDGE_MODES = ["afd", "private", "port-forward"];
+export const EDGE_MODES = ["afd", "private"];
 export const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
 
 // JS-side authoritative defaults. Single source of truth — referenced by
@@ -37,34 +37,6 @@ export const TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
 // (the bicep-side defaults carry a comment pointer to this file).
 export const DEFAULT_EDGE_MODE = "afd";
 export const DEFAULT_TLS_SOURCE = "letsencrypt";
-
-export const SUPPORTED_TLS_BY_EDGE = Object.freeze({
-  afd: Object.freeze(["letsencrypt", "akv"]),
-  private: Object.freeze(["akv", "akv-selfsigned"]),
-  "port-forward": Object.freeze(["akv-selfsigned"]),
-});
-
-export function unsupportedEdgeTlsReason(edgeMode, tlsSource) {
-  const supported = SUPPORTED_TLS_BY_EDGE[edgeMode];
-  if (!supported || supported.includes(tlsSource)) return null;
-  if (edgeMode === "port-forward") {
-    return "Port-forward mode has no public or private ingress endpoint and uses a locally initiated AKV self-signed certificate.";
-  }
-  if (edgeMode === "private") {
-    return "Private ingress has no public HTTP-01 endpoint. Use TLS_SOURCE=akv or akv-selfsigned.";
-  }
-  return "Azure Front Door requires a publicly trusted origin certificate. Use TLS_SOURCE=letsencrypt or akv.";
-}
-
-export function edgeModeTransitionReason(deployedEdgeMode, requestedEdgeMode) {
-  if (!deployedEdgeMode || deployedEdgeMode === requestedEdgeMode) return null;
-  return (
-    `In-place EDGE_MODE transitions are not supported (deployed='${deployedEdgeMode}', ` +
-    `requested='${requestedEdgeMode}'). Azure deployments are incremental, so changing modes ` +
-    "can leave the previous ingress resources active. Create a new stamp or decommission the " +
-    "existing stamp before changing EDGE_MODE."
-  );
-}
 
 // Collapse `akv-selfsigned` → `akv` (the two share a single overlay; the
 // only delta is the AKV issuer name, owned by Portal bicep). Mirrors
@@ -105,7 +77,6 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "PORTAL_AUTHZ_DEFAULT_ROLE",
   "PORTAL_AUTHZ_ADMIN_GROUPS",
   "PORTAL_AUTHZ_USER_GROUPS",
-  "AKS_VNET_ID",
 ]);
 
 // Shared composed-key roster (populated by compose-env.mjs from prior
@@ -149,30 +120,13 @@ export const OVERLAY_CONTRACTS = Object.freeze({
     userRequiredEnvKeys: Object.freeze([
       "HOST",
       "PRIVATE_DNS_ZONE",
+      "AKS_VNET_ID",
     ]),
     composedEnvKeys: SHARED_COMPOSED_ENV_KEYS,
     stubKeys: Object.freeze([
       "FRONT_DOOR_PROFILE_NAME",
       "FRONT_DOOR_PROFILE_RESOURCE_GROUP",
       "FRONT_DOOR_ENDPOINT_NAME",
-      "FRONT_DOOR_ID",
-      "APPLICATION_GATEWAY_NAME",
-      "PRIVATE_LINK_CONFIGURATION_NAME",
-      "SSL_CERT_DOMAIN_SUFFIX",
-      "ACME_EMAIL",
-    ]),
-    bicepOutputKeys: SHARED_BICEP_OUTPUT_KEYS,
-  }),
-  "port-forward-akv": Object.freeze({
-    userRequiredEnvKeys: Object.freeze([]),
-    composedEnvKeys: SHARED_COMPOSED_ENV_KEYS,
-    stubKeys: Object.freeze([
-      "HOST",
-      "PRIVATE_DNS_ZONE",
-      "FRONT_DOOR_PROFILE_NAME",
-      "FRONT_DOOR_PROFILE_RESOURCE_GROUP",
-      "FRONT_DOOR_ENDPOINT_NAME",
-      "FRONT_DOOR_ID",
       "APPLICATION_GATEWAY_NAME",
       "PRIVATE_LINK_CONFIGURATION_NAME",
       "SSL_CERT_DOMAIN_SUFFIX",

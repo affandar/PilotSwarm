@@ -28,11 +28,11 @@ for (const file of ["Dockerfile.portal", "Dockerfile.worker"]) {
     const src = stripComments(readDockerfile(file));
     assert.match(
       src,
-      /^\s*RUN\b(?:[^\r\n]*\\\r?\n)*[^\r\n]*\bnpm\s+ci\b/m,
+      /RUN\s+npm\s+ci\b/,
       `${file} must use 'npm ci' (lockfile-enforcing) for byte-reproducible rebuilds`,
     );
     assert.equal(
-      /^\s*RUN\b(?:[^\r\n]*\\\r?\n)*[^\r\n]*\bnpm\s+install\b/m.test(src),
+      /RUN\s+npm\s+install\b/.test(src),
       false,
       `${file} must NOT use 'npm install' on dependencies — that drifts from package-lock.json on rebuild`,
     );
@@ -52,5 +52,5 @@ test("starter image stages every workspace manifest before npm ci", () => {
   assert.match(source, /COPY packages\/sdk\/package\.json \.\/packages\/sdk\//);
   assert.match(source, /COPY packages\/horizon-store\/package\.json \.\/packages\/horizon-store\//);
   assert.match(source, /COPY packages\/app\/package\.json \.\/packages\/app\//);
-  assert.match(stripComments(source), /^\s*RUN\b(?:[^\r\n]*\\\r?\n)*[^\r\n]*\bnpm\s+ci\b/m);
+  assert.match(stripComments(source), /RUN\s+npm\s+ci\b/);
 });

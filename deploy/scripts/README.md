@@ -140,7 +140,7 @@ Flags:
 | `push` | `oras cp` the tarball into the per-region ACR (no Docker daemon push). | worker, portal |
 | `bicep` | Render `deploy/services/<Module>/bicep/<Module>.params.template.json` with `${VAR}` substitution from the env map, then `az deployment {sub|group} create`. Captures Bicep outputs back into the env map for downstream steps. | per-service module list |
 | `seed-secrets` | Read seedable secrets (`GITHUB_TOKEN` + `ANTHROPIC_API_KEY`) from the loaded env map (set by `new-env` in `deploy/envs/local/<name>/.env`), `az keyvault secret set` each into the env's KV (writing `__PS_UNSET__` for any left blank). SPC mounts them into the worker pod; the runtime strips sentinel values at startup. See [Secrets & identity](#secrets--identity-bicep-deploy-path-only). | baseinfra |
-| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv`, and `overlays/port-forward-akv`; `akv-selfsigned` maps to the corresponding `akv` overlay). | worker, portal |
+| `manifests` | Substitute the overlay `.env` using the env map, stage the rendered `gitops/<svc>/` tree under `deploy/.tmp/<svc>-<env>/`, then `az storage blob upload-batch` the **unrendered** Kustomize tree to the Flux Storage Bucket. Flux reconciles the cluster from there. Worker / cert-manager / cert-manager-issuers each use a single `overlays/default` overlay (per-env values flow in via the staged `.env`); Portal overlays are keyed by `${EDGE_MODE}-${TLS_SOURCE}` (`overlays/afd-letsencrypt`, `overlays/afd-akv`, `overlays/private-akv` — `akv-selfsigned` shares the `private-akv` overlay). | worker, portal |
 | `rollout` | `flux reconcile kustomization <svc>-<svc> -n flux-system --with-source` (forces the Bucket source to re-pull the just-uploaded blobs and the Kustomization to apply that revision), then `kubectl rollout status deployment/<svc>` in `NAMESPACE`, then verifies live `image` ends with the expected tag. | worker, portal |
 
 The default pipeline (no `--steps`) is the full chain. For `baseinfra`
@@ -172,13 +172,13 @@ Files are flat `KEY=value`, no quoting, no shell expansion.
 | `GLOBAL_RESOURCE_GROUP`, `GLOBAL_RESOURCE_PREFIX` | bicep (globalinfra) | Front Door RG + prefix. |
 | `PORTAL_RESOURCE_NAME` | bicep (portal) | Portal logical name. |
 | `NAMESPACE` | manifests, rollout | Target Kubernetes namespace (`pilotswarm` per A-11). |
-| `EDGE_MODE` | bicep, manifests, rollout | `afd` (default), `private`, or `port-forward`. Controls public Front Door/AppGw, internal web-app-routing, or ClusterIP-only localhost access. Drives Portal overlay path. |
+| `EDGE_MODE` | bicep, manifests, rollout | `afd` (default) or `private`. Controls AFD/AppGw/AGIC vs AKS web-app-routing addon. Drives Portal overlay path. |
 | `TLS_SOURCE` | bicep, manifests | `letsencrypt` \| `akv` \| `akv-selfsigned`. Drives Portal overlay path and AKV cert issuer. See [docs/developer/deploy/aks.md](../../docs/developer/deploy/aks.md) for the supported `(EDGE_MODE × TLS_SOURCE)` combos. |
 | `HOST`, `PRIVATE_DNS_ZONE` | bicep (portal), rollout (portal) | Required when `EDGE_MODE=private`. Bicep provisions the Private DNS Zone + VNet link; deploy.mjs writes the A record `${HOST}.${PRIVATE_DNS_ZONE}` → internal LB IP after Portal rollout. |
 | `ACME_EMAIL` | bicep (cert-manager-issuers) | Required when `TLS_SOURCE=letsencrypt`. Let's Encrypt registration / renewal-failure notices. |
 | `PORTAL_TLS_ISSUER_NAME` | bicep (portal) | Optional override for the AKV cert issuer name. Defaults to `OneCertV2-PublicCA` (afd) / `OneCertV2-PrivateCA` (private), auto-registered by Portal bicep. |
 | `AZURE_TENANT_ID` | manifests | Workload identity federation tenant. |
-| `PORTAL_HOSTNAME` | manifests (portal) | Portal TLS hostname: the AFD/private-ingress host or `localhost` for port-forward mode. |
+| `PORTAL_HOSTNAME` | manifests (portal) | Public hostname for AFD origin. |
 | `SSL_CERT_DOMAIN_SUFFIX`, `WAF_MODE`, `ACR_SKU`, `APP_GATEWAY_PRIVATE_IP` | bicep | Static infra params. |
 | `IMAGE` | manifests | Auto-composed from `ACR_LOGIN_SERVER` + service image repo + `--image-tag`; do **not** seed manually. |
 

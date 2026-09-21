@@ -19,7 +19,6 @@ import {
   stagingDir,
   validateService,
   validateEnv,
-  run,
 } from "./lib/common.mjs";
 import { resolveSteps, defaultPipelineFor } from "./lib/stages.mjs";
 import { buildImage } from "./lib/build-image.mjs";
@@ -32,16 +31,8 @@ import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
 import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
-import {
-  EDGE_MODES,
-  TLS_SOURCES,
-  validateRequiredEnv,
-  applyStubKeys,
-  unsupportedEdgeTlsReason,
-  edgeModeTransitionReason,
-} from "./lib/overlay-contracts.mjs";
+import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
-import { ensurePortForwardCertificate } from "./lib/port-forward-certificate.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -122,7 +113,7 @@ function printHelp() {
       "           ('all' runs the canonical end-to-end sequence:",
       "            globalinfra → baseinfra → pls-anchor → cert-manager → cert-manager-issuers → worker → portal,",
       "            applying --steps to each as appropriate. pls-anchor is skipped",
-      "            when EDGE_MODE is not afd; cert-manager services are skipped",
+      "            on the EDGE_MODE=private path; cert-manager services are skipped",
       "            on the akv (enterprise) TLS_SOURCE path.)",
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
@@ -154,31 +145,6 @@ function printHelp() {
   );
 }
 
-function readDeployedEdgeMode({ envName, env }) {
-  if (!env.RESOURCE_GROUP || !env.LOCATION) return null;
-  const deploymentName = `base-infra-${envName}-${env.LOCATION.replace(/[^a-zA-Z0-9-]/g, "")}`;
-  const result = run(
-    "az",
-    [
-      "deployment",
-      "group",
-      "show",
-      "--resource-group",
-      env.RESOURCE_GROUP,
-      "--name",
-      deploymentName,
-      "--query",
-      "properties.outputs.edgeMode.value",
-      "--output",
-      "tsv",
-    ],
-    { capture: true, allowFail: true },
-  );
-  if (result.status !== 0) return null;
-  const deployedEdgeMode = result.stdout.trim().toLowerCase();
-  return EDGE_MODES.includes(deployedEdgeMode) ? deployedEdgeMode : null;
-}
-
 // ───────────────────────── Stage runner ─────────────────────────
 
 async function runStage(name, ctx) {
@@ -192,14 +158,12 @@ async function runStage(name, ctx) {
         log("info", `No container image for service '${ctx.service}'; skipping build.`);
         return;
       }
-
       assertCli("docker", "https://docs.docker.com/get-docker/ (must include buildx)");
       await buildImage({
         service: ctx.service,
         envName: ctx.envName,
         imageTag: ctx.imageTag,
         stagingDir: ctx.stagingDir,
-        env: ctx.env,
       });
       return;
     case "push":
@@ -234,9 +198,6 @@ async function runStage(name, ctx) {
       // the in-process env map, derive DATABASE_URL et al. so the
       // subsequent manifests stage finds them.
       composeDerivedEnv(ctx.env);
-      if (ctx.service === "portal") {
-        ensurePortForwardCertificate(ctx.env);
-      }
       return;
     case "seed-secrets":
       await seedSecrets({
@@ -358,15 +319,17 @@ async function main() {
   // issuer + the bicep cert deployment script. cert-manager / LE always
   // produces a publicly-trusted cert, which is what AFD+PL requires.
   const edgeMode = (env.EDGE_MODE || "afd").toLowerCase();
-  if (!EDGE_MODES.includes(edgeMode)) {
-    log("err", `EDGE_MODE='${env.EDGE_MODE}' is not one of ${EDGE_MODES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
+  const VALID_EDGE_MODES = ["afd", "private"];
+  if (!VALID_EDGE_MODES.includes(edgeMode)) {
+    log("err", `EDGE_MODE='${env.EDGE_MODE}' is not one of ${VALID_EDGE_MODES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
     process.exit(1);
   }
   env.EDGE_MODE = edgeMode;
 
   const tlsSource = (env.TLS_SOURCE || "letsencrypt").toLowerCase();
-  if (!TLS_SOURCES.includes(tlsSource)) {
-    log("err", `TLS_SOURCE='${env.TLS_SOURCE}' is not one of ${TLS_SOURCES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
+  const VALID_TLS_SOURCES = ["letsencrypt", "akv", "akv-selfsigned"];
+  if (!VALID_TLS_SOURCES.includes(tlsSource)) {
+    log("err", `TLS_SOURCE='${env.TLS_SOURCE}' is not one of ${VALID_TLS_SOURCES.join(", ")}. Set it in deploy/envs/${envName}.env or local override.`);
     process.exit(1);
   }
   env.TLS_SOURCE = tlsSource;
@@ -375,11 +338,25 @@ async function main() {
   // new-env.mjs. private+letsencrypt has no public IP for HTTP-01 (DNS-01
   // would require an Azure Public DNS zone we don't provision); afd+akv-
   // selfsigned won't be trusted by AFD's origin TLS validation.
-  const unsupportedReason = unsupportedEdgeTlsReason(edgeMode, tlsSource);
-  if (unsupportedReason) {
+  const UNSUPPORTED_COMBOS = [
+    {
+      edgeMode: "private",
+      tlsSource: "letsencrypt",
+      reason: "Let's Encrypt HTTP-01 requires a public IP for ACME validation; private-mode AKS has none. DNS-01 against an Azure Public DNS zone is not in scope.",
+    },
+    {
+      edgeMode: "afd",
+      tlsSource: "akv-selfsigned",
+      reason: "Azure Front Door rejects self-signed origin certs. Use TLS_SOURCE=letsencrypt or TLS_SOURCE=akv with a public CA.",
+    },
+  ];
+  const blocked = UNSUPPORTED_COMBOS.find(
+    (c) => c.edgeMode === edgeMode && c.tlsSource === tlsSource,
+  );
+  if (blocked) {
     log(
       "err",
-      `Unsupported combination EDGE_MODE='${edgeMode}' + TLS_SOURCE='${tlsSource}': ${unsupportedReason}`,
+      `Unsupported combination EDGE_MODE='${edgeMode}' + TLS_SOURCE='${tlsSource}': ${blocked.reason}`,
     );
     process.exit(1);
   }
@@ -489,11 +466,6 @@ async function main() {
 
   // 5) Subscription pin (FR-005)
   assertSubscription(env.SUBSCRIPTION_ID);
-  const deployedEdgeMode = readDeployedEdgeMode({ envName, env });
-  const transitionReason = edgeModeTransitionReason(deployedEdgeMode, edgeMode);
-  if (transitionReason) {
-    throw new Error(transitionReason);
-  }
 
   // 6) Resolve image tag (FR-017) — shared across services in `all` mode so
   // worker and portal end up tagged consistently in one bring-up invocation.

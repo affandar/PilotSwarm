@@ -13,7 +13,7 @@ import { SERVICE_IMAGE_INFO } from "./service-info.mjs";
 
 // Build a service image and write a gzipped OCI/docker tarball to the staging dir.
 // Returns the absolute path to the .tar.gz on disk.
-export async function buildImage({ service, envName, imageTag, stagingDir: stage, env = {} }) {
+export async function buildImage({ service, envName, imageTag, stagingDir: stage }) {
   const info = SERVICE_IMAGE_INFO[service];
   if (!info) {
     throw new Error(
@@ -52,26 +52,18 @@ export async function buildImage({ service, envName, imageTag, stagingDir: stage
 
   // 1) docker buildx build (platform pinned per repo Docker convention).
   log("info", `docker buildx build → ${localTag}`);
-  const buildArgs = [
+  await runForeground("docker", [
     "buildx",
     "build",
     "--platform",
     "linux/amd64",
     "--load",
-  ];
-  const npmRegistry = String(env.NPM_REGISTRY ?? "").trim();
-  if (npmRegistry) {
-    log("info", `Docker npm registry: ${npmRegistry}`);
-    buildArgs.push("--build-arg", `NPM_REGISTRY=${npmRegistry}`);
-  }
-  buildArgs.push(
     "-t",
     localTag,
     "-f",
     dockerfileAbs,
     REPO_ROOT,
-  );
-  await runForeground("docker", buildArgs);
+  ]);
 
   // 2) docker save | zlib gzip → <staging>/<repo>.tar.gz (no host gzip CLI).
   const outPath = join(stage, `${dockerImageRepo}.tar.gz`);
