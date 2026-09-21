@@ -35,6 +35,7 @@ param aksSubnetId string
 @allowed([
   'afd'
   'private'
+  'port-forward'
 ])
 param edgeMode string = 'afd'
 
@@ -154,7 +155,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
           logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceResourceId
         }
       }
-    } : {
+    } : edgeMode == 'private' ? {
       azureKeyvaultSecretsProvider: {
         enabled: true
         config: {
@@ -173,6 +174,21 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       // operator after the cluster is up.
       webAppRouting: {
         enabled: true
+      }
+      omsAgent: {
+        enabled: true
+        config: {
+          useAADAuth: 'true'
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceResourceId
+        }
+      }
+    } : {
+      azureKeyvaultSecretsProvider: {
+        enabled: true
+        config: {
+          enableSecretRotation: 'true'
+          rotationPollInterval: '30m'
+        }
       }
       omsAgent: {
         enabled: true

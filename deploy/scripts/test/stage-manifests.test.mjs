@@ -82,6 +82,18 @@ test("portal: private + akv-selfsigned collapses to private-akv (shared overlay)
   assert.equal(got, "private-akv");
 });
 
+test("portal: port-forward + akv-selfsigned → port-forward-akv", () => {
+  const got = resolveOverlayName({
+    service: "portal",
+    envName: "dev",
+    env: {
+      EDGE_MODE: "port-forward",
+      TLS_SOURCE: "akv-selfsigned",
+    },
+  });
+  assert.equal(got, "port-forward-akv");
+});
+
 test("portal: throws when EDGE_MODE / TLS_SOURCE are absent (FR-001)", () => {
   // The previous silent default (afd-letsencrypt) was a footgun — operators
   // got an unexpected overlay when they forgot to scaffold the env. The
@@ -289,6 +301,7 @@ for (const [service, edgeMode, tlsSource, overlay] of [
   ["portal", "afd", "letsencrypt", "afd-letsencrypt"],
   ["portal", "afd", "akv", "afd-akv"],
   ["portal", "private", "akv-selfsigned", "private-akv"],
+  ["portal", "port-forward", "akv-selfsigned", "port-forward-akv"],
 ]) {
   test(`password BYO stages ${service}/${overlay} without AAD stubs or credential ConfigMaps`, (t) => {
     const stagingDir = mkdtempSync(join(tmpdir(), "ps-byo-stage-"));

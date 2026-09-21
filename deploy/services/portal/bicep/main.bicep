@@ -41,21 +41,22 @@ param baseInfraResourceNamePrefix string
 @description('Azure region (lowercased). Used in the certificate subject to disambiguate multi-region deployments.')
 param region string
 
-@description('DNS suffix for the portal cert, e.g. pilotswarm.azure.com. Required in EDGE_MODE=afd + TLS_SOURCE=akv (used to derive resourceName.suffix as cert subject + AFD origin host). Ignored when EDGE_MODE=afd + TLS_SOURCE=letsencrypt (cert subject derives from the AppGw cloudapp.azure.com label) or when EDGE_MODE=private (caller supplies portalHostnameOverride).')
+@description('DNS suffix for the portal cert, e.g. pilotswarm.azure.com. Required in EDGE_MODE=afd + TLS_SOURCE=akv. Ignored for letsencrypt, private, and port-forward.')
 param sslCertificateDomainSuffix string
 
 // Edge / TLS overlay defaults. JS-side authoritative source of truth is
 // deploy/scripts/lib/overlay-contracts.mjs (DEFAULT_EDGE_MODE,
 // DEFAULT_TLS_SOURCE). When changing the defaults below, also update that
 // file so the deploy-script validators agree with bicep param defaults.
-@description('Edge topology mode. afd = Front Door + Private Link to AppGw private FE (default; covers OSS via the AppGw cloudapp.azure.com DNS label and the enterprise path via a custom domain). private = AppGw private IP listener only, no AFD; caller must supply portalHostnameOverride and arrange DNS resolution to APP_GATEWAY_PRIVATE_IP.')
+@description('Edge topology mode. afd = Front Door + Private Link to AppGw. private = AKS web-app-routing with an internal LoadBalancer and Private DNS. port-forward = ClusterIP-only portal accessed through kubectl port-forward, with no ingress or DNS resources.')
 @allowed([
   'afd'
   'private'
+  'port-forward'
 ])
 param edgeMode string = 'afd'
 
-@description('TLS cert source. letsencrypt = cert-manager + LE prod (cert lands in a K8s Secret managed by cert-manager; bicep skips the AKV cert deployment script). akv = AKV-registered issuer + bicep cert script (current enterprise path). akv-selfsigned = AKV `Self` issuer + bicep cert script (OSS / dev convenience for private mode; produces a self-signed cert in AKV, no CA registration required, NOT trusted by browsers without manual trust). Default matches the JS-side SoT (deploy/scripts/lib/overlay-contracts.mjs DEFAULT_TLS_SOURCE = letsencrypt). Raw-bicep deploys that previously relied on the akv default must now pass tlsSource=akv explicitly.')
+@description('TLS cert source. letsencrypt = cert-manager + LE prod. akv = AKV-registered issuer + bicep certificate script. akv-selfsigned = AKV Self issuer; Bicep creates private-ingress certificates, while port-forward certificates are created by the local deploy CLI. Default matches deploy/scripts/lib/overlay-contracts.mjs.')
 @allowed([
   'letsencrypt'
   'akv'
@@ -63,13 +64,13 @@ param edgeMode string = 'afd'
 ])
 param tlsSource string = 'letsencrypt'
 
-@description('Caller-supplied portal hostname (short label, no domain). Required in EDGE_MODE=private; ignored in afd (bicep derives from the AppGw DNS label for letsencrypt and from resourceName+sslCertificateDomainSuffix for akv). In private mode the FQDN is composed as <portalHostnameOverride>.<privateDnsZoneName>.')
+@description('Caller-supplied portal hostname label. Required in private mode, ignored in afd, and replaced with localhost in port-forward mode.')
 param portalHostnameOverride string = ''
 
 @description('Azure Private DNS Zone name for private mode (e.g. pilotswarm.private). Required when edgeMode=private; ignored otherwise. Bicep provisions the zone in this resource group and links it to the AKS VNet so in-VNet / VPN / Bastion clients resolve the portal hostname. The post-deploy A record (host -> ingress ILB IP) is written by deploy.mjs.')
 param privateDnsZoneName string = ''
 
-@description('Resource id of the AKS VNet (from BaseInfra output). Used to link the Private DNS Zone in private mode. Empty / unused in afd mode.')
+@description('Resource id of the AKS VNet (from BaseInfra output). Used to link the Private DNS Zone in private mode. Unused in afd and port-forward modes.')
 param aksVnetId string = ''
 
 // -----------------------------------------------------------------------------
@@ -149,9 +150,11 @@ var location = toLower(region)
 // -----------------------------------------------------------------------------
 var publicAppGwFqdn = '${toLower(applicationGatewayName)}.${location}.cloudapp.azure.com'
 var privateFqdn = '${portalHostnameOverride}.${privateDnsZoneName}'
-var certificateSubject = edgeMode == 'private'
-  ? privateFqdn
-  : (tlsSource == 'letsencrypt' ? publicAppGwFqdn : '${resourceName}.${sslCertificateDomainSuffix}')
+var certificateSubject = edgeMode == 'port-forward'
+  ? 'localhost'
+  : (edgeMode == 'private'
+      ? privateFqdn
+      : (tlsSource == 'letsencrypt' ? publicAppGwFqdn : '${resourceName}.${sslCertificateDomainSuffix}'))
 
 // OneCertV2 issuer to register on the AKV when tlsSource=akv. afd lands on
 // the public CA so Front Door / browsers trust the chain; private lands on
@@ -290,7 +293,7 @@ module PortalAkvIssuer '../../common/bicep/akv-certificate-issuer.bicep' = if (t
 // `letsencrypt` — cert-manager owns cert lifecycle and the cert lands
 // directly in a K8s Secret consumed by the portal Ingress.
 // -----------------------------------------------------------------------------
-module PortalSslCertificate '../../common/bicep/akv-ssl-certificate.bicep' = if (tlsSource == 'akv' || tlsSource == 'akv-selfsigned') {
+module PortalSslCertificate '../../common/bicep/akv-ssl-certificate.bicep' = if (edgeMode != 'port-forward' && (tlsSource == 'akv' || tlsSource == 'akv-selfsigned')) {
   name: '${portalTlsCertName}-${dTime}'
   params: {
     location: location

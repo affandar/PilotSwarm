@@ -22,6 +22,8 @@ import {
   TLS_SOURCES,
   DEFAULT_EDGE_MODE,
   DEFAULT_TLS_SOURCE,
+  unsupportedEdgeTlsReason,
+  edgeModeTransitionReason,
   databaseOverlayOmittedKeys,
 } from "../lib/overlay-contracts.mjs";
 
@@ -53,6 +55,10 @@ test("resolveOverlayKey collapses akv-selfsigned to akv", () => {
     resolveOverlayKey({ edgeMode: "private", tlsSource: "akv-selfsigned" }),
     "private-akv",
   );
+  assert.equal(
+    resolveOverlayKey({ edgeMode: "port-forward", tlsSource: "akv-selfsigned" }),
+    "port-forward-akv",
+  );
 });
 
 test("database overlay contract removes secrets and AAD-only requirements for password BYO", () => {
@@ -70,12 +76,12 @@ test("resolveOverlayKey honors JS defaults when inputs are blank", () => {
 });
 
 test("EDGE_MODES + TLS_SOURCES match the canonical contract universe", () => {
-  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "private"]);
+  assert.deepEqual([...EDGE_MODES].sort(), ["afd", "port-forward", "private"]);
   assert.deepEqual([...TLS_SOURCES].sort(), ["akv", "akv-selfsigned", "letsencrypt"]);
 });
 
 test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "port-forward-akv"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay],
       `OVERLAY_CONTRACTS missing entry for overlay '${overlay}'`,
@@ -86,7 +92,7 @@ test("OVERLAY_CONTRACTS has an entry for every (edge,tls) overlay directory", ()
 // Scanner: every literal key in every overlay's .env file must appear in
 // exactly one role bucket. Adding a new key to an overlay .env without
 // adding it to the contract fails this test.
-for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "port-forward-akv"]) {
   test(`overlay-contracts: every '${overlay}' .env key has a contract role`, () => {
     const envKeys = readOverlayEnvKeys(overlay);
     const c = OVERLAY_CONTRACTS[overlay];
@@ -112,8 +118,8 @@ test("afd-akv requires SSL_CERT_DOMAIN_SUFFIX", () => {
   );
 });
 
-test("PORTAL_HOSTNAME is tracked as a bicep-output on all three overlays", () => {
-  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv"]) {
+test("PORTAL_HOSTNAME is tracked as a bicep-output on all portal overlays", () => {
+  for (const overlay of ["afd-akv", "afd-letsencrypt", "private-akv", "port-forward-akv"]) {
     assert.ok(
       OVERLAY_CONTRACTS[overlay].bicepOutputKeys.includes("PORTAL_HOSTNAME"),
       `${overlay} must list PORTAL_HOSTNAME in bicepOutputKeys`,
@@ -157,16 +163,37 @@ test("validateRequiredEnv catches malformed ACME_EMAIL", () => {
   assert.ok(missing.includes("ACME_EMAIL"));
 });
 
-test("validateRequiredEnv requires HOST/PRIVATE_DNS_ZONE/AKS_VNET_ID for private-akv", () => {
+test("private-akv requires user DNS inputs and defers AKS_VNET_ID to bicep", () => {
   const env = {};
   const { missing } = validateRequiredEnv({
     edgeMode: "private",
     tlsSource: "akv",
     env,
   });
-  for (const k of ["HOST", "PRIVATE_DNS_ZONE", "AKS_VNET_ID"]) {
+  for (const k of ["HOST", "PRIVATE_DNS_ZONE"]) {
     assert.ok(missing.includes(k), `expected ${k} missing, got ${missing.join(",")}`);
   }
+  assert.ok(!missing.includes("AKS_VNET_ID"));
+  assert.ok(OVERLAY_CONTRACTS["private-akv"].bicepOutputKeys.includes("AKS_VNET_ID"));
+});
+
+test("port-forward-akv requires no DNS input and only supports akv-selfsigned", () => {
+  const { missing } = validateRequiredEnv({
+    edgeMode: "port-forward",
+    tlsSource: "akv-selfsigned",
+    env: {},
+  });
+  assert.deepEqual(missing, []);
+  assert.equal(unsupportedEdgeTlsReason("port-forward", "akv-selfsigned"), null);
+  assert.match(unsupportedEdgeTlsReason("port-forward", "akv"), /Port-forward mode/);
+  assert.match(unsupportedEdgeTlsReason("port-forward", "letsencrypt"), /Port-forward mode/);
+});
+
+test("edge mode transitions fail closed because ARM deployments are incremental", () => {
+  assert.equal(edgeModeTransitionReason(null, "port-forward"), null);
+  assert.equal(edgeModeTransitionReason("port-forward", "port-forward"), null);
+  assert.match(edgeModeTransitionReason("afd", "port-forward"), /In-place EDGE_MODE transitions/);
+  assert.match(edgeModeTransitionReason("private", "afd"), /decommission the existing stamp/);
 });
 
 // === applyStubKeys ==========================================================
@@ -176,6 +203,7 @@ test("applyStubKeys stamps `unused` for blank stubKeys on private-akv", () => {
   applyStubKeys({ edgeMode: "private", tlsSource: "akv", env });
   for (const k of [
     "FRONT_DOOR_PROFILE_NAME",
+    "FRONT_DOOR_ID",
     "APPLICATION_GATEWAY_NAME",
     "SSL_CERT_DOMAIN_SUFFIX",
     "ACME_EMAIL",

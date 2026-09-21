@@ -13,7 +13,8 @@ This guide walks through deploying PilotSwarm workers to AKS for production mult
 >    Flux-driven cluster manifests, pulled from versioned blob
 >    containers. Modeled on a known-good internal reference
 >    implementation, simplified for PilotSwarm's single-service Node.js
->    shape. This path adds Edge Mode (AFD vs Private AppGw) and TLS
+>    shape. This path adds Edge Mode (AFD, private ingress, or local
+>    port-forward) and TLS
 >    Source (AKV vs Let's Encrypt) topology choices.
 >
 > Choose one. They share the same Kubernetes cluster shape but stamp it
@@ -36,7 +37,7 @@ containers. Public entry points:
 ### Topology Matrix
 
 The IaC path supports an `(EDGE_MODE × TLS_SOURCE)` matrix plus the
-optional `VPN_GATEWAY_ENABLED` axis. Five combinations are supported;
+optional `VPN_GATEWAY_ENABLED` axis. Six combinations are supported;
 the rest are blocked at preflight (see [Unsupported Combinations](#unsupported-combinations)
 and the named diagnostic codes in [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn)):
 
@@ -47,6 +48,7 @@ and the named diagnostic codes in [Optional: VPN Gateway P2S](#optional-vpn-gate
 | `afd` + VPN | `akv`            | AFD → AppGw (Private Link) **and** Azure VPN Gateway P2S → same AppGw private FE | OneCertV2-PublicCA via AKV (shared with AFD path) | Hybrid trusted-bypass; opt-in via `VPN_GATEWAY_ENABLED=true`. AKV-only. See [Optional: VPN Gateway P2S](#optional-vpn-gateway-p2s-hybrid-afd--vpn). |
 | `private`   | `akv`            | AKS web-app-routing addon (NGINX) + ILB       | OneCertV2-PrivateCA via AKV (registered automatically) | Enterprise / AME. No AFD, no AppGw, no AGIC.   |
 | `private`   | `akv-selfsigned` | AKS web-app-routing addon (NGINX) + ILB       | AKV `Self` issuer (auto-generated, in-place)           | No CA; private-VNet smoke tests.               |
+| `port-forward` | `akv-selfsigned` | ClusterIP only; `kubectl port-forward`       | AKV `Self` issuer with a localhost PEM certificate     | Local developer access; no ingress or DNS resources. |
 
 Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 `afd` + `akv`.
@@ -64,6 +66,12 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
   Private DNS Zone (`PRIVATE_DNS_ZONE`) and links it to the AKS VNet;
   `deploy.mjs` writes an A record `${HOST}.${PRIVATE_DNS_ZONE}` →
   internal LB IP after the Portal rolls out.
+- **`EDGE_MODE=port-forward`** — No AFD, AppGw, AGIC, web-app-routing,
+  LoadBalancer Service, Ingress, Private DNS, or GlobalInfra resource
+  group. The Portal Service remains ClusterIP and is reachable only with
+  `kubectl port-forward`. The local deployment principal receives Key
+  Vault Certificates Officer only for this mode so `deploy.mjs` can create
+  the localhost certificate.
 - **`TLS_SOURCE=akv`** — Portal cert is issued by an AKV cert issuer.
   The bicep auto-registers `OneCertV2-PublicCA` (afd mode) or
   `OneCertV2-PrivateCA` (private mode) on the Key Vault using the
@@ -73,10 +81,11 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
   CSI; afd mode binds it to AppGw via the `appgw-ssl-certificate` AGIC
   annotation, private mode mounts it directly into the NGINX-fronted
   Portal pod's TLS secret.
-- **`TLS_SOURCE=akv-selfsigned`** *(private only)* — uses the AKV
-  built-in `Self` issuer to mint a self-signed cert. Browsers will
-  warn; only suitable for private-VNet smoke tests where you control
-  the trust store.
+- **`TLS_SOURCE=akv-selfsigned`** *(private or port-forward)* — uses the
+  AKV built-in `Self` issuer. Private mode mints the certificate through
+  Bicep; port-forward mode creates a PEM certificate for `localhost`
+  through the signed-in Azure CLI identity. Browsers will warn unless
+  the certificate is explicitly trusted.
 - **`TLS_SOURCE=letsencrypt`** *(afd only)* — `cert-manager` is
   installed in-cluster via Flux (HelmRelease pinned to v1.20.2 exact).
   The `letsencrypt-prod` ClusterIssuer (HTTP-01 solver) issues a real
@@ -86,7 +95,7 @@ Default for OSS = `afd` + `letsencrypt`. Default for the enterprise path =
 
 ### Variant Overlays
 
-`deploy/gitops/portal/overlays/` ships three flavors, one per supported
+`deploy/gitops/portal/overlays/` ships four flavors, one per supported
 combo (`akv` and `akv-selfsigned` share an overlay because the only
 difference is the AKV issuer name, set by Portal bicep, not by
 kustomize):
@@ -95,6 +104,8 @@ kustomize):
 - `afd-akv/` — AFD + AppGw + AGIC + Secret Store CSI (AKV cert).
 - `private-akv/` — web-app-routing NGINX + ILB + Secret Store CSI
   (AKV cert, OneCertV2-PrivateCA or `Self`).
+- `port-forward-akv/` — ClusterIP + Secret Store CSI, with the base
+  Ingress explicitly deleted.
 
 Portal bicep selects the overlay automatically:
 
@@ -116,6 +127,15 @@ kustomizationPath: 'overlays/${edgeMode}-${
 
 Both single-service runs (`deploy.mjs <svc>`) and `deploy.mjs all` honor
 these gates.
+
+### Edge-mode transitions
+
+`EDGE_MODE` is immutable for an existing stamp. Azure Resource Manager
+deployments are incremental, so changing modes in place can leave resources
+from the previous ingress topology active. `deploy.mjs` compares the requested
+mode with the existing BaseInfra deployment output and rejects a transition.
+Create a new stamp, or decommission the existing stamp before selecting a
+different edge mode.
 
 ### cert-manager Pinning
 

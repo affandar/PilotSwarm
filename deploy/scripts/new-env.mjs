@@ -56,6 +56,7 @@ import {
   validateRequiredEnv,
   validateVpnGatewayCombo,
   applyStubKeys,
+  unsupportedEdgeTlsReason,
 } from "./lib/overlay-contracts.mjs";
 
 // Common Azure regions → short name. Sourced from
@@ -81,37 +82,13 @@ const DEFAULT_EDGE_MODE = CONTRACT_DEFAULT_EDGE_MODE;
 //                    script. enterprise / closed-network path.
 //   akv-selfsigned — AKV `Self` issuer; bicep auto-creates a self-signed cert
 //                    in AKV with SAN=${HOST}.${PRIVATE_DNS_ZONE}. Only valid
-//                    with edgeMode=private. OSS private demo path; zero
-//                    external dependencies.
+//                    with edgeMode=private or port-forward. The latter creates
+//                    a localhost certificate from the deployment host.
 const TLS_SOURCES = CONTRACT_TLS_SOURCES;
 const DEFAULT_TLS_SOURCE = CONTRACT_DEFAULT_TLS_SOURCE;
 
-// Combos blocked at validation time. Mirrors the Portal bicep `@allowed`
-// invariants: letsencrypt requires a public IP for HTTP-01 (afd only);
-// akv-selfsigned has no use case under afd (AFD won't trust a self-signed
-// chain). Both unsupported combos are reported with a clear remediation.
-const UNSUPPORTED_COMBOS = [
-  {
-    edgeMode: "private",
-    tlsSource: "letsencrypt",
-    reason:
-      "Let's Encrypt HTTP-01 requires a public IP, which private mode does not have. " +
-      "Use --tls-source akv (BYO CA via AKV-registered issuer) or akv-selfsigned (AKV Self issuer).",
-  },
-  {
-    edgeMode: "afd",
-    tlsSource: "akv-selfsigned",
-    reason:
-      "Azure Front Door rejects self-signed origin chains. " +
-      "Use --tls-source letsencrypt (OSS) or akv (enterprise) with afd.",
-  },
-];
-
 function unsupportedReason(edgeMode, tlsSource) {
-  const hit = UNSUPPORTED_COMBOS.find(
-    (c) => c.edgeMode === edgeMode && c.tlsSource === tlsSource,
-  );
-  return hit ? hit.reason : null;
+  return unsupportedEdgeTlsReason(edgeMode, tlsSource);
 }
 
 // Normalise a y/n/yes/no/true/false answer to the literal "y" or "n".
@@ -352,7 +329,7 @@ export const INPUTS = [
     argKey: "edgeMode",
     flag: "--edge-mode",
     metavar: "<m>",
-    help: "afd | private (default: afd).",
+    help: "afd | private | port-forward (default: afd).",
     cliChoices: EDGE_MODES,
     type: "menu",
     prompt: "Edge mode",
@@ -361,6 +338,7 @@ export const INPUTS = [
     choiceDescriptions: {
       afd: "Azure Front Door + AppGw + AGIC (public Internet endpoint, default)",
       private: "Internal LoadBalancer + web-app-routing (NGINX), private DNS zone, no AppGw",
+      "port-forward": "ClusterIP only; localhost access through kubectl port-forward",
     },
   },
   {
@@ -369,10 +347,13 @@ export const INPUTS = [
     metavar: "<s>",
     help: [
       "letsencrypt | akv | akv-selfsigned (default: letsencrypt).",
-      "letsencrypt requires --edge-mode afd. akv-selfsigned requires --edge-mode private.",
+      "letsencrypt requires --edge-mode afd. port-forward requires akv-selfsigned.",
     ],
     cliChoices: TLS_SOURCES,
-    nonInteractiveDefault: () => DEFAULT_TLS_SOURCE,
+    nonInteractiveDefault: (ctx) => {
+      const valid = TLS_SOURCES.filter((t) => unsupportedReason(ctx.edgeMode, t) === null);
+      return valid.includes(DEFAULT_TLS_SOURCE) ? DEFAULT_TLS_SOURCE : valid[0];
+    },
     type: "menu",
     prompt: "TLS source",
     // Filtered choices + descriptions vary by edge-mode, so use the
@@ -388,7 +369,10 @@ export const INPUTS = [
         ctx.edgeMode === "afd"
           ? "AKV-registered OneCertV2-PublicCA issuer + bicep cert deploy (enterprise public)"
           : "AKV-registered OneCertV2-PrivateCA issuer + bicep cert deploy (AME / enterprise private)",
-      "akv-selfsigned": "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
+      "akv-selfsigned":
+        ctx.edgeMode === "port-forward"
+          ? "AKV `Self` issuer; deployment creates a localhost certificate from this machine"
+          : "AKV `Self` issuer; bicep auto-creates a self-signed cert (OSS private demo)",
     }),
   },
   // VPN gateway prompts are placed immediately after tlsSource so the
@@ -622,8 +606,9 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   // Zone A record, and PORTAL_HOSTNAME). Caller may override with
   // --portal-hostname for legacy / non-Azure-DNS scenarios. In afd mode
   // PORTAL_HOSTNAME is derived by bicep from the AppGw DNS label and left
-  // empty here.
-  let derivedPortalHostname = portalHostname ?? "";
+  // empty here. Port-forward has no routable host and always uses localhost.
+  let derivedPortalHostname =
+    resolvedEdgeMode === "port-forward" ? "localhost" : (portalHostname ?? "");
   if (!derivedPortalHostname && resolvedEdgeMode === "private" && host && privateDnsZone) {
     derivedPortalHostname = `${host}.${privateDnsZone}`;
   }
@@ -819,6 +804,7 @@ async function gatherInputs(args, existingSecrets, existingPortalConfig) {
   const nonInteractiveValue = (i, ctx) => {
     const fromArgs = args[i.argKey];
     if (fromArgs != null && fromArgs !== "") return fromArgs;
+    if (i.promptIf && !i.promptIf(ctx)) return "";
     if (i.nonInteractiveDefault) return i.nonInteractiveDefault(ctx) ?? "";
     if (i.default !== undefined) return resolveField(i.default, ctx) ?? "";
     return "";

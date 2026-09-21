@@ -51,6 +51,7 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   }
 
   const kubeEnv = ensureKubeContext(env, stagingDir);
+  ensureNamespace(namespace, kubeEnv);
 
   // Azure FluxConfig wraps each kustomization key as `<configName>-<key>`.
   // Our `flux-config.bicep` passes `configName` as both the FluxConfig name
@@ -131,6 +132,17 @@ export async function waitRollout({ service, envName, env, imageTag, stagingDir 
   if (service === "portal" && env.EDGE_MODE === "private") {
     await applyPrivateModePostDeploy({ env, kubeEnv });
   }
+}
+
+function ensureNamespace(namespace, kubeEnv) {
+  const existing = run("kubectl", ["get", "namespace", namespace], {
+    capture: true,
+    env: kubeEnv,
+    allowFail: true,
+  });
+  if (existing.status === 0) return;
+  log("info", `kubectl create namespace ${namespace}`);
+  run("kubectl", ["create", "namespace", namespace], { env: kubeEnv });
 }
 
 // Acquire AKS credentials into a per-env kubeconfig file and return a

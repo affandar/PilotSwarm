@@ -12,8 +12,8 @@
 //       so a per-env directory split adds no value)
 //   portal (Phase 2)
 //     → combo-keyed: `${EDGE_MODE}-${TLS_SOURCE simplified}`
-//       (`afd-letsencrypt`, `afd-akv`, `private-akv`; `akv-selfsigned`
-//       collapses to `akv` because it shares the `private-akv` overlay)
+//       (`afd-letsencrypt`, `afd-akv`, `private-akv`, `port-forward-akv`;
+//       `akv-selfsigned` collapses to `akv`)
 
 import { cpSync, existsSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -155,10 +155,9 @@ export function resolveOverlayName({ service, envName, env }) {
     }
     const edgeMode = env.EDGE_MODE.toLowerCase();
     const rawTls = env.TLS_SOURCE.toLowerCase();
-    // akv-selfsigned shares the private-akv overlay (the only delta is
-    // the AKV issuer name, set by Portal bicep — kustomize sees nothing
-    // different). Keep this in lock-step with Portal/bicep/main.bicep
-    // `kustomizationPath`.
+    // AKV and AKV self-signed use the same manifest shape; certificate
+    // issuance is handled outside kustomize. Keep this in lock-step with
+    // Portal/bicep/main.bicep `kustomizationPath`.
     const tlsSource = rawTls === "akv-selfsigned" ? "akv" : rawTls;
     return `${edgeMode}-${tlsSource}`;
   }
