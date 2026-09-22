@@ -46,6 +46,25 @@ test("DATABASE_URL composition is skipped when POSTGRES_FQDN is missing", () => 
   assert.equal(env.DATABASE_URL, undefined);
 });
 
+test("strict-private database URLs are passwordless and require the AAD principal", () => {
+  const env = {
+    STRICT_PRIVATE: "true",
+    POSTGRES_FQDN: "ps.example.postgres.database.azure.com",
+    POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: "ps-csi-mid",
+    POSTGRES_ADMIN_PASSWORD: "must-not-appear",
+  };
+  composeDerivedEnv(env);
+  assert.equal(
+    env.DATABASE_URL,
+    "postgresql://ps-csi-mid@ps.example.postgres.database.azure.com:5432/pilotswarm?sslmode=require",
+  );
+  assert.equal(env.DATABASE_URL.includes("must-not-appear"), false);
+  assert.throws(
+    () => composeDerivedEnv({ STRICT_PRIVATE: "true", POSTGRES_FQDN: env.POSTGRES_FQDN }),
+    /requires POSTGRES_AAD_ADMIN_PRINCIPAL_NAME/,
+  );
+});
+
 test("composes AZURE_STORAGE_ACCOUNT_URL stripping the trailing slash from BLOB_CONTAINER_ENDPOINT", () => {
   const env = { BLOB_CONTAINER_ENDPOINT: "https://acct.blob.core.windows.net/" };
   composeDerivedEnv(env);

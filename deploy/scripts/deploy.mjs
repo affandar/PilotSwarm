@@ -30,9 +30,10 @@ import { stageManifests } from "./lib/stage-manifests.mjs";
 import { publishManifests } from "./lib/publish-manifests.mjs";
 import { waitRollout } from "./lib/wait-rollout.mjs";
 import { seedSecrets } from "./lib/seed-secrets.mjs";
-import { SERVICE_IMAGE_INFO, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
+import { SERVICE_IMAGE_INFO, SERVICE_TO_MODULES, ALL_SEQUENCE, ALL_MODE_MODULES } from "./lib/service-info.mjs";
 import { validateRequiredEnv, applyStubKeys } from "./lib/overlay-contracts.mjs";
 import { resolveDatabaseSecretVersions } from "./lib/database-secrets.mjs";
+import { validateDeploymentProfile } from "./lib/deployment-profile.mjs";
 
 // ───────────────────────── Arg parsing ─────────────────────────
 
@@ -118,7 +119,7 @@ function printHelp() {
       "Envs:      a local env name created with `npm run deploy:new-env`",
       "",
       "Flags:",
-      "  --steps <list>      Comma-separated subset of: build,bicep,seed-secrets,push,manifests,rollout",
+      "  --steps <list>      Comma-separated subset of: build,validate,what-if,bicep,seed-secrets,push,manifests,rollout",
       "                      (or just 'noop' for env-load + preflight only).",
       "                      Default: full pipeline for service.",
       "  --region <name>     Override LOCATION from <env>.env (e.g. westus3).",
@@ -198,6 +199,32 @@ async function runStage(name, ctx) {
       // the in-process env map, derive DATABASE_URL et al. so the
       // subsequent manifests stage finds them.
       composeDerivedEnv(ctx.env);
+      return;
+    case "validate":
+      await deployBicep({
+        service: ctx.service,
+        envName: ctx.envName,
+        env: ctx.env,
+        region: ctx.region,
+        stagingDir: ctx.stagingDir,
+        moduleListOverride: ctx.moduleListOverride,
+        force: false,
+        forceModules: [],
+        operation: "validate",
+      });
+      return;
+    case "what-if":
+      await deployBicep({
+        service: ctx.service,
+        envName: ctx.envName,
+        env: ctx.env,
+        region: ctx.region,
+        stagingDir: ctx.stagingDir,
+        moduleListOverride: ctx.moduleListOverride,
+        force: false,
+        forceModules: [],
+        operation: "what-if",
+      });
       return;
     case "seed-secrets":
       await seedSecrets({
@@ -333,6 +360,14 @@ async function main() {
     process.exit(1);
   }
   env.TLS_SOURCE = tlsSource;
+
+  const profileErrors = validateDeploymentProfile(env);
+  if (profileErrors.length > 0) {
+    for (const error of profileErrors) {
+      log("err", `[deployment-profile] ${error}`);
+    }
+    process.exit(1);
+  }
 
   // Defense-in-depth: mirror the unsupported-combination matrix from
   // new-env.mjs. private+letsencrypt has no public IP for HTTP-01 (DNS-01
@@ -507,8 +542,14 @@ async function runOneService({ service, envName, env, steps, imageTag, clean, fo
   // In `all` mode, intersect requested steps with this service's default
   // pipeline so e.g. `--steps manifests,rollout` skips infra services rather
   // than failing on missing overlays.
+  const planningSteps = new Set(["validate", "what-if"]);
   const effectiveSteps = moduleListOverride
-    ? resolvedSteps.filter((s) => defaultPipelineFor(service).includes(s))
+    ? resolvedSteps.filter(
+        (s) =>
+          planningSteps.has(s)
+            ? (SERVICE_TO_MODULES[service]?.length ?? 0) > 0
+            : defaultPipelineFor(service).includes(s),
+      )
     : resolvedSteps;
 
   if (effectiveSteps.length === 0) {

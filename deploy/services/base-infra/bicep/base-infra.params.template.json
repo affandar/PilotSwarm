@@ -23,6 +23,36 @@
     "acrSku": {
       "value": "${ACR_SKU}"
     },
+    "strictPrivate": {
+      "value": ${STRICT_PRIVATE}
+    },
+    "systemPoolCount": {
+      "value": ${AKS_SYSTEM_POOL_INITIAL_COUNT}
+    },
+    "systemPoolMinCount": {
+      "value": ${AKS_SYSTEM_POOL_MIN_COUNT}
+    },
+    "systemPoolMaxCount": {
+      "value": ${AKS_SYSTEM_POOL_MAX_COUNT}
+    },
+    "userPoolCount": {
+      "value": ${AKS_USER_POOL_INITIAL_COUNT}
+    },
+    "userPoolMinCount": {
+      "value": ${AKS_USER_POOL_MIN_COUNT}
+    },
+    "userPoolMaxCount": {
+      "value": ${AKS_USER_POOL_MAX_COUNT}
+    },
+    "postgresBackupRetentionDays": {
+      "value": ${POSTGRES_BACKUP_RETENTION_DAYS}
+    },
+    "storageDeleteRetentionDays": {
+      "value": ${STORAGE_DELETE_RETENTION_DAYS}
+    },
+    "monitorAlertEmail": {
+      "value": "${MONITOR_ALERT_EMAIL}"
+    },
     "appGatewayPrivateIpAddress": {
       "value": "${APP_GATEWAY_PRIVATE_IP}"
     },

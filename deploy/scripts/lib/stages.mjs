@@ -13,7 +13,7 @@ import { loadDeployManifest, pipelineForService } from "./services-manifest.mjs"
 // (granted by Bicep at create time), and before rollout so the worker pods
 // can mount the populated secrets via CSI on first start. Real stage modules
 // are wired in Phases 2–5.
-export const PIPELINE = ["build", "bicep", "seed-secrets", "push", "manifests", "rollout"];
+export const PIPELINE = ["build", "validate", "what-if", "bicep", "seed-secrets", "push", "manifests", "rollout"];
 
 // Default pipeline for a service (FR-008 / FR-010). Sourced from
 // deploy/services/<svc>/deploy.json (optional `pipeline` override) +

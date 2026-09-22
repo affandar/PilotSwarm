@@ -54,7 +54,7 @@ function fixture(t, overrides = {}, { omitFlag = false, staleCache = false, kvVa
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
-const tool = path.basename(process.argv[1]);
+const tool = path.basename(process.argv[1]).replace(/\\.(?:js|cmd)$/i, "");
 const option = key => args[args.indexOf(key) + 1];
 const safe = args.map((a, i) => args[i - 1] === "--value" ? "<redacted>" : a);
 fs.appendFileSync(process.env.BYO_CALLS, JSON.stringify({tool, args: safe}) + "\\n");
@@ -102,7 +102,15 @@ if (args[0] === "keyvault") {
 }
 `;
   for (const tool of ["az", "git", "docker"]) {
-    writeFileSync(join(dir, tool), cli, { mode: 0o755 });
+    if (process.platform === "win32") {
+      writeFileSync(join(dir, `${tool}.js`), cli);
+      writeFileSync(
+        join(dir, `${tool}.cmd`),
+        `@echo off\r\n"${process.execPath}" "%~dp0${tool}.js" %*\r\n`,
+      );
+    } else {
+      writeFileSync(join(dir, tool), cli, { mode: 0o755 });
+    }
   }
   const callsFile = join(dir, "calls.jsonl");
   const valuesFile = join(dir, "values.jsonl");

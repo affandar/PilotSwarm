@@ -49,6 +49,12 @@ import { SEEDABLE_SECRET_KEYS, SEED_SECRETS_UNSET_SENTINEL } from "./lib/seed-se
 import { PORTAL_CONFIG_KEYS } from "./lib/portal-config.mjs";
 import { listAvailableFoundryModels } from "./lib/validate-foundry-deployments.mjs";
 import {
+  DBMIGRATE_PRIVATE_PROFILE,
+  DEPLOYMENT_PROFILES,
+  dbmigratePrivateOverrides,
+  dbmigratePrivatePortalDefaults,
+} from "./lib/deployment-profile.mjs";
+import {
   EDGE_MODES as CONTRACT_EDGE_MODES,
   TLS_SOURCES as CONTRACT_TLS_SOURCES,
   DEFAULT_EDGE_MODE as CONTRACT_DEFAULT_EDGE_MODE,
@@ -325,6 +331,21 @@ export const INPUTS = [
     default: "",
   },
   {
+    argKey: "profile",
+    flag: "--profile",
+    metavar: "<name>",
+    help: "standard | dbmigrate-private (default: standard).",
+    cliChoices: DEPLOYMENT_PROFILES,
+    type: "menu",
+    prompt: "Deployment profile",
+    default: "standard",
+    choices: DEPLOYMENT_PROFILES,
+    choiceDescriptions: {
+      standard: "Existing general-purpose defaults",
+      "dbmigrate-private": "Strict-private, GPT-only DBMigrate nonproduction stamp",
+    },
+  },
+  {
     argKey: "location",
     flag: "--location",
     metavar: "<loc>",
@@ -356,7 +377,7 @@ export const INPUTS = [
     cliChoices: EDGE_MODES,
     type: "menu",
     prompt: "Edge mode",
-    default: DEFAULT_EDGE_MODE,
+    default: (ctx) => ctx.profile === DBMIGRATE_PRIVATE_PROFILE ? "private" : DEFAULT_EDGE_MODE,
     choices: EDGE_MODES,
     choiceDescriptions: {
       afd: "Azure Front Door + AppGw + AGIC (public Internet endpoint, default)",
@@ -372,7 +393,7 @@ export const INPUTS = [
       "letsencrypt requires --edge-mode afd. akv-selfsigned requires --edge-mode private.",
     ],
     cliChoices: TLS_SOURCES,
-    nonInteractiveDefault: () => DEFAULT_TLS_SOURCE,
+    nonInteractiveDefault: (ctx) => ctx.profile === DBMIGRATE_PRIVATE_PROFILE ? "akv" : DEFAULT_TLS_SOURCE,
     type: "menu",
     prompt: "TLS source",
     // Filtered choices + descriptions vary by edge-mode, so use the
@@ -380,6 +401,7 @@ export const INPUTS = [
     choices: (ctx) => TLS_SOURCES.filter((t) => unsupportedReason(ctx.edgeMode, t) === null),
     default: (ctx) => {
       const valid = TLS_SOURCES.filter((t) => unsupportedReason(ctx.edgeMode, t) === null);
+      if (ctx.profile === DBMIGRATE_PRIVATE_PROFILE && valid.includes("akv")) return "akv";
       return valid.includes(DEFAULT_TLS_SOURCE) ? DEFAULT_TLS_SOURCE : valid[0];
     },
     choiceDescriptions: (ctx) => ({
@@ -613,7 +635,7 @@ function usage() {
 
 // Derive deployment-target values from a small set of inputs, matching the enterprise path
 // serviceModel.json naming patterns. Pure function — no I/O.
-export function deriveTargets({ name, subscription, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
+export function deriveTargets({ name, subscription, profile, location, regionShort, edgeMode, host, privateDnsZone, portalHostname, tlsSource, acmeEmail, sslCertDomainSuffix, foundryEnabled, vpnEnabled, vpnClientAddressPool }) {
   const prefix = `ps${name}`;
   const globalPrefix = `${prefix}global`;
   const resolvedEdgeMode = edgeMode ?? DEFAULT_EDGE_MODE;
@@ -640,7 +662,9 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
   // VPN_GATEWAY_ENABLED=false default flows through unchanged — we still
   // emit it explicitly to keep the rendered .env deterministic.
   const vpnOn = normaliseYesNo(vpnEnabled) === "y";
+  const profileOverrides = profile === DBMIGRATE_PRIVATE_PROFILE ? dbmigratePrivateOverrides() : {};
   return {
+    DEPLOYMENT_PROFILE: profile || "standard",
     SUBSCRIPTION_ID: subscription ?? "",
     LOCATION: location,
     RESOURCE_PREFIX: prefix,
@@ -687,6 +711,7 @@ export function deriveTargets({ name, subscription, location, regionShort, edgeM
     // default with the captured value. Other tlsSources don't consume it
     // and the template's empty default flows through unchanged.
     ...(sslCertDomainSuffix ? { SSL_CERT_DOMAIN_SUFFIX: sslCertDomainSuffix } : {}),
+    ...profileOverrides,
   };
 }
 
@@ -948,6 +973,10 @@ const PREFERRED_FOUNDRY_DEPLOYMENTS = [
   { format: "OpenAI", name: "gpt-5-nano", capacity: 250 },
 ];
 
+const DBMIGRATE_FOUNDRY_DEPLOYMENTS = [
+  { format: "OpenAI", name: "gpt-5.4-mini", capacity: 50 },
+];
+
 // Pick the latest offered version of `(format, name)` from the catalog
 // returned by `az cognitiveservices model list`. Versions are date-shaped
 // strings (YYYY-MM-DD), so a lexical sort is the same as a chronological
@@ -971,12 +1000,15 @@ function pickLatestVersion(availableModels, format, name) {
 // fill it in by hand.
 //
 // Pure function: the live `az` call is done by the caller.
-export function scaffoldFoundryDeploymentsJson({ availableModels = null } = {}) {
+export function scaffoldFoundryDeploymentsJson({ availableModels = null, profile = "standard" } = {}) {
   if (!Array.isArray(availableModels)) {
     return JSON.stringify([], null, 2) + "\n";
   }
   const entries = [];
-  for (const pref of PREFERRED_FOUNDRY_DEPLOYMENTS) {
+  const preferred = profile === DBMIGRATE_PRIVATE_PROFILE
+    ? DBMIGRATE_FOUNDRY_DEPLOYMENTS
+    : PREFERRED_FOUNDRY_DEPLOYMENTS;
+  for (const pref of preferred) {
     const version = pickLatestVersion(availableModels, pref.format, pref.name);
     if (!version) continue;
     entries.push({
@@ -1038,6 +1070,17 @@ async function main() {
 
   const inputs = await gatherInputs(args, existingSecrets, existingPortalConfig);
   validateLocalEnvName(inputs.name);
+
+  if (inputs.profile === DBMIGRATE_PRIVATE_PROFILE) {
+    inputs.edgeMode = "private";
+    inputs.tlsSource = "akv";
+    inputs.foundryEnabled = "y";
+    inputs.vpnEnabled = "n";
+    inputs.portalConfig = {
+      ...dbmigratePrivatePortalDefaults(),
+      ...(inputs.portalConfig ?? {}),
+    };
+  }
 
   if (!inputs.location) throw new Error("location is required.");
   if (!inputs.regionShort) throw new Error("region-short is required.");
@@ -1114,7 +1157,7 @@ async function main() {
     } else {
       log("info", `Querying Foundry model catalog for ${targets.LOCATION}...`);
       const availableModels = tryFetchFoundryCatalog(targets.LOCATION);
-      const body = scaffoldFoundryDeploymentsJson({ availableModels });
+      const body = scaffoldFoundryDeploymentsJson({ availableModels, profile: inputs.profile });
       writeFileSync(foundryFile, body, "utf8");
       const parsed = JSON.parse(body);
       if (parsed.length === 0) {

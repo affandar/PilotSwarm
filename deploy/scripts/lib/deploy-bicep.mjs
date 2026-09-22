@@ -8,7 +8,7 @@
 //
 // Subsequent stages (manifests, rollout) see the merged env map in-process.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { run, runJson, log, REPO_ROOT } from "./common.mjs";
 import { renderParams } from "./render-params.mjs";
@@ -20,7 +20,10 @@ import {
   shouldSkipDeploy,
   saveMarker,
 } from "./deploy-marker.mjs";
-import { assertFoundryDeploymentsValid } from "./validate-foundry-deployments.mjs";
+import {
+  assertFoundryDeploymentsValid,
+  validateGptOnlyFoundryDeployments,
+} from "./validate-foundry-deployments.mjs";
 import { resolveAppgwWafCustomRulesFile } from "./appgw-waf-rules.mjs";
 
 // Bicep main.bicep paths and params templates are derived by convention from
@@ -79,7 +82,20 @@ const OUTPUT_ALIAS = {
   portalTlsCertName: "PORTAL_TLS_CERT_NAME",
 };
 
-export async function deployBicep({ service, envName, env, region, stagingDir, moduleListOverride, force, forceModules }) {
+export async function deployBicep({
+  service,
+  envName,
+  env,
+  region,
+  stagingDir,
+  moduleListOverride,
+  force,
+  forceModules,
+  operation = "create",
+}) {
+  if (!["create", "validate", "what-if"].includes(operation)) {
+    throw new Error(`Unsupported Bicep operation '${operation}'.`);
+  }
   const modules = moduleListOverride ?? SERVICE_TO_MODULES[service];
   if (!modules || modules.length === 0) {
     log("info", `No Bicep modules for service '${service}'; skipping.`);
@@ -90,12 +106,12 @@ export async function deployBicep({ service, envName, env, region, stagingDir, m
 
   const forceSet = new Set(Array.isArray(forceModules) ? forceModules : []);
   for (const moduleName of modules) {
-    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet });
+    await deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, operation });
   }
   return env;
 }
 
-async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet }) {
+async function deployOne({ moduleName, service, envName, env, region, stagingDir, force, forceSet, operation }) {
   const scope = MODULE_SCOPE[moduleName];
   if (!scope) throw new Error(`Unknown Bicep scope for module '${moduleName}'`);
   const paramsRel = moduleParamsTemplate(moduleName);
@@ -127,28 +143,30 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
   const effectiveForce =
     force === true ||
     (forceSet && forceSet.has(moduleName));
-  const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
-  if (decision.skip) {
-    log(
-      "info",
-      `[${moduleName}] ✔ skipping deploy (${decision.reason}; pass --force to redeploy)`,
-    );
-    return;
-  }
-  if (decision.reason !== "no marker") {
-    let why = decision.reason;
-    if (effectiveForce && !force && forceSet && forceSet.has(moduleName)) {
-      why = `--force-module=${moduleName}`;
+  if (operation === "create") {
+    const decision = shouldSkipDeploy({ envName, moduleName, templateHash, paramsHash, force: effectiveForce });
+    if (decision.skip) {
+      log(
+        "info",
+        `[${moduleName}] ✔ skipping deploy (${decision.reason}; pass --force to redeploy)`,
+      );
+      return;
     }
-    log("info", `[${moduleName}] redeploying (${why})`);
+    if (decision.reason !== "no marker") {
+      let why = decision.reason;
+      if (effectiveForce && !force && forceSet && forceSet.has(moduleName)) {
+        why = `--force-module=${moduleName}`;
+      }
+      log("info", `[${moduleName}] redeploying (${why})`);
+    }
   }
 
-  // 2) Run az deployment <scope> create.
+  // 2) Run az deployment <scope> <operation>.
   const deploymentName = `${moduleName}-${envName}-${(region || "global").replace(/[^a-zA-Z0-9-]/g, "")}`;
   const baseArgs = [
     "deployment",
     scope,
-    "create",
+    operation,
     "--name",
     deploymentName,
     "--template-file",
@@ -211,6 +229,14 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         throw new Error(
           `FOUNDRY_DEPLOYMENTS_FILE is not valid JSON (${abs}): ${e.message}`,
         );
+      }
+      if (String(env.GPT_ONLY).toLowerCase() === "true") {
+        const gptErrors = validateGptOnlyFoundryDeployments(parsedDeployments);
+        if (gptErrors.length > 0) {
+          throw new Error(
+            `GPT-only Foundry deployment validation failed:\n${gptErrors.map((e) => `  - ${e}`).join("\n")}`,
+          );
+        }
       }
       if (Array.isArray(parsedDeployments) && parsedDeployments.length > 0) {
         log("info", `[${moduleName}] validating ${parsedDeployments.length} Foundry deployment(s) against ${env.LOCATION}`);
@@ -276,10 +302,34 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
         `Resource group not set for module ${moduleName} (need RESOURCE_GROUP or GLOBAL_RESOURCE_GROUP).`,
       );
     }
-    ensureResourceGroup(rg, region || env.LOCATION);
+    if (operation === "create") {
+      ensureResourceGroup(rg, region || env.LOCATION);
+    } else {
+      assertResourceGroupExists(rg, operation);
+    }
     baseArgs.push("--resource-group", rg);
   } else if (scope === "sub") {
     baseArgs.push("--location", region || env.LOCATION);
+  }
+
+  if (operation === "what-if") {
+    baseArgs.push("--result-format", "FullResourcePayloads", "--no-pretty-print", "--output", "json");
+    log("info", `[${moduleName}] az ${baseArgs.join(" ")}`);
+    const result = run("az", baseArgs, { capture: true });
+    const evidenceDir = join(stagingDir, "what-if");
+    mkdirSync(evidenceDir, { recursive: true });
+    const evidencePath = join(evidenceDir, `${moduleName}.json`);
+    writeFileSync(evidencePath, result.stdout || "{}");
+    log("ok", `[${moduleName}] wrote what-if evidence → ${evidencePath}`);
+    return;
+  }
+
+  if (operation === "validate") {
+    baseArgs.push("--output", "none");
+    log("info", `[${moduleName}] az ${baseArgs.join(" ")}`);
+    run("az", baseArgs);
+    log("ok", `[${moduleName}] deployment validation passed`);
+    return;
   }
 
   log("info", `[${moduleName}] az ${baseArgs.join(" ")}`);
@@ -366,10 +416,25 @@ function ensureResourceGroup(name, location) {
     log("info", `[rg] ${name} already exists`);
     return;
   }
+
   log("info", `[rg] creating ${name} in ${location}`);
   run("az", ["group", "create", "--name", name, "--location", location, "-o", "none"]);
 }
 
+function assertResourceGroupExists(name, operation) {
+  const probe = run(
+    "az",
+    ["group", "show", "--name", name, "--query", "id", "-o", "tsv"],
+    { capture: true, allowFail: true },
+  );
+  if (probe.status !== 0 || !String(probe.stdout || "").trim()) {
+    throw new Error(
+      `Cannot run Bicep ${operation} for resource group '${name}' because it does not exist. ` +
+        `Create the empty, approved resource group first or use a subscription-scope wrapper that includes it. ` +
+        `The ${operation} path never creates resource groups.`,
+    );
+  }
+}
 
 //   "frontDoorProfileName" → "FRONT_DOOR_PROFILE_NAME"
 function aliasFor(camelKey) {

@@ -62,6 +62,21 @@ npm run deploy -- worker foo --steps build,push
 npm run deploy -- baseinfra foo --steps bicep
 ```
 
+### DBMigrate strict-private profile
+
+`--profile dbmigrate-private` scaffolds a fail-closed, GPT-only nonproduction
+stamp. It requires private edge mode, trusted AKV TLS, Entra portal auth,
+enforced ownership, Premium ACR, bounded AKS scaling, operational alert routing,
+and a stamp-owned Foundry endpoint. Existing standard-profile defaults are
+unchanged.
+
+Use `--steps validate` to run Azure deployment validation and
+`--steps what-if` to write reviewable JSON under the service staging directory.
+Neither step creates a missing resource group. The management hub, Azure DevOps
+broker boundary, Foundry safety-policy gate, exact commands, and go/no-go
+checklist are documented in
+[`docs/developer/deploy/dbmigrate-private.md`](../../docs/developer/deploy/dbmigrate-private.md).
+
 The reserved labels `dev` and `prod` are NOT valid OSS env names — they
 are used by the enterprise path for ServiceGroup naming.
 

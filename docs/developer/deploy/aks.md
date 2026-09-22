@@ -2,6 +2,12 @@
 
 This guide walks through deploying PilotSwarm workers to AKS for production multi-node operation.
 
+For the opt-in DBMigrate strict-private nonproduction topology, including
+private service endpoints, Bastion management access, deterministic Azure
+validation/what-if, GPT-only Foundry checks, Azure DevOps isolation, recovery,
+and the go/no-go checklist, see
+[DBMigrate private nonproduction deployment](./dbmigrate-private.md).
+
 > **Two deployment paths.** The repo ships two side-by-side ways to deploy
 > PilotSwarm to AKS:
 >

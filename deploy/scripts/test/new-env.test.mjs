@@ -316,6 +316,43 @@ test("scaffoldFoundryDeploymentsJson emits an entry per preferred model offered 
   assert.equal(typeof mini.sku.capacity, "number");
 });
 
+test("dbmigrate-private profile derives strict, bounded, GPT-only defaults", () => {
+  const targets = deriveTargets({
+    name: "dbmigtest",
+    subscription: "sub",
+    profile: "dbmigrate-private",
+    location: "westus3",
+    regionShort: "wus3",
+    edgeMode: "private",
+    tlsSource: "akv",
+    foundryEnabled: "y",
+    vpnEnabled: "n",
+  });
+  assert.equal(targets.DEPLOYMENT_PROFILE, "dbmigrate-private");
+  assert.equal(targets.STRICT_PRIVATE, "true");
+  assert.equal(targets.GPT_ONLY, "true");
+  assert.equal(targets.EDGE_MODE, "private");
+  assert.equal(targets.TLS_SOURCE, "akv");
+  assert.equal(targets.ACR_SKU, "Premium");
+  assert.equal(targets.AKS_SYSTEM_POOL_MAX_COUNT, "2");
+  assert.equal(targets.AKS_USER_POOL_MAX_COUNT, "4");
+  assert.equal(targets.POSTGRES_BACKUP_RETENTION_DAYS, "14");
+  assert.equal(targets.STORAGE_DELETE_RETENTION_DAYS, "14");
+});
+
+test("dbmigrate-private Foundry scaffold exposes only the required GPT default deployment", () => {
+  const availableModels = [
+    { model: { format: "OpenAI", name: "gpt-5.4-mini", version: "2026-03-17" } },
+    { model: { format: "OpenAI", name: "gpt-5.4", version: "2026-03-17" } },
+    { model: { format: "OpenAI", name: "Kimi-K2.5", version: "1" } },
+  ];
+  const deployments = JSON.parse(
+    scaffoldFoundryDeploymentsJson({ availableModels, profile: "dbmigrate-private" }),
+  );
+  assert.deepEqual(deployments.map((d) => d.name), ["gpt-5.4-mini"]);
+  assert.equal(deployments[0].model.version, "2026-03-17");
+});
+
 test("scaffoldFoundryDeploymentsJson returns an empty array when catalog lookup failed", () => {
   // Caller passes null when az is unavailable
   const body = scaffoldFoundryDeploymentsJson({ availableModels: null });

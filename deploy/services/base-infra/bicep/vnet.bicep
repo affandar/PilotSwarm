@@ -1,12 +1,15 @@
 // ==============================================================================
 // PilotSwarm BaseInfra — VNet.
 //
-// Three subnets:
+// Base subnets:
 //   1. AKS subnet — node pool networking (Azure CNI).
 //   2. App Gateway subnet — hosts the WAF_v2 Standard_v2 ingress.
 //   3. App Gateway Private Link subnet — dedicated subnet for the Private
 //      Link Service backing the AppGW private frontend. MUST have
 //      `privateLinkServiceNetworkPolicies: 'Disabled'`.
+// Strict-private stamps add a dedicated subnet for Azure service private
+// endpoints. VPN stamps may additionally add GatewaySubnet and the DNS
+// Resolver inbound subnet.
 // ==============================================================================
 
 @description('Azure region.')
@@ -27,6 +30,12 @@ param appGatewaySubnetPrefix string = '10.20.16.0/24'
 @description('Application Gateway Private Link subnet prefix (must be distinct from the App Gateway subnet).')
 param appGatewayPrivateLinkSubnetPrefix string = '10.20.17.0/24'
 
+@description('Whether to add the dedicated Azure service private-endpoint subnet.')
+param strictPrivate bool = false
+
+@description('Azure service private-endpoint subnet prefix.')
+param privateEndpointSubnetPrefix string = '10.20.20.0/24'
+
 @description('Whether to provision a GatewaySubnet (required for the Azure VPN Gateway). False by default — VPN is an additive, optional ingress.')
 param vpnGatewayEnabled bool = false
 
@@ -43,6 +52,7 @@ var vnetName = '${resourceNamePrefix}-vnet'
 var aksSubnetName = 'aks-subnet'
 var appGatewaySubnetName = 'appgw-subnet'
 var appGatewayPrivateLinkSubnetName = 'appgw-pls-subnet'
+var privateEndpointSubnetName = 'private-endpoints-subnet'
 // Azure requirement: VPN Gateway only attaches to a subnet named exactly
 // "GatewaySubnet". Do not parameterise this name.
 var gatewaySubnetName = 'GatewaySubnet'
@@ -79,6 +89,16 @@ var gatewaySubnetEntry = [
   }
 ]
 
+var privateEndpointSubnetEntry = [
+  {
+    name: privateEndpointSubnetName
+    properties: {
+      addressPrefix: privateEndpointSubnetPrefix
+      privateEndpointNetworkPolicies: 'Disabled'
+    }
+  }
+]
+
 // Private DNS Resolver inbound endpoint subnet. Co-provisioned with the VPN
 // gateway because P2S clients cannot reach the Azure-magic DNS IP
 // (168.63.129.16) through the tunnel — that IP is only reachable from inside
@@ -106,7 +126,8 @@ var dnsResolverInboundSubnetEntry = [
   }
 ]
 
-var allSubnets = vpnGatewayEnabled ? concat(baseSubnets, gatewaySubnetEntry, dnsResolverInboundSubnetEntry) : baseSubnets
+var privateSubnets = strictPrivate ? concat(baseSubnets, privateEndpointSubnetEntry) : baseSubnets
+var allSubnets = vpnGatewayEnabled ? concat(privateSubnets, gatewaySubnetEntry, dnsResolverInboundSubnetEntry) : privateSubnets
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -134,10 +155,11 @@ output aksSubnetName string = aksSubnetName
 output appGatewaySubnetId string = vnet.properties.subnets[1].id
 output appGatewaySubnetName string = appGatewaySubnetName
 output appGatewayPrivateLinkSubnetId string = vnet.properties.subnets[2].id
+output privateEndpointSubnetId string = strictPrivate ? resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, privateEndpointSubnetName) : ''
 // GatewaySubnet ID only when VPN ingress is enabled — empty string keeps the
 // output shape stable for non-VPN stamps.
-output gatewaySubnetId string = vpnGatewayEnabled ? vnet.properties.subnets[3].id : ''
+output gatewaySubnetId string = vpnGatewayEnabled ? resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, gatewaySubnetName) : ''
 // DNS Resolver inbound subnet — only present when VPN is enabled (the
 // resolver is exclusively here to give P2S clients a reachable DNS server).
-output dnsResolverInboundSubnetId string = vpnGatewayEnabled ? vnet.properties.subnets[4].id : ''
+output dnsResolverInboundSubnetId string = vpnGatewayEnabled ? resourceId('Microsoft.Network/virtualNetworks/subnets', vnet.name, dnsResolverInboundSubnetName) : ''
 output dnsResolverInboundSubnetName string = dnsResolverInboundSubnetName

@@ -19,6 +19,9 @@ param registryName string
 ])
 param skuName string = 'Basic'
 
+@description('Whether to disable public access and force the Premium SKU required by ACR Private Link.')
+param strictPrivate bool = false
+
 @description('Principal ID of the AKS kubelet UAMI that needs AcrPull.')
 param aksKubeletPrincipalId string
 
@@ -26,11 +29,11 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   name: registryName
   location: location
   sku: {
-    name: skuName
+    name: strictPrivate ? 'Premium' : skuName
   }
   properties: {
     adminUserEnabled: false
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: strictPrivate ? 'Disabled' : 'Enabled'
   }
 }
 

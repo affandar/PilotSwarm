@@ -92,6 +92,41 @@ const PLACEHOLDER_FILES = {
   ],
 };
 
+function catalogSource(env) {
+  const filename = String(env.GPT_ONLY).toLowerCase() === "true"
+    ? "model_providers.gpt-only.json"
+    : "model_providers.json";
+  return join(REPO_ROOT, "deploy", "gitops", "worker", "base", filename);
+}
+
+export function validateGptOnlyCatalog(catalog, env) {
+  if (String(env.GPT_ONLY).toLowerCase() !== "true") return;
+  if (String(env.FOUNDRY_ENABLED).toLowerCase() !== "true") {
+    throw new Error("[gpt-only] FOUNDRY_ENABLED must be true.");
+  }
+  if (!env.FOUNDRY_ENDPOINT || String(env.FOUNDRY_ENDPOINT).includes("__FOUNDRY_ENDPOINT__")) {
+    throw new Error("[gpt-only] FOUNDRY_ENDPOINT must be resolved before manifests are staged.");
+  }
+  if (!Array.isArray(catalog.providers) || catalog.providers.length !== 1) {
+    throw new Error("[gpt-only] catalog must contain exactly one provider.");
+  }
+  const provider = catalog.providers[0];
+  if (provider.id !== "azure-foundry" || provider.type !== "openai") {
+    throw new Error("[gpt-only] the only provider must be azure-foundry/openai.");
+  }
+  if (!Array.isArray(provider.models) || provider.models.length === 0) {
+    throw new Error("[gpt-only] at least one GPT model is required.");
+  }
+  for (const model of provider.models) {
+    if (!String(model.name || "").toLowerCase().startsWith("gpt-")) {
+      throw new Error(`[gpt-only] non-GPT model '${model.name}' is not allowed.`);
+    }
+  }
+  if (!String(catalog.defaultModel || "").startsWith("azure-foundry:gpt-")) {
+    throw new Error("[gpt-only] defaultModel must select an Azure Foundry GPT deployment.");
+  }
+}
+
 function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
   const rules = PLACEHOLDER_FILES[service];
   if (!rules || rules.length === 0) return;
@@ -187,6 +222,16 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   cpSync(srcRoot, stagedServiceRoot, { recursive: true });
   log("info", `Staged ${srcRoot} → ${stagedServiceRoot}`);
 
+  if (service === "worker") {
+    const selectedCatalog = catalogSource(env);
+    const stagedCatalog = join(stagedServiceRoot, "base", "model_providers.json");
+    if (!existsSync(selectedCatalog)) {
+      throw new Error(`Selected worker model catalog is missing: ${selectedCatalog}`);
+    }
+    cpSync(selectedCatalog, stagedCatalog);
+    log("info", `Selected ${selectedCatalog} → worker/base/model_providers.json`);
+  }
+
   // Portal needs the same model catalog as the worker so its
   // PilotSwarmManagementClient.listModels() returns the same set. Single
   // source of truth lives at deploy/gitops/worker/base/model_providers.json;
@@ -196,7 +241,7 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // intentionally absent) — all real builds go through deploy.mjs →
   // stage-manifests first.
   if (service === "portal") {
-    const workerCatalog = join(REPO_ROOT, "deploy", "gitops", "worker", "base", "model_providers.json");
+    const workerCatalog = catalogSource(env);
     const portalCatalog = join(stagedServiceRoot, "base", "model_providers.json");
     if (!existsSync(workerCatalog)) {
       throw new Error(
@@ -256,6 +301,11 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).
   applyPlaceholderRules({ service, stagedServiceRoot, env });
+
+  if (runtimeService && String(env.GPT_ONLY).toLowerCase() === "true") {
+    const catalogPath = join(stagedServiceRoot, "base", "model_providers.json");
+    validateGptOnlyCatalog(JSON.parse(readFileSync(catalogPath, "utf8")), env);
+  }
 
   return stagedServiceRoot;
 }

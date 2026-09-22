@@ -74,6 +74,13 @@ test("step intersection: --steps bicep applies to every service in ALL_SEQUENCE"
   }
 });
 
+test("planning steps validate,what-if apply to every service with Bicep modules", () => {
+  for (const svc of ALL_SEQUENCE) {
+    const resolved = resolveSteps("validate,what-if", svc);
+    assert.deepEqual(resolved, ["validate", "what-if"], `${svc} should retain planning steps`);
+  }
+});
+
 test("step intersection: --steps manifests,rollout skips infra-only services", () => {
   // Pure infra services (global-infra, base-infra) have default pipeline = [bicep]
   // / [bicep, seed-secrets], so their effective intersection with

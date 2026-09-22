@@ -28,6 +28,7 @@ export function validateFoundryDeployments({ deployments, availableModels, regio
   if (!Array.isArray(deployments)) {
     return [`foundry-deployments.json must contain a JSON array (got ${typeof deployments})`];
   }
+
   if (!Array.isArray(availableModels)) {
     return [`available models response must be an array (got ${typeof availableModels})`];
   }
@@ -72,6 +73,29 @@ export function validateFoundryDeployments({ deployments, availableModels, regio
       `[${i}] ${d.name || "(unnamed)"} -> ${m.format}/${m.name}@${m.version} ` +
         `not available in ${region}. ${hint}`,
     );
+  }
+  return errors;
+}
+
+export function validateGptOnlyFoundryDeployments(deployments) {
+  if (!Array.isArray(deployments) || deployments.length === 0) {
+    return ["GPT_ONLY=true requires at least one Foundry GPT deployment."];
+  }
+  const errors = [];
+  let hasDefault = false;
+  for (let i = 0; i < deployments.length; i++) {
+    const deployment = deployments[i] || {};
+    const deploymentName = String(deployment.name || "");
+    const modelName = String(deployment.model?.name || "");
+    if (!deploymentName.toLowerCase().startsWith("gpt-") || !modelName.toLowerCase().startsWith("gpt-")) {
+      errors.push(`[${i}] '${deploymentName || "(unnamed)"}' is not an approved GPT-family deployment.`);
+    }
+    if (deploymentName === "gpt-5.4-mini" && modelName === "gpt-5.4-mini") {
+      hasDefault = true;
+    }
+  }
+  if (!hasDefault) {
+    errors.push("GPT_ONLY=true requires deployment 'gpt-5.4-mini' for the catalog default.");
   }
   return errors;
 }

@@ -12,7 +12,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DEPLOY_MJS = resolve(here, "..", "deploy.mjs");
@@ -55,11 +57,21 @@ test("deploy.mjs rejects --force-module with no value", () => {
 import { mock } from "node:test";
 
 const skipCalls = [];
+const runCalls = [];
 
 mock.module("../lib/common.mjs", {
   namedExports: {
     log: () => {},
-    run: () => ({ stdout: "", stderr: "", status: 0 }),
+    run: (_command, args) => {
+      runCalls.push(args);
+      if (args[0] === "group" && args[1] === "show") {
+        return { stdout: "/subscriptions/test/resourceGroups/test-rg", stderr: "", status: 0 };
+      }
+      if (args[0] === "deployment" && args[2] === "what-if") {
+        return { stdout: '{"changes":[]}', stderr: "", status: 0 };
+      }
+      return { stdout: "", stderr: "", status: 0 };
+    },
     runJson: () => ({}),
     REPO_ROOT: process.cwd(),
   },
@@ -87,11 +99,15 @@ mock.module("../lib/bicep-outputs-cache.mjs", {
   namedExports: { saveCache: () => {} },
 });
 mock.module("../lib/validate-foundry-deployments.mjs", {
-  namedExports: { assertFoundryDeploymentsValid: () => {} },
+  namedExports: {
+    assertFoundryDeploymentsValid: () => {},
+    validateGptOnlyFoundryDeployments: () => [],
+  },
 });
 
 function resetCalls() {
   skipCalls.length = 0;
+  runCalls.length = 0;
 }
 
 test("deployBicep: --force-module targets ONLY the named module", async () => {
@@ -121,6 +137,54 @@ test("deployBicep: --force-module targets ONLY the named module", async () => {
     false,
     `base-infra should NOT be forced, got force=${byModule["base-infra"]}; calls=${JSON.stringify(skipCalls)}`,
   );
+});
+
+test("deployBicep validate bypasses markers and uses Azure validation without creating the resource group", async () => {
+  resetCalls();
+  const { deployBicep } = await import("../lib/deploy-bicep.mjs");
+  await deployBicep({
+    service: "worker",
+    envName: "dev",
+    env: { RESOURCE_GROUP: "test-rg" },
+    region: "westus2",
+    stagingDir: process.cwd(),
+    moduleListOverride: ["worker"],
+    force: false,
+    forceModules: [],
+    operation: "validate",
+  });
+  assert.equal(skipCalls.length, 0, "planning operations must not consult deployment markers");
+  assert.ok(runCalls.some((args) => args[0] === "group" && args[1] === "show"));
+  assert.ok(runCalls.some((args) => args[0] === "deployment" && args[2] === "validate"));
+  assert.ok(!runCalls.some((args) => args[0] === "group" && args[1] === "create"));
+});
+
+test("deployBicep what-if persists full JSON evidence", async () => {
+  resetCalls();
+  const stagingDir = mkdtempSync(join(tmpdir(), "ps-what-if-"));
+  try {
+    const { deployBicep } = await import("../lib/deploy-bicep.mjs");
+    await deployBicep({
+      service: "worker",
+      envName: "dev",
+      env: { RESOURCE_GROUP: "test-rg" },
+      region: "westus2",
+      stagingDir,
+      moduleListOverride: ["worker"],
+      force: false,
+      forceModules: [],
+      operation: "what-if",
+    });
+    const command = runCalls.find((args) => args[0] === "deployment" && args[2] === "what-if");
+    assert.ok(command, "expected deployment group what-if command");
+    assert.ok(command.includes("FullResourcePayloads"));
+    assert.equal(
+      readFileSync(join(stagingDir, "what-if", "worker.json"), "utf8"),
+      '{"changes":[]}',
+    );
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
 });
 
 test("deployBicep: no --force-module leaves every module unforced", async () => {

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   validateFoundryDeployments,
+  validateGptOnlyFoundryDeployments,
   assertFoundryDeploymentsValid,
 } from "../lib/validate-foundry-deployments.mjs";
 
@@ -32,6 +33,26 @@ test("returns no errors when every deployment has a matching model triple", () =
     deployments,
     availableModels: WESTUS3_MODELS,
     region: "westus3",
+  });
+
+  test("GPT-only deployment contract requires gpt-5.4-mini and rejects non-GPT entries", () => {
+    assert.deepEqual(
+      validateGptOnlyFoundryDeployments([
+        {
+          name: "gpt-5.4-mini",
+          model: { format: "OpenAI", name: "gpt-5.4-mini", version: "2026-03-17" },
+        },
+      ]),
+      [],
+    );
+    const errors = validateGptOnlyFoundryDeployments([
+      {
+        name: "Kimi-K2.5",
+        model: { format: "OpenAI", name: "Kimi-K2.5", version: "1" },
+      },
+    ]);
+    assert.ok(errors.some((e) => e.includes("not an approved GPT-family")));
+    assert.ok(errors.some((e) => e.includes("requires deployment 'gpt-5.4-mini'")));
   });
   assert.deepEqual(errors, []);
 });

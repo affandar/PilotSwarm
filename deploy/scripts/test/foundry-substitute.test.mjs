@@ -11,7 +11,13 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { stageManifests } from "../lib/stage-manifests.mjs";
+import { stageManifests, validateGptOnlyCatalog } from "../lib/stage-manifests.mjs";
+import {
+  dbmigratePrivateOverrides,
+  dbmigratePrivatePortalDefaults,
+  validateDeploymentProfile,
+} from "../lib/deployment-profile.mjs";
+import { sanitizeFoundryResult } from "../validate-foundry-smoke.mjs";
 import { REPO_ROOT } from "../lib/common.mjs";
 
 // Helper: copy the real worker base/* into a fixture root, swap out
@@ -114,6 +120,7 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
       env,
       stagingDir: tmp,
     });
+
     const catalog = readFileSync(join(stagedRoot, "base", "model_providers.json"), "utf8");
     assert.ok(
       catalog.includes("__FOUNDRY_ENDPOINT__"),
@@ -122,4 +129,98 @@ test("__FOUNDRY_ENDPOINT__ stays unresolved when FOUNDRY_ENDPOINT is empty/unset
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("GPT-only catalog rejects non-GPT providers and requires a resolved Foundry endpoint", () => {
+  const env = {
+    GPT_ONLY: "true",
+    FOUNDRY_ENABLED: "true",
+    FOUNDRY_ENDPOINT: "https://example.cognitiveservices.azure.com",
+  };
+  assert.doesNotThrow(() =>
+    validateGptOnlyCatalog(
+      {
+        providers: [{ id: "azure-foundry", type: "openai", models: [{ name: "gpt-5.4-mini" }] }],
+        defaultModel: "azure-foundry:gpt-5.4-mini",
+      },
+      env,
+    ),
+  );
+  assert.throws(
+    () =>
+      validateGptOnlyCatalog(
+        {
+          providers: [{ id: "anthropic", type: "anthropic", models: [{ name: "claude-sonnet" }] }],
+          defaultModel: "anthropic:claude-sonnet",
+        },
+        env,
+      ),
+    /only provider must be azure-foundry/,
+  );
+  assert.throws(
+    () =>
+      validateGptOnlyCatalog(
+        {
+          providers: [{ id: "azure-foundry", type: "openai", models: [{ name: "gpt-5.4-mini" }] }],
+          defaultModel: "azure-foundry:gpt-5.4-mini",
+        },
+        { ...env, FOUNDRY_ENDPOINT: "" },
+      ),
+    /FOUNDRY_ENDPOINT must be resolved/,
+  );
+});
+
+test("DBMigrate private profile fails closed on insecure auth or missing operational inputs", () => {
+  const valid = {
+    ...dbmigratePrivateOverrides(),
+    ...dbmigratePrivatePortalDefaults(),
+    SUBSCRIPTION_ID: "00000000-0000-0000-0000-000000000000",
+    PORTAL_AUTH_ENTRA_TENANT_ID: "11111111-1111-1111-1111-111111111111",
+    PORTAL_AUTH_ENTRA_CLIENT_ID: "22222222-2222-2222-2222-222222222222",
+    PORTAL_AUTHZ_ADMIN_GROUPS: "33333333-3333-3333-3333-333333333333",
+    PORTAL_AUTHZ_USER_GROUPS: "44444444-4444-4444-4444-444444444444",
+    MONITOR_ALERT_EMAIL: "oncall@example.invalid",
+    FOUNDRY_DEPLOYMENTS_FILE: "deploy/envs/local/test/foundry-deployments.json",
+    DEPLOY_POSTGRES: "true",
+    PILOTSWARM_USE_MANAGED_IDENTITY: "1",
+  };
+  assert.deepEqual(validateDeploymentProfile(valid), []);
+  const errors = validateDeploymentProfile({
+    ...valid,
+    AUTHZ_ENFORCE_OWNERSHIP: "false",
+    MONITOR_ALERT_EMAIL: "",
+    AKS_USER_POOL_MAX_COUNT: "10",
+  });
+  assert.ok(errors.some((e) => e.includes("AUTHZ_ENFORCE_OWNERSHIP")));
+  assert.ok(errors.some((e) => e.includes("MONITOR_ALERT_EMAIL")));
+  assert.ok(errors.some((e) => e.includes("AKS_USER_POOL_MAX_COUNT")));
+});
+
+test("Foundry smoke evidence classifies policy rejection without retaining prompt content", async () => {
+  const headers = new Headers({ "apim-request-id": "request-123" });
+  const response = {
+    url: "https://example.cognitiveservices.azure.com/openai/v1/chat/completions",
+    status: 400,
+    ok: false,
+    headers,
+  };
+  const payload = {
+    error: {
+      code: "content_filter",
+      innererror: {
+        code: "ResponsibleAIPolicyViolation",
+        content_filter_result: { jailbreak: { detected: true, filtered: true } },
+      },
+    },
+  };
+  const requestBody = {
+    model: "gpt-5.4-mini",
+    messages: [{ role: "system", content: "sensitive representative prompt" }],
+  };
+  const evidence = sanitizeFoundryResult({ response, payload, requestBody });
+  assert.equal(evidence.policyRejected, true);
+  assert.equal(evidence.jailbreak.detected, true);
+  assert.equal(evidence.jailbreak.filtered, true);
+  assert.equal(evidence.requestId, "request-123");
+  assert.equal(JSON.stringify(evidence).includes("sensitive representative prompt"), false);
 });

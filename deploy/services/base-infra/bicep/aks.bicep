@@ -65,8 +65,32 @@ param systemPoolVmSize string = 'Standard_D2ds_v5'
 @description('User node pool VM size.')
 param userPoolVmSize string = 'Standard_D4ds_v5'
 
+@description('System node pool initial node count.')
+@minValue(1)
+param systemPoolCount int = 1
+
+@description('System node pool minimum autoscale count.')
+@minValue(1)
+param systemPoolMinCount int = 1
+
+@description('System node pool maximum autoscale count.')
+@minValue(1)
+param systemPoolMaxCount int = 5
+
 @description('User node pool initial node count.')
+@minValue(1)
 param userPoolCount int = 2
+
+@description('User node pool minimum autoscale count.')
+@minValue(1)
+param userPoolMinCount int = 1
+
+@description('User node pool maximum autoscale count.')
+@minValue(1)
+param userPoolMaxCount int = 10
+
+@description('Whether to disable the public AKS API and expose only the private API endpoint.')
+param strictPrivate bool = false
 
 @description('Availability zones. Empty array disables zone placement (useful for dev in zone-limited regions).')
 param availabilityZones array = []
@@ -100,9 +124,9 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
       {
         name: 'systempool'
         mode: 'System'
-        count: 1
-        minCount: 1
-        maxCount: 5
+        count: systemPoolCount
+        minCount: systemPoolMinCount
+        maxCount: systemPoolMaxCount
         enableAutoScaling: true
         vmSize: systemPoolVmSize
         osType: 'Linux'
@@ -120,8 +144,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
         name: 'userpool'
         mode: 'User'
         count: userPoolCount
-        minCount: 1
-        maxCount: 10
+        minCount: userPoolMinCount
+        maxCount: userPoolMaxCount
         enableAutoScaling: true
         vmSize: userPoolVmSize
         osType: 'Linux'
@@ -200,9 +224,11 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-05-01' = {
     oidcIssuerProfile: {
       enabled: true
     }
-    apiServerAccessProfile: {
-      enablePrivateCluster: false
-    }
+    apiServerAccessProfile: union({
+      enablePrivateCluster: strictPrivate
+    }, strictPrivate ? {
+      enablePrivateClusterPublicFQDN: false
+    } : {})
   }
 }
 

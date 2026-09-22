@@ -30,6 +30,19 @@ param storageAccountName string
 ])
 param skuName string = 'Standard_LRS'
 
+@description('Whether to disable public/shared-key access and enable strict blob data protection.')
+param strictPrivate bool = false
+
+@description('Blob soft-delete retention in days for strict-private stamps.')
+@minValue(1)
+@maxValue(365)
+param blobDeleteRetentionDays int = 7
+
+@description('Container soft-delete retention in days for strict-private stamps.')
+@minValue(1)
+@maxValue(365)
+param containerDeleteRetentionDays int = 7
+
 @description('Principal ID of the AKS kubelet UAMI that needs Blob Data Reader on manifest containers.')
 param aksKubeletPrincipalId string
 
@@ -57,8 +70,10 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   properties: {
     accessTier: 'Hot'
     allowBlobPublicAccess: false
-    allowSharedKeyAccess: true
+    allowSharedKeyAccess: !strictPrivate
+    defaultToOAuthAuthentication: strictPrivate
     minimumTlsVersion: 'TLS1_2'
+    publicNetworkAccess: strictPrivate ? 'Disabled' : 'Enabled'
     supportsHttpsTrafficOnly: true
   }
 }
@@ -66,7 +81,17 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageAccount
   name: 'default'
-  properties: {}
+  properties: strictPrivate ? {
+    isVersioningEnabled: true
+    deleteRetentionPolicy: {
+      enabled: true
+      days: blobDeleteRetentionDays
+    }
+    containerDeleteRetentionPolicy: {
+      enabled: true
+      days: containerDeleteRetentionDays
+    }
+  } : {}
 }
 
 resource sessionsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {

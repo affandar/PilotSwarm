@@ -1,0 +1,18 @@
+{
+    "providers": [
+        {
+            "id": "azure-foundry",
+            "type": "openai",
+            "baseUrl": "__FOUNDRY_ENDPOINT__/openai/v1",
+            "apiKey": "env:AZURE_OAI_KEY",
+            "models": [
+                {
+                    "name": "gpt-5.4-mini",
+                    "description": "GPT-5.4 Mini via the stamp-owned Azure AI Foundry account.",
+                    "cost": "medium"
+                }
+            ]
+        }
+    ],
+    "defaultModel": "azure-foundry:gpt-5.4-mini"
+}

@@ -39,6 +39,9 @@ param accountName string
 ])
 param sku string = 'S0'
 
+@description('Whether to disable the public endpoint and require Private Link.')
+param strictPrivate bool = false
+
 @description('Array of model deployments to provision under this account. Each entry: { name: <deployment-name>, model: { format: <vendor>, name: <model>, version: <version> }, sku: { name: <sku>, capacity: <int> } }. Loaded from a per-stamp JSON file by the deploy orchestrator. Empty array → no deployments (account-only provisioning).')
 param deployments array = []
 
@@ -57,9 +60,9 @@ resource account 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   }
   properties: {
     customSubDomainName: accountName
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: strictPrivate ? 'Disabled' : 'Enabled'
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: strictPrivate ? 'Deny' : 'Allow'
     }
     // Phase 1: key-auth flow. The Entra-mode proposal flips this to true
     // once the SDK has a token-provider codepath

@@ -16,6 +16,9 @@ param keyVaultName string
 @description('AAD tenant ID for the vault.')
 param tenantId string = subscription().tenantId
 
+@description('Whether to disable public access and deny all non-private network traffic.')
+param strictPrivate bool = false
+
 @description('Principal ID of the CSI SPC UAMI that needs Key Vault Secrets User.')
 param csiPrincipalId string
 
@@ -46,9 +49,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableSoftDelete: true
     enablePurgeProtection: true
     softDeleteRetentionInDays: 90
+    publicNetworkAccess: strictPrivate ? 'Disabled' : 'Enabled'
     networkAcls: {
-      bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      bypass: strictPrivate ? 'None' : 'AzureServices'
+      defaultAction: strictPrivate ? 'Deny' : 'Allow'
     }
   }
 }

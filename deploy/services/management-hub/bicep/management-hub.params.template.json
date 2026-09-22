@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "${LOCATION}"
+    },
+    "resourceNamePrefix": {
+      "value": "${MANAGEMENT_HUB_RESOURCE_PREFIX}"
+    },
+    "adminSshPublicKey": {
+      "value": "${MANAGEMENT_HUB_ADMIN_SSH_PUBLIC_KEY}"
+    },
+    "logAnalyticsWorkspaceId": {
+      "value": "${MANAGEMENT_HUB_LOG_ANALYTICS_WORKSPACE_ID}"
+    },
+    "dataCollectionRuleId": {
+      "value": "${MANAGEMENT_HUB_DATA_COLLECTION_RULE_ID}"
+    },
+    "spokes": {
+      "value": []
+    },
+    "privateDnsZones": {
+      "value": []
+    }
+  }
+}

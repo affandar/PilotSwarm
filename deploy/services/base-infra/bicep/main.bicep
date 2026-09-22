@@ -37,6 +37,46 @@ param sslCertificateDomainSuffix string
 ])
 param acrSku string = 'Basic'
 
+@description('Opt-in fail-closed network posture. Disables public service endpoints, creates service Private Link endpoints/DNS, and makes the AKS API private. False preserves the existing deployment behavior.')
+param strictPrivate bool = false
+
+@description('System node pool initial node count.')
+@minValue(1)
+param systemPoolCount int = 1
+
+@description('System node pool minimum autoscale count.')
+@minValue(1)
+param systemPoolMinCount int = 1
+
+@description('System node pool maximum autoscale count.')
+@minValue(1)
+param systemPoolMaxCount int = 5
+
+@description('User node pool initial node count.')
+@minValue(1)
+param userPoolCount int = 2
+
+@description('User node pool minimum autoscale count.')
+@minValue(1)
+param userPoolMinCount int = 1
+
+@description('User node pool maximum autoscale count.')
+@minValue(1)
+param userPoolMaxCount int = 10
+
+@description('PostgreSQL backup retention in days. The DBMigrate profile supplies its approved value.')
+@minValue(7)
+@maxValue(35)
+param postgresBackupRetentionDays int = 7
+
+@description('Storage blob and container soft-delete retention in days.')
+@minValue(1)
+@maxValue(365)
+param storageDeleteRetentionDays int = 7
+
+@description('Email recipient for the minimum nonproduction Azure Monitor action group. Empty disables alert resources.')
+param monitorAlertEmail string = ''
+
 @description('WAF mode on the App Gateway. Dev uses Detection; prod uses Prevention.')
 @allowed([
   'Detection'
@@ -164,6 +204,7 @@ var keyVaultName = '${alphaPrefix}kv'
 var applicationGatewayName = '${resourceNamePrefix}-appgw'
 var logAnalyticsName = '${resourceNamePrefix}-log'
 var foundryAccountName = '${resourceNamePrefix}-aif'
+var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 
 // ==============================================================================
 // UAMIs (must exist before AKS so kubelet identity can be bound).
@@ -186,6 +227,7 @@ module Vnet './vnet.bicep' = {
   params: {
     location: location
     resourceNamePrefix: resourceNamePrefix
+    strictPrivate: strictPrivate
     vpnGatewayEnabled: vpnGatewayEnabled
     // When VPN ingress is enabled, advertise the Private DNS Resolver inbound
     // endpoint static IP via the VNet's dhcpOptions. P2S clients connecting
@@ -382,6 +424,13 @@ module Aks './aks.bicep' = {
     kubeletIdentityPrincipalId: Uami.outputs.kubeletIdentityPrincipalId
     aksControlPlaneIdentityResourceId: Uami.outputs.aksControlPlaneIdentityResourceId
     aksControlPlaneIdentityPrincipalId: Uami.outputs.aksControlPlaneIdentityPrincipalId
+    strictPrivate: strictPrivate
+    systemPoolCount: systemPoolCount
+    systemPoolMinCount: systemPoolMinCount
+    systemPoolMaxCount: systemPoolMaxCount
+    userPoolCount: userPoolCount
+    userPoolMinCount: userPoolMinCount
+    userPoolMaxCount: userPoolMaxCount
     availabilityZones: availabilityZones
     logAnalyticsWorkspaceResourceId: LogAnalytics.outputs.workspaceId
   }
@@ -433,6 +482,7 @@ module Acr './acr.bicep' = {
     location: location
     registryName: acrName
     skuName: acrSku
+    strictPrivate: strictPrivate
     aksKubeletPrincipalId: Uami.outputs.kubeletIdentityPrincipalId
   }
 }
@@ -446,6 +496,9 @@ module Storage './storage.bicep' = {
   params: {
     location: location
     storageAccountName: storageAccountName
+    strictPrivate: strictPrivate
+    blobDeleteRetentionDays: storageDeleteRetentionDays
+    containerDeleteRetentionDays: storageDeleteRetentionDays
     aksKubeletPrincipalId: Uami.outputs.kubeletIdentityPrincipalId
     workerWorkloadPrincipalId: Uami.outputs.csiIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
@@ -462,10 +515,28 @@ module Postgres './postgres.bicep' = if (deployPostgres) {
   params: {
     location: location
     serverName: postgresServerName
+    strictPrivate: strictPrivate
+    backupRetentionDays: postgresBackupRetentionDays
+    logAnalyticsWorkspaceId: LogAnalytics.outputs.workspaceId
     aadAdminPrincipalId: Uami.outputs.csiIdentityPrincipalId
     aadAdminPrincipalName: Uami.outputs.csiIdentityName
     aadAdminPrincipalType: 'ServicePrincipal'
   }
+}
+
+module MonitoringAlerts './monitoring-alerts.bicep' = if (!empty(monitorAlertEmail)) {
+  name: '${resourceNamePrefix}-alerts-${dTime}'
+  params: {
+    location: location
+    resourceNamePrefix: resourceNamePrefix
+    logAnalyticsWorkspaceId: LogAnalytics.outputs.workspaceId
+    alertEmail: monitorAlertEmail
+    serviceNamespace: serviceAccountNamespace
+  }
+  dependsOn: [
+    ContainerInsightsDcr
+    Postgres
+  ]
 }
 
 // ==============================================================================
@@ -477,6 +548,7 @@ module KeyVault './keyvault.bicep' = {
   params: {
     location: location
     keyVaultName: keyVaultName
+    strictPrivate: strictPrivate
     csiPrincipalId: Uami.outputs.csiIdentityPrincipalId
     appGwPrincipalId: Uami.outputs.appGwIdentityPrincipalId
     localDeploymentPrincipalId: localDeploymentPrincipalId
@@ -500,8 +572,91 @@ module Foundry './foundry.bicep' = if (foundryEnabled) {
     location: location
     accountName: foundryAccountName
     sku: foundrySku
+    strictPrivate: strictPrivate
     deployments: foundryDeployments
     keyVaultName: KeyVault.outputs.keyVaultName
+  }
+}
+
+// ==============================================================================
+// Strict-private service endpoints and private DNS.
+// ==============================================================================
+
+module AcrPrivateEndpoint './private-endpoint.bicep' = if (strictPrivate) {
+  name: '${resourceNamePrefix}-acr-pe-${dTime}'
+  params: {
+    location: location
+    resourceName: '${resourceNamePrefix}-acr'
+    subnetId: Vnet.outputs.privateEndpointSubnetId
+    privateLinkServiceId: Acr.outputs.registryId
+    groupId: 'registry'
+    privateDnsZoneName: 'privatelink.azurecr.io'
+    vnetId: Vnet.outputs.vnetId
+  }
+}
+
+module StoragePrivateEndpoint './private-endpoint.bicep' = if (strictPrivate) {
+  name: '${resourceNamePrefix}-blob-pe-${dTime}'
+  params: {
+    location: location
+    resourceName: '${resourceNamePrefix}-blob'
+    subnetId: Vnet.outputs.privateEndpointSubnetId
+    privateLinkServiceId: Storage.outputs.storageAccountId
+    groupId: 'blob'
+    privateDnsZoneName: blobPrivateDnsZoneName
+    vnetId: Vnet.outputs.vnetId
+  }
+}
+
+module KeyVaultPrivateEndpoint './private-endpoint.bicep' = if (strictPrivate) {
+  name: '${resourceNamePrefix}-kv-pe-${dTime}'
+  params: {
+    location: location
+    resourceName: '${resourceNamePrefix}-kv'
+    subnetId: Vnet.outputs.privateEndpointSubnetId
+    privateLinkServiceId: KeyVault.outputs.keyVaultId
+    groupId: 'vault'
+    privateDnsZoneName: 'privatelink.vaultcore.azure.net'
+    vnetId: Vnet.outputs.vnetId
+  }
+}
+
+module PostgresPrivateEndpoint './private-endpoint.bicep' = if (strictPrivate && deployPostgres) {
+  name: '${resourceNamePrefix}-pg-pe-${dTime}'
+  params: {
+    location: location
+    resourceName: '${resourceNamePrefix}-pg'
+    subnetId: Vnet.outputs.privateEndpointSubnetId
+    privateLinkServiceId: Postgres!.outputs.serverId
+    groupId: 'postgresqlServer'
+    privateDnsZoneName: 'privatelink.postgres.database.azure.com'
+    vnetId: Vnet.outputs.vnetId
+  }
+}
+
+module PostgresStrictPrivateAadAdmin './postgres-aad-admin.bicep' = if (strictPrivate && deployPostgres) {
+  name: '${resourceNamePrefix}-pg-aad-admin-${dTime}'
+  params: {
+    serverName: Postgres!.outputs.serverName
+    primaryPrincipalId: Uami.outputs.csiIdentityPrincipalId
+    primaryPrincipalName: Uami.outputs.csiIdentityName
+    primaryPrincipalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    PostgresPrivateEndpoint
+  ]
+}
+
+module FoundryPrivateEndpoint './private-endpoint.bicep' = if (strictPrivate && foundryEnabled) {
+  name: '${resourceNamePrefix}-foundry-pe-${dTime}'
+  params: {
+    location: location
+    resourceName: '${resourceNamePrefix}-foundry'
+    subnetId: Vnet.outputs.privateEndpointSubnetId
+    privateLinkServiceId: Foundry!.outputs.accountId
+    groupId: 'account'
+    privateDnsZoneName: 'privatelink.cognitiveservices.azure.com'
+    vnetId: Vnet.outputs.vnetId
   }
 }
 
@@ -646,6 +801,20 @@ output logAnalyticsWorkspaceName string = LogAnalytics.outputs.workspaceName
 // manifest-staging time (placeholder `__FOUNDRY_ENDPOINT__`).
 output foundryEndpoint string = foundryEnabled ? Foundry!.outputs.endpoint : ''
 output foundryAccountName string = foundryEnabled ? Foundry!.outputs.accountName : ''
+
+// Strict-private endpoint IDs. Empty strings preserve the output contract for
+// existing public stamps while making private resources discoverable.
+output privateEndpointSubnetId string = strictPrivate ? Vnet.outputs.privateEndpointSubnetId : ''
+output acrPrivateEndpointId string = strictPrivate ? AcrPrivateEndpoint!.outputs.privateEndpointId : ''
+output storagePrivateEndpointId string = strictPrivate ? StoragePrivateEndpoint!.outputs.privateEndpointId : ''
+output keyVaultPrivateEndpointId string = strictPrivate ? KeyVaultPrivateEndpoint!.outputs.privateEndpointId : ''
+output postgresPrivateEndpointId string = (strictPrivate && deployPostgres) ? PostgresPrivateEndpoint!.outputs.privateEndpointId : ''
+output foundryPrivateEndpointId string = (strictPrivate && foundryEnabled) ? FoundryPrivateEndpoint!.outputs.privateEndpointId : ''
+output acrPrivateDnsZoneId string = strictPrivate ? AcrPrivateEndpoint!.outputs.privateDnsZoneId : ''
+output storagePrivateDnsZoneId string = strictPrivate ? StoragePrivateEndpoint!.outputs.privateDnsZoneId : ''
+output keyVaultPrivateDnsZoneId string = strictPrivate ? KeyVaultPrivateEndpoint!.outputs.privateDnsZoneId : ''
+output postgresPrivateDnsZoneId string = (strictPrivate && deployPostgres) ? PostgresPrivateEndpoint!.outputs.privateDnsZoneId : ''
+output foundryPrivateDnsZoneId string = (strictPrivate && foundryEnabled) ? FoundryPrivateEndpoint!.outputs.privateDnsZoneId : ''
 
 // ----- VPN P2S ingress outputs (empty strings when disabled) ---------------
 output vpnGatewayId string = vpnGatewayEnabled ? VpnGateway!.outputs.vpnGatewayId : ''

@@ -37,13 +37,27 @@ export function composeDerivedEnv(env) {
     }
   }
 
-  // DATABASE_URL — overlay ConfigMap value, NOT a KV secret in the
-  // bicep-deploy path (see deploy/gitops/worker/base/secret-provider-class.yaml).
-  // Embeds the deterministic bootstrap admin password from postgres.bicep.
-  // The password is identical on every stamp and never reaches a real
-  // production cluster (prod uses the enterprise path, where Postgres comes with
-  // AAD-only auth).
-  if (!env.DATABASE_URL && env.POSTGRES_FQDN) {
+  // Resolve the AAD principal before composing either database URL. Strict
+  // private deployments never construct or stage a password-bearing URL.
+  if (!env.PILOTSWARM_DB_AAD_USER && env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) {
+    env.PILOTSWARM_DB_AAD_USER = env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME;
+  }
+
+  if (
+    !env.DATABASE_URL &&
+    env.POSTGRES_FQDN &&
+    String(env.STRICT_PRIVATE).toLowerCase() === "true"
+  ) {
+    if (!env.PILOTSWARM_DB_AAD_USER) {
+      throw new Error(
+        "STRICT_PRIVATE=true requires POSTGRES_AAD_ADMIN_PRINCIPAL_NAME before DATABASE_URL can be composed.",
+      );
+    }
+    const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
+    env.DATABASE_URL =
+      `postgresql://${encodeURIComponent(env.PILOTSWARM_DB_AAD_USER)}@${env.POSTGRES_FQDN}:5432/${pgDb}?sslmode=require`;
+    log("info", `Composed DATABASE_URL (passwordless AAD URL) for strict-private overlay.`);
+  } else if (!env.DATABASE_URL && env.POSTGRES_FQDN) {
     const pgUser = env.POSTGRES_ADMIN_LOGIN || "pilotswarm";
     const pgDb = env.POSTGRES_DATABASE_NAME || "pilotswarm";
     const pgPwd = env.POSTGRES_ADMIN_PASSWORD || "PilotSwarmDev_BootstrapOnly!9876";
@@ -71,9 +85,6 @@ export function composeDerivedEnv(env) {
   // .connectWithSchemaAndEntra, available since duroxide-node 0.1.25);
   // when PILOTSWARM_USE_MANAGED_IDENTITY=1 the worker reuses the same
   // AAD user / passwordless URL for the duroxide store too.
-  if (!env.PILOTSWARM_DB_AAD_USER && env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME) {
-    env.PILOTSWARM_DB_AAD_USER = env.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME;
-  }
   if (
     !env.PILOTSWARM_CMS_FACTS_DATABASE_URL &&
     env.POSTGRES_FQDN &&
