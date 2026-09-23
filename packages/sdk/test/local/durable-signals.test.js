@@ -1,13 +1,14 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
 import { computeCronAtNextFire } from "../../src/cron-at.ts";
 import { MAX_DRAIN_PER_TURN, MAX_ITERATIONS_PER_EXECUTION } from "../../src/orchestration/state.ts";
 import { createSessionProxy } from "../../src/session-proxy.ts";
-import { AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_NAMES, SIGNAL_RACE_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 import { commandResponseKey } from "../../src/types.ts";
 import {
     SIGNAL_ACTIVITY_CAPABILITY,
+    SIGNAL_RACE_ACTIVITY_CAPABILITY,
     SIGNAL_BUFFER_LIMIT,
     SIGNAL_DEDUP_LIMIT,
     SIGNAL_MAX_INLINE_BYTES,
@@ -15,6 +16,7 @@ import {
     createSessionSignal,
     formatSignalPrompt,
     parseSessionSignal,
+    parseSignalRaceOutcome,
     supportsSignalOrchestration,
     validateRaiseSignalOptions,
     validateSignalWaitInput,
@@ -71,7 +73,7 @@ class Driver {
             continueAsNewVersioned: (nextInput, version) => ({ kind: "continue", input: nextInput, version }),
         };
         this.input = { sessionId: "signal-session", config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, ...input };
-        this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.input);
+        this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.input);
     }
 
     enqueue(value, queue = "messages") {
@@ -107,9 +109,9 @@ class Driver {
             }
             case "activity":
                 switch (effect.name) {
-                    case SIGNAL_ACTIVITY_NAMES.runTurn:
-                    case SIGNAL_ACTIVITY_NAMES.runTurn2: {
-                        expect(effect.tag).toBe(SIGNAL_ACTIVITY_CAPABILITY);
+                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn:
+                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn2: {
+                        expect(effect.tag).toBe(SIGNAL_RACE_ACTIVITY_CAPABILITY);
                         this.turns.push(effect.input);
                         const result = this.turnResults.shift() ?? completed;
                         return typeof result === "function" ? result(this, effect.input) : result;
@@ -126,6 +128,7 @@ class Driver {
                     case "loadKnowledgeIndex":
                     case "summarizeSession":
                     case "hydrateSession": return null;
+                    case "destroySession": return null;
                     default: throw new Error(`Unexpected activity: ${effect.name}`);
                 }
             default: throw new Error(`Unexpected effect: ${JSON.stringify(effect)}`);
@@ -138,8 +141,8 @@ class Driver {
             if (this.pending) {
                 if (this.pending.kind === "continue") {
                     this.continues.push(structuredClone(this.pending.input));
-                    expect(this.pending.version).toBe("1.0.80");
-                    this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.pending.input);
+                    expect(this.pending.version).toBe("1.0.81");
+                    this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.pending.input);
                     this.pending = null;
                     continue;
                 }
@@ -172,6 +175,192 @@ describe.concurrent("durable signal envelopes", () => {
         expect(() => validateRaiseSignalOptions({ data: cycle })).toThrow(/circular/);
         const deep = Array.from({ length: 18 }).reduce(value => ({ value }), 1);
         expect(() => validateRaiseSignalOptions({ data: deep })).toThrow(/nesting/);
+    });
+
+    describe.concurrent("explicit durable signal races", () => {
+        const race = (timeoutSeconds) => ({ ...waiting(["ready", "failed"], timeoutSeconds), waitMode: "any" });
+        const raceEvents = driver => driver.events.filter(event => event.eventType === "session.signal_race_completed");
+
+        it("records one typed signal winner and tombstones the losing timeout", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(60)] });
+            driver.run();
+            const wait = driver.signals.pendingWait;
+            expect(wait.mode).toBe("any");
+            driver.enqueue({ signal: signal("winner") });
+            driver.run();
+            const result = driver.signals.lastRaceOutcome;
+            expect(result).toMatchObject({
+                version: 1, waitId: wait.waitId, winner: { kind: "signal", signalId: "winner", name: "ready" },
+                losers: { unconsumedSignals: "buffered", otherUserInput: "queued", timer: "tombstoned" },
+            });
+            expect(parseSignalRaceOutcome(result)).toEqual(result);
+            expect(driver.turns[1].prompt).toContain("[WAIT_FOR_ANY RESULT]");
+            expect(driver.signals.pendingWait).toBeUndefined();
+            const turns = driver.turns.length;
+            driver.now += 61_000;
+            driver.run();
+            expect(driver.turns).toHaveLength(turns);
+            expect(raceEvents(driver)).toHaveLength(1);
+        });
+
+        it.each(["prompt", "answer"])("accepted %s input wins before a queued match and expired timeout", (kind) => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(1)] });
+            driver.run();
+            driver.now += 2_000;
+            driver.enqueue({ signal: signal("keep-buffered") });
+            driver.enqueue({ [kind]: "User input wins" });
+            driver.run();
+            expect(driver.signals.lastRaceOutcome.winner).toMatchObject({ kind: "user", inputKind: kind });
+            expect(driver.signals.lastRaceOutcome.winner.inputId).toBeTruthy();
+            expect(driver.signals.pendingWait).toBeUndefined();
+            expect(driver.signals.buffered.map(entry => entry.signalId)).toEqual(["keep-buffered"]);
+            expect(driver.turns[1].prompt).toContain("User input wins");
+            expect(driver.turns[1].prompt).toContain("[WAIT_FOR_ANY RESULT]");
+            expect(raceEvents(driver)).toHaveLength(1);
+            expect(driver.events.some(event => event.eventType === "session.signal_wait_resumed")).toBe(false);
+            expect(driver.events.some(event => event.eventType === "session.signal_wait_timeout")).toBe(false);
+        });
+
+        it("queued Stop wins even beyond a full signal batch, without deleting accepted input", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(1)] });
+            driver.run();
+            const waitId = driver.signals.pendingWait.waitId;
+            driver.now += 2000;
+            for (let index = 0; index < MAX_DRAIN_PER_TURN; index++) driver.enqueue({ signal: signal(`tie-${index}`) });
+            driver.enqueue({ prompt: "Retain this ordinary input" });
+            driver.enqueue({ type: "cmd", cmd: "cancel_signal_wait", id: "race-stop", args: { waitId } });
+            driver.run();
+            expect(driver.signals.lastRaceOutcome).toMatchObject({ waitId, winner: { kind: "stop" } });
+            expect(driver.turns).toHaveLength(2);
+            expect(driver.turns[1].prompt).toContain("Retain this ordinary input");
+            expect(driver.events.some(event => event.eventType === "session.signal_consumed")).toBe(false);
+            expect(raceEvents(driver)).toHaveLength(1);
+            expect(driver.signals.buffered).toHaveLength(SIGNAL_BUFFER_LIMIT);
+        });
+
+        it("a matching signal beats an elapsed timer while unrelated signals remain buffered", () => {
+            const driver = new Driver({
+                now: START + 2000,
+                input: {
+                    iteration: 1,
+                    pendingSignalWait: { mode: "any", waitId: "restored-race", names: ["ready"], reason: "Recovered",
+                        startedAt: new Date(START).toISOString(), deadline: new Date(START + 1000).toISOString() },
+                },
+                messages: [{ signal: signal("other", "other") }, { signal: signal("matching") }],
+            });
+            driver.run();
+            expect(driver.signals.lastRaceOutcome.winner).toMatchObject({ kind: "signal", signalId: "matching" });
+            expect(driver.signals.buffered.map(entry => entry.signalId)).toEqual(["other"]);
+            expect(driver.events.some(event => event.eventType === "session.signal_wait_timeout")).toBe(false);
+        });
+
+        it("returns a typed timeout only when no input or matching signal won", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(1)] });
+            driver.run();
+            const deadline = driver.signals.pendingWait.deadline;
+            driver.now += 2000;
+            driver.run();
+            expect(driver.signals.lastRaceOutcome).toMatchObject({
+                winner: { kind: "timeout", deadline }, losers: { timer: "elapsed" },
+            });
+            expect(driver.turns).toHaveLength(2);
+            expect(driver.turns[1].prompt).toContain("[WAIT_FOR_ANY RESULT]");
+            expect(raceEvents(driver)).toHaveLength(1);
+        });
+
+        it("preserves a user winner and its accepted prompt when that turn is budget-refused", () => {
+            const driver = new Driver({
+                input: { prompt: "Race" },
+                turns: [race(60), { type: "wait", budget: true, seconds: 5, reason: "Budget pause" }, completed],
+            });
+            driver.run();
+            driver.enqueue({ prompt: "Accepted user winner" });
+            driver.run();
+            expect(driver.signals.pendingWait).toBeUndefined();
+            const outcome = driver.signals.lastRaceOutcome;
+            expect(outcome.winner.kind).toBe("user");
+            driver.now += 6000;
+            driver.run();
+            expect(driver.signals.lastRaceOutcome).toEqual(outcome);
+            expect(driver.turns[2].stashedPrompts.join("\n")).toContain("Accepted user winner");
+            expect(raceEvents(driver)).toHaveLength(1);
+        });
+
+        it("does not supersede an ordinary user message after the signal winner was committed", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race()] });
+            driver.run();
+            driver.enqueue({ signal: signal("already-won") });
+            driver.run();
+            const outcome = driver.signals.lastRaceOutcome;
+            driver.enqueue({ prompt: "Later user input is still real input" });
+            driver.run();
+            expect(driver.turns).toHaveLength(3);
+            expect(driver.turns[2].prompt).toContain("Later user input is still real input");
+            expect(driver.signals.lastRaceOutcome).toEqual(outcome);
+            expect(raceEvents(driver)).toHaveLength(1);
+        });
+
+        it("selects one queued user input and leaves the other input for its ordinary turn", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race()] });
+            driver.run();
+            driver.enqueue({ prompt: "First accepted input" });
+            driver.enqueue({ prompt: "Second accepted input" });
+            driver.run();
+            expect(driver.turns).toHaveLength(3);
+            expect(driver.turns[1].prompt).toContain("First accepted input");
+            expect(driver.turns[1].prompt).not.toContain("Second accepted input");
+            expect(driver.turns[2].prompt).toBe("Second accepted input");
+            expect(raceEvents(driver)).toHaveLength(1);
+            expect(driver.signals.lastRaceOutcome.winner.kind).toBe("user");
+        });
+
+        it("carries the active race and original deadline across continue-as-new", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(3600)] });
+            driver.run();
+            const wait = driver.signals.pendingWait;
+            for (let index = 0; index < MAX_DRAIN_PER_TURN * MAX_ITERATIONS_PER_EXECUTION; index++) {
+                driver.enqueue({ signal: signal(`can-${index}`, "other") });
+                driver.run();
+            }
+            expect(driver.continues.some(input => input.pendingSignalWait?.waitId === wait.waitId)).toBe(true);
+            expect(driver.signals.pendingWait).toEqual(wait);
+            driver.enqueue({ signal: signal("after-can") });
+            driver.run();
+            expect(driver.signals.lastRaceOutcome).toMatchObject({ waitId: wait.waitId, winner: { kind: "signal", signalId: "after-can" } });
+            expect(raceEvents(driver)).toHaveLength(1);
+        });
+
+        it("records cancellation and replacement as typed outcomes without forcing a model turn", () => {
+            const makeInput = () => ({
+                iteration: 1,
+                pendingSignalWait: { mode: "any", waitId: "cancel-race", names: ["ready"], reason: "Cancel",
+                    startedAt: new Date(START).toISOString() },
+            });
+            const cancelled = new Driver({ input: { ...makeInput(), pendingToolActions: [{ type: "signal-wait", action: "cancel" }] } });
+            cancelled.run();
+            expect(cancelled.signals.lastRaceOutcome.winner).toEqual({ kind: "cancel", disposition: "cancelled" });
+            expect(cancelled.turns).toHaveLength(0);
+            const replaced = new Driver({ input: { ...makeInput(), pendingToolActions: [waiting(["new"])] } });
+            replaced.run();
+            expect(replaced.signals.lastRaceOutcome.winner).toEqual({ kind: "cancel", disposition: "replaced" });
+            expect(replaced.signals.pendingWait.names).toEqual(["new"]);
+            expect(replaced.turns).toHaveLength(0);
+        });
+
+        it("commits graceful session cancellation ahead of other race candidates", () => {
+            const driver = new Driver({ input: { prompt: "Race" }, turns: [race(1)] });
+            driver.run();
+            driver.now += 2000;
+            driver.enqueue({ signal: signal("cancel-loser") });
+            driver.enqueue({ prompt: "Queued input" });
+            driver.enqueue({ type: "cmd", cmd: "cancel", id: "cancel-session" });
+            driver.run();
+            expect(driver.output).toBe("cancelled");
+            expect(driver.signals.lastRaceOutcome.winner).toEqual({ kind: "cancel", disposition: "session_terminated" });
+            expect(raceEvents(driver)).toHaveLength(1);
+            expect(driver.turns).toHaveLength(1);
+            expect(driver.signals.buffered.map(item => item.signalId)).toEqual(["cancel-loser"]);
+        });
     });
 
     it("rejects forged identity, invalid names, versions and wait inputs", () => {

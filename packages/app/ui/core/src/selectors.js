@@ -38,6 +38,7 @@ import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
 import { describeSignalEvent, isSignalWaiting, selectSessionSignalWait } from "./session-signals.js";
+import { selectWebhookConsole } from "./webhook-state.js";
 import {
     BUDGET_PERIODS,
     BUDGET_SERIES_DAYS,
@@ -4649,12 +4650,13 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = ["providers", "packages", "workers", "features"].includes(admin.section) ? admin.section : "providers";
+    const section = ["providers", "packages", "workers", "features", "webhooks"].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
         { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
+        { id: "webhooks", kind: "section", depth: 0, label: "Webhooks", selected: section === "webhooks" },
         { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName },
         { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
         ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
@@ -4928,7 +4930,17 @@ export function selectAdminConsole(state) {
         },
     };
 
-    const actions = [];
+    const actions = [{ id: "showWebhooks", label: "Webhooks", key: "h" }];
+    if (section === "webhooks") {
+        return {
+            visible: Boolean(admin.visible), loading: Boolean(admin.loading), loadError: admin.loadError || null,
+            principal, isAdmin, adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
+            section, settingsTree, packages: packagesView, workers: workersView, modelProviders,
+            webhooks: selectWebhookConsole(state),
+            actions: [{ id: "refreshWebhooks", label: "Refresh", key: "r" }, { id: "showProviders", label: "My Providers", key: "m" }, { id: "close", label: "Close console", key: "Esc" }],
+        };
+    }
     if (section === "workers") {
         actions.push({ id: "workersRefresh", label: "Refresh workers", key: "r" });
         actions.push({ id: "showPackages", label: "Packages", key: "a" });
@@ -5908,6 +5920,15 @@ export function selectProviderTable(state) {
 }
 
 export function selectStatusBar(state) {
+    if (state.admin?.visible && state.admin.section === "webhooks") {
+        if (state.ui.modal?.type === "confirm") return { left: state.ui.modal.title, right: "Enter/y confirm · Esc/n cancel" };
+        const view = selectWebhookConsole(state);
+        return { left: view.error || view.loadError || view.pending || "Webhooks · server-authorized management", right: view.help };
+    }
+    if (state.admin?.visible && !state.admin.ghcpKey?.editing && !state.admin.modelProviders?.create?.editing && !state.ui.modal) {
+        const view = selectAdminConsole(state);
+        return { left: "Admin Console", right: `h webhooks · m providers · a packages · ${view.isAdmin ? "M shared · w workers · " : ""}${view.actions.map(action => `${action.key} ${action.label}`).join(" · ")}` };
+    }
     const focus = state.ui.focusRegion;
     const paneFullscreen = state.ui.fullscreenPane || null;
     const activeSession = selectActiveSession(state);
@@ -6046,7 +6067,8 @@ export function selectStatusBar(state) {
     // Keep Stop first so truncation never hides a running-turn/signal-wait
     // target. The same binding stays listed, grayed, in `?` help.
     if (canStopSessionTurn(activeSession)) {
-        right = `ctrl-x stop${activeSession.status === "waiting" ? " signal wait" : ""} · ${right}`;
+        const target = activeSession.status === "waiting" ? (activeSession.signalWait?.mode === "any" ? " event race" : " signal wait") : "";
+        right = `ctrl-x stop${target} · ${right}`;
     }
     return {
         left: state.ui.statusText,
@@ -9241,6 +9263,20 @@ const KEYBINDING_HELP = [
         ["alt/ctrl-j", "newline"],
         ["ctrl-a", "attach artifact"],
         ["@ / @@", "artifact / session reference"],
+    ] },
+    { section: "Admin Console → Webhooks (A then h)", bindings: [
+        ["1–6 / Tab / ← →", "connectors / bindings / templates / signals / receipts / health"],
+        ["j k / ctrl-u,d", "select resource / scroll details"],
+        ["n / e / d", "create / edit / confirmed revoke (not session termination)"],
+        ["connectors c", "copy public delivery URL or labeled relative path"],
+        ["t", "binding policy dry run — no external delivery"],
+        ["s / u", "choose session / manually raise signal"],
+        ["f / [ / ]", "receipt filters / newer / older page"],
+        ["p / o / v", "confirm replay / select receipt session / related receipts"],
+        ["r / m / Esc", "refresh / My Providers / close"],
+        ["form Tab / ↑ ↓", "field / choice (text and JSON are never executed)"],
+        ["form Enter/Esc", "submit / cancel; Ctrl+J adds a JSON newline"],
+        ["one-time c/Esc", "copy capability URL / close and erase"],
     ] },
     { section: "Overlays", bindings: [
         ["Esc / q", "close"],

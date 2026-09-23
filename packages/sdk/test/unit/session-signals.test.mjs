@@ -354,6 +354,77 @@ test("signal state exposes only metadata, never raw buffer slots or inline paylo
     assert.deepEqual(h.valueReads, [SIGNAL_STATE_KEY]);
 });
 
+test("signal state preserves the explicit race wait mode without changing legacy waits", async () => {
+    for (const [version, pendingWait] of [
+        ["1.0.80", WAIT],
+        ["1.0.81", { ...WAIT, mode: "any" }],
+    ]) {
+        const h = harness({
+            status: "Running", version,
+            signalState: JSON.stringify({ version: 1, interrupted: false, pendingWait, buffered: [] }),
+        });
+        assert.deepEqual(await h.mgmt.getSessionSignalState("s1"), {
+            version: 1, interrupted: false, pendingWait, buffered: [],
+        });
+    }
+});
+
+test("signal wait mode rejects unsupported values instead of silently changing semantics", async () => {
+    for (const mode of ["signal", "all", "", null, true, 1]) {
+        const h = harness({
+            status: "Running", version: "1.0.81",
+            signalState: JSON.stringify({ version: 1, interrupted: false, pendingWait: { ...WAIT, mode }, buffered: [] }),
+        });
+        await assert.rejects(h.mgmt.getSessionSignalState("s1"), { code: "SIGNAL_STATE_INVALID" });
+    }
+});
+
+const raceOutcome = (winner, timer = "tombstoned") => ({
+    version: 1,
+    waitId: WAIT.waitId,
+    completedAt: "2026-09-16T09:00:05.000Z",
+    waitDurationMs: 5000,
+    winner,
+    losers: { unconsumedSignals: "buffered", otherUserInput: "queued", timer },
+});
+
+test("race metadata survives state reads for every typed winner and loser timer disposition", async () => {
+    for (const lastRaceOutcome of [
+        raceOutcome({ kind: "signal", signalId: SUMMARY.signalId, name: SUMMARY.name, payloadRef: "artifact://build-log" }),
+        raceOutcome({ kind: "user", inputId: "input-1", inputKind: "prompt" }),
+        raceOutcome({ kind: "user", inputId: "input-2", inputKind: "answer" }, "not_scheduled"),
+        raceOutcome({ kind: "timeout", deadline: "2026-09-16T09:00:05.000Z" }, "elapsed"),
+        raceOutcome({ kind: "stop" }),
+        raceOutcome({ kind: "cancel", disposition: "cancelled" }),
+        raceOutcome({ kind: "cancel", disposition: "replaced" }),
+        raceOutcome({ kind: "cancel", disposition: "session_terminated" }),
+    ]) {
+        const h = harness({
+            status: "Running", version: "1.0.81",
+            signalState: JSON.stringify({ version: 1, interrupted: false, lastRaceOutcome, buffered: [SUMMARY] }),
+        });
+        assert.deepEqual(await h.mgmt.getSessionSignalState("s1"), {
+            version: 1, interrupted: false, lastRaceOutcome, buffered: [SUMMARY],
+        });
+        assert.deepEqual(h.valueReads, [SIGNAL_STATE_KEY]);
+    }
+});
+
+test("race metadata rejects corrupt outcomes and embedded payloads through the canonical parser", async () => {
+    const valid = raceOutcome({ kind: "signal", signalId: SUMMARY.signalId, name: SUMMARY.name });
+    for (const lastRaceOutcome of [
+        null, {}, { ...valid, version: 2 }, { ...valid, waitDurationMs: -1 },
+        { ...valid, winner: { ...valid.winner, data: { secret: "must-not-leak" } } },
+        { ...valid, losers: { ...valid.losers, timer: "elapsed" } },
+    ]) {
+        const h = harness({
+            status: "Running", version: "1.0.81",
+            signalState: JSON.stringify({ version: 1, interrupted: false, lastRaceOutcome, buffered: [] }),
+        });
+        await assert.rejects(h.mgmt.getSessionSignalState("s1"), { code: "SIGNAL_STATE_INVALID" });
+    }
+});
+
 test("a maximum-name wait's generated reason survives signal-state inspection", async () => {
     const names = Array.from({ length: 8 }, (_, index) => String.fromCharCode(97 + index).repeat(64));
     const request = validateSignalWaitInput({ names });

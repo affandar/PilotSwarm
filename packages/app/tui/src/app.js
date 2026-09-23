@@ -3,6 +3,7 @@ import { useInput, useStdin } from "ink";
 import { UiPlatformProvider, SharedPilotSwarmApp } from "pilotswarm/ui-react";
 import { UI_COMMANDS, selectAdminConsole, selectNodeMapView } from "pilotswarm/ui-core";
 import { PILOTSWARM_CLI_VERSION_LABEL } from "./version.js";
+import { handleWebhookInput } from "./webhook-input.js";
 
 const MOUSE_INPUT_PATTERN = /\u001b\[<(\d+);(\d+);(\d+)([mM])/gu;
 const MOUSE_INPUT_FRAGMENT_PATTERN = /(?:\u001b)?\[<\d+;\d+;\d+[mM]/u;
@@ -195,7 +196,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             const events = parseMouseInputSequences(chunk?.toString?.("utf8") || "");
             if (events.length === 0) return;
             mouseInputRef.current.ignoreUntil = Date.now() + 120;
-            if (controller.getState().ui.modal) {
+            const current = controller.getState();
+            if (current.ui.modal || current.admin?.webhooks?.capabilityId || current.admin?.webhooks?.editor) {
                 platform.clearPointerSelection?.();
                 return;
             }
@@ -267,6 +269,9 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             requestExit();
             return;
         }
+        // Webhook forms/capabilities consume text and confirmation input before
+        // global q/Stop shortcuts. No typed config can act on a hidden session.
+        if (handleWebhookInput(controller, input, key, platform)) return;
         // Stop the current turn or parked signal wait — same as portal Stop.
         // ctrl-x is reliable across terminals; ctrl-esc also fires where the
         // terminal sends it distinctly from a bare Esc. The controller no-ops
@@ -349,7 +354,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (adminVisible) {
-            const adminSection = ["providers", "packages", "workers"].includes(adminState?.section)
+            const adminSection = ["providers", "packages", "workers", "webhooks"].includes(adminState?.section)
                 ? adminState.section
                 : "providers";
             if (modal?.type === "confirm") {
@@ -365,6 +370,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             }
             if (key.escape) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_ADMIN_CONSOLE).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "h") {
+                controller.setAdminSection("webhooks");
                 return;
             }
             // Settings-tree section toggles (Model Providers ⟷ Agents ⟷ Workers).

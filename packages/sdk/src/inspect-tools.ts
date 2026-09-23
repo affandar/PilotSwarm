@@ -1423,6 +1423,53 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         ...factsTools,
     ];
 
+    if (catalog.webhooks) {
+        // These are receipt-owned reads, not reads of the destination session.
+        // Management applies the current receipt-owner/admin scope, including
+        // when a former destination is no longer readable.
+        const reader = PilotSwarmManagementClient._webhookTools(catalog);
+        const webhookViewer = async () => {
+            const viewer = await viewerFor();
+            if (viewer === NO_VIEWER) throw new Error("An authenticated inspect viewer is required.");
+            return {
+                principal: { provider: viewer.provider, subject: viewer.subject },
+                isAdmin: viewer.isSystemPrincipal || viewer.isAdmin,
+                adminScope: viewer.isSystemPrincipal ? "unrestricted" as const : viewer.adminScope,
+            };
+        };
+        const read = async (run: () => Promise<unknown>) => {
+            try { return await run(); }
+            catch (error) {
+                return { error: error instanceof Error ? error.message : "Webhook inspection failed",
+                    ...(typeof (error as { code?: unknown })?.code === "string" ? { code: (error as { code: string }).code } : {}) };
+            }
+        };
+        tools.push(
+            defineTool("read_webhook_receipts", {
+                description: "Read viewer-authorized redacted webhook receipts, delivery disposition and session correlation. Never returns raw bodies, capability URLs or credentials.",
+                parameters: { type: "object", properties: {
+                    session_id: { type: "string" }, connector_id: { type: "string" }, endpoint_id: { type: "string" },
+                    status: { type: "string" }, before: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 },
+                } },
+                handler: async (args: { session_id?: string; connector_id?: string; endpoint_id?: string; status?: import("./webhook-types.js").WebhookReceiptStatus; before?: string; limit?: number }) =>
+                    read(async () => reader.listWebhookReceipts({
+                        sessionId: args.session_id, connectorId: args.connector_id, endpointId: args.endpoint_id,
+                        status: args.status, before: args.before, limit: args.limit,
+                    }, await webhookViewer())),
+            }),
+            defineTool("read_webhook_receipt", {
+                description: "Read one authorized webhook receipt's redacted routing timeline, retries, duplicate count and final disposition.",
+                parameters: { type: "object", properties: { receipt_id: { type: "string" } }, required: ["receipt_id"] },
+                handler: async (args: { receipt_id: string }) => read(async () => reader.getWebhookReceipt(args.receipt_id, await webhookViewer())),
+            }),
+            defineTool("read_webhook_metrics", {
+                description: "Read viewer-scoped webhook outcome counts, pending delivery backlog and dead-letter ages.",
+                parameters: { type: "object", properties: {} },
+                handler: async () => read(async () => reader.getWebhookMetrics(await webhookViewer())),
+            }),
+        );
+    }
+
     if (duroxideClient) {
         const signalReader = PilotSwarmManagementClient._signalReader(catalog, duroxideClient);
         const readSessionSignalsTool = defineTool("read_session_signals", {

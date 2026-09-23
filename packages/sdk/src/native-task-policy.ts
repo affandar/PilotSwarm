@@ -9,7 +9,7 @@ const forbidden = new Set([
     "send_session_message", "reply_session_message", "complete_agent", "wait", "ask_user",
     "create_session", "send_message", "send_and_wait", "stop_session", "delete_session", "restart_session", "fork_session",
     "write_agent", "manage_schedule", "run_factory", "factories_manage", "schedule", "cron",
-    "wait_on_worker", "wait_for_signal", "cron_at", "report_cycle", "set_session_model", "regenerate_context", "regenerate_agent",
+    "wait_on_worker", "wait_for_signal", "wait_for_any", "create_signal_webhook", "cron_at", "report_cycle", "set_session_model", "regenerate_context", "regenerate_agent",
     "message_agent", "wait_for_agents", "cancel_agent", "delete_agent", "manage_embedder",
     "manage_system_session_model", "force_terminate_session", "cleanup_session", "prune_orchestrations",
     "start_pod_process",

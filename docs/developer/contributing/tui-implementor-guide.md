@@ -215,12 +215,42 @@ High-value areas:
 - `state.history` — per-session normalized event/chat/activity data
 - `state.ui` — focus region, inspector tab, modal state, scroll offsets, prompt draft
 - `state.files` — artifacts, previews, browser scope, selection
+- `state.admin.webhooks` — server-scoped webhook metadata, labeled config drafts,
+  optimistic revision baselines, receipt filters/cursors and pending/error state;
+  **never** the one-time endpoint URL/token
 
 Rules:
 
 - Reducers should stay pure.
 - Async calls live in the controller or transport.
 - Selectors should consume normalized state, not reach into transports.
+
+Webhook management lives in the shared Admin Console, not in a host-only
+application. Use the canonical methods in `webhook-controller.js` for both
+hosts; do not infer administrator status from disabled auth or successful
+admission, or convert a denied operation into another mutation. Config editors
+parse JSON and allowlist fixed-policy fields; they do not execute expressions.
+Reference-only auth is separate from model-provider credentials.
+
+Keep revision conflicts, unknown mutation outcomes and server denials visible.
+Replay/revoke use the existing confirmation flow. Endpoint mint responses are
+split into redacted metadata and a private, navigation-scoped capability; never
+dispatch or log the raw response. A late mint after closing must not reopen a
+secret dialog. Consumption, queueing and initial acceptance remain distinct.
+
+Local validation (no database, LLM, ingress or external provider requests):
+
+```bash
+npm run test:ui --workspace=pilotswarm
+node --test packages/app/tui/test/webhook-input.test.mjs
+```
+
+Use Node 24. The normal `test:ui` script discovers both `ui/core/test/*.test.mjs`
+and `ui/react/test/*.test.mjs`; the app's `test` script includes it. The native
+test boots real Ink with synthetic streams/controller.
+The browser test bundles in memory and uses a fresh offline Chromium/Chrome
+profile with every page request blocked; it starts no HTTP server. It can use an
+already-installed macOS Chrome when Playwright's Chromium is not installed.
 
 ## Commands, Focus, And Tabs
 

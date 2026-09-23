@@ -71,6 +71,7 @@ export function publishStatus(
             }
             : { cronActive: false }),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
+        ...(state.lastSignalRaceOutcome ? { lastSignalRaceOutcome: state.lastSignalRaceOutcome } : {}),
         ...(state.pendingSignalWait ? {
             signalWait: state.pendingSignalWait,
             signalWaitInterrupted: state.signalWaitInterrupted,
@@ -509,6 +510,7 @@ export function buildContinueInput(
         ...(state.pendingSignalWait ? { pendingSignalWait: state.pendingSignalWait } : {}),
         ...(state.signalWaitInterrupted ? { signalWaitInterrupted: true } : {}),
         ...(state.recentSignalIds.length ? { recentSignalIds: [...state.recentSignalIds] } : {}),
+        ...(state.lastSignalRaceOutcome ? { lastSignalRaceOutcome: state.lastSignalRaceOutcome } : {}),
         ...(state.waitingForAgentIds ? { waitingForAgentIds: state.waitingForAgentIds } : {}),
         ...(state.interruptedWaitTimer ? { interruptedWaitTimer: state.interruptedWaitTimer } : {}),
         // A queued-while-blocked prompt must survive the epoch boundary too,

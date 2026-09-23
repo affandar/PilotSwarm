@@ -1,14 +1,15 @@
 # Proposal: Durable Signals & Webhooks (`wait_for_signal`)
 
-**Status:** Phase 1 implemented; later phases remain proposals
-**Updated:** 2026-09-16
+**Status:** Phases 1-4 implemented; real-provider rollout/testing is operator-controlled
 
 This proposal is tracked by [#79](https://github.com/affandar/PilotSwarm/issues/79).
-The [canonical durable signals guide](../developer/building/durable-signals.md)
-documents the implemented contract. Phase 1 covers authenticated signal APIs and
-durable waits, not public webhook ingress, provider connectors, create-session
-bindings, or `wait_for_any`. The original substrate and generic capability-URL
-design are retained below, with their implementation status made explicit.
+The [durable signals guide](../developer/building/durable-signals.md) and
+[webhook guide](../developer/building/webhooks.md) document the implemented
+contract. Phase 1 remains frozen at orchestration 1.0.80; Phase 2 races use
+1.0.81 and distinct V2 activities. Phases 3/4 add opt-in generic capabilities,
+authenticated GitHub/ADO ingress and approved bindings/templates.
+The original design and rationale are retained below; canonical guides and
+migration 0081 take precedence over the initial schema sketch.
 
 ## Problem
 
@@ -16,7 +17,7 @@ Before Phase 1, agents could durably wait on **time** (`wait`, `cron`, `cron_at`
 and on **humans** (`ask_user` → `send_answer`), but not typed external events.
 A CI run, approval, or peer milestone required polling or human relay.
 
-What exists today is close but incomplete:
+The foundation before this work was close but incomplete:
 
 - The durable `messages` queue already delivers three kinds of payloads into a running orchestration — prompts, answers (`{answer}`), commands (`{type:"cmd"}`) — with stash/merge, cancel tombstones, duplicate suppression, and interrupt semantics ([`packages/sdk/src/orchestration/queue.ts`](../../packages/sdk/src/orchestration/queue.ts)).
 - `ask_user` parks a session (`pendingInputQuestion`, status `input_required`) until an answer message arrives ([`turn.ts`](../../packages/sdk/src/orchestration/turn.ts), `processAnswer` in queue.ts).
@@ -29,12 +30,12 @@ What exists today is close but incomplete:
 2. **Raise via the PS client API**: SDK, Web API op, and MCP tool — an agent, an operator, a script, or a *parent/peer session* can raise a signal into any session it can write to.
 3. **Raise via direct webhook**: an unauthenticated-by-Entra HTTPS endpoint an external system (GitHub, Azure Monitor, PagerDuty, anything that can POST JSON) can call — with its own auth, minted and revocable per (session, signal).
 4. **Raise-before-wait works**: signals buffer durably until consumed. External systems fire when *they* are ready, not when the agent is.
-5. Full observability: redacted lifecycle events, sequence-pane rendering, waiting names/deadlines, management/MCP/tuner inspection. A manual portal raise affordance remains a later phase.
+5. Full observability: redacted lifecycle events, sequence-pane rendering, waiting names/deadlines, management/MCP/tuner inspection, and shared portal/TUI lifecycle/manual-raise controls.
 6. Survives dehydration, worker eviction, and continue-as-new — same durability bar as `wait` and `ask_user`.
 
 ## Non-Goals (v1)
 
-- **Broadcast / fan-out** (one webhook → many sessions). One endpoint targets one session's signal. Fan-out composes on top (a dispatcher agent).
+- **Unbounded broadcast / payload-selected fan-out.** A generic endpoint targets one session's signal. Provider connectors may have up to 16 independently approved matching bindings, never payload-selected destinations.
 - **Multiple concurrent `wait_for_signal` parks per session.** One pending signal-wait at a time, mirroring the single `pendingInputQuestion`. The wait accepts *multiple names* (any-of), which covers the practical cases.
 - **Streaming/large payloads.** Signals carry ≤ 32 KB of JSON inline. Bigger data goes to the artifact store and the signal carries the ref — the same upload-first/reference-after architecture as image attachments.
 - **Guaranteed exactly-once end-to-end.** Webhook senders retry; we provide idempotency-key dedup (below), not distributed transactions.
@@ -130,7 +131,7 @@ complete event list and the shared Activity/sequence presentation.
 - Sender attribution and time are server-stamped from the auth context; request fields cannot choose them. The result `{ signalId, name, raisedAt, status: "queued" }` confirms durable queue acceptance, not consumption.
 - `getSessionSignalState(sessionId)` exposes the pending wait, interruption flag, and redacted buffer through management/Web API/MCP and tuner tools. Old/unknown orchestration decoders fail explicitly.
 
-## Raise path 2 — direct webhook (Phase 3, not implemented)
+## Raise path 2 — direct webhook (Phase 3)
 
 External systems can't do Entra. The webhook surface is a **capability URL** bound to one (session, signal name):
 
@@ -143,7 +144,10 @@ X-Signature-256: sha256=<optional HMAC>
 { "status": "ok", "run_url": "…" }          ← body IS the payload
 ```
 
-**Endpoint lifecycle** — a new CMS table (steps-shaped migration per the schema-migration skill):
+**Endpoint lifecycle** — initial design sketch below. The authoritative
+owner-ID-based schema, bounded receipts/outbox and procedures are in
+[`webhooks-0081.ts`](../../packages/sdk/src/migrations/webhooks-0081.ts) and its
+[`diff`](../../packages/sdk/src/migrations/0081_diff.md).
 
 ```sql
 CREATE TABLE copilot_sessions.signal_endpoints (
@@ -165,19 +169,19 @@ CREATE TABLE copilot_sessions.signal_endpoints (
 
 Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSignalEndpoint` / `listSignalEndpoints`, access `session:write`):
 
-- **The agent itself** via a `create_signal_webhook` control tool — the killer flow: the LLM registers a webhook with an external service *using that service's own API through its tools*, handing over a URL it just minted, then calls `wait_for_signal`. Returns `{ url, endpoint_id, expires_at }`; the raw token appears once in the tool result and never again.
+- **The agent itself** via `create_signal_webhook` on enabled 1.0.81+ workers. It mints only for its own authorized session and returns the management DTO (`url`, `token`, `endpointId`, `expiresAt`, metadata). External registration is a separate authorized tool operation, never implicit. The private SDK context can retain the result; public event/history projections redact capabilities even after hydration.
 - **MCP tools** for operators (`create_signal_endpoint`, `revoke_signal_endpoint`, `list_signal_endpoints` — list shows metadata only, never tokens).
 - **Web API** for scripting.
 
 **Request handling** (portal server, mounted *outside* the Entra-gated `/api/v1` router, next to the public health route):
 
-1. Constant-time token-hash lookup; unknown/revoked/expired/over-max-uses → uniform `404` (no oracle).
+1. Hash the random capability and look up its digest; unknown/revoked/expired/over-max-uses → uniform `404`.
 2. If `hmac_secret_ref` set → resolve it from the configured secret store and verify `X-Signature-256` over the exact raw body with constant-time comparison; mismatch → `401`. Never persist plaintext secrets in CMS.
 3. Enforce `Content-Type: application/json`, body ≤ 32 KB (route-scoped body limit), JSON-parse.
-4. Persist a receipt/outbox and stamp `source: { kind: "webhook", receiptId, actorId }`; dedupe by `Idempotency-Key` → `signalId`.
-5. Enqueue the signal envelope via the same start-aware path; bump `use_count`; record `session.signal_received` with origin metadata (IP, UA) for audit.
-6. Respond `202 { "accepted": true }` — never echo payload or session data. Terminal sessions → `410`.
-7. Rate limit per endpoint (e.g. 60/min sliding) and per source IP; excess → `429` + audit event.
+4. Atomically persist receipt/outbox/use accounting; dedupe by `Idempotency-Key` and exact-body digest. Stamp a trusted webhook source and reserved signal identity.
+5. Respond `202 { "accepted": true }` after that commit, without waiting for routing. Never echo payload or session data. Terminal target refusal → `410`.
+6. A leased pump reauthorizes and enqueues through the same start-aware path. Durable signal consumption/drop events correlate receipt disposition atomically.
+7. Persist fixed-minute global/source/origin/binding quotas; excess → `429` and bounded counters. Peer addresses are hashed for rate buckets; raw bodies, capability paths and credentials do not enter diagnostic metadata.
 
 **Threat model notes**: blast radius of a leaked token is one signal name on one session, until expiry/revocation; the payload reaches the model only inside the untrusted-data framing (prompt-injection posture consistent with `[FROM:]` sender attribution); tokens are hashed at rest so a DB read does not yield live URLs; HMAC upgrade path for providers that sign (GitHub-style).
 
@@ -190,8 +194,8 @@ Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSig
 | `managed-session.ts` / `session-proxy.ts` / `worker.ts` | Signal-aware declarations and handlers, CMS events, capability-tagged turn/epoch activities |
 | Management/session/web clients, Web API, MCP | `raiseSignal`, redacted state reads, compatibility event wrappers, target authorization and version checks |
 | Tuner / shared UI | `read_session_signals`, pending names/deadlines, Activity and sequence lifecycle entries |
-| Future CMS/ingress | Endpoint/receipt/outbox migrations, capability URLs, connector secrets, bindings and routing |
-| Mixed-version behavior | Older decoders reject signal writes; old turn activities never acquire the signal tool. New activities require `pilotswarm.signals.v1`. |
+| CMS/ingress | Migration 0081, fixed-target capability URLs, exact-byte GitHub HMAC / ADO HTTPS Basic authentication, approved bindings/templates and durable routing |
+| Mixed-version behavior | Ordinary signals require 1.0.80 / `pilotswarm.signals.v1`; explicit races and approved prompt dispatch require 1.0.81 / `pilotswarm.signals.v2`. Frozen declarations/yield sequences remain unchanged. |
 
 ## Coverage and later testing
 
@@ -208,9 +212,9 @@ model; the normal credentialed integration gate remains necessary.
 ## Phasing
 
 - **1 — core durable signals** (implemented): SDK + 1.0.80, typed envelopes, buffering/deduplication, optional-deadline `wait_for_signal`, authenticated raise/read surfaces, status/events and shared UI.
-- **2 — explicit races**: `wait_for_any`, one typed winner, deterministic Stop/cancel → accepted input → signal → timer precedence, and durable loser disposition.
-- **3 — generic webhooks**: capability endpoint mint/list/revoke, token hashing, secret references, expiry/use limits, HMAC, durable receipts/outbox, rate limits, audit and lifecycle/manual-raise UI.
-- **4 — provider connectors**: GitHub/Azure DevOps exact-body authentication and normalization, trusted bindings, session templates, coalescing and dead-letter operations.
+- **2 — explicit races** (implemented): `wait_for_any`, one typed winner, deterministic Stop/cancel → accepted input → signal → timer precedence, and durable loser disposition.
+- **3 — generic webhooks** (implemented, opt-in): capability endpoint mint/list/revoke, token hashing, secret references, expiry/use limits, optional HMAC, durable receipts/outbox, rate limits, audit and lifecycle/manual-raise UI.
+- **4 — provider connectors** (implemented, opt-in): GitHub exact-body HMAC and Azure DevOps HTTPS Basic authentication, finite build/PR normalization, trusted bindings, session templates, coalescing and dead-letter operations. No push events or GitHub portal sign-in.
 
 Provider bindings choose one fixed `create_session`, `raise_signal`, or
 `enqueue_prompt` action. Templates, not payloads, own identity, model/provider,
@@ -222,6 +226,12 @@ execution; receipt states distinguish queued, consumed, duplicate, rejected,
 failed and dead-lettered outcomes. Provider retries are idempotent by at least
 `binding_id + provider_delivery_id`. Coalescing and its follow-up action require
 explicit policy rather than payload-selected destinations.
+
+Local coverage includes real raw HTTP/PostgreSQL/native Duroxide delivery and
+consumption, with synthetic authentication credentials and fixture model-turn
+activities. It does not claim native GitHub/ADO delivery or a new live model
+evaluation. External hook registration, CI and deployment remain explicit
+operator actions, separate from policy provisioning.
 
 ## Open questions
 

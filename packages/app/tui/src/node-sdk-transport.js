@@ -23,6 +23,7 @@ import {
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
+import { authorizeWebhookTemplate, webhookHostConfig } from "./webhook-host.js";
 
 const EXPORTS_DIR = path.resolve(
     expandUserPath(process.env.PILOTSWARM_EXPORT_DIR || path.join(os.homedir(), "pilotswarm-exports")),
@@ -379,6 +380,7 @@ function normalizeCreatableAgent(agent) {
         // it in the Built-in section instead of in a flat list of sixteen.
         startedBy: Array.isArray(agent?.startedBy) ? agent.startedBy.filter(Boolean) : [],
         supportsDirectStart: typeof agent?.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
+        namespace: typeof agent?.namespace === "string" ? agent.namespace : undefined,
     };
 }
 
@@ -537,6 +539,8 @@ export class NodeSdkTransport {
             : {};
         this.client = null;
         this.artifactStore = createArtifactStore();
+        this.webhookConfig = webhookHostConfig();
+        this.webhookRuntime = null;
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
@@ -546,6 +550,7 @@ export class NodeSdkTransport {
             pluginDirs: this.pluginDirs,
             blobEnabled: Boolean(process.env.AZURE_STORAGE_ACCOUNT_URL || process.env.AZURE_STORAGE_CONNECTION_STRING),
             artifactStore: this.artifactStore,
+            webhookPublicOrigin: this.webhookConfig.publicOrigin,
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -605,11 +610,23 @@ export class NodeSdkTransport {
         });
         await this.client.start();
         await this.mgmt.start();
+        if (this.webhookConfig.enabled) {
+            this.webhookRuntime = this.mgmt.createWebhookRuntime({
+                client: this.client,
+                publicOrigin: this.webhookConfig.publicOrigin,
+                allowLoopbackHttp: this.webhookConfig.allowLoopbackHttp,
+                authorizeTemplate: (template, owner) => authorizeWebhookTemplate(this, template, owner),
+                onError: code => console.error(`[webhooks] routing pump: ${code}`),
+            });
+            this.webhookRuntime.start();
+        }
     }
 
     async stop() {
         this.sessionHandles.clear();
         await this.stopLogTail();
+        await this.webhookRuntime?.stop();
+        this.webhookRuntime = null;
         await Promise.allSettled([
             this.client ? this.client.stop() : Promise.resolve(),
             this.mgmt.stop(),
@@ -617,6 +634,49 @@ export class NodeSdkTransport {
         ]);
         this.client = null;
     }
+
+    getWebhookRuntime() {
+        if (!this.webhookRuntime) {
+            throw Object.assign(new Error("Webhook ingress is disabled on this host."), { code: "WEBHOOKS_DISABLED", status: 404 });
+        }
+        return this.webhookRuntime;
+    }
+
+    async _webhookViewer() {
+        const viewer = await this._modelProviderViewer();
+        const role = await this.mgmt.getUserRole(viewer.principal);
+        if (!["user", "admin", "anonymous"].includes(role?.role)) {
+            // Direct TUI is a trusted operator surface; it uses its local user,
+            // never a caller-supplied webhook identity.
+            await this.mgmt.recordUserRole(viewer.principal, viewer.isAdmin ? "admin" : "user");
+        }
+        return { ...viewer, adminScope: process.env.AUTHZ_ADMIN_SCOPE || "unrestricted" };
+    }
+
+    async createSignalEndpoint(sessionId, signalName, options = {}) {
+        return this.mgmt.createSignalEndpoint(sessionId, signalName, options, await this._webhookViewer());
+    }
+    async listSignalEndpoints(sessionId) { return this.mgmt.listSignalEndpoints(sessionId, await this._webhookViewer()); }
+    async revokeSignalEndpoint(endpointId) { return this.mgmt.revokeSignalEndpoint(endpointId, await this._webhookViewer()); }
+    async createWebhookConnector(input) { return this.mgmt.createWebhookConnector(input, await this._webhookViewer()); }
+    async listWebhookConnectors() { return this.mgmt.listWebhookConnectors(await this._webhookViewer()); }
+    async updateWebhookConnector(connectorId, patch) { return this.mgmt.updateWebhookConnector(connectorId, patch, await this._webhookViewer()); }
+    async revokeWebhookConnector(connectorId) { return this.mgmt.revokeWebhookConnector(connectorId, await this._webhookViewer()); }
+    async createWebhookBinding(input) { return this.mgmt.createWebhookBinding(input, await this._webhookViewer()); }
+    async listWebhookBindings() { return this.mgmt.listWebhookBindings(await this._webhookViewer()); }
+    async updateWebhookBinding(bindingId, patch) { return this.mgmt.updateWebhookBinding(bindingId, patch, await this._webhookViewer()); }
+    async revokeWebhookBinding(bindingId) { return this.mgmt.revokeWebhookBinding(bindingId, await this._webhookViewer()); }
+    async createWebhookSessionTemplate(input) { return this.mgmt.createWebhookSessionTemplate(input, await this._webhookViewer()); }
+    async listWebhookSessionTemplates() { return this.mgmt.listWebhookSessionTemplates(await this._webhookViewer()); }
+    async updateWebhookSessionTemplate(templateId, patch) { return this.mgmt.updateWebhookSessionTemplate(templateId, patch, await this._webhookViewer()); }
+    async revokeWebhookSessionTemplate(templateId) { return this.mgmt.revokeWebhookSessionTemplate(templateId, await this._webhookViewer()); }
+    async testWebhookBinding(bindingId, input) { return this.mgmt.testWebhookBinding(bindingId, input, await this._webhookViewer()); }
+    async listWebhookReceipts(query = {}) { return this.mgmt.listWebhookReceipts(query, await this._webhookViewer()); }
+    async getWebhookReceipt(receiptId) { return this.mgmt.getWebhookReceipt(receiptId, await this._webhookViewer()); }
+    async replayWebhookReceipt(receiptId, input) { return this.mgmt.replayWebhookReceipt(receiptId, input, await this._webhookViewer()); }
+    async getWebhookMetrics() { return this.mgmt.getWebhookMetrics(await this._webhookViewer()); }
+    async raiseSignal(sessionId, name, options = {}) { return this.mgmt.raiseSignal(sessionId, name, options); }
+    async getSessionSignalState(sessionId) { return this.mgmt.getSessionSignalState(sessionId); }
 
     resolveSessionCreationMetadata() {
         if (this.workers.length > 0) {

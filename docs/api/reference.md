@@ -186,7 +186,56 @@ data. A payload such as `{ prompt: "...", type: "cmd", answer: "yes" }` does
 not invoke any of those operations. Use `sendMessage`, `sendAnswer`, or
 the appropriate management method instead.
 
-Phase 1 includes no webhook endpoints, provider connectors, or wait-race API.
+On orchestration 1.0.81+, `wait_for_any` exposes `pendingWait.mode: "any"` and
+`lastRaceOutcome`: one typed winner (`signal`, `user`, `timeout`, `stop`,
+`cancel`) plus durable loser dispositions. See
+[durable races](../developer/building/durable-signals.md#race-signals-against-user-input).
+
+### Webhook management
+
+These operations are typed `PilotSwarmManagementClient` methods in direct and
+Web API modes. The server stamps the viewer from authentication; never send a
+viewer or credential value in the body. An administrator must approve connector
+credentials and session-template configuration. Other reads/mutations are
+owner-scoped, subject to the configured administrator scope and current grants.
+
+| Operation | Route | Body/query |
+|---|---|---|
+| createSignalEndpoint | `POST /api/v1/sessions/:sessionId/signal-endpoints/:signalName` | `{ options: { label?, expiresAt?, maxUses?, wake?, hmacSecretRef?, rateLimitPerMinute? } }` |
+| listSignalEndpoints | `GET /api/v1/sessions/:sessionId/signal-endpoints` | None; metadata only |
+| revokeSignalEndpoint | `DELETE /api/v1/signal-endpoints/:endpointId` | None |
+| createWebhookConnector / listWebhookConnectors | `POST` / `GET /api/v1/webhooks/connectors` | Create: `{ input }` |
+| updateWebhookConnector / revokeWebhookConnector | `PATCH` / `DELETE /api/v1/webhooks/connectors/:connectorId` | Update: `{ patch: { expectedRevision, ... } }` |
+| createWebhookBinding / listWebhookBindings | `POST` / `GET /api/v1/webhooks/bindings` | Create: `{ input }` |
+| updateWebhookBinding / revokeWebhookBinding | `PATCH` / `DELETE /api/v1/webhooks/bindings/:bindingId` | Update: `{ patch: { expectedRevision, ... } }` |
+| createWebhookSessionTemplate / listWebhookSessionTemplates | `POST` / `GET /api/v1/webhooks/templates` | Create: `{ input }` |
+| updateWebhookSessionTemplate / revokeWebhookSessionTemplate | `PATCH` / `DELETE /api/v1/webhooks/templates/:templateId` | Update: `{ patch: { expectedRevision, ... } }` |
+| testWebhookBinding | `POST /api/v1/webhooks/bindings/:bindingId/test` | `{ event: <normalized-event> }` |
+| listWebhookReceipts | `GET /api/v1/webhooks/receipts` | `query=<URL-encoded JSON>` with `connectorId?`, `endpointId?`, `sessionId?`, `status?`, `before?`, `limit?` |
+| getWebhookReceipt | `GET /api/v1/webhooks/receipts/:receiptId` | None |
+| replayWebhookReceipt | `POST /api/v1/webhooks/receipts/:receiptId/replay` | `{ confirmed: true }`; explicit confirmation required |
+| getWebhookMetrics | `GET /api/v1/webhooks/metrics` | None |
+
+Endpoint creation returns the capability URL/token **once**. Metadata reads
+never return them. Connector auth accepts approved references only:
+`{mode:"github-hmac-sha256",secretRef}` or
+`{mode:"ado-basic",usernameRef,passwordRef}`. Updates carry `expectedRevision`;
+conflicts refuse instead of overwriting newer policy. Payloads cannot select
+owners, models, agents, namespaces, tools or routing destinations.
+
+External delivery uses separate opt-in `POST /hooks/s/:token` and
+`POST /hooks/c/:connectorId` routes, outside portal sign-in but authenticated
+by capability/HMAC or provider credentials over trusted HTTPS. Their body is
+raw JSON, not the management wrapper above. A `202 {accepted:true}` response
+means durable receipt/outbox acceptance, not consumption or model success.
+Receipts expose redacted timelines, attempts, duplicate counts and correlation.
+Signal consumption works on 1.0.80+; approved prompt consumption requires
+1.0.81+ and means dispatch into a turn, not successful model completion.
+
+See [webhook ingress](../developer/building/webhooks.md) for source scopes,
+approved templates, coalescing, bounded normalization, secret rotation, rates,
+revocation, dead letters and local verification. Configuring these resources
+does not register a GitHub/ADO hook or deploy infrastructure.
 
 ### Session sharing
 

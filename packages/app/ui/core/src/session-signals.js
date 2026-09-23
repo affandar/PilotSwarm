@@ -12,6 +12,7 @@ export const SIGNAL_EVENT_TYPES = [
     "session.signal_wait_resumed",
     "session.signal_wait_cancelled",
     "session.signal_wait_timeout",
+    "session.signal_race_completed",
 ];
 const signalEventTypes = new Set(SIGNAL_EVENT_TYPES);
 const dormantStatuses = new Set(["waiting", "idle", "unknown"]);
@@ -55,11 +56,13 @@ export function selectSessionSignalWait(session) {
         || (!isSignalWaiting(session) && !(interrupted
             && (dormantStatuses.has(session?.status || "unknown") || session?.status === "running")))) return null;
     const timing = waitTiming(session.signalWait);
+    const race = session.signalWait.mode === "any";
     return {
         interrupted,
         color: "yellow",
-        text: `${interrupted ? "Signal wait interrupted" : "Waiting for signal"}: ${pendingNames} · ${timing}`,
-        badge: `[signal${interrupted ? " interrupted" : ""}: ${pendingNames} · ${timing}]`,
+        text: `${race ? (interrupted ? "Event race interrupted" : "Waiting for first event")
+            : interrupted ? "Signal wait interrupted" : "Waiting for signal"}: ${pendingNames}${race ? " or user input" : ""} · ${timing}`,
+        badge: `[${race ? "race" : "signal"}${interrupted ? " interrupted" : ""}: ${pendingNames} · ${timing}]`,
     };
 }
 
@@ -140,6 +143,27 @@ export function reconcileSignalWaitSnapshot(previous, next, { authoritative = fa
 export function describeSignalEvent(event) {
     if (!signalEventTypes.has(event?.eventType)) return null;
     const data = event?.data && typeof event.data === "object" ? event.data : {};
+    if (event.eventType === "session.signal_race_completed") {
+        const winner = data.winner && typeof data.winner === "object" ? data.winner : {};
+        const kind = ["signal", "user", "timeout", "stop", "cancel"].includes(winner.kind) ? winner.kind : "unknown";
+        const subject = kind === "signal" ? `signal ${text(winner.name) || "unknown"}` : kind;
+        const details = [`winner: ${subject}`];
+        if (text(data.waitId)) details.push(`wait ${text(data.waitId)}`);
+        if (text(winner.signalId)) details.push(`signal ${text(winner.signalId)}`);
+        if (text(winner.inputId)) details.push(`input ${text(winner.inputId)}`);
+        if (text(winner.disposition)) details.push(`disposition ${text(winner.disposition)}`);
+        if (Number.isFinite(data.waitDurationMs) && data.waitDurationMs >= 0) {
+            details.push(`waited ${formatHumanDurationSeconds(data.waitDurationMs / 1000)}`);
+        }
+        if (data.losers?.timer === "tombstoned") details.push("losing timeout cancelled");
+        return {
+            label: "[race]",
+            color: kind === "stop" || kind === "cancel" ? "gray" : kind === "timeout" ? "yellow" : "green",
+            text: details.join(" · "),
+            sequenceText: `race winner: ${subject}`,
+            type: "signal",
+        };
+    }
     const waitEvent = event.eventType.startsWith("session.signal_wait_");
     const phase = event.eventType.slice(waitEvent ? "session.signal_wait_".length : "session.signal_".length);
     const wake = !waitEvent && phase === "consumed";

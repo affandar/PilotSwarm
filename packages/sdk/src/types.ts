@@ -3,7 +3,7 @@ import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
-import type { PendingSignalWait, SignalWaitRequest } from "./session-signals.js";
+import type { PendingSignalWait, SignalWaitRequest, SignalRaceOutcome } from "./session-signals.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
@@ -21,7 +21,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
-    | ({ type: "signal-wait"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest)
+    | ({ type: "signal-wait"; waitMode?: "any"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest)
     | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
@@ -60,7 +60,7 @@ type TurnResultVariant =
     // gate and got a fresh answer, so re-arming would put a session that was
     // just released straight back to sleep.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "signal-wait"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest & QueuedTurnActionCarrier)
+    | ({ type: "signal-wait"; waitMode?: "any"; content?: string; events?: CapturedEvent[] } & SignalWaitRequest & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -89,6 +89,10 @@ export interface CapturedEvent {
 export interface TurnOptions {
     /** @internal Enabled only by the capability-routed signal-aware activity. */
     durableSignals?: boolean;
+    /** @internal Enabled only by the version-2 signal activity. */
+    durableSignalRaces?: boolean;
+    /** @internal Trusted worker gate for capability endpoint tools. */
+    webhookEndpoints?: boolean;
     onDelta?: (delta: string) => void;
     onToolStart?: (name: string, args: any) => void;
     /** Called for every event as it fires during the turn. */
@@ -113,6 +117,9 @@ export interface TurnOptions {
     attachments?: Array<{ data: string; mimeType: string; displayName?: string }>;
     /** Worker-owned inline implementations for non-suspending control tools. */
     controlToolBridge?: {
+        createSignalWebhook?(args: {
+            signal_name: string; label?: string; expires_at?: string; max_uses?: number; wake?: boolean;
+        }): Promise<import("./webhook-types.js").CreatedSignalEndpoint>;
         /**
          * Create a TOP-LEVEL session running an agent (the Agent Manager's
          * verification loop). Distinct from spawnAgent, which can only ever
@@ -185,6 +192,10 @@ export interface TurnOptions {
 export interface SerializableSessionConfig {
     /** @internal Worker-owned declaration gate; never trusted from session creation input. */
     durableSignals?: boolean;
+    /** @internal Worker-owned declaration gate for wait_for_any. */
+    durableSignalRaces?: boolean;
+    /** @internal Never enabled by caller-supplied session configuration. */
+    webhookEndpoints?: boolean;
     model?: string;
     reasoningEffort?: ReasoningEffort | null;
     /** Context-window tier ("default" = smaller window; "long_context" = the model's long-context tier). */
@@ -607,6 +618,7 @@ export interface OrchestrationInput {
     pendingSignalWait?: PendingSignalWait;
     signalWaitInterrupted?: boolean;
     recentSignalIds?: string[];
+    lastSignalRaceOutcome?: SignalRaceOutcome;
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -1308,6 +1320,7 @@ export interface SessionStatusSignal {
     waitStartedAt?: number;
     signalWait?: PendingSignalWait;
     signalWaitInterrupted?: boolean;
+    lastSignalRaceOutcome?: SignalRaceOutcome;
     cronActive?: boolean;
     cronInterval?: number;
     cronReason?: string;

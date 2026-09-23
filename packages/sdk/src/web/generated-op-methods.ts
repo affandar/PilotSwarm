@@ -22,6 +22,10 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
+    "createSignalEndpoint",
+    "createWebhookBinding",
+    "createWebhookConnector",
+    "createWebhookSessionTemplate",
     "deleteAgentPackage",
     "deleteArtifact",
     "deleteFact",
@@ -93,6 +97,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getTopEventEmitters",
     "getUserFeatureFlags",
     "getUserStats",
+    "getWebhookMetrics",
+    "getWebhookReceipt",
     "getWorkerCount",
     "grantAgentPackageEditor",
     "grantSessionShare",
@@ -117,6 +123,11 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessions",
     "listSessionShares",
     "listSessionsPage",
+    "listSignalEndpoints",
+    "listWebhookBindings",
+    "listWebhookConnectors",
+    "listWebhookReceipts",
+    "listWebhookSessionTemplates",
     "listWorkers",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
@@ -130,12 +141,17 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "removeCanvasShareLink",
     "removeProviderLimit",
     "renameSession",
+    "replayWebhookReceipt",
     "republishAgentPackageVersion",
     "resetCanvasShareLink",
     "resetClusterFeatureFlag",
     "restartSystemSession",
     "revokeAgentPackageEditor",
     "revokeSessionShare",
+    "revokeSignalEndpoint",
+    "revokeWebhookBinding",
+    "revokeWebhookConnector",
+    "revokeWebhookSessionTemplate",
     "searchFacts",
     "searchGraphEdges",
     "searchGraphNodes",
@@ -168,11 +184,15 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "stopFactsEmbedder",
     "stopSessionTurn",
     "storeFact",
+    "testWebhookBinding",
     "unsetMyFeatureFlag",
     "unsetUserFeatureFlag",
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
+    "updateWebhookBinding",
+    "updateWebhookConnector",
+    "updateWebhookSessionTemplate",
     "uploadAgentPackage",
     "uploadArtifact",
     "upsertGraphEdge",
@@ -336,6 +356,40 @@ export interface ManagementOps {
      * @remarks `POST /management/session-groups` — access: `authed`
      */
     createSessionGroup(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
+     * Mint a fixed-target webhook capability. The token is returned once; expiry, use and rate limits are enforced durably.
+     * @remarks `POST /sessions/:sessionId/signal-endpoints/:signalName` — access: `session:write`
+     */
+    createSignalEndpoint(params: {
+        sessionId: string;
+        signalName: string;
+        options?: any;
+    }): Promise<any>;
+
+    /**
+     * Bind an approved source/filter to one authorized action. Payloads cannot select destinations or session configuration.
+     * @remarks `POST /webhooks/bindings` — access: `authed`
+     */
+    createWebhookBinding(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
+     * Approve a GitHub or Azure DevOps source and authentication references. Never accepts plaintext secrets.
+     * @remarks `POST /webhooks/connectors` — access: `fleet:admin`
+     */
+    createWebhookConnector(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
+     * Approve a source-scoped session template with fixed owner, agent, namespace, model policy and prompt.
+     * @remarks `POST /webhooks/templates` — access: `fleet:admin`
+     */
+    createWebhookSessionTemplate(params: {
         input?: any;
     }): Promise<any>;
 
@@ -939,6 +993,20 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Viewer-scoped webhook counts, routing backlog and dead-letter age with bounded dimensions.
+     * @remarks `GET /webhooks/metrics` — access: `authed`
+     */
+    getWebhookMetrics(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Read an authorized receipt, disposition and receipt-to-session correlation.
+     * @remarks `GET /webhooks/receipts/:receiptId` — access: `authed`
+     */
+    getWebhookReceipt(params: {
+        receiptId: string;
+    }): Promise<any>;
+
+    /**
      * Live worker count.
      * @remarks `GET /system/workers` — access: `authed`
      */
@@ -1123,6 +1191,40 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * List authorized signal endpoint metadata, never capability tokens.
+     * @remarks `GET /sessions/:sessionId/signal-endpoints` — access: `session:write`
+     */
+    listSignalEndpoints(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * List viewer-authorized binding policy.
+     * @remarks `GET /webhooks/bindings` — access: `authed`
+     */
+    listWebhookBindings(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * List viewer-authorized connectors with redacted authentication metadata.
+     * @remarks `GET /webhooks/connectors` — access: `authed`
+     */
+    listWebhookConnectors(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Page viewer-authorized redacted delivery timelines; inline payloads are never returned.
+     * @remarks `GET /webhooks/receipts` — access: `authed`
+     */
+    listWebhookReceipts(params: {
+        query?: any;
+    }): Promise<any>;
+
+    /**
+     * List viewer-authorized approved templates.
+     * @remarks `GET /webhooks/templates` — access: `authed`
+     */
+    listWebhookSessionTemplates(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Worker registry (0040): every registered worker with pool, lifecycle phase, liveness, write-once info, health snapshot, and per-domain state. Hard admin gate. [admin]
      * @remarks `GET /workers` — access: `fleet:admin` (admin)
      */
@@ -1254,6 +1356,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Explicitly confirmed replay of a failed receipt under current authorization; confirmed must be true.
+     * @remarks `POST /webhooks/receipts/:receiptId/replay` — access: `authed`
+     */
+    replayWebhookReceipt(params: {
+        receiptId: string;
+        confirmed?: any;
+    }): Promise<any>;
+
+    /**
      * Publish an existing version's exact bytes into the same-named package in another scope (user↔shared). THE update path for an already-published shared package — promote can only move a row to an unused name. Creator or admin.
      * @remarks `POST /agent-packages/:name/republish` — access: `authed`
      */
@@ -1309,6 +1420,38 @@ export interface ManagementOps {
     revokeSessionShare(params: {
         sessionId: string;
         user?: any;
+    }): Promise<any>;
+
+    /**
+     * Revoke an owned signal endpoint; the target session is untouched.
+     * @remarks `DELETE /signal-endpoints/:endpointId` — access: `authed`
+     */
+    revokeSignalEndpoint(params: {
+        endpointId: string;
+    }): Promise<any>;
+
+    /**
+     * Revoke a binding without changing its target session.
+     * @remarks `DELETE /webhooks/bindings/:bindingId` — access: `authed`
+     */
+    revokeWebhookBinding(params: {
+        bindingId: string;
+    }): Promise<any>;
+
+    /**
+     * Revoke a connector and prevent subsequent routing attempts.
+     * @remarks `DELETE /webhooks/connectors/:connectorId` — access: `authed`
+     */
+    revokeWebhookConnector(params: {
+        connectorId: string;
+    }): Promise<any>;
+
+    /**
+     * Revoke approval for future session creation through a template.
+     * @remarks `DELETE /webhooks/templates/:templateId` — access: `authed`
+     */
+    revokeWebhookSessionTemplate(params: {
+        templateId: string;
     }): Promise<any>;
 
     /**
@@ -1627,6 +1770,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Dry-run normalized event matching and persisted policy; creates no sessions and does not bypass current host admission.
+     * @remarks `POST /webhooks/bindings/:bindingId/test` — access: `authed`
+     */
+    testWebhookBinding(params: {
+        bindingId: string;
+        event?: any;
+    }): Promise<any>;
+
+    /**
      * Remove my preference and inherit cluster policy.
      * @remarks `DELETE /management/users/me/features/:featureKey` — access: `authed`
      */
@@ -1672,6 +1824,33 @@ export interface ManagementOps {
     updateSharedProviderCredential(params: {
         name: string;
         credentials?: any;
+    }): Promise<any>;
+
+    /**
+     * Update an owned binding with expectedRevision and current target authorization.
+     * @remarks `PATCH /webhooks/bindings/:bindingId` — access: `authed`
+     */
+    updateWebhookBinding(params: {
+        bindingId: string;
+        patch?: any;
+    }): Promise<any>;
+
+    /**
+     * Update a connector with expectedRevision; credential-reference changes require admin approval.
+     * @remarks `PATCH /webhooks/connectors/:connectorId` — access: `authed`
+     */
+    updateWebhookConnector(params: {
+        connectorId: string;
+        patch?: any;
+    }): Promise<any>;
+
+    /**
+     * Update a template with expectedRevision; configuration and prompt changes require admin approval.
+     * @remarks `PATCH /webhooks/templates/:templateId` — access: `authed`
+     */
+    updateWebhookSessionTemplate(params: {
+        templateId: string;
+        patch?: any;
     }): Promise<any>;
 
     /**
@@ -1764,6 +1943,10 @@ export function createManagementOps(
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
+        createSignalEndpoint: (params: Record<string, unknown> = {}) => callOp("createSignalEndpoint", params),
+        createWebhookBinding: (params: Record<string, unknown> = {}) => callOp("createWebhookBinding", params),
+        createWebhookConnector: (params: Record<string, unknown> = {}) => callOp("createWebhookConnector", params),
+        createWebhookSessionTemplate: (params: Record<string, unknown> = {}) => callOp("createWebhookSessionTemplate", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
@@ -1835,6 +2018,8 @@ export function createManagementOps(
         getTopEventEmitters: (params: Record<string, unknown> = {}) => callOp("getTopEventEmitters", params),
         getUserFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getUserFeatureFlags", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
+        getWebhookMetrics: (params: Record<string, unknown> = {}) => callOp("getWebhookMetrics", params),
+        getWebhookReceipt: (params: Record<string, unknown> = {}) => callOp("getWebhookReceipt", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
@@ -1859,6 +2044,11 @@ export function createManagementOps(
         listSessions: (params: Record<string, unknown> = {}) => callOp("listSessions", params),
         listSessionShares: (params: Record<string, unknown> = {}) => callOp("listSessionShares", params),
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
+        listSignalEndpoints: (params: Record<string, unknown> = {}) => callOp("listSignalEndpoints", params),
+        listWebhookBindings: (params: Record<string, unknown> = {}) => callOp("listWebhookBindings", params),
+        listWebhookConnectors: (params: Record<string, unknown> = {}) => callOp("listWebhookConnectors", params),
+        listWebhookReceipts: (params: Record<string, unknown> = {}) => callOp("listWebhookReceipts", params),
+        listWebhookSessionTemplates: (params: Record<string, unknown> = {}) => callOp("listWebhookSessionTemplates", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
@@ -1872,12 +2062,17 @@ export function createManagementOps(
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
+        replayWebhookReceipt: (params: Record<string, unknown> = {}) => callOp("replayWebhookReceipt", params),
         republishAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("republishAgentPackageVersion", params),
         resetCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("resetCanvasShareLink", params),
         resetClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("resetClusterFeatureFlag", params),
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
+        revokeSignalEndpoint: (params: Record<string, unknown> = {}) => callOp("revokeSignalEndpoint", params),
+        revokeWebhookBinding: (params: Record<string, unknown> = {}) => callOp("revokeWebhookBinding", params),
+        revokeWebhookConnector: (params: Record<string, unknown> = {}) => callOp("revokeWebhookConnector", params),
+        revokeWebhookSessionTemplate: (params: Record<string, unknown> = {}) => callOp("revokeWebhookSessionTemplate", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),
         searchGraphEdges: (params: Record<string, unknown> = {}) => callOp("searchGraphEdges", params),
         searchGraphNodes: (params: Record<string, unknown> = {}) => callOp("searchGraphNodes", params),
@@ -1910,11 +2105,15 @@ export function createManagementOps(
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
+        testWebhookBinding: (params: Record<string, unknown> = {}) => callOp("testWebhookBinding", params),
         unsetMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetMyFeatureFlag", params),
         unsetUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetUserFeatureFlag", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
+        updateWebhookBinding: (params: Record<string, unknown> = {}) => callOp("updateWebhookBinding", params),
+        updateWebhookConnector: (params: Record<string, unknown> = {}) => callOp("updateWebhookConnector", params),
+        updateWebhookSessionTemplate: (params: Record<string, unknown> = {}) => callOp("updateWebhookSessionTemplate", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),

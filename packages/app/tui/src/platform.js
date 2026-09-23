@@ -897,6 +897,16 @@ export function createTuiPlatform() {
         Lines,
         Input,
         StatusLine,
+        // Explicit user gesture only. Do not retain the copied text or put it
+        // into status/error strings (webhook capabilities are one-time).
+        copyText(text) {
+            return { ok: copyTextToClipboard(text).ok };
+        },
+        getPanelScrollLimit({ lines, width, height }) {
+            const contentWidth = Math.max(1, (Number(width) || 40) - 4);
+            const contentHeight = Math.max(1, (Number(height) || 8) - 2);
+            return Math.max(0, wrapNormalizedLines(normalizeLines(lines), contentWidth).length - contentHeight);
+        },
         setTheme(themeId) {
             const nextTheme = getTheme(themeId) || getTheme(DEFAULT_THEME_ID);
             if (!nextTheme || nextTheme.id === tuiPlatformRuntime.themeId) return;

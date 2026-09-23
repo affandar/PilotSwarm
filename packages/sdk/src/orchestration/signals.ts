@@ -9,6 +9,8 @@ import {
     type SessionSignalState,
     type SessionSignalV1,
     type SignalWaitRequest,
+    type SignalRaceWinner,
+    type SignalRaceOutcome,
 } from "../session-signals.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import { publishStatus, releaseAffinity, writeLatestResponse } from "./lifecycle.js";
@@ -44,6 +46,7 @@ export function publishSignalState(
         ...(runtime.state.pendingSignalWait ? { pendingWait: runtime.state.pendingSignalWait } : {}),
         interrupted: runtime.state.signalWaitInterrupted,
         buffered: buffered.map(summarizeSignal),
+        ...(runtime.state.lastSignalRaceOutcome ? { lastRaceOutcome: runtime.state.lastSignalRaceOutcome } : {}),
     };
     runtime.ctx.setValue(SIGNAL_STATE_KEY, JSON.stringify(value));
 }
@@ -122,12 +125,50 @@ export function* interruptSignalWait(
     }]);
 }
 
+export function* finishSignalRace(
+    runtime: DurableSessionRuntime,
+    winner: SignalRaceWinner,
+): Generator<any, SignalRaceOutcome | undefined, any> {
+    const wait = runtime.state.pendingSignalWait;
+    if (wait?.mode !== "any") return undefined;
+    const now: number = yield runtime.ctx.utcNow();
+    const outcome: SignalRaceOutcome = {
+        version: 1, waitId: wait.waitId, completedAt: new Date(now).toISOString(), winner,
+        waitDurationMs: Math.max(0, now - Date.parse(wait.startedAt)),
+        losers: {
+            unconsumedSignals: "buffered",
+            otherUserInput: "queued",
+            timer: !wait.deadline ? "not_scheduled" : winner.kind === "timeout" ? "elapsed" : "tombstoned",
+        },
+    };
+    runtime.state.pendingSignalWait = null;
+    runtime.state.signalWaitInterrupted = false;
+    runtime.state.lastSignalRaceOutcome = outcome;
+    runtime.state.raceDrainPending = false;
+    if (runtime.state.activeTimer?.type === "signal-timeout") runtime.state.activeTimer = null;
+    publishSignalState(runtime);
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.signal_race_completed", data: outcome,
+    }]);
+    return outcome;
+}
+
+export function* resolveSignalRaceInput(
+    runtime: DurableSessionRuntime,
+    inputKind: "prompt" | "answer",
+): Generator<any, SignalRaceOutcome | undefined, any> {
+    if (runtime.state.pendingSignalWait?.mode !== "any") return undefined;
+    const inputId: string = yield runtime.ctx.newGuid();
+    return yield* finishSignalRace(runtime, { kind: "user", inputId, inputKind });
+}
+
 export function* cancelSignalWait(
     runtime: DurableSessionRuntime,
     disposition: "cancelled" | "replaced" | "stopped" | "session_terminated",
 ): Generator<any, void, any> {
     const wait = runtime.state.pendingSignalWait;
     if (!wait) return;
+    yield* finishSignalRace(runtime, disposition === "stopped" ? { kind: "stop" } : { kind: "cancel", disposition });
     runtime.state.pendingSignalWait = null;
     runtime.state.signalWaitInterrupted = false;
     if (runtime.state.activeTimer?.type === "signal-timeout") runtime.state.activeTimer = null;
@@ -185,6 +226,7 @@ export function* startSignalWait(
     runtime: DurableSessionRuntime,
     request: Extract<SignalWaitRequest, { action: "wait" }>,
     content?: string,
+    mode?: "any",
 ): Generator<any, void, any> {
     yield* cancelSignalWait(runtime, "replaced");
     const now: number = yield runtime.ctx.utcNow();
@@ -194,6 +236,7 @@ export function* startSignalWait(
         names: [...request.names],
         reason: request.reason,
         startedAt: new Date(now).toISOString(),
+        ...(mode ? { mode } : {}),
         ...(request.timeoutSeconds !== undefined
             ? { deadline: new Date(now + request.timeoutSeconds * 1000).toISOString() } : {}),
     };
@@ -232,6 +275,10 @@ export function* takeReadySignal(runtime: DurableSessionRuntime): Generator<any,
     const matches = wait && wait.names.includes(signal.name);
     const now: number = yield runtime.ctx.utcNow();
     if (matches) {
+        yield* finishSignalRace(runtime, {
+            kind: "signal", signalId: signal.signalId, name: signal.name,
+            ...(signal.payloadRef ? { payloadRef: signal.payloadRef } : {}),
+        });
         state.pendingSignalWait = null;
         state.signalWaitInterrupted = false;
         state.activeTimer = null;
@@ -280,6 +327,10 @@ export function* timeoutSignalWait(
     const { state } = runtime;
     const wait = state.pendingSignalWait;
     if (!wait || wait.waitId !== waitId || state.signalWaitInterrupted) return undefined;
+    if (wait.mode === "any") {
+        if (!wait.deadline) throw new Error("A signal race timeout requires its original deadline.");
+        yield* finishSignalRace(runtime, { kind: "timeout", deadline: wait.deadline });
+    }
     state.pendingSignalWait = null;
     if (state.activeTimer?.type === "signal-timeout" && state.activeTimer.signalWaitId === waitId) state.activeTimer = null;
     publishSignalState(runtime);

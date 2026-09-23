@@ -56,7 +56,13 @@ if (!endpoint || !headers) {
     });
 
     const sdk = new NodeSDK({
-        instrumentations: getNodeAutoInstrumentations(),
+        instrumentations: getNodeAutoInstrumentations({
+            "@opentelemetry/instrumentation-http": {
+                // Capability URLs contain bearer tokens. Webhook code records
+                // bounded outcome metrics instead of raw request URL spans.
+                ignoreIncomingRequestHook: req => /^(?:https?:\/\/[^/]+)?\/hooks(?:\/|$|\?)/i.test(req.url || ""),
+            },
+        }),
         resourceDetectors: getResourceDetectors(),
         metricReaders: [metricReader],
         traceExporter,

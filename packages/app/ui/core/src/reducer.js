@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort }
 import { normalizeMoa } from "./moa.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { isSignalWaiting, reconcileSignalWaitSnapshot } from "./session-signals.js";
+import { reduceWebhookUi } from "./webhook-state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -849,7 +850,7 @@ export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    const next = baseReducer(state, action);
+    const next = reduceWebhookUi(state, baseReducer(state, action), action);
     if (next === state) return next;
     return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
 }
@@ -3010,7 +3011,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "webhooks", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
         case "admin/features":

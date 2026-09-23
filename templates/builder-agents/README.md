@@ -63,8 +63,11 @@ Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval r
 For external-event coordination, use `wait_for_signal` with authenticated
 `raiseSignal` producers rather than a polling loop. The SDK builder skill
 covers optional deadlines, stable delivery IDs, bounded buffering, untrusted
-payloads, and the 1.0.80 compatibility gate. Public webhooks, provider connectors,
-and event-triggered session templates remain later phases. See
+payloads, the 1.0.80 signal gate and 1.0.81 `wait_for_any` races. Opt-in
+[webhooks](../../docs/developer/building/webhooks.md) provide fixed-target
+capabilities, GitHub/ADO connectors and approved templates. Keep secret
+references and owner/agent/model policy server-owned; never scaffold automatic
+provider registration without explicit operator permission. See
 [durable signals](../../docs/developer/building/durable-signals.md).
 
 Artifact workflows should assume the consolidated `write_artifact` / `read_artifact` / `list_artifacts` surface. Files that already exist on the worker (builds, archives, binaries) upload via `write_artifact({fromFile})` and download via `read_artifact({toFile})` — bytes stream server-side and every result carries a `sha256` plus the `artifact://` link. Reserve inline `content` (with `contentType` + base64 for small binaries) for text the agent is authoring, and explain that the browser portal downloads binary artifacts rather than previewing them inline.

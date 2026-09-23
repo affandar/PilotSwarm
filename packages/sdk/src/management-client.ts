@@ -44,6 +44,9 @@ import type { BudgetPeriod } from "./provider-budgets.js";
 import { wakeProviderPausedSessions } from "./provider-wake.js";
 import { LOCAL_DEFAULT_USER_PRINCIPAL } from "./session-owner-utils.js";
 import { FeatureFlagError } from "./feature-flags.js";
+import { WebhookRuntime } from "./webhook-runtime.js";
+import { WebhookError } from "./webhook-types.js";
+import type * as Webhooks from "./webhook-types.js";
 import type { FeatureStore, FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "./feature-store.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -54,6 +57,7 @@ import {
     SIGNAL_MAX_INLINE_BYTES,
     SIGNAL_MIN_ORCHESTRATION_VERSION,
     parseSessionSignal,
+    parseSignalRaceOutcome,
     validateSignalWaitInput,
     type PendingSignalWait,
     type RaiseSignalOptions,
@@ -669,6 +673,8 @@ export interface PilotSwarmManagementClientOptions {
     aadDbUser?: string;
     /** Artifact store used by direct-mode agent-package publish/read/delete operations. */
     artifactStore?: ArtifactStore | null;
+    /** HTTPS origin used for minted webhook URLs; unset returns relative capability URLs. */
+    webhookPublicOrigin?: string;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -691,6 +697,7 @@ export class PilotSwarmManagementClient {
     private _activeStatusWaitControllers = new Set<AbortController>();
     private _activeStatusWaitPromises = new Set<Promise<unknown>>();
     private _started = false;
+    private _webhookRuntimes = new Set<WebhookRuntime>();
 
     constructor(options: PilotSwarmManagementClientOptions | PilotSwarmWebOptions) {
         assertUnambiguousProvider(options, "PilotSwarmManagementClient");
@@ -720,6 +727,23 @@ export class PilotSwarmManagementClient {
         client._duroxideClient = duroxideClient;
         client._started = true;
         return { getSessionSignalState: (sessionId) => client.getSessionSignalState(sessionId) };
+    }
+
+    /** @internal Worker-owned catalog facade; no connections or lifecycle ownership. */
+    static _webhookTools(catalog: SessionCatalog, publicOrigin?: string): Pick<PilotSwarmManagementClient,
+        "createSignalEndpoint" | "listSignalEndpoints" | "revokeSignalEndpoint"
+        | "listWebhookReceipts" | "getWebhookReceipt" | "getWebhookMetrics"> {
+        const client = new PilotSwarmManagementClient({ store: "", webhookPublicOrigin: publicOrigin });
+        client._catalog = catalog;
+        client._started = true;
+        return {
+            createSignalEndpoint: (...args) => client.createSignalEndpoint(...args),
+            listSignalEndpoints: (...args) => client.listSignalEndpoints(...args),
+            revokeSignalEndpoint: (...args) => client.revokeSignalEndpoint(...args),
+            listWebhookReceipts: (...args) => client.listWebhookReceipts(...args),
+            getWebhookReceipt: (...args) => client.getWebhookReceipt(...args),
+            getWebhookMetrics: (...args) => client.getWebhookMetrics(...args),
+        };
     }
 
     // ─── Lifecycle ───────────────────────────────────────────
@@ -796,6 +820,8 @@ export class PilotSwarmManagementClient {
     }
 
     async stop(): Promise<void> {
+        const webhookStops = await Promise.allSettled([...this._webhookRuntimes].map(runtime => runtime.stop()));
+        this._webhookRuntimes.clear();
         for (const controller of [...this._activeStatusWaitControllers]) {
             controller.abort(createAbortError("PilotSwarmManagementClient stopped"));
         }
@@ -815,6 +841,8 @@ export class PilotSwarmManagementClient {
         }
         this._duroxideClient = null;
         this._started = false;
+        const failedWebhookStop = webhookStops.find(result => result.status === "rejected");
+        if (failedWebhookStop?.status === "rejected") throw failedWebhookStop.reason;
     }
 
     private async _readJsonValue<T>(sessionId: string, key: string): Promise<T | null> {
@@ -2273,7 +2301,8 @@ export class PilotSwarmManagementClient {
             }
             const pending = state.pendingWait;
             if (pending !== undefined) {
-                if (!pending || typeof pending.waitId !== "string" || !pending.waitId || typeof pending.reason !== "string") {
+                if (!pending || typeof pending.waitId !== "string" || !pending.waitId || typeof pending.reason !== "string"
+                    || (pending.mode !== undefined && pending.mode !== "any")) {
                     throw new Error("Invalid signal wait");
                 }
                 validateSignalWaitInput({ names: pending.names, reason: pending.reason });
@@ -2292,8 +2321,10 @@ export class PilotSwarmManagementClient {
                         reason: pending.reason,
                         startedAt: pending.startedAt,
                         ...(pending.deadline !== undefined ? { deadline: pending.deadline } : {}),
+                        ...(pending.mode === "any" ? { mode: "any" as const } : {}),
                     },
                 } : {}),
+                ...(state.lastRaceOutcome !== undefined ? { lastRaceOutcome: parseSignalRaceOutcome(state.lastRaceOutcome) } : {}),
                 buffered: state.buffered.map((entry: any) => {
                     const summary = parseSessionSignal({
                         version: entry.version,
@@ -3092,6 +3123,82 @@ export class PilotSwarmManagementClient {
             "messages",
             JSON.stringify(payload),
         );
+    }
+
+    private _requireWebhooks() {
+        this._ensureStarted();
+        if (!this._catalog?.webhooks) throw new WebhookError("WEBHOOKS_UNSUPPORTED", "The runtime storage provider does not support webhooks.", 501);
+        return this._catalog.webhooks;
+    }
+
+    /** Trusted host only. The returned runtime owns no providers; stop it before closing this client. */
+    createWebhookRuntime(options: Webhooks.WebhookRuntimeOptions): WebhookRuntime {
+        if (typeof options.client?._raiseSignal !== "function") {
+            throw new WebhookError("WEBHOOK_CONFIG_INVALID", "Webhook routing requires a trusted direct-mode client.");
+        }
+        const runtime = new WebhookRuntime(this._requireWebhooks(), { publicOrigin: this.config.webhookPublicOrigin, ...options });
+        this._webhookRuntimes.add(runtime);
+        return runtime;
+    }
+    createSignalEndpoint(sessionId: string, signalName: string, options: Webhooks.CreateSignalEndpointOptions = {}, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.CreatedSignalEndpoint> {
+        return this._requireWebhooks().createSignalEndpoint(sessionId, signalName, options, viewer, this.config.webhookPublicOrigin);
+    }
+    listSignalEndpoints(sessionId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.SignalEndpoint[]> {
+        return this._requireWebhooks().listSignalEndpoints(sessionId, viewer);
+    }
+    revokeSignalEndpoint(endpointId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.SignalEndpoint> {
+        return this._requireWebhooks().revokeSignalEndpoint(endpointId, viewer);
+    }
+    createWebhookConnector(input: Webhooks.CreateWebhookConnectorInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._requireWebhooks().createWebhookConnector(input, viewer);
+    }
+    listWebhookConnectors(viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector[]> {
+        return this._requireWebhooks().listWebhookConnectors(viewer);
+    }
+    updateWebhookConnector(connectorId: string, patch: Webhooks.UpdateWebhookConnectorInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._requireWebhooks().updateWebhookConnector(connectorId, patch, viewer);
+    }
+    revokeWebhookConnector(connectorId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._requireWebhooks().revokeWebhookConnector(connectorId, viewer);
+    }
+    createWebhookBinding(input: Webhooks.CreateWebhookBindingInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._requireWebhooks().createWebhookBinding(input, viewer);
+    }
+    listWebhookBindings(viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding[]> {
+        return this._requireWebhooks().listWebhookBindings(viewer);
+    }
+    updateWebhookBinding(bindingId: string, patch: Webhooks.UpdateWebhookBindingInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._requireWebhooks().updateWebhookBinding(bindingId, patch, viewer);
+    }
+    revokeWebhookBinding(bindingId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._requireWebhooks().revokeWebhookBinding(bindingId, viewer);
+    }
+    createWebhookSessionTemplate(input: Webhooks.CreateWebhookSessionTemplateInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._requireWebhooks().createWebhookSessionTemplate(input, viewer);
+    }
+    listWebhookSessionTemplates(viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate[]> {
+        return this._requireWebhooks().listWebhookSessionTemplates(viewer);
+    }
+    updateWebhookSessionTemplate(templateId: string, patch: Webhooks.UpdateWebhookSessionTemplateInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._requireWebhooks().updateWebhookSessionTemplate(templateId, patch, viewer);
+    }
+    revokeWebhookSessionTemplate(templateId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._requireWebhooks().revokeWebhookSessionTemplate(templateId, viewer);
+    }
+    testWebhookBinding(bindingId: string, input: { event: Webhooks.WebhookEvent }, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBindingTest> {
+        return this._requireWebhooks().testWebhookBinding(bindingId, input, viewer);
+    }
+    listWebhookReceipts(query: Webhooks.WebhookReceiptQuery = {}, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt[]> {
+        return this._requireWebhooks().listWebhookReceipts(query, viewer);
+    }
+    getWebhookReceipt(receiptId: string, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt> {
+        return this._requireWebhooks().getWebhookReceipt(receiptId, viewer);
+    }
+    replayWebhookReceipt(receiptId: string, input: { confirmed: true }, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt> {
+        return this._requireWebhooks().replayWebhookReceipt(receiptId, input, viewer);
+    }
+    getWebhookMetrics(viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookMetrics> {
+        return this._requireWebhooks().getWebhookMetrics(viewer);
     }
 
     /**

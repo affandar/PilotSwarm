@@ -415,7 +415,46 @@ Use `get_session_signals` and `get_session_events` (`session.signal_*`) to
 inspect state and lifecycle outcomes. Unsupported/unknown older executions
 return `SIGNALS_UNSUPPORTED`; oversized payloads return `SIGNAL_TOO_LARGE`.
 The legacy event wrapper is not an escape hatch for prompts, answers, or
-commands: use their dedicated tools. Phase 1 has no webhook/connector tools.
+commands: use their dedicated tools. On 1.0.81+, `get_session_signals` also
+reports an explicit `wait_for_any` race's mode and `lastRaceOutcome`.
+
+### Webhook Management
+
+All tools below use `PilotSwarmManagementClient` in direct and web mode.
+Web mode derives identity on the server; direct mode is a trusted local
+operator surface. Resource visibility and mutations are checked by the same
+owner/administrator policy as the portal.
+
+| Tool | Input / behavior |
+|---|---|
+| `create_signal_endpoint` | `session_id`, `signal_name`, optional `options`; URL/token returned once |
+| `list_signal_endpoints` | `session_id`; metadata only, no token recovery |
+| `revoke_signal_endpoint` | `endpoint_id`, `confirmed: true` |
+| `list_webhook_connectors` | Authorized connectors, with auth configuration redacted |
+| `manage_webhook_connector` | `operation: {action:"create",input}` / `{action:"update",connectorId,patch}` / `{action:"revoke",connectorId,confirmed:true}` |
+| `list_webhook_bindings` | Authorized fixed filters and actions |
+| `manage_webhook_binding` | Same operation union, using `bindingId`; actions are `raise_signal`, `enqueue_prompt` or `create_session` |
+| `list_webhook_templates` | Authorized approved session templates |
+| `manage_webhook_template` | Same operation union, using `templateId`; configuration/prompt changes require administrator approval |
+| `test_webhook_binding` | `binding_id`, normalized `event`; dry run only, no model or provider call |
+| `list_webhook_receipts` | Optional `query` with connector/endpoint/session/status filters, `before` cursor and `limit` |
+| `get_webhook_receipt` | `receipt_id`; redacted routing timeline and session correlation |
+| `replay_webhook_receipt` | `receipt_id`, `confirmed: true`; explicit user confirmation and current authorization |
+| `get_webhook_metrics` | Viewer-scoped outcome counts, backlog and dead-letter ages |
+
+Update patches require `expectedRevision`. Connector auth uses **references**,
+never plaintext: GitHub `{mode:"github-hmac-sha256",secretRef}` or ADO
+`{mode:"ado-basic",usernameRef,passwordRef}`. External GitHub delivery verifies
+the exact raw bytes; ADO uses native Basic authentication over HTTPS, not HMAC.
+Templates cannot accept arbitrary credentials, tools, filesystem paths or
+payload-selected ownership. Coalescing is explicit policy, never inferred.
+
+Treat a minted URL as a secret, not ordinary transcript content. `queued` is
+not `consumed`; a prompt's consumed receipt means orchestration dispatch, not
+model success. Dry runs check persisted policy, not current host/model
+admission. Neither these tools nor connector creation registers provider hooks,
+starts tunnels, triggers CI, or changes cloud resources. See
+[webhook ingress](../../../docs/developer/building/webhooks.md).
 
 ### Session Groups
 

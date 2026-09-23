@@ -4,11 +4,11 @@ Durable signals let an authorized caller resume a session waiting for an
 external event, without polling or running model turns while it is parked.
 They require orchestration **1.0.80 or later** and a signal-capable worker.
 
-This is Phase 1 of [#79](https://github.com/affandar/PilotSwarm/issues/79).
-It does **not** expose public webhook URLs, provider connectors, event-triggered
-session templates, or `wait_for_any`. Use the normal authenticated Web API
-client configuration; database-backed direct mode remains a trusted-server
-interface.
+This is the durable-wait foundation of [#79](https://github.com/affandar/PilotSwarm/issues/79).
+[Webhook ingress](webhooks.md) adds opt-in public capability URLs,
+authenticated GitHub/ADO connectors and approved event-triggered templates.
+Client signal APIs use normal Web API authentication; database-backed direct
+mode remains a trusted-server interface.
 
 ## Wait from an agent
 
@@ -52,6 +52,43 @@ a replacement wait. Stopping an interrupting model turn also cancels its pending
 signal wait. Complete/cancel/delete retain their ordinary session lifecycle
 behavior.
 
+## Race signals against user input
+
+Orchestration **1.0.81+** adds `wait_for_any` using capability-routed
+`pilotswarm.signals.v2` turns. It accepts the same 1-8 names, optional timeout,
+and reason as `wait_for_signal`, but the first winner ends the wait:
+
+```js
+wait_for_any({
+    names: ["approval", "deployment-failed"],
+    timeout_seconds: 3600,
+    reason: "Wait for approval, user input, or expiry",
+});
+```
+
+At a durable input boundary, precedence is Stop/graceful cancellation, accepted
+user input, matching signal, then timeout. This is deterministic replay ordering,
+not physical arrival-time ordering. The oldest matching buffered signal wins
+among signals. If user input wins, the original race is not re-armed. Other
+queued user messages keep their ordinary turns, and unconsumed signals remain
+buffered; a losing timer is tombstoned by wait ID.
+
+The tool acknowledges suspension in the current turn. A runnable winner is
+presented in the resumed turn as a typed `WAIT_FOR_ANY RESULT`; Stop or
+cancellation does not force a model turn just to report that it stopped.
+`getSessionSignalState()` exposes the same metadata as `lastRaceOutcome`:
+version, wait ID, completion time, wait duration, one `winner`, and `losers`
+dispositions. Winner kinds are `signal`, `user`, `timeout`, `stop`, and `cancel`.
+The signal winner references its signal ID/name, the user winner has an input
+reference, and the timeout winner retains the absolute deadline. Inline payloads
+do not enter that outcome or its audit event.
+
+`session.signal_race_completed` is recorded once for each settled race and
+appears in the shared Activity/sequence views. A provider-budget refusal of the
+winning user turn preserves its accepted input without re-arming the race.
+`wait_for_any({action: "cancel"})` cancels the pending wait; replacing it records
+the cancellation disposition before starting the replacement.
+
 ## Raise through a client
 
 Given an initialized, authenticated `PilotSwarmClient`, a signal can arrive
@@ -91,7 +128,8 @@ call the corresponding message/answer/control API for those operations.
 The Web API and MCP equivalents are documented in the
 [API reference](../../api/reference.md) and
 [MCP reference](../../../packages/app/mcp/README.md).
-MCP callers use `raise_signal`; there is no unauthenticated ingress in this phase.
+MCP callers use `raise_signal`. External senders instead use the separately
+authenticated, opt-in `/hooks` routes described in the webhook guide.
 
 ## Buffering, identity, and payloads
 
@@ -122,7 +160,7 @@ supported boundary. They are not injected into an in-flight call. At dispatch,
 queued interactive input precedes matching signals, and a matching signal is
 checked before a queued timeout. Timeout records are bound to wait IDs so stale
 timers cannot complete a replacement wait. The explicit typed race result and
-full loser-disposition contract are deferred to `wait_for_any`.
+full loser-disposition contract are provided by `wait_for_any` on 1.0.81+.
 
 Payload fields never choose the owner, destination session, agent, model,
 provider, namespace, tools, or credentials. Signal turns are runtime-attributed,
@@ -150,6 +188,7 @@ session.signal_dropped            session.signal_rejected
 session.signal_wait_started       session.signal_wait_interrupted
 session.signal_wait_resumed       session.signal_wait_cancelled
 session.signal_wait_timeout
+session.signal_race_completed
 ```
 
 Consumption records identify `mode: "wait" | "wake"` and, for a match, the wait
@@ -166,6 +205,9 @@ older decoder fails explicitly rather than disappearing into its queue.
 Signal-aware run-turn and epoch-start activities require
 `pilotswarm.signals.v1`, so an old worker cannot claim them. Older run-turn
 activities retain their original names, payloads, and tool declarations.
+The Phase 1 1.0.80 handler is also frozen; its workers do not receive the
+`wait_for_any` tool. Race-aware 1.0.81 turns use separate activity names and the
+`pilotswarm.signals.v2` capability.
 
 An earlier, unmerged draft of this feature used 1.0.79 before main independently
 assigned that version to different behavior. Draft-test histories from that

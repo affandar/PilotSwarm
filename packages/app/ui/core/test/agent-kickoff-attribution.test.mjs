@@ -23,6 +23,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 import { isAgentKickoffMessage } from "../src/selectors.js";
 
@@ -32,6 +33,27 @@ const clientTs = readFileSync(
 );
 
 const KICKOFF = "Introduce yourself in one line as Dobby, the R2D train poller.";
+
+function property(object, name) {
+    return object.properties.find(node => ts.isPropertyAssignment(node)
+        && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === name);
+}
+
+function bootstrapSends(source, filename = "fixture.ts") {
+    const tree = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
+    const calls = [];
+    const visit = node => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+            && ["send", "_startTurn"].includes(node.expression.name.text)) {
+            const options = node.arguments.find(arg => ts.isObjectLiteralExpression(arg)
+                && property(arg, "bootstrap")?.initializer.kind === ts.SyntaxKind.TrueKeyword);
+            if (options) calls.push({ options, prompt: node.arguments[0]?.getText(tree), text: node.getText(tree) });
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(tree);
+    return calls;
+}
 
 test("a system-stamped user prompt is recognised as a kickoff", () => {
     assert.equal(
@@ -89,12 +111,8 @@ test("every bootstrap send in the SDK stamps a sender", () => {
     );
     const unstamped = [];
     for (const source of [["client.ts", clientTs], ["session-proxy.ts", proxy]]) {
-        // `.send(` AND `._startTurn(`: the regen reseed path enqueues its
-        // bootstrap through _startTurn directly, and a regex that only knew
-        // .send( let that site ship unstamped while this test claimed to
-        // derive the full list. It did not — it derived the list of one shape.
-        for (const m of source[1].matchAll(/\.(?:send|_startTurn)\(([^;]*?)\{[^;]*?bootstrap:\s*true[^;]*?\}/gs)) {
-            if (!/sender:/.test(m[0])) unstamped.push(`${source[0]}: ${m[0].slice(0, 70).replace(/\s+/g, " ")}`);
+        for (const call of bootstrapSends(source[1], source[0])) {
+            if (!property(call.options, "sender")) unstamped.push(`${source[0]}: ${call.text.slice(0, 70).replace(/\s+/g, " ")}`);
         }
     }
     assert.deepEqual(unstamped, [], `these bootstrap sends carry no sender:\n  ${unstamped.join("\n  ")}`);
@@ -103,11 +121,23 @@ test("every bootstrap send in the SDK stamps a sender", () => {
 test("the SDK stamps the kickoff so the UI has something to recognise", () => {
     // Without the stamp the selector can never fire — the two halves have to
     // stay together, and they live in different packages.
-    const start = clientTs.indexOf("if (opts?.initialPrompt) {");
-    assert.notEqual(start, -1, "the initialPrompt send site moved — renamed?");
-    const block = clientTs.slice(start, start + 600);
-    assert.match(block, /sender:\s*\{\s*kind:\s*"system"/, "the kickoff send must carry a system sender");
-    assert.match(block, /bootstrap:\s*true/, "and must still be a bootstrap prompt");
+    const sends = bootstrapSends(clientTs, "client.ts").filter(call => call.prompt === "opts.initialPrompt");
+    assert.equal(sends.length, 1, "the initialPrompt bootstrap send site moved — renamed?");
+    const sender = property(sends[0].options, "sender")?.initializer;
+    assert.ok(sender && ts.isObjectLiteralExpression(sender), "the kickoff must carry a sender");
+    const kind = property(sender, "kind")?.initializer;
+    assert.ok(kind && ts.isStringLiteral(kind) && kind.text === "system", "the kickoff sender must be system");
+});
+
+test("bootstrap source guard handles nested options without borrowing another send's sender", () => {
+    const sends = bootstrapSends(`
+        session.send(prompt, { bootstrap: true, ...(key ? { clientMessageIds: [key] } : {}), sender: { kind: "system" } });
+        session._startTurn(prompt, { bootstrap: true, nested: { sender: { kind: "system" } } });
+        session.send(prompt, { sender: { kind: "user" } });
+    `);
+    assert.equal(sends.length, 2);
+    assert.ok(property(sends[0].options, "sender"));
+    assert.equal(property(sends[1].options, "sender"), undefined);
 });
 
 // ── the system prompt stays OUT of the chat pane ────────────────────────────

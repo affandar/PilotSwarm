@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
+import { AdminWebhooksSection } from "./webhook-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -4505,7 +4506,7 @@ export function clampWaitReason(
  * the wake-up instruction read as a stall reason.
  */
 export function waitReasonLabel(session) {
-    if (selectSessionSignalWait(session)) return "Signal";
+    if (selectSessionSignalWait(session)) return session?.signalWait?.mode === "any" ? "Race" : "Signal";
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
@@ -9273,7 +9274,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             answerMode: Boolean(activeSession?.pendingQuestion?.question),
             canStopTurn,
             stopTurnLabel: canStopTurn && activeSession.status === "waiting"
-                ? "Stop waiting for a signal"
+                ? activeSession.signalWait?.mode === "any" ? "Stop the event race" : "Stop waiting for a signal"
                 : "Stop the current turn",
             hasOutbox: outbox.length > 0,
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
@@ -13324,17 +13325,34 @@ function useKeyboardShortcuts(controller, mobile, suspended = false) {
             const isPlainShortcut = !event.metaKey && !event.ctrlKey && !event.altKey;
             const isShiftTheme = !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "T" && event.shiftKey;
             const isShiftModel = !event.metaKey && !event.ctrlKey && !event.altKey && event.key === "N" && event.shiftKey;
+            const webhooks = controller.getState().admin?.section === "webhooks" && controller.getState().admin?.visible
+                ? controller.getState().admin.webhooks : null;
             const selectVisibleInspectorTab = (delta) => {
                 const nextTab = cycleTabs(visibleInspectorTabs, currentInspectorTab, delta);
                 controller.selectInspectorTab(nextTab).catch(() => {});
             };
 
-            if (!editable && isShiftTheme) {
+            // This settings page replaces the workspace. Never create/stop a
+            // hidden session while operating webhook controls. Dialog keys are
+            // owned by the form or the existing confirmation flow below.
+            if (webhooks && !modal) {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    if (webhooks.editor || webhooks.capabilityId) controller.closeWebhookDialog();
+                    else controller.closeAdminConsole();
+                } else if (!editable && event.key === "r" && isPlainShortcut && !webhooks.editor && !webhooks.capabilityId) {
+                    event.preventDefault();
+                    void controller.refreshAdminWebhooks();
+                }
+                return;
+            }
+
+            if (!webhooks && !editable && isShiftTheme) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_THEME_PICKER).catch(() => {});
                 return;
             }
-            if (!editable && isShiftModel) {
+            if (!webhooks && !editable && isShiftModel) {
                 event.preventDefault();
                 controller.handleCommand(UI_COMMANDS.OPEN_MODEL_PICKER).catch(() => {});
                 return;
@@ -13675,6 +13693,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
+    const showWebhooks = view.section === "webhooks";
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
@@ -13826,7 +13845,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                showWebhooks ? React.createElement(AdminWebhooksSection, { controller }) : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -13855,7 +13875,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view })
+                    : showWebhooks ? React.createElement(AdminWebhooksSection, { controller }) : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -13951,6 +13972,8 @@ function AdminSettingsTree({ controller, view }) {
                         controller.setAdminModelProviderPage("shared");
                     } else if (row.id === "features") {
                         controller.setAdminSection("features");
+                    } else if (row.id === "webhooks") {
+                        controller.setAdminSection("webhooks");
                     } else {
                         controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                     }

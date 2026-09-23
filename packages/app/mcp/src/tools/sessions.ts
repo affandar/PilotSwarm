@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { sessionIdShape } from "../session-id.js";
 import type { PilotSwarmSession } from "pilotswarm-sdk";
+import { LOCAL_DEFAULT_USER_PRINCIPAL } from "pilotswarm-sdk";
 import type { ServerContext } from "../context.js";
 import { jsonResult, errorResult, withToolErrors } from "../util/respond.js";
 
@@ -51,6 +52,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             boundAgentName: agent,
                             model,
                             systemMessage: system_message,
+                            owner: LOCAL_DEFAULT_USER_PRINCIPAL,
                         });
                     } else {
                         session = await ctx.client.createSessionForAgent(agent, {
@@ -60,6 +62,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             contextTier: context_tier,
                             groupId: group_id,
                             splash,
+                            ...(!ctx.webMode ? { owner: LOCAL_DEFAULT_USER_PRINCIPAL } : {}),
                         } as any);
                     }
                 } else {
@@ -69,6 +72,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         reasoningEffort: reasoning_effort,
                         contextTier: context_tier,
                         groupId: group_id,
+                        ...(!ctx.webMode ? { owner: LOCAL_DEFAULT_USER_PRINCIPAL } : {}),
                     } as any);
                 }
 

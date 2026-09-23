@@ -252,6 +252,13 @@ test("no session-touching tool bypasses all three rules", () => {
     for (let i = 0; i < marks.length; i += 1) {
         const body = source.slice(marks[i].at, marks[i + 1]?.at ?? source.length);
         if (!body.includes("session_id")) continue;          // not session-scoped
+        if (marks[i].name === "read_webhook_receipts") {
+            // session_id only filters receipt metadata. The management API
+            // authorizes the receipt owner, not current destination access.
+            assert.match(body, /reader\.listWebhookReceipts\(\{[\s\S]*?\}, await webhookViewer\(\)\)/,
+                "receipt reads must use the canonical management API with a freshly resolved viewer");
+            continue;
+        }
         if (!RULES.some((rule) => body.includes(rule))) ungated.push(marks[i].name);
     }
 

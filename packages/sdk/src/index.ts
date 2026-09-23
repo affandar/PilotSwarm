@@ -38,10 +38,15 @@ export type {
     SessionSignalSummary,
     SessionSignalState,
     PendingSignalWait,
+    SignalRaceWinner,
+    SignalRaceOutcome,
     RaiseSignalOptions,
     RaiseSignalResult,
 } from "./session-signals.js";
 export { SignalValidationError } from "./session-signals.js";
+export * from "./webhook-types.js";
+export { WebhookRuntime } from "./webhook-runtime.js";
+export { defaultWebhookSecretResolver } from "./webhook-validation.js";
 export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";

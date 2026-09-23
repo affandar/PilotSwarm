@@ -13,6 +13,8 @@
 // Usage:  node packages/app/mcp/test/unit/dispatch.unit.mjs
 
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { LOCAL_DEFAULT_USER_PRINCIPAL } from "pilotswarm-sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../dist/src/server.js";
@@ -454,6 +456,74 @@ async function main() {
         const large = await client.callTool({ name: "raise_signal", arguments: { session_id: UUID, name: "build_ready" } });
         record("signal size refusal → structured code/status", large.isError === true
             && parse(large).code === "SIGNAL_TOO_LARGE" && parse(large).status === 413);
+        await client.close();
+    }
+
+    for (const webMode of [false, true]) {
+        const calls = [];
+        const ctx = makeCtx(calls, { webMode, authz: { adminScope: "cluster" } });
+        const connector = { label: "GitHub", provider: "github", source: { repositoryId: "123" },
+            auth: { mode: "github-hmac-sha256", secretRef: "FIXTURE_GITHUB" } };
+        const prompt = { instruction: "Inspect the PR.", fields: ["title"] };
+        const binding = { label: "PR", connectorId: "whc_fixture", filters: { action: ["opened", "reopened"] },
+            action: { type: "raise_signal", sessionId: UUID, signalName: "ready" } };
+        const template = { label: "Approved", source: connector.source, config: { namespace: "app", agentName: "reviewer", reasoningEffort: "minimal" }, prompt };
+        const event = { version: 1, provider: "github", repositoryId: "123", eventType: "pull_request.lifecycle", action: "opened" };
+        const patch = { expectedRevision: 2, state: "disabled" };
+        const cases = [
+            ["create_signal_endpoint", { session_id: UUID, signal_name: "ready", options: { maxUses: 1 } }, "createSignalEndpoint", [UUID, "ready", { maxUses: 1 }]],
+            ["list_signal_endpoints", { session_id: UUID }, "listSignalEndpoints", [UUID]],
+            ["revoke_signal_endpoint", { endpoint_id: "sgep_fixture", confirmed: true }, "revokeSignalEndpoint", ["sgep_fixture"]],
+            ["list_webhook_connectors", {}, "listWebhookConnectors", []],
+            ["manage_webhook_connector", { operation: { action: "create", input: connector } }, "createWebhookConnector", [connector]],
+            ["manage_webhook_connector", { operation: { action: "update", connectorId: "whc_fixture", patch } }, "updateWebhookConnector", ["whc_fixture", patch]],
+            ["manage_webhook_connector", { operation: { action: "revoke", connectorId: "whc_fixture", confirmed: true } }, "revokeWebhookConnector", ["whc_fixture"]],
+            ["list_webhook_bindings", {}, "listWebhookBindings", []],
+            ["manage_webhook_binding", { operation: { action: "create", input: binding } }, "createWebhookBinding", [binding]],
+            ["manage_webhook_binding", { operation: { action: "update", bindingId: "whb_fixture", patch } }, "updateWebhookBinding", ["whb_fixture", patch]],
+            ["manage_webhook_binding", { operation: { action: "revoke", bindingId: "whb_fixture", confirmed: true } }, "revokeWebhookBinding", ["whb_fixture"]],
+            ["list_webhook_templates", {}, "listWebhookSessionTemplates", []],
+            ["manage_webhook_template", { operation: { action: "create", input: template } }, "createWebhookSessionTemplate", [template]],
+            ["manage_webhook_template", { operation: { action: "update", templateId: "wht_fixture", patch } }, "updateWebhookSessionTemplate", ["wht_fixture", patch]],
+            ["manage_webhook_template", { operation: { action: "revoke", templateId: "wht_fixture", confirmed: true } }, "revokeWebhookSessionTemplate", ["wht_fixture"]],
+            ["test_webhook_binding", { binding_id: "whb_fixture", event }, "testWebhookBinding", ["whb_fixture", { event }]],
+            ["list_webhook_receipts", { query: { sessionId: UUID, limit: 10, before: "whr_before" } }, "listWebhookReceipts", [{ sessionId: UUID, limit: 10, before: "whr_before" }]],
+            ["get_webhook_receipt", { receipt_id: "whr_fixture" }, "getWebhookReceipt", ["whr_fixture"]],
+            ["replay_webhook_receipt", { receipt_id: "whr_fixture", confirmed: true }, "replayWebhookReceipt", ["whr_fixture", { confirmed: true }]],
+            ["get_webhook_metrics", {}, "getWebhookMetrics", []],
+        ];
+        ctx.mgmt.recordUserRole = async (...args) => { calls.push(["recordUserRole", ...args]); };
+        for (const [, , method] of cases) {
+            ctx.mgmt[method] = async (...args) => { calls.push([method, ...args]); return { ok: true }; };
+        }
+        const client = await connect(ctx);
+        const viewer = webMode ? undefined : { principal: LOCAL_DEFAULT_USER_PRINCIPAL, isAdmin: true, adminScope: "cluster" };
+        for (const [name, args, method, expected] of cases) {
+            calls.length = 0;
+            const res = await client.callTool({ name, arguments: { ...args, viewer: { principal: { provider: "spoof", subject: "spoof" }, isAdmin: true } } });
+            record(`webhooks ${webMode ? "web" : "direct"} ${method}`,
+                !res.isError && isDeepStrictEqual(calls.find(([n]) => n === method), [method, ...expected, viewer]));
+            record(`webhooks ${webMode ? "web" : "direct"} trusted identity ${method}`,
+                webMode ? !calls.some(([n]) => n === "recordUserRole")
+                    : isDeepStrictEqual(calls[0], ["recordUserRole", LOCAL_DEFAULT_USER_PRINCIPAL, "admin"]));
+        }
+        for (const [name, args] of [
+            ["replay_webhook_receipt", { receipt_id: "whr_fixture", confirmed: false }],
+            ["revoke_signal_endpoint", { endpoint_id: "sgep_fixture" }],
+            ["manage_webhook_binding", { operation: { action: "revoke", bindingId: "whb_fixture" } }],
+            ["manage_webhook_connector", { operation: { action: "create", input: { ...connector, auth: { mode: "github-hmac-sha256", secret: "must-not-be-accepted" } } } }],
+            ["manage_webhook_template", { operation: { action: "create", input: { ...template, config: { ...template.config, tools: ["payload-selected"] } } } }],
+            ["manage_webhook_binding", { operation: { action: "create", input: { ...binding, filters: { "$.arbitrary": "forbidden" } } } }],
+        ]) {
+            calls.length = 0;
+            const res = await client.callTool({ name, arguments: args });
+            record(`webhook invalid ${name} refused before management`, res.isError === true && calls.length === 0);
+        }
+        ctx.mgmt.getWebhookMetrics = async () => { throw Object.assign(new Error("private database connection details"), { code: "WEBHOOK_STORAGE_UNAVAILABLE", status: 503 }); };
+        const failure = await client.callTool({ name: "get_webhook_metrics", arguments: {} });
+        record("webhook storage errors preserve safe code without private detail", failure.isError === true
+            && parse(failure).code === "WEBHOOK_STORAGE_UNAVAILABLE" && parse(failure).status === 503
+            && !JSON.stringify(failure).includes("private database connection"));
         await client.close();
     }
 

@@ -29,8 +29,8 @@ function stateWith(session, mode = "local") {
 test("Stop and the TUI hint include valid parked signal waits without changing running-turn eligibility", () => {
     for (const isSystem of [false, true]) {
         for (const signalWait of [WAIT, TIMED_WAIT]) {
-            const session = row({ signalWait, isSystem });
-            assert.equal(canStopSessionTurn(session), true);
+                    const session = row({ signalWait, isSystem });
+                    assert.equal(canStopSessionTurn(session), true);
             for (const mode of ["local", "remote"]) {
                 const state = stateWith(session, mode);
                 for (const focusRegion of ["sessions", "chat", "prompt"]) {
@@ -88,6 +88,20 @@ test("indefinite signal waits have exact shared text, not a zero-second timer", 
         assert.equal(selectLiveActivityLines(state).length, 0, "parked waits are not Working");
         assert.doesNotMatch(flatten(view.runs), /0s|idle|until/);
     }
+});
+
+test("first-winner races are distinct from interruptible signal waits and retain Stop", () => {
+    const session = row({ signalWait: { ...WAIT, mode: "any" } });
+    const expected = "Waiting for first event: approval, build-ready or user input · no deadline";
+    assert.deepEqual(selectSessionSignalWait(session), {
+        interrupted: false, color: "yellow", text: expected,
+        badge: "[race: approval, build-ready · no deadline]",
+    });
+    assert.equal(canStopSessionTurn(session), true);
+    assert.equal(waitReasonLabel(session), "Race");
+    assert.match(selectStatusBar(stateWith(session)).right, /^ctrl-x stop event race · /);
+    assert.equal(visibleWaitReason(session, "waiting"), expected);
+    assert.ok(flatten(selectSessionRows(stateWith(session))[0].titleRuns).includes("[race:"));
 });
 
 test("timed waits show the local absolute deadline, not a reset countdown", () => {

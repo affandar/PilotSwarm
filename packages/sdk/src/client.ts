@@ -28,8 +28,10 @@ import {
     supportsSignalOrchestration,
     SignalValidationError,
     SIGNAL_MIN_ORCHESTRATION_VERSION,
+    SIGNAL_RACE_MIN_ORCHESTRATION_VERSION,
     type RaiseSignalOptions,
     type RaiseSignalResult,
+    type SessionSignalV1,
     type JsonValue,
 } from "./session-signals.js";
 import type { FactStore } from "./facts-store.js";
@@ -191,6 +193,10 @@ export class PilotSwarmClient {
 
     async createSession(config?: ManagedSessionConfig & {
         sessionId?: string;
+        /** Trusted direct-mode stable creation key; retries never overwrite or resurrect a session. */
+        idempotencyKey?: string;
+        /** @internal Named-agent metadata persisted atomically with an idempotent create. */
+        initialMetadata?: { title?: string; splash?: string; splashMobile?: string };
         onUserInputRequest?: UserInputHandler;
         /** Names of tools registered on the worker via worker.registerTools(). */
         toolNames?: string[];
@@ -235,6 +241,15 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
+        const previousConfig = this.sessionConfigs.get(sessionId);
+        if (config?.idempotencyKey !== undefined && (!this._catalog.webhooks
+            || typeof config.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(config.sessionId)
+            || typeof config.idempotencyKey !== "string" || !config.idempotencyKey.trim()
+            || Buffer.byteLength(config.idempotencyKey) > 256 || /[\u0000-\u001f\u007f]/.test(config.idempotencyKey)
+            || !config.owner?.provider || !config.owner.subject || config.parentSessionId || config.groupId)) {
+            throw Object.assign(new Error("Idempotent creation requires a direct-mode catalog, reserved session ID, owner, and a top-level ungrouped session."),
+                { code: "INVALID_REQUEST", status: 400 });
+        }
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const resolvedConfig = {
             ...(config ?? {}),
@@ -275,7 +290,7 @@ export class PilotSwarmClient {
         // in-memory map above only covers the process that ran this create.
         // JSON round-trip strips undefined fields for clean JSONB.
         const configForRow = this.sessionConfigs.get(sessionId);
-        await this._catalog.createSession(sessionId, {
+        const creationOptions = {
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
             contextTier: resolvedConfig.contextTier ?? undefined,
@@ -291,8 +306,29 @@ export class PilotSwarmClient {
                     ...(config?.nestingLevel !== undefined ? { bootstrapNestingLevel: config.nestingLevel } : {}),
                 }
                 : null,
-        });
-        if (resolved) {
+        };
+        let created = true;
+        if (config?.idempotencyKey !== undefined) {
+            try {
+                created = await this._catalog.webhooks!.createSessionOnce({
+                    sessionId, key: config.idempotencyKey, owner: config.owner!, agentId,
+                    config: creationOptions.creationConfig ?? {},
+                    metadata: {
+                        visibility: config.visibility ?? "private",
+                        modelResolutionSource: resolved?.source,
+                        ...config.initialMetadata,
+                    },
+                });
+            } catch (error) {
+                if (previousConfig) this.sessionConfigs.set(sessionId, previousConfig);
+                else this.sessionConfigs.delete(sessionId);
+                throw error;
+            }
+            if (!created) this.sessionConfigs.delete(sessionId);
+        } else {
+            await this._catalog.createSession(sessionId, creationOptions);
+        }
+        if (resolved && created) {
             await this._catalog.recordEvents(sessionId, [{
                 eventType: "session.model_resolved",
                 data: { model: resolved.model, source: resolved.source },
@@ -325,6 +361,9 @@ export class PilotSwarmClient {
      * @throws If the agent is not found, is a system agent, or policy rejects it.
      */
     async createSessionForAgent(agentName: string, opts?: {
+        /** Trusted direct-mode reserved identity, for durable webhook routing. */
+        sessionId?: string;
+        idempotencyKey?: string;
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         contextTier?: ManagedSessionConfig["contextTier"];
@@ -338,6 +377,10 @@ export class PilotSwarmClient {
         groupId?: string | null;
         visibility?: SessionVisibility | null;
     }): Promise<PilotSwarmSession> {
+        if ((opts?.sessionId !== undefined) !== (opts?.idempotencyKey !== undefined)) {
+            throw Object.assign(new Error("Reserved named-session IDs require an idempotencyKey, and vice versa."),
+                { code: "INVALID_REQUEST", status: 400 });
+        }
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
         if (!allowed.includes(agentName)) {
@@ -346,7 +389,13 @@ export class PilotSwarmClient {
             );
         }
 
+        const reservedId = opts?.sessionId ?? crypto.randomUUID();
+        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
+        const title = `${agentTitle}: ${reservedId.slice(0, 8)}`;
         const session = await this.createSession({
+            sessionId: reservedId,
+            idempotencyKey: opts?.idempotencyKey,
+            initialMetadata: { title, splash: opts?.splash, splashMobile: opts?.splashMobile },
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
@@ -361,14 +410,14 @@ export class PilotSwarmClient {
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
-        const shortId = session.sessionId.slice(0, 8);
-        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
-        await this._catalog.updateSession(session.sessionId, {
-            agentId: agentName,
-            title: `${agentTitle}: ${shortId}`,
-            ...(opts?.splash ? { splash: opts.splash } : {}),
-            ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
-        });
+        if (!opts?.idempotencyKey) {
+            await this._catalog.updateSession(session.sessionId, {
+                agentId: agentName,
+                title,
+                ...(opts?.splash ? { splash: opts.splash } : {}),
+                ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
+            });
+        }
 
         if (opts?.initialPrompt) {
             // Stamp the kickoff as a SYSTEM sender. It is the agent
@@ -379,6 +428,7 @@ export class PilotSwarmClient {
             // appeared in the transcript under "You:".
             await session.send(opts.initialPrompt, {
                 bootstrap: true,
+                ...(opts.idempotencyKey ? { clientMessageIds: [opts.idempotencyKey] } : {}),
                 sender: { kind: "system", display: `${agentName} kickoff`, origin: "api" },
             });
         }
@@ -945,19 +995,51 @@ export class PilotSwarmClient {
         return orchestrationId;
     }
 
+    /** @internal Start-aware webhook prompts must not land on a removed or terminal execution. */
+    async _enqueueWebhookPrompt(sessionId: string, prompt: string, messageId: string, bootstrap = false): Promise<void> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const row = await this._catalog.getSession(sessionId);
+        if (!row || row.deletedAt || row.isSystem || row.serviceKind
+            || ["completed", "cancelled", "failed", "error"].includes(row.state)) {
+            throw Object.assign(new Error("The webhook destination is not an active session."),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        const orchestrationId = `session-${sessionId}`;
+        const status = await this.duroxideClient.getStatus(orchestrationId);
+        if (!["Running", "NotFound"].includes(status?.status)
+            || (status.status === "NotFound" && (row.state !== "pending" || row.orchestrationId))) {
+            throw Object.assign(new Error("The webhook destination has no live or startable execution."),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        if (status.status === "Running") {
+            const info = await this.duroxideClient.getInstanceInfo(orchestrationId);
+            if (!supportsSignalOrchestration(info?.orchestrationVersion, SIGNAL_RACE_MIN_ORCHESTRATION_VERSION)) {
+                throw Object.assign(new Error("Webhook prompt routing requires orchestration 1.0.81 or later."),
+                    { code: "WEBHOOK_SESSION_VERSION_UNSUPPORTED", status: 409 });
+            }
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else this.activeOrchestrations.delete(sessionId);
+        await this._ensureOrchestrationAndSend(sessionId, prompt, {
+            ...(bootstrap ? { bootstrap: true } : {}),
+            clientMessageIds: [messageId],
+            sender: { kind: "system", display: "Webhook event", origin: "api" },
+        });
+    }
+
     /** @internal The sender is trusted transport metadata, separate from caller-controlled options. */
     async _raiseSignal(
         sessionId: string,
         name: string,
         options: RaiseSignalOptions = {},
         sender?: MessageSender,
+        trustedSource?: SessionSignalV1["source"],
     ): Promise<RaiseSignalResult> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const normalizedSender = normalizeMessageSender(sender);
         const actorId = messageSenderKey(normalizedSender);
         let signal;
         try {
-            signal = createSessionSignal(name, options, {
+            signal = createSessionSignal(name, options, trustedSource ?? {
                 kind: normalizedSender?.kind === "agent" ? "session"
                     : normalizedSender?.kind === "system" ? "system" : "api",
                 ...(actorId ? { actorId } : {}),

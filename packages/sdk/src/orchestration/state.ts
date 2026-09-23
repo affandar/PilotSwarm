@@ -9,7 +9,7 @@ import type {
     TurnAction,
 } from "../types.js";
 import { cloneContextUsage } from "./utils.js";
-import { SIGNAL_DEDUP_LIMIT, type PendingSignalWait } from "../session-signals.js";
+import { SIGNAL_DEDUP_LIMIT, type PendingSignalWait, type SignalRaceOutcome } from "../session-signals.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
@@ -107,6 +107,9 @@ export interface DurableSessionState {
     pendingSignalWait: PendingSignalWait | null;
     signalWaitInterrupted: boolean;
     recentSignalIds: string[];
+    lastSignalRaceOutcome?: SignalRaceOutcome;
+    /** A full bounded drain has not yet established the race's input boundary. */
+    raceDrainPending: boolean;
     waitingForAgentIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
     /**
@@ -286,7 +289,7 @@ export function touchRecentClientMessageIds(state: DurableSessionState, ids: str
 }
 
 export function createInitialState(input: OrchestrationInput, options: DurableSessionOptions): DurableSessionState {
-    const config = { ...input.config, durableSignals: true };
+    const config = { ...input.config, durableSignals: true, durableSignalRaces: true };
     if (input.taskContext) {
         const base = typeof options.baseSystemMessage === "string"
             ? options.baseSystemMessage ?? ""
@@ -339,6 +342,8 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         pendingSignalWait: input.pendingSignalWait ? { ...input.pendingSignalWait, names: [...input.pendingSignalWait.names] } : null,
         signalWaitInterrupted: input.signalWaitInterrupted ?? false,
         recentSignalIds: [...(input.recentSignalIds ?? [])].slice(-SIGNAL_DEDUP_LIMIT),
+        lastSignalRaceOutcome: input.lastSignalRaceOutcome,
+        raceDrainPending: false,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,

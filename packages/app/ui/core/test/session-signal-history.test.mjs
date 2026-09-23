@@ -42,6 +42,11 @@ const cases = [
     ["session.signal_wait_timeout", { ...WAIT, deadline: DEADLINE }, "[signal wait]",
         `! timed out: approval · until ${formatCronTimestampForClient(DEADLINE)} · wait w1 · reason: Review`,
         `! signal wait timed out: approval · until ${formatCronTimestampForClient(DEADLINE)}`, "yellow"],
+    ["session.signal_race_completed", {
+        waitId: "w1", waitDurationMs: 5000, winner: { kind: "signal", name: "approval", signalId: "sig-1" },
+        losers: { timer: "tombstoned" },
+    }, "[race]", "winner: signal approval · wait w1 · signal sig-1 · waited 5s · losing timeout cancelled",
+    "race winner: signal approval", "green"],
 ];
 
 test("all signal lifecycle events have exact shared Activity/sequence descriptions", () => {

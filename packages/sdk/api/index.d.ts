@@ -26,12 +26,32 @@ export interface PendingSignalWait {
     reason: string;
     startedAt: string;
     deadline?: string;
+    mode?: "any";
+}
+
+export interface SignalRaceOutcome {
+    version: 1;
+    waitId: string;
+    completedAt: string;
+    waitDurationMs: number;
+    winner:
+        | { kind: "signal"; signalId: string; name: string; payloadRef?: string }
+        | { kind: "user"; inputId: string; inputKind: "prompt" | "answer" }
+        | { kind: "timeout"; deadline: string }
+        | { kind: "stop" }
+        | { kind: "cancel"; disposition: "cancelled" | "replaced" | "session_terminated" };
+    losers: {
+        unconsumedSignals: "buffered";
+        otherUserInput: "queued";
+        timer: "not_scheduled" | "elapsed" | "tombstoned";
+    };
 }
 
 export interface SessionSignalState {
     version: 1;
     pendingWait?: PendingSignalWait;
     interrupted: boolean;
+    lastRaceOutcome?: SignalRaceOutcome;
     buffered: Array<{
         version: 1;
         signalId: string;

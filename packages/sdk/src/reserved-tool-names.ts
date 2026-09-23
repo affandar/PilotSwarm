@@ -85,6 +85,11 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "stage_agent_package_edit",
     "store_fact",
     "wait_for_signal",
+    "wait_for_any",
+    "create_signal_webhook",
+    "read_webhook_receipts",
+    "read_webhook_receipt",
+    "read_webhook_metrics",
 ] as const;
 
 /** Complete platform namespace, including tools gated by role or store. */

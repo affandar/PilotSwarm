@@ -182,6 +182,37 @@ view models carry saved credentials. The browser keeps a password draft local
 to the create/update sheet; the native wizard masks its draft and removes it
 from shared state before awaiting either call. Cancel and completion clear both.
 
+### Webhook management flow
+
+Settings/Admin → Webhooks uses `state.admin.webhooks`, the shared
+`webhook-controller.js` commands, `webhook-forms.js` field schemas and
+`webhook-validation.js` JSON/config validation. `selectWebhookConsole` supplies
+both hosts with resource capabilities, read/pending/errors, selected revisions,
+receipt paging/timelines and viewer-scoped health. Native `webhook-input.js`
+translates keys only; `webhook-tui.js` and `webhook-panel.js` render the same
+semantic view. The browser's ordinary Tab focus traversal remains browser-native.
+
+Every update captures `expectedRevision`; a stale write refreshes and requires
+explicit re-edit, never retry. The existing confirmation flow owns revoke and
+receipt replay (`{confirmed:true}` only after confirmation). Neither action
+terminates a session. Read visibility and mutation authorization remain server
+decisions, including on auth-disabled deployments; profile admission is not an
+implicit admin grant.
+
+One-time endpoint capabilities are private controller memory, **not** store
+actions, selectors, persisted preferences or general statuses. Only the mounted
+capability view can read them. Reducer navigation/identity invalidation and
+controller disposal erase the reference and reject late responses. Native
+rendering does not register those lines in the pointer-selection cache; explicit
+copy is a separate user gesture. Only numeric wrapping/scroll limits cross back
+from the terminal renderer.
+
+Connector delivery addresses are different: they contain a public connector ID,
+not a capability, and belong in the shared read-only view model. Compose them
+only from bootstrap `webhooks.publicOrigin` plus `/hooks/c/<encoded-id>`, or
+show a labeled relative path when no origin is supplied. Both hosts use the
+same explicit clipboard flow, without opening or fetching the address.
+
 ### Chat/history flow
 
 ```text

@@ -184,6 +184,29 @@ export class HttpApiTransport {
         return this.api.call("getSessionSignalState", { sessionId });
     }
 
+    async createSignalEndpoint(sessionId, signalName, options = {}) {
+        return this.api.call("createSignalEndpoint", { sessionId, signalName, options });
+    }
+    async listSignalEndpoints(sessionId) { return this.api.call("listSignalEndpoints", { sessionId }); }
+    async revokeSignalEndpoint(endpointId) { return this.api.call("revokeSignalEndpoint", { endpointId }); }
+    async createWebhookConnector(input) { return this.api.call("createWebhookConnector", { input }); }
+    async listWebhookConnectors() { return this.api.call("listWebhookConnectors"); }
+    async updateWebhookConnector(connectorId, patch) { return this.api.call("updateWebhookConnector", { connectorId, patch }); }
+    async revokeWebhookConnector(connectorId) { return this.api.call("revokeWebhookConnector", { connectorId }); }
+    async createWebhookBinding(input) { return this.api.call("createWebhookBinding", { input }); }
+    async listWebhookBindings() { return this.api.call("listWebhookBindings"); }
+    async updateWebhookBinding(bindingId, patch) { return this.api.call("updateWebhookBinding", { bindingId, patch }); }
+    async revokeWebhookBinding(bindingId) { return this.api.call("revokeWebhookBinding", { bindingId }); }
+    async createWebhookSessionTemplate(input) { return this.api.call("createWebhookSessionTemplate", { input }); }
+    async listWebhookSessionTemplates() { return this.api.call("listWebhookSessionTemplates"); }
+    async updateWebhookSessionTemplate(templateId, patch) { return this.api.call("updateWebhookSessionTemplate", { templateId, patch }); }
+    async revokeWebhookSessionTemplate(templateId) { return this.api.call("revokeWebhookSessionTemplate", { templateId }); }
+    async testWebhookBinding(bindingId, { event }) { return this.api.call("testWebhookBinding", { bindingId, event }); }
+    async listWebhookReceipts(query = {}) { return this.api.call("listWebhookReceipts", { query }); }
+    async getWebhookReceipt(receiptId) { return this.api.call("getWebhookReceipt", { receiptId }); }
+    async replayWebhookReceipt(receiptId, { confirmed }) { return this.api.call("replayWebhookReceipt", { receiptId, confirmed }); }
+    async getWebhookMetrics() { return this.api.call("getWebhookMetrics"); }
+
     /** @deprecated Use raiseSignal. */
     async sendSessionEvent(sessionId, eventName, data) {
         await this.raiseSignal(sessionId, eventName, { data });

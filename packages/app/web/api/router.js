@@ -97,6 +97,7 @@ function sendError(res, error, fallbackStatus) {
 const ID_PARAM_KEYS = new Set([
     "sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId",
     "fromSessionId", "toSessionId",
+    "endpointId", "connectorId", "bindingId", "templateId", "receiptId",
 ]);
 const SAFE_ID = /^[\w:.-]{1,200}$/;
 

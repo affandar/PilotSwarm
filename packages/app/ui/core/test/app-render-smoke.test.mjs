@@ -77,6 +77,19 @@ const render = (controller) => renderToStaticMarkup(
     React.createElement(PilotSwarmWebApp, { controller }),
 );
 
+test("all shared webhook Admin pages render for admin, ordinary and auth-disabled viewers", async () => {
+    const { setupWebhooks } = await import("./webhook-fixture.mjs");
+    for (const options of [{}, { isAdmin: false }, { isAdmin: false, authDisabled: true }]) {
+        const { controller } = setupWebhooks(options);
+        for (const tab of ["connectors", "bindings", "templates", "endpoints", "receipts", "health"]) {
+            await controller.setWebhookTab(tab);
+            const html = render(controller);
+            assert.match(html, /aria-label="Webhook management"/, `${tab} is in the actual Admin Console tree`);
+            assert.match(html, /Only server-visible resources/);
+        }
+    }
+});
+
 test("the app renders without throwing", () => {
     const html = render(makeController());
     assert.ok(html.length > 0, "produced markup");

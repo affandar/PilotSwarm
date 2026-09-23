@@ -5,6 +5,7 @@ import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName } from "../types.js";
 import { armSignalWait, cancelSignalWait, interruptSignalWait, startSignalWait, timeoutSignalWait } from "./signals.js";
+import { formatSignalRaceOutcome } from "../session-signals.js";
 import { createSessionProxy } from "../session-proxy.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
@@ -1200,7 +1201,7 @@ export function* handleTurnResult(
                 yield* cancelSignalWait(runtime, "cancelled");
                 yield* schedulePostTurnContinuation(runtime);
             } else {
-                yield* startSignalWait(runtime, result, result.content);
+                yield* startSignalWait(runtime, result, result.content, result.waitMode);
             }
             return;
         }
@@ -1454,7 +1455,11 @@ export function* processTimer(
     switch (timer.type) {
         case "signal-timeout": {
             const prompt = yield* timeoutSignalWait(runtime, timer.signalWaitId);
-            if (prompt) yield* processPrompt(runtime, prompt, true);
+            if (prompt) {
+                const outcome = state.lastSignalRaceOutcome;
+                const prefix = outcome && outcome.waitId === timer.signalWaitId ? `${formatSignalRaceOutcome(outcome)}\n\n` : "";
+                yield* processPrompt(runtime, prefix + prompt, true);
+            }
             return;
         }
         case "wait": {

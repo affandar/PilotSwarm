@@ -69,7 +69,7 @@ export class WebPilotSwarmClient {
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
-        for (const key of ["sessionId", "parentSessionId", "agentId", "toolNames", "nestingLevel"]) {
+        for (const key of ["sessionId", "idempotencyKey", "initialMetadata", "parentSessionId", "agentId", "toolNames", "nestingLevel"]) {
             if (config && (config as any)[key] !== undefined) {
                 throw webModeUnsupported(`createSession({ ${key} })`, "agent-bound sessions use createSessionForAgent; worker-side options are direct-mode only");
             }
@@ -84,6 +84,8 @@ export class WebPilotSwarmClient {
     }
 
     async createSessionForAgent(agentName: string, opts?: {
+        sessionId?: string;
+        idempotencyKey?: string;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string;
@@ -94,6 +96,9 @@ export class WebPilotSwarmClient {
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     }): Promise<WebPilotSwarmSession> {
+        if (opts?.sessionId !== undefined || opts?.idempotencyKey !== undefined) {
+            throw webModeUnsupported("createSessionForAgent({ sessionId, idempotencyKey })", "reserved creation identities belong to trusted webhook routing");
+        }
         const view = await this._api.call("createSessionForAgent", {
             agentName,
             model: opts?.model,

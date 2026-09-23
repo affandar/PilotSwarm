@@ -1,6 +1,6 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY } from "./activity-routing.js";
-import { SIGNAL_ACTIVITY_CAPABILITY } from "./session-signals.js";
+import { SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_RACE_ACTIVITY_CAPABILITY } from "./session-signals.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
@@ -777,7 +777,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_RACE_ACTIVITY_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -1201,7 +1201,7 @@ export class PilotSwarmWorker {
                     const collision = findReservedPackageToolName(
                         tools.map((tool: any) => String(tool?.name || "")),
                         [
-                            ...ManagedSession.systemToolDefs({ durableSignals: true }).map((tool: any) => String(tool.name)),
+                            ...ManagedSession.systemToolDefs({ durableSignals: true, durableSignalRaces: true, webhookEndpoints: true }).map((tool: any) => String(tool.name)),
                             ...ManagedSession.subAgentToolDefs().map((tool: any) => String(tool.name)),
                             ...this._frameworkBaseToolNames,
                             ...this._appDefaultToolNames,
