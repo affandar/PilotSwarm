@@ -29,6 +29,12 @@ parks. There is no polling turn, local sleep, or retained activity running the
 wait. Long and indefinite waits release worker affinity using the ordinary
 snapshot/hold/release protocol.
 
+Indefinite waits do not require a webhook subscription. An endpoint expiring,
+being exhausted or being revoked does not cancel the wait: another authorized
+producer can still raise the signal. The management UI shows unavailable
+endpoints beside the active wait. Prefer an explicit timeout for CI/build work;
+use Stop or session termination when the workflow itself should end.
+
 A user message interrupts the wait for one turn. Afterwards the same wait ID,
 names, and **original absolute deadline** are re-armed; time spent answering is
 not added to the deadline. This survives continue-as-new and worker replacement.

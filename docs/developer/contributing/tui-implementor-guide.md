@@ -238,6 +238,12 @@ split into redacted metadata and a private, navigation-scoped capability; never
 dispatch or log the raw response. A late mint after closing must not reopen a
 secret dialog. Consumption, queueing and initial acceptance remain distinct.
 
+Health exposes the server's retention policy and viewer-scoped cleanup counters;
+`e` opens the same revision-guarded admin policy form as the portal. Preserve
+replay deadlines/availability in receipt projections and refuse an expired
+confirmation without submitting it. Unavailable endpoint warnings belong beside
+the live signal wait, not in chat and never as an implicit wait cancellation.
+
 Local validation (no database, LLM, ingress or external provider requests):
 
 ```bash

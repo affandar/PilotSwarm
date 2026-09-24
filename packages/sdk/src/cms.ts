@@ -959,7 +959,7 @@ export interface SessionCatalog {
      * See provider-store.ts.
      */
     readonly providers?: ProviderStore;
-    /** Durable webhook ingress, routing and receipt storage (migration 0081). */
+    /** Durable webhook ingress, routing and bounded retention (migrations 0081-0082). */
     readonly webhooks?: WebhookStore;
     readonly features?: FeatureStore;
 
@@ -1631,6 +1631,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+        this.webhooks.startRetention();
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -3785,6 +3786,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
+        await this.webhooks.stopRetention();
         if (this.pool) {
             await this.pool.end();
             this.pool = null;

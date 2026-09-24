@@ -128,6 +128,11 @@ budgets and lifecycle constraints remain the approved agent/deployment policy;
 payload fields cannot override them. Build/PR events are supported, not push.
 Receipt/outbox acceptance is not model success. Explain queued versus consumed,
 inspect redacted receipts and require confirmation before replay or revocation.
+Document the persisted 30-day terminal-history/replay defaults and the
+administrator's revision-guarded `updateWebhookRetentionPolicy` operation.
+Cleanup never ages out pending/queued work or deduplication/creation identities.
+Do not couple indefinite waits to endpoint expiry or revocation; show the
+unavailable producer and encourage an explicit timeout for finite CI work.
 Never register provider hooks, start a tunnel, trigger CI or deploy just because
 a local connector was configured; those are separate authorized operations.
 

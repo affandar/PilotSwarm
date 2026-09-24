@@ -235,9 +235,29 @@ activities. It does not claim native GitHub/ADO delivery or a new live model
 evaluation. External hook registration, CI and deployment remain explicit
 operator actions, separate from policy provisioning.
 
-## Open questions
+## Implemented policy decisions
+
+The issue's open decisions are implemented as the following reviewable defaults:
+
+| Decision | Implementation |
+|---|---|
+| Default PR coalescing | Off; explicitly configure the repository/PR key and follow-up action |
+| Indefinite waits | Available without a webhook subscription; endpoint expiry/revocation does not cancel the wait |
+| Simultaneous-event ordering | Stop/cancel, accepted input, matching signal, timeout |
+| Initial provider events | CI/build completion and selected PR lifecycle events; no push |
+| Unmatched retention | Discard bodies; retain redacted metadata under the terminal receipt policy |
+
+Migration 0082 adds a persisted, revision-guarded **30-day terminal history and
+30-day replay window**, configurable by administrators. Cleanup is automatic
+on initialized CMS hosts, bounded and independent of ingress enablement.
+It never ages out queued/outbox work, delivery deduplication or creation
+tombstones. Replay/history expiry and cleanup counters are exposed through
+the normal management, MCP, tuner and shared UI surfaces. See
+[production retention](../developer/building/webhooks.md#production-retention).
+
+## Deferred design questions
 
 1. **Should `ask_user` converge onto signals?** An answer is structurally a signal named `answer` with a human source. v1 keeps them separate (ask_user's UX contract is load-bearing); convergence is a refactor candidate once signals prove out.
-2. **Signal history retention** — events give an audit trail, but should consumed payloads be queryable (`list_signals`)? Leaning: events suffice for v1.
+2. **Queryable consumed signal payloads** — not added. Lifecycle events remain the audit surface; webhook payload/history cleanup follows the policy above, without changing session-event retention.
 3. **Per-endpoint schema validation** — optional JSON Schema on the endpoint row to reject malformed provider payloads at the edge rather than burning a turn. Defer.
 4. **Cross-session waits** (parent waits on child's signal without the child knowing its parent's id) — the child-update digest machinery already covers most of this; revisit with real demand.

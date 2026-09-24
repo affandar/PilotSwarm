@@ -20,6 +20,7 @@ export const endpoint = (extra = {}) => ({ endpointId: "endpoint-1", sessionId: 
 export const receipt = (extra = {}) => ({ receiptId: "receipt-1", connectorId: "connector-1", bindingId: "binding-1", deliveryId: "delivery-1",
     status: "queued", eventType: "pull_request.lifecycle", action: "raise_signal", sessionId: "s1", signalId: "signal-1",
     attempts: 1, duplicateCount: 2, replayCount: 0, receivedAt: AT, updatedAt: AT,
+    payloadRetained: true, replayAvailable: ["routing_failed", "dead_lettered", "disabled", "expired", "target_terminal"].includes(extra.status),
     timeline: [{ status: "queued", at: "2026-09-23T10:00:02.000Z" }, { status: "received", at: AT }], ...extra });
 export function deferred() {
     let resolve, reject;
@@ -49,6 +50,7 @@ export function setupWebhooks({ isAdmin = true, authDisabled = false, overrides 
         receipts: rows.receipts || [receipt()],
     };
     const calls = [];
+    let retentionPolicy = { revision: 1, receiptRetentionDays: 30, replayRetentionDays: 30, updatedAt: AT };
     const capture = (name, fn) => async (...args) => { calls.push([name, ...clone(args)]); return fn(...args); };
     const transport = {
         getCurrentUserProfile: async () => profile,
@@ -73,7 +75,14 @@ export function setupWebhooks({ isAdmin = true, authDisabled = false, overrides 
         replayWebhookReceipt: capture("replayWebhookReceipt", id => { catalog.receipts.find(row => row.receiptId === id).replayCount++; return { replayed: true }; }),
         testWebhookBinding: capture("testWebhookBinding", (_, { event }) => ({ matches: true, authorized: true, action: "raise_signal", authorizationScope: "persisted_policy", event })),
         getWebhookMetrics: capture("getWebhookMetrics", () => ({ pending: 4, deadLettered: 2, oldestPendingAgeSeconds: 25, oldestDeadLetterAgeSeconds: 75,
+            retention: { policy: clone(retentionPolicy), lastSweepAt: AT, nextSweepAt: AT, receiptsDeleted: 5, payloadsDeleted: 7 },
             receipts: [{ provider: "github", status: "queued", count: 4 }, { provider: "generic", status: "dead_lettered", count: 2 }] })),
+        updateWebhookRetentionPolicy: capture("updateWebhookRetentionPolicy", patch => {
+            if (patch.expectedRevision !== retentionPolicy.revision) throw Object.assign(new Error("Retention policy changed"), { code: "WEBHOOK_CONFLICT", status: 409 });
+            retentionPolicy = { revision: retentionPolicy.revision + 1, receiptRetentionDays: patch.receiptRetentionDays,
+                replayRetentionDays: patch.replayRetentionDays, updatedAt: AT };
+            return clone(retentionPolicy);
+        }),
     };
     for (const [kind, suffix, factory] of [["connectors", "Connector", connector], ["bindings", "Binding", binding], ["templates", "SessionTemplate", template]]) {
         transport[`listWebhook${suffix}s`] = capture(`listWebhook${suffix}s`, () => clone(catalog[kind]));

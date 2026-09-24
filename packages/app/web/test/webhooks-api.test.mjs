@@ -189,6 +189,10 @@ test("HTTP/RPC management stamps trusted viewer identity and requires a committe
         const forbidden = await fetch(`${server.base}/api/v1/webhooks/connectors`, { method: "POST",
             headers: { "content-type": "application/json" }, body: "{}" });
         assert.equal(forbidden.status, 403);
+        const deniedRetention = await fetch(`${server.base}/api/v1/webhooks/retention`, { method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ patch: { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 } }) });
+        assert.equal(deniedRetention.status, 403);
         runtime.transport.recordUserRole = async () => { throw new Error("role store failed"); };
         await assert.rejects(runtime.call("listWebhookConnectors", {}, auth), /role store/);
         assert.equal(calls.length, 1);
@@ -225,13 +229,15 @@ test("all webhook management methods round-trip through the public web client an
         ["getWebhookReceipt", ["whr_fixture", viewer], { receiptId: "whr_fixture" }],
         ["replayWebhookReceipt", ["whr_fixture", { confirmed: true }, viewer], { receiptId: "whr_fixture", confirmed: true }],
         ["getWebhookMetrics", [viewer], {}],
+        ["updateWebhookRetentionPolicy", [{ expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 }, viewer],
+            { patch: { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 } }],
     ];
     try {
         for (const [method, args, params] of cases) {
             const result = await client[method](...args);
             assert.deepEqual(result, { method, params }, method);
         }
-        assert.equal(calls.length, 20);
+        assert.equal(calls.length, 21);
         assert.ok(!JSON.stringify(calls).includes("forged"));
     } finally {
         await client.stop();

@@ -195,7 +195,7 @@ and receipt semantics.
 | `Tab` / `Shift+Tab`, `←` / `→` | Previous/next webhook page |
 | `j` / `k`, `↓` / `↑` | Select resource |
 | `Ctrl+U` / `Ctrl+D`, PageUp/PageDown | Scroll details (also scrolls the one-time capability view) |
-| `n` / `e` | Create / edit (captured revision is required; stale edits must be reopened) |
+| `n` / `e` | Create / edit; `e` on Health edits retention policy (admin-only, captured revision required) |
 | Connectors: `c` | Copy the selected public delivery URL, or the clearly labeled relative path when bootstrap supplies no public origin; no URL is opened or fetched |
 | `d` | Confirm revocation of the selected resource, **not** the session |
 | `t` | Binding dry run against persisted policy; no external delivery |

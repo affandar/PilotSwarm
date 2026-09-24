@@ -329,6 +329,35 @@ test("portal admin/ordinary/auth-disabled controls, JSON validation, stale revis
     await expect(page.getByRole("button", { name: "Approve template…", exact: true })).toBeDisabled();
 });
 
+for (const width of [1440, 390]) {
+    test(`portal retention controls, replay expiry and endpoint warnings remain usable at ${width}px`, async t => {
+        const page = await mounted(t, {}, { width, height: 900 });
+        await selectTab(page, "Health");
+        await expect(page.getByRole("region", { name: "Webhook retention" })).toBeVisible();
+        await page.getByRole("button", { name: "Edit retention policy…", exact: true }).click();
+        await fill(page, "receiptRetentionDays", "90");
+        await fill(page, "replayRetentionDays", "7");
+        await completeForm(page, "Save retention policy");
+        assert.deepEqual(await calls(page, "updateWebhookRetentionPolicy"),
+            [["updateWebhookRetentionPolicy", { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 }]]);
+        await expect(page.getByText("Terminal receipt history: 90 days. Replay window: 7 days.")).toBeVisible();
+        await page.evaluate(() => {
+            window.fixture.catalog.receipts = [window.helpers.receipt({
+                status: "dead_lettered", replayAvailable: false,
+                replayExpiresAt: new Date(Date.now() - 1000).toISOString(), payloadRetained: false,
+            })];
+            window.fixture.catalog.endpoints[0].revokedAt = new Date().toISOString();
+        });
+        await selectTab(page, "Receipts");
+        await expect(page.getByRole("button", { name: "Replay receipt…", exact: true })).toBeDisabled();
+        await expect(page.getByText(/replay window has expired/i)).toBeVisible();
+        await selectTab(page, "Session signals");
+        await expect(page.getByText(/wait remains active; other authorized producers/)).toBeVisible();
+        assert.equal((await calls(page, "replayWebhookReceipt")).length, 0);
+        assert.equal((await calls(page, "raiseSignal")).length, 0);
+    });
+}
+
 test("mobile portal keeps the same actions and renders hostile labels/references as text without requests", async t => {
     const page = await mounted(t, {}, { width: 390, height: 844 });
     await page.evaluate(async () => {

@@ -390,7 +390,85 @@ Raw provider bodies are never retained. Only the bounded normalized projection
 table, with no public payload-read operation. Unmatched provider deliveries
 retain redacted metadata only and cannot later be replayed into a newly-created
 binding. Receipt/routing history is retained until administrative storage
-retention removes it; no automatic deletion policy is implied.
+retention removes it under the bounded policy below.
+
+### Production retention
+
+Migration **0082** adds automatic, database-coordinated cleanup. It does not
+change orchestration 1.0.80 or the signal wait contract.
+
+| Data | Default policy |
+|---|---|
+| Terminal receipt metadata | 30 days after a terminal disposition |
+| Failed receipt replay data | 30 days from its first replayable terminal failure |
+| Consumed/dropped payloads and successful no-op payloads | Eligible for deletion on the next bounded cleanup pass |
+| Unmatched provider bodies | Never retained; redacted receipt metadata follows the terminal retention policy |
+| Queued receipts/signals and pending or leased routing work | Never removed because of age |
+| Delivery deduplication rows and session-creation tombstones | Retained permanently; cleanup never makes an old delivery new again |
+
+The current policy is returned by `getWebhookMetrics().retention.policy`.
+Administrators can change it through the shared Health page, MCP or the typed
+management API:
+
+```ts
+const { retention } = await management.getWebhookMetrics();
+await management.updateWebhookRetentionPolicy({
+    expectedRevision: retention.policy.revision,
+    receiptRetentionDays: 90,
+    replayRetentionDays: 7,
+});
+```
+
+Both durations are whole days, from 1 through 3,650, and replay retention cannot
+exceed receipt retention. Changes apply to future terminal dispositions. A
+captured replay deadline is never extended by duplicate deliveries, replay
+attempts or a later policy change. Already accepted routing work is protected
+even if it completes after the replay window. Queued receipts are retained until
+their correlated disposition; retention does not clear Duroxide queues, signal
+buffers, session transcripts, artifacts or the private SDK snapshot. It removes
+the webhook store's routing copy, not every derived copy of event data.
+
+Receipt reads expose `settledAt`, `receiptExpiresAt`, `replayExpiresAt`,
+`payloadRetained` and `replayAvailable`. Availability describes retained
+data/window/status/lease, not current authorization. Expired replay is refused
+with **`WEBHOOK_REPLAY_EXPIRED` (410)** even before cleanup deletes its payload.
+After receipt history is purged, the normal not-found response applies. A page
+cursor whose receipt expired also returns not-found; select **Newest** rather
+than silently receiving an incorrect page.
+
+Every initialized PostgreSQL CMS host owns a shutdown-aware cleanup loop,
+independent of the public-ingress flag. Keep at least one CMS-connected host
+running for automatic cleanup; no LLM or provider request is involved.
+The database admits one sweep at a time, using an indexed scan, skip-locked
+receipt locks and at most 500 candidates per transaction. Full batches continue
+after one second; idle sweeps run approximately once per minute. Scheduling is
+best-effort under load, not an expiry SLA. Shutdown waits for the current batch;
+a crash rolls back deletion, counters and scheduling together. Existing terminal
+history is backfilled in bounded batches with a full retention period on upgrade.
+
+Cleanup keeps compact delivery identities, exact-body digests and their original
+acceptance result even after receipts expire, so late retries neither create a
+second session nor pick up newly created bindings. Obsolete trace context is
+cleared when the last receipt for a delivery is deleted. Creation tombstones also
+survive hard session deletion. These small correctness records intentionally
+continue to consume storage for the lifetime of the CMS schema.
+
+`getWebhookMetrics().retention` includes persisted cleanup timestamps and
+viewer-scoped cumulative `receiptsDeleted` / `payloadsDeleted` counters.
+Receipt status counts describe retained history, not lifetime totals. The
+same diagnostics reach the tuner and the shared Health page. A stale last-sweep
+timestamp plus bounded `[webhooks] retention` errors indicates stalled cleanup;
+no error path silently reports successful deletion.
+
+### Indefinite waits and endpoint lifecycle
+
+Indefinite waits remain available without a managed webhook subscription:
+SDK callers, operators, peers or another endpoint may also supply the signal.
+Endpoint expiry, exhaustion or revocation **does not cancel the wait** or erase
+queued signals. The shared Session signals page shows these endpoint states
+alongside the active wait, without claiming that all producers are unavailable.
+Use an explicit timeout for CI/build workflows; use Stop or ordinary session
+termination when the workflow itself should end. There is no hidden lifetime cap.
 
 ## Limits and trusted host integration
 

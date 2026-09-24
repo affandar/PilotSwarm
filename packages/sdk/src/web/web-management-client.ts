@@ -189,6 +189,9 @@ export class WebPilotSwarmManagementClient {
     async getWebhookMetrics(_viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookMetrics> {
         return this._api.call("getWebhookMetrics");
     }
+    async updateWebhookRetentionPolicy(patch: Webhooks.UpdateWebhookRetentionPolicyInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookRetentionPolicy> {
+        return this._api.call("updateWebhookRetentionPolicy", { patch });
+    }
 
     // ── Session groups ──────────────────────────────────────────────────
 

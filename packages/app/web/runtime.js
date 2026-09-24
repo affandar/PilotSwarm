@@ -147,6 +147,7 @@ const WEBHOOK_METHODS = new Set([
     "createWebhookBinding", "listWebhookBindings", "updateWebhookBinding", "revokeWebhookBinding",
     "createWebhookSessionTemplate", "listWebhookSessionTemplates", "updateWebhookSessionTemplate", "revokeWebhookSessionTemplate",
     "testWebhookBinding", "listWebhookReceipts", "getWebhookReceipt", "replayWebhookReceipt", "getWebhookMetrics",
+    "updateWebhookRetentionPolicy",
 ]);
 
 
@@ -1578,6 +1579,7 @@ export class PortalRuntime {
             case "getWebhookReceipt": return mgmt.getWebhookReceipt(params.receiptId, viewer);
             case "replayWebhookReceipt": return mgmt.replayWebhookReceipt(params.receiptId, { confirmed: params.confirmed }, viewer);
             case "getWebhookMetrics": return mgmt.getWebhookMetrics(viewer);
+            case "updateWebhookRetentionPolicy": return mgmt.updateWebhookRetentionPolicy(params.patch, viewer);
             default: throw new Error("Unknown webhook management operation");
         }
     }

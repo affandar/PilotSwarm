@@ -1,4 +1,5 @@
 import { selectSessionSignalWait } from "./session-signals.js";
+import { formatDisplayDateTime } from "./formatting.js";
 import { WEBHOOK_CAPABILITY_WARNING, WEBHOOK_DRY_RUN_HELP, WEBHOOK_POLICY_HELP, webhookText } from "./webhook-validation.js";
 
 export const WEBHOOK_TABS = Object.freeze([
@@ -117,7 +118,8 @@ export function projectWebhookResource(kind, row) {
     if (kind === "receipts") {
         const projected = pick(row, ["receiptId", "connectorId", "endpointId", "bindingId", "deliveryId", "status",
             "eventType", "action", "sessionId", "signalId", "attempts", "duplicateCount", "replayCount",
-            "lastErrorCode", "receivedAt", "updatedAt", "nextAttemptAt"]);
+            "lastErrorCode", "receivedAt", "updatedAt", "nextAttemptAt",
+            "settledAt", "receiptExpiresAt", "replayExpiresAt", "replayAvailable", "payloadRetained"]);
         projected.timeline = (Array.isArray(row.timeline) ? row.timeline : [])
             .map(entry => pick(entry, ["status", "at", "code"]))
             .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
@@ -135,8 +137,18 @@ export function projectWebhookResource(kind, row) {
 }
 export function projectWebhookMetrics(value) {
     if (!value || !Array.isArray(value.receipts)) throw new Error("The server returned invalid webhook health metadata.");
+    const policy = value.retention?.policy;
+    if (value.retention && (!Number.isInteger(policy?.revision) || policy.revision < 1
+        || !Number.isInteger(policy.receiptRetentionDays) || policy.receiptRetentionDays < 1 || policy.receiptRetentionDays > 3650
+        || !Number.isInteger(policy.replayRetentionDays) || policy.replayRetentionDays < 1 || policy.replayRetentionDays > policy.receiptRetentionDays)) {
+        throw new Error("The server returned invalid retention policy metadata.");
+    }
     return { ...pick(value, ["pending", "deadLettered", "oldestPendingAgeSeconds", "oldestDeadLetterAgeSeconds"]),
-        receipts: value.receipts.map(row => pick(row, ["provider", "status", "count"])) };
+        receipts: value.receipts.map(row => pick(row, ["provider", "status", "count"])),
+        retention: value.retention ? {
+            ...pick(value.retention, ["lastSweepAt", "nextSweepAt", "receiptsDeleted", "payloadsDeleted"]),
+            policy: pick(value.retention.policy, ["revision", "receiptRetentionDays", "replayRetentionDays", "updatedAt"]),
+        } : null };
 }
 export function projectWebhookSignalState(value) {
     if (!value || !Array.isArray(value.buffered)) throw new Error("The server returned invalid signal state.");
@@ -162,17 +174,22 @@ export function webhookReceiptMeaning(status) {
     return "No successful consumption confirmed; inspect status/error";
 }
 function safeJson(value) { return webhookText(JSON.stringify(value, null, 2)); }
+function endpointState(row, now) {
+    return row.revokedAt ? "revoked" : Date.parse(row.expiresAt) <= now ? "expired"
+        : row.maxUses != null && row.useCount >= row.maxUses ? "exhausted" : "active";
+}
 
 export function selectWebhookConsole(state) {
     const value = state.admin?.webhooks || createWebhookState();
     const viewer = webhookViewer(state);
+    const now = Date.now();
     const bucket = value[value.tab] || {};
     const rows = (bucket.rows || []).map(row => ({
         ...row,
         rowId: webhookResourceId(value.tab, row),
         selected: webhookResourceId(value.tab, row) === bucket.selectedId,
         title: webhookText(row.label || row.receiptId || row.endpointId || row.id),
-        stateLabel: webhookText(row.status || row.state || (row.revokedAt ? "revoked" : Date.parse(row.expiresAt) <= Date.now() ? "expired" : "active")),
+        stateLabel: webhookText(row.status || row.state || endpointState(row, now)),
     }));
     const resource = (bucket.rows || []).find(row => webhookResourceId(value.tab, row) === bucket.selectedId) || null;
     const selected = value.tab === "receipts" && bucket.detail?.receiptId === bucket.selectedId ? bucket.detail : resource;
@@ -185,6 +202,11 @@ export function selectWebhookConsole(state) {
     const session = state.sessions?.byId?.[value.sessionId];
     const signalData = value.signalState.data;
     const wait = signalData?.pendingWait;
+    const activeWait = signalData ? wait : !value.signalState.error ? session?.signalWait : null;
+    const endpointWarnings = activeWait && value.endpoints.loaded && !value.endpoints.loading && !value.endpoints.error
+        ? value.endpoints.rows.filter(row => activeWait.names?.includes(row.signalName) && endpointState(row, now) !== "active")
+            .map(row => `Endpoint "${webhookText(row.label || row.endpointId)}" for ${webhookText(row.signalName)} is ${endpointState(row, now)}. The wait remains active; other authorized producers can still raise this signal.`)
+        : [];
     const waitText = signalData
         ? (wait ? selectSessionSignalWait({ status: signalData.interrupted ? "running" : "waiting",
             signalWait: wait, signalWaitInterrupted: signalData.interrupted })?.text || "No active signal wait" : "No active signal wait")
@@ -193,6 +215,16 @@ export function selectWebhookConsole(state) {
     if (value.tab === "connectors" && selected) detailLines.unshift("Authentication configured is not proof that credentials resolve or deliveries succeed.", "");
     if (value.tab === "templates") detailLines.unshift(WEBHOOK_POLICY_HELP, "");
     if (value.tab === "receipts" && selected) detailLines.unshift(webhookReceiptMeaning(selected.status), "");
+    const replayDeadline = selected?.replayExpiresAt ? Date.parse(selected.replayExpiresAt) : null;
+    const replayExpired = replayDeadline !== null && (!Number.isFinite(replayDeadline) || replayDeadline <= now);
+    const replayUnavailable = !selected ? null : replayExpired ? "The replay window has expired. No new replay can be requested."
+        : selected.payloadRetained === false ? "Routing data is no longer retained. This receipt cannot be replayed."
+            : selected.replayAvailable !== true ? "Replay is not currently available. Refresh to check status, retained data and replay limits." : null;
+    if (value.tab === "receipts" && selected) {
+        if (selected.replayExpiresAt) detailLines.unshift(`Replay deadline: ${formatDisplayDateTime(selected.replayExpiresAt)}`);
+        if (selected.receiptExpiresAt) detailLines.unshift(`History expires: ${formatDisplayDateTime(selected.receiptExpiresAt)}`);
+        if (replayUnavailable) detailLines.unshift(replayUnavailable);
+    }
     const busy = Boolean(value.pending);
     const editor = value.editor ? {
         ...value.editor,
@@ -226,18 +258,22 @@ export function selectWebhookConsole(state) {
         canEdit: !busy && !bucket.loading && !bucket.error && canManage && !revoked && ["connectors", "bindings", "templates"].includes(value.tab),
         canRevoke: !busy && !bucket.loading && !bucket.error && canManage && !revoked && value.tab !== "receipts",
         canTest: !busy && !bucket.loading && !bucket.error && canManage && !revoked && value.tab === "bindings",
-        canReplay: !busy && !bucket.loading && !bucket.detailLoading && !bucket.detailError && !bucket.error && Boolean(selected) && value.tab === "receipts",
+        canReplay: !busy && !bucket.loading && !bucket.detailLoading && !bucket.detailError && !bucket.error
+            && selected?.replayAvailable === true && !replayUnavailable && value.tab === "receipts",
+        replayUnavailable,
+        canEditRetention: !busy && viewer.isAdmin && value.tab === "health" && value.health.loaded
+            && !value.health.loading && !value.health.error && Number.isInteger(value.health.data?.retention?.policy?.revision),
         canRaise: !busy && Boolean(value.sessionId),
         connectorDelivery,
         canCopyConnector: Boolean(connectorDelivery) && !busy && !bucket.loading && !bucket.error && !editor && !value.capabilityId && !state.ui.modal,
-        sessionId: value.sessionId, sessionRows, signalState: value.signalState, waitText: webhookText(waitText),
+        sessionId: value.sessionId, sessionRows, signalState: value.signalState, waitText: webhookText(waitText), endpointWarnings,
         detailLines, detailOffset: value.detailOffset,
         editor, capabilityId: value.capabilityId, capabilityWarning: WEBHOOK_CAPABILITY_WARNING, copyStatus: value.copyStatus,
         testResult: value.testResult, testHelp: WEBHOOK_DRY_RUN_HELP,
         receipts: value.receipts, health: value.health,
         help: editor ? "Tab/Shift+Tab field · ↑/↓ choice · Enter submit · Ctrl+J JSON newline · Esc cancel"
             : value.capabilityId ? "c copy capability URL · Ctrl+U/D scroll · Esc close and erase"
-                : `${value.tab === "connectors" ? "c copy delivery URL/path · " : ""}1–6/Tab page · j/k select · n create · e edit · d revoke · t dry-run · s session · u raise · f filters · p replay · o session · v related receipts · [/] receipts · r refresh · Ctrl+U/D scroll · m providers · Esc close`,
+                : `${value.tab === "connectors" ? "c copy delivery URL/path · " : ""}1–6/Tab page · j/k select · n create · e edit${value.tab === "health" ? " retention policy" : ""} · d revoke · t dry-run · s session · u raise · f filters · p replay · o session · v related receipts · [/] receipts · r refresh · Ctrl+U/D scroll · m providers · Esc close`,
     };
 }
 
@@ -259,11 +295,19 @@ export function buildWebhookConsoleLines(view) {
             lines.push(line(`Pending: ${view.health.data.pending} · oldest ${view.health.data.oldestPendingAgeSeconds}s`));
             lines.push(line(`Dead-lettered: ${view.health.data.deadLettered} · oldest ${view.health.data.oldestDeadLetterAgeSeconds}s`, "yellow"));
             for (const row of view.health.data.receipts) lines.push(line(`${row.provider} · ${row.status}: ${row.count}`));
+            const retention = view.health.data.retention;
+            if (retention) {
+                lines.push(line(`Retention: history ${retention.policy.receiptRetentionDays} days · replay ${retention.policy.replayRetentionDays} days`),
+                    line(`Cleaned: ${retention.receiptsDeleted} receipts · ${retention.payloadsDeleted} payloads`),
+                    line(`Last cleanup: ${retention.lastSweepAt ? formatDisplayDateTime(retention.lastSweepAt) : "Not yet run"}`),
+                    line("Active work and delivery/creation identities are never aged out.", "gray"));
+            } else lines.push(line("Retention policy is unavailable on this server.", "yellow"));
         } else if (!view.loading && !view.loadError) lines.push(line("No health snapshot loaded.", "gray"));
         lines.push(line("Receipt/error facts only. Configured authentication is not verified health.", "gray"));
     } else {
         if (view.tab === "endpoints") {
             lines.push(line(`Session: ${view.sessionId || "choose with s"}`, "cyan"), line(view.waitText, "yellow"));
+            lines.push(...view.endpointWarnings.map(text => line(text, "yellow")));
             if (view.signalState.loading) lines.push(line("Loading signal state…", "gray"));
             if (view.signalState.error) lines.push(line(`Signal state: ${view.signalState.error}`, "red"));
             if (view.signalState.data) lines.push(line(`Buffered signals: ${view.signalState.data.buffered.length}`));

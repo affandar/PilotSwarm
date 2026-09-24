@@ -91,6 +91,14 @@ export function createWebhookEditor(kind, mode, { resource = null, isAdmin = fal
             repositoryId: connector?.source?.repositoryId || "", ...(connector?.source?.projectId ? { projectId: connector.source.projectId } : {}),
             pullRequestNumber: 1,
         }), "Use a normalized event, not a raw provider body. No external request is sent. URLs remain plain text."));
+    } else if (kind === "retention") {
+        title = "Edit webhook retention"; submitLabel = "Save retention policy";
+        description = "Applies to future terminal dispositions. Existing replay deadlines are never extended. Cleanup preserves active work and delivery/creation deduplication identities; it runs even when ingress is disabled.";
+        fixed.push(`Expected revision: ${resource.revision}`);
+        fields.push(
+            field("receiptRetentionDays", "Terminal receipt history (days)", "number", String(resource.receiptRetentionDays), "Whole number 1-3650. Default 30 days after a terminal disposition."),
+            field("replayRetentionDays", "Replay window (days)", "number", String(resource.replayRetentionDays), "Whole number 1 through the receipt retention period. Default 30 days from the first replayable terminal failure."),
+        );
     } else if (kind === "receipts") {
         title = "Filter receipts"; submitLabel = "Apply filters"; description = "Server-scoped metadata only. Newest first, with an exclusive opaque receipt-ID cursor.";
         const query = webhooks?.receipts.query || {};

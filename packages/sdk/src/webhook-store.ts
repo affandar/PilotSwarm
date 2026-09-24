@@ -10,6 +10,7 @@ import {
     type WebhookReceipt, type WebhookReceiptQuery, type WebhookMetrics, type WebhookBindingTest,
     type WebhookEvent, type WebhookSignalDisposition, type WebhookRouteClaim,
     type WebhookConnectorAuth, type WebhookProvider, type WebhookSourceScope,
+    type WebhookRetentionPolicy, type UpdateWebhookRetentionPolicyInput, type WebhookRetentionSweep,
 } from "./webhook-types.js";
 import {
     webhookObject, webhookText, webhookInteger, webhookRevision, webhookRate, webhookSecretRef, webhookHash,
@@ -30,11 +31,49 @@ const STATUS_CODES: Record<string, number> = {
     WEBHOOK_FORBIDDEN: 403, WEBHOOK_NOT_FOUND: 404, WEBHOOK_CONFLICT: 409, WEBHOOK_DISABLED: 409,
     WEBHOOK_EXPIRED: 410, WEBHOOK_TARGET_TERMINAL: 410, WEBHOOK_LIMIT: 429, WEBHOOK_LEASE_LOST: 409,
     WEBHOOK_PAYLOAD_UNAVAILABLE: 409, WEBHOOK_CONFIRMATION_REQUIRED: 400,
+    WEBHOOK_REPLAY_EXPIRED: 410,
 };
 /** @internal Owned by the CMS provider; feature surfaces must use the management client. */
 export class WebhookStore {
     private readonly schema: string;
+    private retentionTimer?: ReturnType<typeof setTimeout>;
+    private retentionRun?: Promise<void>;
+    private retentionStopped = true;
     constructor(private readonly pool: Pool, schema: string) { this.schema = `"${schema.replace(/"/g, '""')}"`; }
+
+    /** CMS-owned maintenance also runs when public ingress is disabled. */
+    startRetention(): void {
+        if (!this.retentionStopped) return;
+        this.retentionStopped = false;
+        const schedule = (delayMs: number) => {
+            if (this.retentionStopped) return;
+            this.retentionTimer = setTimeout(() => {
+                this.retentionRun = run().finally(() => { this.retentionRun = undefined; });
+            }, delayMs);
+            this.retentionTimer.unref?.();
+        };
+        const run = async () => {
+            let delayMs = 60_000;
+            try {
+                const result = await this.sweepRetention();
+                const next = Date.parse(result.nextSweepAt);
+                if (!Number.isFinite(next)) throw new WebhookError("WEBHOOK_RETENTION_FAILED", "Invalid retention schedule.", 503);
+                delayMs = Math.max(1000, Math.min(60_000, next - Date.now()));
+            } catch (error) {
+                console.error(`[webhooks] retention: ${error instanceof WebhookError ? error.code : "WEBHOOK_RETENTION_FAILED"}`);
+            } finally { schedule(delayMs); }
+        };
+        schedule(0);
+    }
+    async stopRetention(): Promise<void> {
+        this.retentionStopped = true;
+        clearTimeout(this.retentionTimer);
+        this.retentionTimer = undefined;
+        await this.retentionRun;
+    }
+    sweepRetention(limit = 500): Promise<WebhookRetentionSweep> {
+        return this.call("cms_webhook_retention_sweep", [webhookInteger(limit, "limit", 1, 500)]);
+    }
     private async call<T>(name: string, args: unknown[] = []): Promise<T> {
         const client = await this.pool.connect().catch(() => {
             throw new WebhookError("WEBHOOK_STORAGE_UNAVAILABLE", "Webhook storage is unavailable.", 503);
@@ -169,6 +208,14 @@ export class WebhookStore {
         return this.call("cms_webhook_replay", [webhookText(receiptId, "receiptId"), true, ...this.actor(viewer)]);
     }
     getWebhookMetrics(viewer?: WebhookViewer): Promise<WebhookMetrics> { return this.call("cms_webhook_metrics", this.actor(viewer)); }
+    updateWebhookRetentionPolicy(value: UpdateWebhookRetentionPolicyInput, viewer?: WebhookViewer): Promise<WebhookRetentionPolicy> {
+        const input = webhookObject(value, ["expectedRevision", "receiptRetentionDays", "replayRetentionDays"]);
+        webhookRevision(input.expectedRevision);
+        const receiptDays = webhookInteger(input.receiptRetentionDays, "receiptRetentionDays", 1, 3650);
+        webhookInteger(input.replayRetentionDays, "replayRetentionDays", 1, receiptDays);
+        const [provider, subject] = this.actor(viewer);
+        return this.call("cms_webhook_retention_update", [JSON.stringify(input), provider, subject, viewer?.isAdmin === true]);
+    }
     preflight(peerHash: string): Promise<boolean> { return this.call("cms_webhook_preflight", [peerHash]); }
     originRate(origin: string): Promise<boolean> { return this.call("cms_webhook_origin_rate", [origin]); }
     ingressConfig(kind: "endpoint" | "connector", key: string): Promise<WebhookIngressConfig> {

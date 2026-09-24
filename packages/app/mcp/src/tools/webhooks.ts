@@ -151,6 +151,14 @@ export function registerWebhookTools(server: McpServer, ctx: ServerContext) {
         inputSchema: { receipt_id: id, confirmed: z.literal(true) } },
     withToolErrors(async ({ receipt_id }) => jsonResult(await ctx.mgmt.replayWebhookReceipt(receipt_id, { confirmed: true }, await viewer()))));
     server.registerTool("get_webhook_metrics", { title: "Get Webhook Metrics",
-        description: "Read viewer-scoped outcome counts, routing backlog and dead-letter ages.", inputSchema: {} },
+        description: "Read viewer-scoped outcome counts, routing backlog, dead-letter ages, retention policy and cleanup counters.", inputSchema: {} },
     withToolErrors(async () => jsonResult(await ctx.mgmt.getWebhookMetrics(await viewer()))));
+    server.registerTool("update_webhook_retention_policy", { title: "Update Webhook Retention",
+        description: "Administrator-only, revision-guarded retention policy. Applies to future terminal dispositions; existing deadlines are not extended. Active work and deduplication/creation tombstones are preserved.",
+        inputSchema: { patch: z.object({
+            expectedRevision: z.number().int().positive(),
+            receiptRetentionDays: z.number().int().min(1).max(3650),
+            replayRetentionDays: z.number().int().min(1).max(3650),
+        }).strict().refine(value => value.replayRetentionDays <= value.receiptRetentionDays, "Replay retention cannot exceed receipt retention") } },
+    withToolErrors(async ({ patch }) => jsonResult(await ctx.mgmt.updateWebhookRetentionPolicy(patch, await viewer()))));
 }

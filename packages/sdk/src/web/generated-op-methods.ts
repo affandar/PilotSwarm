@@ -192,6 +192,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "updateSharedProviderCredential",
     "updateWebhookBinding",
     "updateWebhookConnector",
+    "updateWebhookRetentionPolicy",
     "updateWebhookSessionTemplate",
     "uploadAgentPackage",
     "uploadArtifact",
@@ -1845,6 +1846,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Update bounded receipt/replay retention with expectedRevision. Active work and delivery/creation deduplication are never aged out.
+     * @remarks `PATCH /webhooks/retention` — access: `fleet:admin`
+     */
+    updateWebhookRetentionPolicy(params: {
+        patch?: any;
+    }): Promise<any>;
+
+    /**
      * Update a template with expectedRevision; configuration and prompt changes require admin approval.
      * @remarks `PATCH /webhooks/templates/:templateId` — access: `authed`
      */
@@ -2113,6 +2122,7 @@ export function createManagementOps(
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
         updateWebhookBinding: (params: Record<string, unknown> = {}) => callOp("updateWebhookBinding", params),
         updateWebhookConnector: (params: Record<string, unknown> = {}) => callOp("updateWebhookConnector", params),
+        updateWebhookRetentionPolicy: (params: Record<string, unknown> = {}) => callOp("updateWebhookRetentionPolicy", params),
         updateWebhookSessionTemplate: (params: Record<string, unknown> = {}) => callOp("updateWebhookSessionTemplate", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),

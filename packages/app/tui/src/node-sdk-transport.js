@@ -675,6 +675,7 @@ export class NodeSdkTransport {
     async getWebhookReceipt(receiptId) { return this.mgmt.getWebhookReceipt(receiptId, await this._webhookViewer()); }
     async replayWebhookReceipt(receiptId, input) { return this.mgmt.replayWebhookReceipt(receiptId, input, await this._webhookViewer()); }
     async getWebhookMetrics() { return this.mgmt.getWebhookMetrics(await this._webhookViewer()); }
+    async updateWebhookRetentionPolicy(patch) { return this.mgmt.updateWebhookRetentionPolicy(patch, await this._webhookViewer()); }
     async raiseSignal(sessionId, name, options = {}) { return this.mgmt.raiseSignal(sessionId, name, options); }
     async getSessionSignalState(sessionId) { return this.mgmt.getSessionSignalState(sessionId); }
 

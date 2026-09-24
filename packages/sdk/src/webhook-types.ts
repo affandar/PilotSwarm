@@ -200,6 +200,12 @@ export interface WebhookReceipt {
     receivedAt: string;
     updatedAt: string;
     nextAttemptAt?: string;
+    settledAt?: string;
+    receiptExpiresAt?: string;
+    replayExpiresAt?: string;
+    payloadRetained: boolean;
+    /** Retained data/status/window only. Replay still reauthorizes current policy. */
+    replayAvailable: boolean;
     timeline: Array<{ status: WebhookReceiptStatus; at: string; code?: string }>;
 }
 export interface WebhookReceiptQuery {
@@ -217,6 +223,31 @@ export interface WebhookMetrics {
     deadLettered: number;
     oldestPendingAgeSeconds: number;
     oldestDeadLetterAgeSeconds: number;
+    retention: {
+        policy: WebhookRetentionPolicy;
+        lastSweepAt: string | null;
+        nextSweepAt: string | null;
+        receiptsDeleted: number;
+        payloadsDeleted: number;
+    };
+}
+export interface WebhookRetentionPolicy {
+    revision: number;
+    receiptRetentionDays: number;
+    replayRetentionDays: number;
+    updatedAt: string;
+}
+export interface UpdateWebhookRetentionPolicyInput {
+    expectedRevision: number;
+    receiptRetentionDays: number;
+    replayRetentionDays: number;
+}
+/** @internal Bounded maintenance result, with a database-coordinated schedule. */
+export interface WebhookRetentionSweep {
+    processed: number;
+    receiptsDeleted: number;
+    payloadsDeleted: number;
+    nextSweepAt: string;
 }
 export interface WebhookBindingTest {
     matches: boolean;

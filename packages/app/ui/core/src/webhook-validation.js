@@ -234,6 +234,12 @@ export function webhookFormInput(editor, { isAdmin = false, now = Date.now() } =
         case "test":
             input.event = validateWebhookEvent(json("event", "Normalized event"));
             break;
+        case "retention":
+            if (!isAdmin) throw new Error("Only an administrator can update retention policy.");
+            input.expectedRevision = integer(editor.expectedRevision, "Selected revision", 1, 2147483647);
+            input.receiptRetentionDays = integer(Number(fields.receiptRetentionDays), "Receipt retention days", 1, 3650);
+            input.replayRetentionDays = integer(Number(fields.replayRetentionDays), "Replay retention days", 1, input.receiptRetentionDays);
+            break;
         case "receipts":
             for (const key of ["connectorId", "endpointId", "sessionId", "status", "before"]) optionalText(key);
             optionalNumber("limit", "Page size", 100);

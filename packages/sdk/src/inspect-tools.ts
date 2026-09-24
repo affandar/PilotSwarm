@@ -1463,7 +1463,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
                 handler: async (args: { receipt_id: string }) => read(async () => reader.getWebhookReceipt(args.receipt_id, await webhookViewer())),
             }),
             defineTool("read_webhook_metrics", {
-                description: "Read viewer-scoped webhook outcome counts, pending delivery backlog and dead-letter ages.",
+                description: "Read viewer-scoped webhook outcome counts, pending delivery backlog, dead-letter ages, retention policy, cleanup timestamps and deletion counters.",
                 parameters: { type: "object", properties: {} },
                 handler: async () => read(async () => reader.getWebhookMetrics(await webhookViewer())),
             }),

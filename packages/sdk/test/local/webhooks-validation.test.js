@@ -185,6 +185,8 @@ describe.concurrent("webhook management web-mode contract", () => {
             ["getWebhookReceipt", ["r", viewer], { receiptId: "r" }],
             ["replayWebhookReceipt", ["r", { confirmed: true }, viewer], { receiptId: "r", confirmed: true }],
             ["getWebhookMetrics", [viewer], undefined],
+            ["updateWebhookRetentionPolicy", [{ expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 }, viewer],
+                { patch: { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 } }],
         ];
         for (const [name, args, params] of cases) {
             await client[name](...args);
@@ -251,5 +253,31 @@ describe.concurrent("webhook management web-mode contract", () => {
         release();
         await stopping;
         expect(claims).toBe(1);
+    });
+    it("owns one unreferenced cleanup loop and waits for an in-flight batch before shutdown", async () => {
+        const store = new WebhookStore({}, "fixture");
+        const entered = Promise.withResolvers();
+        const release = Promise.withResolvers();
+        let runs = 0;
+        store.sweepRetention = async () => {
+            runs++;
+            entered.resolve();
+            await release.promise;
+            return { processed: 0, payloadsDeleted: 0, receiptsDeleted: 0,
+                nextSweepAt: new Date(Date.now() + 60_000).toISOString() };
+        };
+        store.startRetention();
+        store.startRetention();
+        expect(store.retentionTimer.hasRef()).toBe(false);
+        await entered.promise;
+        let stopped = false;
+        const stopping = store.stopRetention().then(() => { stopped = true; });
+        expect(stopped).toBe(false);
+        release.resolve();
+        await stopping;
+        expect(stopped).toBe(true);
+        expect(runs).toBe(1);
+        expect(store.retentionTimer).toBeUndefined();
+        await store.stopRetention();
     });
 });

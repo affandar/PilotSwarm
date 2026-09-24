@@ -95,6 +95,7 @@ export const OPERATIONS = [
     { name: "getWebhookReceipt", access: "authed", method: "GET", path: "/webhooks/receipts/:receiptId", params: { receiptId: path("receiptId") }, summary: "Read an authorized receipt, disposition and receipt-to-session correlation." },
     { name: "replayWebhookReceipt", access: "authed", method: "POST", path: "/webhooks/receipts/:receiptId/replay", params: { receiptId: path("receiptId"), confirmed: body() }, summary: "Explicitly confirmed replay of a failed receipt under current authorization; confirmed must be true." },
     { name: "getWebhookMetrics", access: "authed", method: "GET", path: "/webhooks/metrics", summary: "Viewer-scoped webhook counts, routing backlog and dead-letter age with bounded dimensions." },
+    { name: "updateWebhookRetentionPolicy", access: "fleet:admin", method: "PATCH", path: "/webhooks/retention", params: { patch: body() }, summary: "Update bounded receipt/replay retention with expectedRevision. Active work and delivery/creation deduplication are never aged out." },
 
     // ── Session sharing (security model) ────────────────────────────────
     { name: "getSessionAccess", access: "session:read", method: "GET", path: "/sessions/:sessionId/access", params: { sessionId: path("sessionId") }, summary: "The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }." },

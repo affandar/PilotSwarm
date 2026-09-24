@@ -181,6 +181,13 @@ model success. Keep [the webhook guide](../docs/developer/building/webhooks.md),
 MCP, shared UI and tuner reads in parity. Provider registration, CI runs, tunnels
 and deployments require separate explicit operator permission.
 
+Webhook retention defaults to 30-day terminal history and a fixed 30-day replay
+window. Cleanup is CMS-owned, bounded and independent of ingress enablement.
+Preserve queued/outbox work, delivery dedupe and creation tombstones; never
+extend captured replay deadlines on duplicates/replay/policy edits. Expose
+policy, cleanup counts and expiry through management/MCP/tuner/shared Health.
+Endpoint expiry/revocation warns beside a live wait but never cancels it.
+
 ### Docker / AKS Build Convention
 
 The AKS cluster runs on AMD64 Linux nodes. **All Docker image builds must use `docker buildx build --platform linux/amd64`** — not plain `docker build` — because development happens on macOS ARM64 (Apple Silicon). Without the platform flag, the pushed image has the wrong architecture and pods fail with `ImagePullBackOff` / `no match for platform in manifest`.

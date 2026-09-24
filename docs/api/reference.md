@@ -215,6 +215,7 @@ owner-scoped, subject to the configured administrator scope and current grants.
 | getWebhookReceipt | `GET /api/v1/webhooks/receipts/:receiptId` | None |
 | replayWebhookReceipt | `POST /api/v1/webhooks/receipts/:receiptId/replay` | `{ confirmed: true }`; explicit confirmation required |
 | getWebhookMetrics | `GET /api/v1/webhooks/metrics` | None |
+| updateWebhookRetentionPolicy | `PATCH /api/v1/webhooks/retention` | Admin-only `{ patch: { expectedRevision, receiptRetentionDays, replayRetentionDays } }` |
 
 Endpoint creation returns the capability URL/token **once**. Metadata reads
 never return them. Connector auth accepts approved references only:
@@ -236,6 +237,18 @@ See [webhook ingress](../developer/building/webhooks.md) for source scopes,
 approved templates, coalescing, bounded normalization, secret rotation, rates,
 revocation, dead letters and local verification. Configuring these resources
 does not register a GitHub/ADO hook or deploy infrastructure.
+
+Retention defaults to 30 days for terminal receipt history and 30 days for the
+first terminal failure's replay window. Durations are 1-3650 whole days, with
+replay no longer than history. Read policy/revision through
+`getWebhookMetrics().retention.policy`; updates apply to future terminal
+dispositions and do not extend existing replay deadlines. The `retention`
+snapshot also contains cleanup timestamps and viewer-scoped deletion counters.
+Receipt reads include `settledAt`, `receiptExpiresAt`, `replayExpiresAt`,
+`payloadRetained`, and `replayAvailable`. Replay reauthorizes even when
+`replayAvailable` is true. An expired replay returns `WEBHOOK_REPLAY_EXPIRED`
+(410); purged history/cursors return not-found. Cleanup preserves pending work,
+queued signals, delivery deduplication and session-creation tombstones.
 
 ### Session sharing
 

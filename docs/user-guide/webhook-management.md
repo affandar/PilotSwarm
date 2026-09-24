@@ -29,7 +29,7 @@ the UI does not read environment variables or reach past the transport.
 | **Approved templates** | Administrators approve creation policy: fixed source, namespace, agent/model settings, instruction and allowlisted event fields. Owners can edit label/state; config/prompt changes require admin. Source and owner are immutable after creation. |
 | **Session signals** | Choose an ordinary session from the visible catalog or enter its exact authorized ID. Inspect the current signal wait and buffered metadata, mint/revoke generic endpoints, or raise a signal manually. System/service sessions and group rows are not webhook targets. |
 | **Receipts** | Filter by connector, endpoint, session, status or exclusive receipt-ID cursor. Page newest-first (25 by default; maximum 100). Inspect redacted chronological timeline, attempts, duplicate/replay counts, last error and next attempt time. Select the receipt's session using ordinary authorized navigation. |
-| **Health** | Viewer-scoped bounded counts by provider/status, pending/dead-letter totals and oldest ages. These are receipt/error facts, not proof that configured authentication works. |
+| **Health** | Viewer-scoped counts, pending/dead-letter ages, retention policy, cleanup timestamps and deletion counters. Administrators can edit retention using the captured revision. These are receipt/error facts, not proof that configured authentication works. |
 
 Press **Refresh** / `r` to read current server metadata. Receipt **Older** /
 **Newer** pages retain the filters. **Newest**, or applying filters without a
@@ -142,7 +142,11 @@ fetched. A successful manual raise reports **queued**, not consumed. Current
 `signalWait` metadata keeps first-event/race versus interruptible waits and
 indefinite versus deadline waits distinct.
 
-**Replay** always opens the shared confirmation dialog. Only confirmation
+Expired, revoked or exhausted endpoints are shown alongside a still-active
+wait. They do not cancel it: another endpoint, SDK caller, operator or peer may
+still supply the signal. Prefer explicit timeouts for CI/build workflows.
+
+**Replay**, when available, opens the shared confirmation dialog. Only confirmation
 sends `{confirmed:true}`; there is no auto-replay or mutation retry. Replay
 may create a session, enqueue a prompt or raise a signal and remains subject
 to current policy and replay limits. **Revoke** is a separate confirmed
@@ -154,12 +158,33 @@ closes and reopens the edit. The UI never silently retries with a newer revision
 After a timeout or lost connection, refresh before deciding whether to submit
 another action: the outcome may be unknown.
 
+## Retention and expiry
+
+Terminal receipt history and failed-delivery replay default to **30 days**.
+Health shows the persisted policy, last cleanup and cumulative viewer-scoped
+deletion counts. Administrators use **Edit retention policy** (`e` on Health)
+to choose 1-3650 whole days, with replay no longer than history. Changes affect
+future terminal dispositions; existing replay deadlines are not extended.
+Revision conflicts require reopening the refreshed policy.
+
+Receipt details show history/replay expiry and whether routing data is still
+retained. Replay is disabled when unavailable or expired; the server enforces
+expiry again and can return `WEBHOOK_REPLAY_EXPIRED` even if cleanup has not
+deleted the bytes yet. If a saved receipt/cursor has been purged, use **Newest**
+to resume browsing current history.
+
+Cleanup runs automatically on initialized CMS hosts, even with ingress off.
+It deletes consumed payloads on a bounded pass and expired terminal history,
+but never ages out queued signals, pending routing work, delivery duplicate
+protection or session-creation tombstones. Receipt status counts cover retained
+history; deletion counters are cumulative. Indefinite waits are unaffected.
+
 ## Native interaction
 
 Within Webhooks, `1`–`6`, `Tab`/`Shift+Tab` or left/right arrows change page.
 `j`/`k` (or arrows) select a resource; `Ctrl+U`/`Ctrl+D` or PageUp/PageDown
 scroll details. On Connectors, `c` copies the selected delivery URL/relative path.
-`n` creates, `e` edits, `d` requests revocation, `t` opens a
+`n` creates, `e` edits (the retention policy on Health), `d` requests revocation, `t` opens a
 binding dry run, `s` chooses a session, `u` raises a signal, `f` edits receipt
 filters, `p` requests replay, `o` selects the receipt's session, and `v` opens
 related receipts. `[`/`]` page receipts newer/older. `r` refreshes, `m` returns

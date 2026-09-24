@@ -12,6 +12,7 @@ import type { MigrationEntry } from "./pg-migrator.js";
 import { featureFlagsMigration } from "./migrations/feature-flags-0077.js";
 import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-default-policy-0078.js";
 import { webhooksMigration } from "./migrations/webhooks-0081.js";
+import { webhookRetentionMigration } from "./migrations/webhook-retention-0082.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -404,6 +405,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0079", name: "base_agent_v2", sql: baseAgentV2Migration(schema) },
         { version: "0080", name: "session_page_system_filter", sql: migration_0080_session_page_system_filter(schema) },
         { version: "0081", name: "durable_webhooks", sql: webhooksMigration(schema) },
+        { version: "0082", name: "webhook_retention", steps: webhookRetentionMigration(schema) },
     ];
 }
 

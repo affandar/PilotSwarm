@@ -8,7 +8,9 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import { webhooksMigration } from "../../src/migrations/webhooks-0081.ts";
+import { webhookRetentionMigration } from "../../src/migrations/webhook-retention-0082.ts";
 import { WebhookRuntime } from "../../src/webhook-runtime.ts";
+import { WebhookStore } from "../../src/webhook-store.ts";
 import { createInspectTools } from "../../src/inspect-tools.ts";
 import { webhookHash } from "../../src/webhook-validation.ts";
 import { assert } from "../helpers/assertions.js";
@@ -97,6 +99,12 @@ async function fixture(run) {
     }
 }
 
+async function sweepRetention(f, limit = 500) {
+    await f.store.stopRetention();
+    await pool.query(`UPDATE "${f.schema}".webhook_retention_policy SET next_sweep_at=now()-interval '1 second' WHERE singleton`);
+    return f.store.sweepRetention(limit);
+}
+
 describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
     it.each(["raise_signal", "enqueue_prompt", "signal_endpoint"])("routes an authenticated HTTP %s through PostgreSQL and native Duroxide to a waiting session", { timeout: 45_000 }, actionType => fixture(async f => {
         const { SqliteProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
@@ -160,6 +168,16 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
                 sessionId: f.target, config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, prompt: "Wait for a PR",
             }, "1.0.80");
             await waitFor(status => status.status === "waiting" && status.signalWait);
+            if (capability) {
+                const pendingWait = JSON.parse((await native.getStatus(instance)).customStatus).signalWait;
+                const expired = await f.management.createSignalEndpoint(f.target, "pr_ready", {}, alice);
+                const revoked = await f.management.createSignalEndpoint(f.target, "pr_ready", {}, alice);
+                await pool.query(`UPDATE "${f.schema}".signal_endpoints SET expires_at=now()-interval '1 second' WHERE endpoint_id=$1`, [expired.endpointId]);
+                await f.management.revokeSignalEndpoint(revoked.endpointId, alice);
+                await sweepRetention(f);
+                expect(JSON.parse((await native.getStatus(instance)).customStatus).signalWait).toEqual(pendingWait);
+                expect(turns).toHaveLength(1);
+            }
             await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
             const delivery = capability
                 ? request({ pullRequestNumber: 7 }, { "idempotency-key": "native-http" })
@@ -749,5 +767,245 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
         expect(receipt).not.toHaveProperty("traceContext");
         expect(JSON.stringify(receipt)).not.toContain(traceContext.traceId);
         expect(JSON.stringify(await f.management.getWebhookMetrics(alice))).not.toContain(traceContext.traceId);
+    }));
+
+    it("uses persisted retention defaults and revision-guarded administrator changes without altering prior deadlines", () => fixture(async f => {
+        await f.store.stopRetention();
+        const policy = (await f.management.getWebhookMetrics(alice)).retention.policy;
+        expect(policy).toMatchObject({ revision: 1, receiptRetentionDays: 30, replayRetentionDays: 30 });
+        const patch = { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 };
+        await expect(f.management.updateWebhookRetentionPolicy(patch, alice)).rejects.toMatchObject({ status: 403 });
+        await expect(f.management.updateWebhookRetentionPolicy(patch, { ...alice, isAdmin: true })).rejects.toMatchObject({ status: 403 });
+        const saved = await f.management.updateWebhookRetentionPolicy(patch, { ...admin, adminScope: "cluster" });
+        expect(saved).toMatchObject({ revision: 2, receiptRetentionDays: 90, replayRetentionDays: 7 });
+        await expect(f.management.updateWebhookRetentionPolicy(patch, admin)).rejects.toMatchObject({ code: "WEBHOOK_CONFLICT" });
+        for (const invalid of [
+            { receiptRetentionDays: 0, replayRetentionDays: 1 },
+            { receiptRetentionDays: 3651, replayRetentionDays: 1 },
+            { receiptRetentionDays: 7, replayRetentionDays: 8 },
+        ]) {
+            await expect(async () => f.management.updateWebhookRetentionPolicy({ expectedRevision: 2, ...invalid }, admin))
+                .rejects.toMatchObject({ code: "WEBHOOK_INVALID" });
+        }
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        await f.runtime.acceptSignalEndpoint(endpoint.token, request({ value: 1 }));
+        const [claim] = await f.store.claim();
+        await f.store.finish(claim.receiptId, claim.leaseToken, "dead_lettered", "FIXTURE_FAILURE", false);
+        const receipt = await f.management.getWebhookReceipt(claim.receiptId, alice);
+        expect(Date.parse(receipt.replayExpiresAt) - Date.parse(receipt.settledAt)).toBe(7 * 86400000);
+        expect(Date.parse(receipt.receiptExpiresAt) - Date.parse(receipt.settledAt)).toBe(90 * 86400000);
+        expect(receipt.replayAvailable).toBe(true);
+        await f.management.updateWebhookRetentionPolicy({ expectedRevision: 2, receiptRetentionDays: 365, replayRetentionDays: 365 }, admin);
+        expect((await f.management.getWebhookReceipt(claim.receiptId, alice)).replayExpiresAt).toBe(receipt.replayExpiresAt);
+        const audit = await pool.query(`SELECT action FROM "${f.schema}".authz_audit WHERE action='webhook.retention.update'`);
+        expect(audit.rows).toHaveLength(2);
+    }));
+
+    it("removes consumed payloads then aged receipt history without losing delivery deduplication", () => fixture(async f => {
+        await f.store.stopRetention();
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        const delivery = request({ value: "delete-after-consumption" }, { "idempotency-key": "retained-identity" });
+        await f.runtime.acceptSignalEndpoint(endpoint.token, delivery);
+        await f.runtime.runOnce();
+        const [receipt] = await f.management.listWebhookReceipts({}, alice);
+        await f.store.recordSignalDisposition({ receiptId: receipt.receiptId, sessionId: f.target, signalId: receipt.signalId, disposition: "consumed" });
+        const consumed = await f.management.getWebhookReceipt(receipt.receiptId, alice);
+        expect(consumed).toMatchObject({ payloadRetained: true, replayAvailable: false });
+        expect(consumed.receiptExpiresAt).toBeTruthy();
+        expect(await sweepRetention(f)).toMatchObject({ payloadsDeleted: 1, receiptsDeleted: 0 });
+        expect((await f.management.getWebhookReceipt(receipt.receiptId, alice)).payloadRetained).toBe(false);
+        await f.runtime.acceptSignalEndpoint(endpoint.token, delivery);
+        expect((await f.management.getWebhookReceipt(receipt.receiptId, alice)).receiptExpiresAt).toBe(consumed.receiptExpiresAt);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET receipt_expires_at=now()-interval '1 second' WHERE receipt_id=$1`, [receipt.receiptId]);
+        expect(await sweepRetention(f)).toMatchObject({ receiptsDeleted: 1, payloadsDeleted: 0 });
+        await expect(f.management.getWebhookReceipt(receipt.receiptId, alice)).rejects.toMatchObject({ code: "WEBHOOK_NOT_FOUND" });
+        await f.runtime.acceptSignalEndpoint(endpoint.token, delivery);
+        expect(await f.runtime.runOnce()).toBe(0);
+        expect(await f.management.listWebhookReceipts({}, alice)).toEqual([]);
+        expect(f.queued).toHaveLength(1);
+        expect((await f.management.listSignalEndpoints(f.target, alice))[0].useCount).toBe(1);
+        await expect(f.runtime.acceptSignalEndpoint(endpoint.token,
+            request({ value: "changed-body" }, { "idempotency-key": "retained-identity" })))
+            .rejects.toMatchObject({ code: "WEBHOOK_DELIVERY_CONFLICT" });
+        const retention = (await f.management.getWebhookMetrics(alice)).retention;
+        expect(retention).toMatchObject({ payloadsDeleted: 1, receiptsDeleted: 1 });
+        expect(retention.lastSweepAt).toBeTruthy();
+        expect((await f.management.getWebhookMetrics(bob)).retention).toMatchObject({ payloadsDeleted: 0, receiptsDeleted: 0 });
+        expect((await f.management.getWebhookMetrics({ ...admin, adminScope: "cluster" })).retention.receiptsDeleted).toBe(0);
+        expect((await f.management.getWebhookMetrics(admin)).retention.receiptsDeleted).toBe(1);
+    }));
+
+    it("never ages out queued signals or pending and leased routing work", () => fixture(async f => {
+        await f.store.stopRetention();
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        for (const id of ["queued", "pending", "leased"]) {
+            await f.runtime.acceptSignalEndpoint(endpoint.token, request({ id }, { "idempotency-key": id }));
+        }
+        const [first] = await f.store.claim();
+        await f.store.routeContext(first.receiptId, first.leaseToken);
+        await f.store.finish(first.receiptId, first.leaseToken, "queued", null, false);
+        const [leased] = await f.store.claim();
+        await f.store.routeContext(leased.receiptId, leased.leaseToken);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET received_at=now()-interval '500 days',
+            updated_at=now()-interval '500 days',receipt_expires_at=now()-interval '1 day',payload_expires_at=now()-interval '1 day'`);
+        expect(await sweepRetention(f)).toMatchObject({ processed: 0, receiptsDeleted: 0, payloadsDeleted: 0 });
+        expect((await pool.query(`SELECT count(*)::int AS n FROM "${f.schema}".webhook_payloads`)).rows[0].n).toBe(3);
+        expect(await f.management.listWebhookReceipts({}, alice)).toHaveLength(3);
+        expect((await f.management.getWebhookMetrics(alice)).pending).toBe(2);
+    }));
+
+    it("enforces replay expiry before cleanup and never renews it after duplicates, replay or policy changes", () => fixture(async f => {
+        await f.store.stopRetention();
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        const delivery = request({ value: 1 }, { "idempotency-key": "fixed-replay-window" });
+        await f.runtime.acceptSignalEndpoint(endpoint.token, delivery);
+        const [claim] = await f.store.claim();
+        await f.store.finish(claim.receiptId, claim.leaseToken, "dead_lettered", "FIXTURE_FAILURE", false);
+        const first = await f.management.getWebhookReceipt(claim.receiptId, alice);
+        await f.runtime.acceptSignalEndpoint(endpoint.token, delivery);
+        await f.management.replayWebhookReceipt(first.receiptId, { confirmed: true }, alice);
+        const [retried] = await f.store.claim();
+        await f.store.finish(retried.receiptId, retried.leaseToken, "dead_lettered", "FIXTURE_FAILURE", false);
+        expect((await f.management.getWebhookReceipt(first.receiptId, alice)).replayExpiresAt).toBe(first.replayExpiresAt);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET replay_expires_at=now(),
+            payload_expires_at=now(),receipt_expires_at=now()+interval '7 days' WHERE receipt_id=$1`, [first.receiptId]);
+        await expect(f.management.replayWebhookReceipt(first.receiptId, { confirmed: true }, bob)).rejects.toMatchObject({ status: 404 });
+        await expect(f.management.replayWebhookReceipt(first.receiptId, { confirmed: true }, alice))
+            .rejects.toMatchObject({ code: "WEBHOOK_REPLAY_EXPIRED", status: 410 });
+        expect((await f.management.getWebhookReceipt(first.receiptId, alice))).toMatchObject({ replayAvailable: false, payloadRetained: true });
+        await f.management.updateWebhookRetentionPolicy({ expectedRevision: 1, receiptRetentionDays: 365, replayRetentionDays: 365 }, admin);
+        expect(await sweepRetention(f)).toMatchObject({ payloadsDeleted: 1, receiptsDeleted: 0 });
+        await expect(f.management.replayWebhookReceipt(first.receiptId, { confirmed: true }, alice))
+            .rejects.toMatchObject({ code: "WEBHOOK_REPLAY_EXPIRED", status: 410 });
+        // An actual late queue acknowledgement can still settle the retained
+        // receipt even after replay bytes expired; cleanup never touches the queue.
+        await f.store.recordSignalDisposition({ receiptId: first.receiptId, sessionId: f.target,
+            signalId: first.signalId, disposition: "consumed" });
+        expect((await f.management.getWebhookReceipt(first.receiptId, alice)).status).toBe("consumed");
+    }));
+
+    it("preserves creation tombstones and unmatched delivery identity after their receipt history expires", () => fixture(async f => {
+        await f.store.stopRetention();
+        const connector = await f.connector();
+        const unmatched = event("unmatched-before-binding");
+        await f.runtime.acceptConnector(connector.id, unmatched);
+        const template = await f.template();
+        await f.management.createWebhookBinding({
+            label: "Create once", connectorId: connector.id, filters: {},
+            action: { type: "create_session", templateId: template.id },
+        }, alice);
+        const delivery = event("created-once");
+        await f.runtime.acceptConnector(connector.id, delivery);
+        await f.runtime.runOnce();
+        const created = (await f.management.listWebhookReceipts({}, alice)).find(row => row.deliveryId === "created-once");
+        await f.store.recordSignalDisposition({ receiptId: created.receiptId, sessionId: created.sessionId,
+            signalId: created.signalId, disposition: "consumed" });
+        await pool.query(`DELETE FROM "${f.schema}".sessions WHERE session_id=$1`, [created.sessionId]);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET receipt_expires_at=now()-interval '1 day'`);
+        expect(await sweepRetention(f)).toMatchObject({ receiptsDeleted: 2 });
+        await f.runtime.acceptConnector(connector.id, delivery);
+        await f.runtime.acceptConnector(connector.id, unmatched);
+        expect(await f.runtime.runOnce()).toBe(0);
+        expect(await f.management.listWebhookReceipts({}, alice)).toEqual([]);
+        expect(await f.catalog.getSession(created.sessionId)).toBeNull();
+        expect((await pool.query(`SELECT count(*)::int AS n FROM "${f.schema}".session_creation_keys`)).rows[0].n).toBe(1);
+        expect((await pool.query(`SELECT count(*)::int AS n FROM "${f.schema}".webhook_deliveries`)).rows[0].n).toBe(2);
+        expect(f.queued).toHaveLength(1);
+    }));
+
+    it("serializes retention against replay and skips locked receipts rather than deleting newly actionable work", () => fixture(async f => {
+        await f.store.stopRetention();
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        await f.runtime.acceptSignalEndpoint(endpoint.token, request({ value: 1 }));
+        const [claim] = await f.store.claim();
+        await f.store.finish(claim.receiptId, claim.leaseToken, "dead_lettered", "FIXTURE_FAILURE", false);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET settled_at=NULL,receipt_expires_at=NULL,
+            payload_expires_at=NULL WHERE receipt_id=$1`, [claim.receiptId]);
+        const connection = await pool.connect();
+        try {
+            await connection.query("BEGIN");
+            await connection.query(`SELECT "${f.schema}".cms_webhook_replay($1,TRUE,$2,$3,FALSE)`,
+                [claim.receiptId, alice.principal.provider, alice.principal.subject]);
+            // The replay holds its receipt lock until commit. A cleanup batch
+            // must not wait on it or purge the body before the new outbox exists.
+            expect(await sweepRetention(f)).toMatchObject({ receiptsDeleted: 0, payloadsDeleted: 0 });
+            await connection.query("COMMIT");
+        } finally { connection.release(); }
+        expect((await f.management.getWebhookMetrics(alice)).pending).toBe(1);
+        await f.runtime.runOnce();
+        const queued = await f.management.getWebhookReceipt(claim.receiptId, alice);
+        expect(queued).toMatchObject({ status: "queued", payloadRetained: true });
+        expect(queued.receiptExpiresAt).toBeUndefined();
+    }));
+
+    it("bounds cleanup batches, resumes after restart and backfills older terminal receipts without bulk expiry", () => fixture(async f => {
+        await f.store.stopRetention();
+        const connector = await f.connector();
+        for (const id of ["a", "b", "c"]) await f.runtime.acceptConnector(connector.id, event(`bounded-${id}`));
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET receipt_expires_at=now()-interval '1 second'`);
+        expect(await sweepRetention(f, 1)).toMatchObject({ processed: 1, receiptsDeleted: 1 });
+        expect((await f.store.sweepRetention(1)).processed).toBe(0);
+        const [legacy] = await f.management.listWebhookReceipts({}, alice);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET settled_at=NULL,receipt_expires_at=NULL,
+            payload_expires_at=NULL WHERE receipt_id=$1`, [legacy.receiptId]);
+        expect(await sweepRetention(f, 1)).toMatchObject({ processed: 1, receiptsDeleted: 0 });
+        const backfilled = await f.management.getWebhookReceipt(legacy.receiptId, alice);
+        expect(Date.parse(backfilled.receiptExpiresAt) - Date.parse(backfilled.settledAt)).toBe(30 * 86400000);
+        for (const step of webhookRetentionMigration(f.schema)) await pool.query(step);
+        expect((await f.management.getWebhookMetrics(alice)).retention.receiptsDeleted).toBe(1);
+        const restarted = new WebhookStore(pool, f.schema);
+        await pool.query(`UPDATE "${f.schema}".webhook_retention_policy SET next_sweep_at=now() WHERE singleton`);
+        expect(await restarted.sweepRetention()).toMatchObject({ receiptsDeleted: 1 });
+        expect(await f.management.listWebhookReceipts({}, alice)).toHaveLength(1);
+        expect(() => f.store.sweepRetention(501)).toThrow(expect.objectContaining({ code: "WEBHOOK_INVALID" }));
+    }));
+
+    it("rolls cleanup data and counters back together and prevents a second worker from double-cleaning", () => fixture(async f => {
+        await f.store.stopRetention();
+        const endpoint = await f.management.createSignalEndpoint(f.target, "ready", {}, alice);
+        await f.runtime.acceptSignalEndpoint(endpoint.token, request({ value: "transactional" }));
+        await f.runtime.runOnce();
+        const [receipt] = await f.management.listWebhookReceipts({}, alice);
+        await f.store.recordSignalDisposition({ receiptId: receipt.receiptId, sessionId: f.target,
+            signalId: receipt.signalId, disposition: "consumed" });
+        await pool.query(`UPDATE "${f.schema}".webhook_retention_policy SET next_sweep_at=now() WHERE singleton`);
+        const connection = await pool.connect();
+        try {
+            await connection.query("BEGIN");
+            const result = await connection.query(`SELECT "${f.schema}".cms_webhook_retention_sweep(500) AS result`);
+            expect(result.rows[0].result).toMatchObject({ payloadsDeleted: 1 });
+            expect(await f.store.sweepRetention()).toMatchObject({ processed: 0, payloadsDeleted: 0 });
+        } finally {
+            await connection.query("ROLLBACK");
+            connection.release();
+        }
+        expect((await f.management.getWebhookReceipt(receipt.receiptId, alice)).payloadRetained).toBe(true);
+        expect((await f.management.getWebhookMetrics(alice)).retention.payloadsDeleted).toBe(0);
+        expect(await f.store.sweepRetention()).toMatchObject({ payloadsDeleted: 1 });
+        expect((await f.management.getWebhookMetrics(alice)).retention.payloadsDeleted).toBe(1);
+    }));
+
+    it("cleans at most 500 receipts per default pass and durably schedules the remaining batch", () => fixture(async f => {
+        await f.store.stopRetention();
+        const connector = await f.connector();
+        await f.runtime.acceptConnector(connector.id, event("batch-seed"));
+        const [seed] = await f.management.listWebhookReceipts({}, alice);
+        await pool.query(`WITH deliveries AS (
+            INSERT INTO "${f.schema}".webhook_deliveries(delivery_pk,origin_id,delivery_id,payload_hash)
+            SELECT 'batch-delivery-'||n,$1,'batch-'||n,repeat('0',64) FROM generate_series(1,500) n
+            RETURNING delivery_pk
+        )
+        INSERT INTO "${f.schema}".webhook_receipts(receipt_id,delivery_pk,owner_id,provider,origin_id,status,signal_id,
+            settled_at,receipt_expires_at)
+        SELECT 'batch-receipt-'||d.delivery_pk,d.delivery_pk,r.owner_id,r.provider,r.origin_id,'unmatched','batch-signal',
+            now()-interval '31 days',now()-interval '1 second'
+        FROM deliveries d CROSS JOIN "${f.schema}".webhook_receipts r WHERE r.receipt_id=$2`,
+        [connector.id, seed.receiptId]);
+        await pool.query(`UPDATE "${f.schema}".webhook_receipts SET receipt_expires_at=now()-interval '1 second' WHERE receipt_id=$1`, [seed.receiptId]);
+        expect(await sweepRetention(f)).toMatchObject({ processed: 500, receiptsDeleted: 500 });
+        expect((await f.management.listWebhookReceipts({}, alice))).toHaveLength(1);
+        expect((await f.management.getWebhookMetrics(alice)).retention.receiptsDeleted).toBe(500);
+        expect(await sweepRetention(f)).toMatchObject({ processed: 1, receiptsDeleted: 1 });
+        expect((await pool.query(`SELECT count(*)::int AS n FROM "${f.schema}".webhook_deliveries`)).rows[0].n).toBe(501);
     }));
 });

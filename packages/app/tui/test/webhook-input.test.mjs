@@ -8,10 +8,10 @@ import { handleWebhookInput } from "../src/webhook-input.js";
 import { PilotSwarmTuiApp } from "../src/app.js";
 import { createTuiPlatform } from "../src/platform.js";
 import { buildHelpModalRows, selectStatusBar } from "../../ui/core/src/index.js";
-import { drain, setupWebhooks, TEST_TOKEN, TEST_URL } from "../../ui/core/test/webhook-fixture.mjs";
+import { drain, setupWebhooks, TEST_TOKEN, TEST_URL, receipt } from "../../ui/core/test/webhook-fixture.mjs";
 
 test("native Webhooks keys use shared actions, real confirmation, pagination and scroll help", async () => {
-    const { controller, value, calls } = setupWebhooks();
+    const { controller, value, calls } = setupWebhooks({ rows: { receipts: [receipt({ status: "dead_lettered" })] } });
     await controller.refreshAdminWebhooks();
     assert.equal(handleWebhookInput(controller, "2"), true); await drain();
     assert.equal(value().tab, "bindings");
@@ -43,6 +43,12 @@ test("native Webhooks keys use shared actions, real confirmation, pagination and
     assert.equal(value().detailOffset, 2, "scrolling back works immediately after hitting the bottom");
     assert.match(selectStatusBar(controller.getState()).right, /f filters.*p replay.*v related receipts/);
     assert.match(JSON.stringify(buildHelpModalRows()), /Admin Console.*Webhooks.*confirmed revoke/);
+    handleWebhookInput(controller, "6"); await drain();
+    handleWebhookInput(controller, "e");
+    assert.equal(value().editor.kind, "retention");
+    assert.equal(value().editor.expectedRevision, 1);
+    handleWebhookInput(controller, "", { escape: true });
+    assert.equal(value().editor, null);
 });
 
 test("native form consumes q/d/session keys as text, choices as arrows and JSON newlines explicitly", async () => {

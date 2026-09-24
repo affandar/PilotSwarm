@@ -1,5 +1,5 @@
 import React from "react";
-import { selectWebhookConsole, webhookReceiptMeaning, webhookText } from "pilotswarm/ui-core";
+import { selectWebhookConsole, webhookReceiptMeaning, webhookText, formatDisplayDateTime } from "pilotswarm/ui-core";
 import { useControllerSelector } from "./use-controller-state.js";
 
 const h = React.createElement;
@@ -126,6 +126,7 @@ function ReceiptDetail({ controller, view }) {
         h("p", null, `Attempts: ${receipt.attempts} · Duplicates: ${receipt.duplicateCount} · Replays: ${receipt.replayCount}`),
         receipt.lastErrorCode ? alert(`Last error: ${receipt.lastErrorCode}`) : null,
         receipt.nextAttemptAt ? note(`Next attempt: ${receipt.nextAttemptAt}`) : null,
+        view.replayUnavailable ? note(view.replayUnavailable) : null,
         view.receipts.detailLoading ? note("Loading receipt timeline…") : null,
         alert(view.receipts.detailError),
         h("div", { className: "ps-webhooks__bar" },
@@ -139,13 +140,20 @@ function ReceiptDetail({ controller, view }) {
                 h("td", null, webhookText(entry.at)), h("td", null, webhookText(entry.status)), h("td", null, webhookText(entry.code || "—")))))));
 }
 
-function Health({ view }) {
+function Health({ controller, view }) {
     const data = view.health.data;
     return h("section", { className: "ps-webhooks__detail", "aria-label": "Webhook health" },
         note("Viewer-scoped, bounded aggregates of receipt/error facts. Authentication configured is not proof of successful resolution or verified delivery."),
         data ? h(React.Fragment, null,
             h("p", null, `Pending: ${data.pending} · Oldest pending age: ${data.oldestPendingAgeSeconds}s`),
             h("p", null, `Dead-lettered: ${data.deadLettered} · Oldest dead-letter age: ${data.oldestDeadLetterAgeSeconds}s`),
+            data.retention ? h("section", { "aria-label": "Webhook retention" },
+                h("h4", null, "Retention"),
+                note(`Terminal receipt history: ${data.retention.policy.receiptRetentionDays} days. Replay window: ${data.retention.policy.replayRetentionDays} days.`),
+                note(`Cleaned: ${data.retention.receiptsDeleted} receipts and ${data.retention.payloadsDeleted} payloads. Last cleanup: ${data.retention.lastSweepAt ? formatDisplayDateTime(data.retention.lastSweepAt) : "Not yet run"}.`),
+                note("Status counts cover retained receipts. Cleanup counts are cumulative and viewer-scoped. Active work and deduplication/creation identities are never aged out."),
+                button("Edit retention policy…", () => controller.openWebhookEditor("health", "edit"), !view.canEditRetention))
+                : note("Retention policy is unavailable on this server."),
             h("table", null,
                 h("thead", null, h("tr", null, ["Provider", "Receipt status", "Count"].map(label => h("th", { key: label }, label)))),
                 h("tbody", null, data.receipts.map((row, index) => h("tr", { key: index },
@@ -190,6 +198,7 @@ export function WebhookPanel({ controller, view, copyCapability }) {
                 button("Enter session ID…", () => controller.openWebhookEditor("session"), locked),
                 button("Raise signal…", () => controller.openWebhookEditor("signal"), !view.canRaise || locked)),
             note(view.waitText),
+            view.endpointWarnings.map((text, index) => h("p", { key: index, role: "status", className: "ps-admin-console__hint" }, text)),
             view.signalState.loading ? note("Loading signal state…") : null,
             alert(view.signalState.error),
             view.signalState.data ? h("details", null, h("summary", null, `Buffered signals: ${view.signalState.data.buffered.length} — metadata only`),
@@ -208,7 +217,7 @@ export function WebhookPanel({ controller, view, copyCapability }) {
                 button("Newest", () => controller.pageWebhookReceipts(0), locked || view.loading || !view.receipts.query.before),
                 button("Newer", () => controller.pageWebhookReceipts(-1), locked || view.loading || !view.receipts.cursors.length),
                 button("Older", () => controller.pageWebhookReceipts(1), locked || view.loading || !view.receipts.hasMore))) : null,
-        view.tab === "health" ? h(Health, { view })
+        view.tab === "health" ? h(Health, { controller, view })
             : h("div", { className: "ps-webhooks__content" },
                 h("div", { className: "ps-webhooks__list", "aria-label": `${view.tab} resources` },
                     view.rows.map(row => button(`${row.title} · ${row.stateLabel}`, () => controller.selectWebhookResource(row.rowId), locked || view.loading,

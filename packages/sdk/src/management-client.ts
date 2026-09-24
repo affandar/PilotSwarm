@@ -3200,6 +3200,9 @@ export class PilotSwarmManagementClient {
     getWebhookMetrics(viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookMetrics> {
         return this._requireWebhooks().getWebhookMetrics(viewer);
     }
+    updateWebhookRetentionPolicy(input: Webhooks.UpdateWebhookRetentionPolicyInput, viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookRetentionPolicy> {
+        return this._requireWebhooks().updateWebhookRetentionPolicy(input, viewer);
+    }
 
     /**
      * Queue a typed signal, starting an unstarted session from its persisted

@@ -129,7 +129,7 @@ const ALWAYS_TOOLS = [
     "list_webhook_connectors", "manage_webhook_connector",
     "list_webhook_bindings", "manage_webhook_binding",
     "list_webhook_templates", "manage_webhook_template", "test_webhook_binding",
-    "list_webhook_receipts", "get_webhook_receipt", "replay_webhook_receipt", "get_webhook_metrics",
+    "list_webhook_receipts", "get_webhook_receipt", "replay_webhook_receipt", "get_webhook_metrics", "update_webhook_retention_policy",
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",

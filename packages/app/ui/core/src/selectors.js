@@ -9267,7 +9267,7 @@ const KEYBINDING_HELP = [
     { section: "Admin Console → Webhooks (A then h)", bindings: [
         ["1–6 / Tab / ← →", "connectors / bindings / templates / signals / receipts / health"],
         ["j k / ctrl-u,d", "select resource / scroll details"],
-        ["n / e / d", "create / edit / confirmed revoke (not session termination)"],
+        ["n / e / d", "create / edit (retention policy on Health) / confirmed revoke (not session termination)"],
         ["connectors c", "copy public delivery URL or labeled relative path"],
         ["t", "binding policy dry run — no external delivery"],
         ["s / u", "choose session / manually raise signal"],

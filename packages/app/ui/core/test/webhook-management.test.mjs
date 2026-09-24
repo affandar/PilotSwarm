@@ -425,7 +425,7 @@ test("endpoint limits/reference validation is shared; ordinary users cannot send
 });
 
 test("replay always confirms the exact selected receipt; cancel, fake confirmation and double click never replay", async () => {
-    const { controller, calls, value } = setupWebhooks();
+    const { controller, calls, value } = setupWebhooks({ rows: { receipts: [receipt({ status: "dead_lettered" })] } });
     await controller.setWebhookTab("receipts");
     await controller.confirmWebhookAction({ type: "confirm", action: "webhookReplay", extras: { id: "receipt-1", generation: value().generation } });
     assert.equal(calls.some(call => call[0] === "replayWebhookReceipt"), false);
@@ -524,7 +524,8 @@ test("read/connection failure clears stale rows and shows errors rather than fab
 
 test("identity changes discard old reads and in-flight edits; server denials have no unsafe fallback", async () => {
     const oldRead = deferred(), failedReplay = deferred(); let replays = 0;
-    const { controller, store, value } = setupWebhooks({ overrides: { listWebhookConnectors: () => oldRead.promise,
+    const { controller, store, value } = setupWebhooks({ rows: { receipts: [receipt({ status: "dead_lettered" })] },
+        overrides: { listWebhookConnectors: () => oldRead.promise,
         replayWebhookReceipt: () => { replays++; return failedReplay.promise; } } });
     const loading = controller.refreshAdminWebhooks();
     store.dispatch({ type: "auth/context", principal: OTHER, authorization: { role: "user" } });
@@ -536,6 +537,92 @@ test("identity changes discard old reads and in-flight edits; server denials hav
     failedReplay.reject(Object.assign(new Error("Replay denied"), { status: 403, code: "FORBIDDEN" }));
     await replaying; await drain();
     assert.equal(replays, 1); assert.match(value().error, /FORBIDDEN.*Replay denied/);
+});
+
+test("retention policy editing is administrator-only, revision guarded and never silently retried", async () => {
+    const { controller, calls, value } = setupWebhooks();
+    await controller.setWebhookTab("health");
+    let view = selectWebhookConsole(controller.getState());
+    assert.equal(view.canEditRetention, true);
+    assert.match(JSON.stringify(buildWebhookConsoleLines(view)), /history 30 days.*replay 30 days/);
+    controller.openWebhookEditor("health", "edit");
+    assert.equal(value().editor.kind, "retention");
+    fillWebhookForm(controller, { receiptRetentionDays: "14", replayRetentionDays: "15" });
+    await controller.submitWebhookEditor();
+    assert.equal(calls.filter(call => call[0] === "updateWebhookRetentionPolicy").length, 0);
+    fillWebhookForm(controller, { receiptRetentionDays: "90", replayRetentionDays: "7" });
+    await controller.submitWebhookEditor();
+    assert.deepEqual(calls.find(call => call[0] === "updateWebhookRetentionPolicy"),
+        ["updateWebhookRetentionPolicy", { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 }]);
+    assert.equal(value().health.data.retention.policy.revision, 2);
+    assert.match(value().notice, /Existing deadlines and active work are unchanged/);
+
+    const conflict = setupWebhooks({ overrides: { updateWebhookRetentionPolicy: async () => {
+        throw Object.assign(new Error("Changed policy"), { status: 409, code: "WEBHOOK_CONFLICT" });
+    } } });
+    await conflict.controller.setWebhookTab("health");
+    conflict.controller.openWebhookEditor("health", "edit");
+    await conflict.controller.submitWebhookEditor();
+    assert.equal(conflict.value().editor.stale, true);
+    assert.match(conflict.value().error, /not retried/);
+    assert.ok(conflict.calls.filter(call => call[0] === "getWebhookMetrics").length >= 2);
+
+    const ordinary = setupWebhooks({ isAdmin: false });
+    await ordinary.controller.setWebhookTab("health");
+    view = selectWebhookConsole(ordinary.controller.getState());
+    assert.equal(view.canEditRetention, false);
+    ordinary.controller.openWebhookEditor("health", "edit");
+    assert.equal(ordinary.value().editor, null);
+});
+
+test("expired, unavailable and queued receipts cannot open a replay confirmation", async () => {
+    for (const row of [
+        receipt(),
+        receipt({ status: "dead_lettered", replayAvailable: true, replayExpiresAt: new Date(Date.now() - 1000).toISOString() }),
+        receipt({ status: "dead_lettered", replayAvailable: true, payloadRetained: false }),
+        receipt({ status: "dead_lettered", replayAvailable: undefined }),
+    ]) {
+        const { controller, calls } = setupWebhooks({ rows: { receipts: [row] } });
+        await controller.setWebhookTab("receipts");
+        const view = selectWebhookConsole(controller.getState());
+        assert.equal(view.canReplay, false);
+        assert.ok(view.replayUnavailable);
+        controller.requestWebhookReplay();
+        assert.equal(controller.getState().ui.modal, null);
+        assert.equal(calls.some(call => call[0] === "replayWebhookReceipt"), false);
+    }
+});
+
+test("a replay deadline expiring during confirmation is reported without submitting a mutation", async () => {
+    const { controller, calls, value } = setupWebhooks({ rows: { receipts: [
+        receipt({ status: "dead_lettered", replayExpiresAt: new Date(Date.now() + 60_000).toISOString() }),
+    ] } });
+    await controller.setWebhookTab("receipts");
+    controller.requestWebhookReplay();
+    const expired = { ...value().receipts.detail, replayExpiresAt: new Date(Date.now() - 1000).toISOString() };
+    controller._patchWebhooks({ receipts: { ...value().receipts, detail: expired } });
+    await controller.confirmModal();
+    assert.equal(controller.getState().ui.modal, null);
+    assert.match(value().error, /replay window has expired/i);
+    assert.equal(calls.some(call => call[0] === "replayWebhookReceipt"), false);
+});
+
+test("expired and revoked endpoints warn alongside a live wait without cancelling it", async () => {
+    const rows = [
+        endpoint({ endpointId: "expired", expiresAt: new Date(Date.now() - 1000).toISOString() }),
+        endpoint({ endpointId: "revoked", revokedAt: new Date().toISOString() }),
+        endpoint({ endpointId: "used", maxUses: 1, useCount: 1 }),
+        endpoint({ endpointId: "irrelevant", signalName: "another", revokedAt: new Date().toISOString() }),
+    ];
+    const { controller, calls, value } = setupWebhooks({ rows: { endpoints: rows } });
+    await controller.setWebhookTab("endpoints");
+    const view = selectWebhookConsole(controller.getState());
+    assert.equal(view.endpointWarnings.length, 3);
+    assert.match(view.endpointWarnings.join(" "), /expired.*wait remains active.*revoked.*exhausted/);
+    assert.equal(value().signalState.data.pendingWait.waitId, "wait-1");
+    assert.equal(view.rows.find(row => row.endpointId === "used").stateLabel, "exhausted");
+    assert.equal(calls.some(call => /stop|cancel|complete|delete|raise/i.test(call[0])), false);
+    assert.match(JSON.stringify(buildWebhookConsoleLines(view)), /other authorized producers/);
 });
 
 test("mutation timeout remains uncertain and visible, with no retry or late capability disclosure", async t => {

@@ -199,6 +199,13 @@ terminates a session. Read visibility and mutation authorization remain server
 decisions, including on auth-disabled deployments; profile admission is not an
 implicit admin grant.
 
+The Health page uses `getWebhookMetrics().retention` and the canonical
+`updateWebhookRetentionPolicy` operation. Its shared field editor captures a
+revision; no UI timer deletes data or extends a replay deadline. Receipt replay
+uses server availability plus the client-visible absolute deadline and is
+rechecked at confirmation. Expired/revoked/exhausted endpoint warnings preserve
+the independent signal-wait lifecycle.
+
 One-time endpoint capabilities are private controller memory, **not** store
 actions, selectors, persisted preferences or general statuses. Only the mounted
 capability view can read them. Reducer navigation/identity invalidation and

@@ -206,6 +206,7 @@ export class HttpApiTransport {
     async getWebhookReceipt(receiptId) { return this.api.call("getWebhookReceipt", { receiptId }); }
     async replayWebhookReceipt(receiptId, { confirmed }) { return this.api.call("replayWebhookReceipt", { receiptId, confirmed }); }
     async getWebhookMetrics() { return this.api.call("getWebhookMetrics"); }
+    async updateWebhookRetentionPolicy(patch) { return this.api.call("updateWebhookRetentionPolicy", { patch }); }
 
     /** @deprecated Use raiseSignal. */
     async sendSessionEvent(sessionId, eventName, data) {

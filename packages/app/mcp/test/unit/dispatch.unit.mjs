@@ -491,6 +491,8 @@ async function main() {
             ["get_webhook_receipt", { receipt_id: "whr_fixture" }, "getWebhookReceipt", ["whr_fixture"]],
             ["replay_webhook_receipt", { receipt_id: "whr_fixture", confirmed: true }, "replayWebhookReceipt", ["whr_fixture", { confirmed: true }]],
             ["get_webhook_metrics", {}, "getWebhookMetrics", []],
+            ["update_webhook_retention_policy", { patch: { expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 } },
+                "updateWebhookRetentionPolicy", [{ expectedRevision: 1, receiptRetentionDays: 90, replayRetentionDays: 7 }]],
         ];
         ctx.mgmt.recordUserRole = async (...args) => { calls.push(["recordUserRole", ...args]); };
         for (const [, , method] of cases) {
@@ -514,6 +516,7 @@ async function main() {
             ["manage_webhook_connector", { operation: { action: "create", input: { ...connector, auth: { mode: "github-hmac-sha256", secret: "must-not-be-accepted" } } } }],
             ["manage_webhook_template", { operation: { action: "create", input: { ...template, config: { ...template.config, tools: ["payload-selected"] } } } }],
             ["manage_webhook_binding", { operation: { action: "create", input: { ...binding, filters: { "$.arbitrary": "forbidden" } } } }],
+            ["update_webhook_retention_policy", { patch: { expectedRevision: 1, receiptRetentionDays: 7, replayRetentionDays: 30 } }],
         ]) {
             calls.length = 0;
             const res = await client.callTool({ name, arguments: args });
@@ -524,6 +527,10 @@ async function main() {
         record("webhook storage errors preserve safe code without private detail", failure.isError === true
             && parse(failure).code === "WEBHOOK_STORAGE_UNAVAILABLE" && parse(failure).status === 503
             && !JSON.stringify(failure).includes("private database connection"));
+        ctx.mgmt.replayWebhookReceipt = async () => { throw Object.assign(new Error("Receipt replay window has expired"), { code: "WEBHOOK_REPLAY_EXPIRED", status: 410 }); };
+        const expired = await client.callTool({ name: "replay_webhook_receipt", arguments: { receipt_id: "whr_expired", confirmed: true } });
+        record("expired webhook replay retains its actionable refusal", expired.isError === true
+            && parse(expired).code === "WEBHOOK_REPLAY_EXPIRED" && parse(expired).status === 410);
         await client.close();
     }
 

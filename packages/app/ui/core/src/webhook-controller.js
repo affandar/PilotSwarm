@@ -249,17 +249,19 @@ export const webhookControllerMethods = {
         await this._loadWebhookReceipts(query, cursors);
     },
     openWebhookEditor(kind = this.getState().admin.webhooks.tab, mode = "create") {
+        if (kind === "health" && mode === "edit") kind = "retention";
         const state = this.getState();
         if (!webhookIsOpen(state)) return;
         const view = selectWebhookConsole(state);
         if (view.busy) return;
         const permitted = kind === "session" || kind === "receipts" && view.tab === "receipts"
+            || kind === "retention" && view.canEditRetention
             || kind === "signal" && view.tab === "endpoints" && view.canRaise
             || kind === "test" && view.canTest
             || kind === view.tab && (mode === "edit" ? view.canEdit : view.canCreate);
         if (!permitted) { this._patchWebhooks({ error: "This action requires the appropriate owner/admin access and a current selection." }); return; }
         const editor = createWebhookEditor(kind, mode, {
-            resource: mode === "edit" || kind === "test" ? view.selected : null,
+            resource: kind === "retention" ? view.health.data.retention.policy : mode === "edit" || kind === "test" ? view.selected : null,
             isAdmin: view.isAdmin, webhooks: state.admin.webhooks,
             session: state.sessions.byId[state.admin.webhooks.sessionId || state.sessions.activeSessionId],
         });
@@ -320,7 +322,12 @@ export const webhookControllerMethods = {
                 this._patchWebhooks({ editor: null });
                 await this._loadWebhookReceipts(input, []); return;
             }
-            if (editor.mode === "edit" || editor.kind === "test") {
+            if (editor.kind === "retention") {
+                const health = state.admin.webhooks.health;
+                if (!isAdmin || health.loading || health.error || health.data?.retention?.policy?.revision !== editor.expectedRevision) {
+                    throw new Error("Retention policy or authorization changed. Close and reopen the refreshed policy.");
+                }
+            } else if (editor.mode === "edit" || editor.kind === "test") {
                 const kind = editor.kind === "test" ? "bindings" : editor.kind;
                 const bucket = state.admin.webhooks[kind];
                 const row = bucket.rows.find(row => row.id === editor.resourceId);
@@ -331,9 +338,9 @@ export const webhookControllerMethods = {
                 }
             }
             if ((editor.kind === "endpoints" || editor.kind === "signal") && editor.sessionId !== state.admin.webhooks.sessionId) throw new Error("The target session changed. Reopen the form.");
-            const name = editor.kind === "test" ? "testWebhookBinding"
+            const name = editor.kind === "retention" ? "updateWebhookRetentionPolicy" : editor.kind === "test" ? "testWebhookBinding"
                 : editor.kind === "signal" ? "raiseSignal" : operations[editor.kind]?.[editor.mode === "edit" ? "update" : "create"];
-            const args = editor.kind === "test" ? [editor.resourceId, input]
+            const args = editor.kind === "retention" ? [input] : editor.kind === "test" ? [editor.resourceId, input]
                 : editor.kind === "signal" ? [editor.sessionId, input.name, Object.fromEntries(Object.entries(input).filter(([key]) => key !== "name"))]
                     : editor.kind === "endpoints" ? [editor.sessionId, input.signalName, Object.fromEntries(Object.entries(input).filter(([key]) => key !== "signalName"))]
                         : editor.mode === "edit" ? [editor.resourceId, input] : [input];
@@ -358,7 +365,9 @@ export const webhookControllerMethods = {
                 } else {
                     if (editor.kind === "signal" && result?.status !== "queued") throw new Error("The server did not confirm that the signal was queued. Refresh signal state; no automatic retry was made.");
                     this._patchWebhooks({ pending: null, editor: null,
-                        notice: editor.kind === "signal" ? "Signal queued durably; consumption is not yet confirmed." : "Webhook policy saved. Configured does not mean verified delivery." }, generation);
+                        notice: editor.kind === "signal" ? "Signal queued durably; consumption is not yet confirmed."
+                            : editor.kind === "retention" ? "Retention policy saved for future terminal dispositions. Existing deadlines and active work are unchanged."
+                                : "Webhook policy saved. Configured does not mean verified delivery." }, generation);
                     await this.refreshAdminWebhooks();
                 }
                 return { ok: true }; // Never return a capability into generic handlers/loggers.
@@ -367,7 +376,10 @@ export const webhookControllerMethods = {
                 const stale = editor.mode === "edit" && conflict(error);
                 const message = errorMessage(error) + (stale ? " The resource will be refreshed. Close and reopen this edit; it was not retried." : "");
                 this._patchWebhooks({ pending: null, error: message, editor: { ...editor, error: message, stale } }, generation);
-                if (stale) await this._loadWebhookList(editor.kind);
+                if (stale) {
+                    if (editor.kind === "retention") await this._loadWebhookHealth();
+                    else await this._loadWebhookList(editor.kind);
+                }
                 return { ok: false, error: message };
             }
         } catch (error) {
@@ -403,6 +415,11 @@ export const webhookControllerMethods = {
             || state.admin.webhooks.pending || modal.extras?.generation !== state.admin.webhooks.generation) return;
         const { generation, id, kind } = modal.extras;
         const view = selectWebhookConsole(state);
+        if (modal.action === "webhookReplay" && view.selectedId === id && !view.canReplay) {
+            this.dispatch({ type: "ui/modal", modal: null });
+            this._patchWebhooks({ error: view.replayUnavailable || "Replay is no longer available. Refresh the receipt." }, generation);
+            return;
+        }
         if (view.selectedId !== id || (modal.action === "webhookReplay" ? !view.canReplay : !view.canRevoke || view.tab !== kind)) return;
         this.dispatch({ type: "ui/modal", modal: null });
         const name = modal.action === "webhookReplay" ? "replayWebhookReceipt" : operations[kind]?.revoke;

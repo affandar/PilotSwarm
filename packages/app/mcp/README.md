@@ -440,7 +440,8 @@ owner/administrator policy as the portal.
 | `list_webhook_receipts` | Optional `query` with connector/endpoint/session/status filters, `before` cursor and `limit` |
 | `get_webhook_receipt` | `receipt_id`; redacted routing timeline and session correlation |
 | `replay_webhook_receipt` | `receipt_id`, `confirmed: true`; explicit user confirmation and current authorization |
-| `get_webhook_metrics` | Viewer-scoped outcome counts, backlog and dead-letter ages |
+| `get_webhook_metrics` | Viewer-scoped outcome counts, backlog, dead-letter ages, retention policy and cleanup counters |
+| `update_webhook_retention_policy` | Admin-only `patch: {expectedRevision, receiptRetentionDays, replayRetentionDays}`; future terminal dispositions only |
 
 Update patches require `expectedRevision`. Connector auth uses **references**,
 never plaintext: GitHub `{mode:"github-hmac-sha256",secretRef}` or ADO
@@ -455,6 +456,14 @@ model success. Dry runs check persisted policy, not current host/model
 admission. Neither these tools nor connector creation registers provider hooks,
 starts tunnels, triggers CI, or changes cloud resources. See
 [webhook ingress](../../../docs/developer/building/webhooks.md).
+
+Terminal history and failed-delivery replay default to 30 days. Retention
+durations are 1-3650 whole days; replay cannot outlive history. Read the current
+revision through `get_webhook_metrics`. Receipt metadata shows replay/history
+deadlines and payload availability. Expired replay returns
+`WEBHOOK_REPLAY_EXPIRED` (410), even if physical cleanup is delayed. Active
+work, queued signals, delivery deduplication and creation tombstones are not
+aged out. Endpoint expiry/revocation does not cancel an indefinite signal wait.
 
 ### Session Groups
 
