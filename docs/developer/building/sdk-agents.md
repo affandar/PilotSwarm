@@ -138,6 +138,23 @@ Use the same `write_artifact` surface for both text and binary outputs.
 
 This keeps builder-facing artifact workflows consistent across SDK, TUI, and portal hosts.
 
+## External-event waits
+
+Use `wait_for_signal({ names: ["build-finished"], reason: "Waiting for the build" })`
+when an authorized producer can publish a completion event. Omit
+`timeout_seconds` for an indefinite wait, or set an explicit deadline. Producers
+call `PilotSwarmSession.raiseSignal` or
+`PilotSwarmManagementClient.raiseSignal`; they do not enqueue raw prompts or
+commands. Signals can arrive before the wait. User interruption preserves the
+original deadline, and payloads are untrusted data.
+
+Use `wait_for_any` on 1.0.80+ when accepted user input should win the race
+instead of interrupting and re-arming a signal wait. See
+[Durable signals](./durable-signals.md) for typed winners, limits and
+mixed-version requirements. [Webhook ingress](./webhooks.md) adds opt-in
+capability URLs, GitHub HMAC/ADO Basic-auth connectors and approved
+event-triggered session templates; payloads never choose privileged policy.
+
 ## Step 4: Optional skills
 
 Skills are shared domain knowledge bundles.

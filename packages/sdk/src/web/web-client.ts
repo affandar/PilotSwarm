@@ -10,6 +10,13 @@ import {
     createApiClientFromOptions,
     webModeUnsupported,
 } from "./api-connection.js";
+import type { MessageSender } from "../message-sender.js";
+import {
+    validateSignalName,
+    validateRaiseSignalOptions,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+} from "../session-signals.js";
 
 const WAIT_SLICE_MS = 10_000;
 const EVENT_POLL_LIMIT = 200;
@@ -62,7 +69,7 @@ export class WebPilotSwarmClient {
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
-        for (const key of ["sessionId", "parentSessionId", "agentId", "toolNames", "nestingLevel"]) {
+        for (const key of ["sessionId", "idempotencyKey", "initialMetadata", "parentSessionId", "agentId", "toolNames", "nestingLevel"]) {
             if (config && (config as any)[key] !== undefined) {
                 throw webModeUnsupported(`createSession({ ${key} })`, "agent-bound sessions use createSessionForAgent; worker-side options are direct-mode only");
             }
@@ -77,6 +84,8 @@ export class WebPilotSwarmClient {
     }
 
     async createSessionForAgent(agentName: string, opts?: {
+        sessionId?: string;
+        idempotencyKey?: string;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string;
@@ -87,6 +96,9 @@ export class WebPilotSwarmClient {
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     }): Promise<WebPilotSwarmSession> {
+        if (opts?.sessionId !== undefined || opts?.idempotencyKey !== undefined) {
+            throw webModeUnsupported("createSessionForAgent({ sessionId, idempotencyKey })", "reserved creation identities belong to trusted webhook routing");
+        }
         const view = await this._api.call("createSessionForAgent", {
             agentName,
             model: opts?.model,
@@ -241,8 +253,17 @@ export class WebPilotSwarmSession {
         };
     }
 
+    async raiseSignal(name: string, options: RaiseSignalOptions = {}, _sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this.api.call("raiseSignal", {
+            sessionId: this.sessionId,
+            name: validateSignalName(name),
+            ...validateRaiseSignalOptions(options),
+        });
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
-        await this.api.call("sendSessionEvent", { sessionId: this.sessionId, eventName, data });
+        await this.raiseSignal(eventName, validateRaiseSignalOptions({ data }));
     }
 
     async cancelPendingMessage(clientMessageIds: string[]): Promise<void> {

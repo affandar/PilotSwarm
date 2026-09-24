@@ -391,10 +391,79 @@ with `get_capabilities` to see the shape of this server.
 
 | Tool | Description |
 |------|-------------|
-| `stop_turn` | Abort the in-flight turn; the session stays alive |
+| `stop_turn` | Abort the in-flight turn or cancel the observed parked signal wait; the session stays alive |
 | `complete_session` | Mark a session completed (successful terminal state, distinct from cancel) |
 | `cancel_pending_messages` | Cancel queued messages by the `client_message_ids` they were sent with |
-| `send_session_event` | Inject a custom named event into a session *(web)* |
+| `raise_signal` | Queue `{ session_id, name, data?, payload_ref?, signal_id?, wake? }` through the management client in direct or web mode; returns `{ signalId, name, raisedAt, status: "queued" }` |
+| `send_session_event` | Deprecated direct/web compatibility wrapper: `event_name` becomes the signal name, `data` stays untrusted data, and `wake` defaults to false |
+
+Signals require a session execution on orchestration **1.0.80+**. Raising a
+signal starts a new pending session without inventing a chat prompt or model
+turn. First sends wait up to ten seconds for worker initialization and verify
+the actual execution version before enqueueing; a timeout queues no signal.
+Names match `[a-z0-9_-]{1,64}`, inline data is JSON capped at 32 KiB UTF-8,
+and `payload_ref` is an opaque reference capped at 1,024 JSON-encoded UTF-8
+bytes, including quotes and escapes. It is never automatically fetched.
+Identity and timestamps are server-stamped; callers cannot supply
+them. `wake` defaults to false; matching waits can resume, and pre-arrival
+signals buffer durably. Reuse `signal_id` for delivery retries within the
+bounded deduplication window (128 accepted IDs plus buffered signals).
+The signal buffer holds 32 entries.
+
+`queued` means enqueue succeeded, not that an agent consumed the signal.
+Use `get_session_signals` and `get_session_events` (`session.signal_*`) to
+inspect state and lifecycle outcomes. Unsupported/unknown older executions
+return `SIGNALS_UNSUPPORTED`; oversized payloads return `SIGNAL_TOO_LARGE`.
+The legacy event wrapper is not an escape hatch for prompts, answers, or
+commands: use their dedicated tools. On 1.0.80+, `get_session_signals` also
+reports an explicit `wait_for_any` race's mode and `lastRaceOutcome`.
+
+### Webhook Management
+
+All tools below use `PilotSwarmManagementClient` in direct and web mode.
+Web mode derives identity on the server; direct mode is a trusted local
+operator surface. Resource visibility and mutations are checked by the same
+owner/administrator policy as the portal.
+
+| Tool | Input / behavior |
+|---|---|
+| `create_signal_endpoint` | `session_id`, `signal_name`, optional `options`; URL/token returned once |
+| `list_signal_endpoints` | `session_id`; metadata only, no token recovery |
+| `revoke_signal_endpoint` | `endpoint_id`, `confirmed: true` |
+| `list_webhook_connectors` | Authorized connectors, with auth configuration redacted |
+| `manage_webhook_connector` | `operation: {action:"create",input}` / `{action:"update",connectorId,patch}` / `{action:"revoke",connectorId,confirmed:true}` |
+| `list_webhook_bindings` | Authorized fixed filters and actions |
+| `manage_webhook_binding` | Same operation union, using `bindingId`; actions are `raise_signal`, `enqueue_prompt` or `create_session` |
+| `list_webhook_templates` | Authorized approved session templates |
+| `manage_webhook_template` | Same operation union, using `templateId`; configuration/prompt changes require administrator approval |
+| `test_webhook_binding` | `binding_id`, normalized `event`; dry run only, no model or provider call |
+| `list_webhook_receipts` | Optional `query` with connector/endpoint/session/status filters, `before` cursor and `limit` |
+| `get_webhook_receipt` | `receipt_id`; redacted routing timeline and session correlation |
+| `replay_webhook_receipt` | `receipt_id`, `confirmed: true`; explicit user confirmation and current authorization |
+| `get_webhook_metrics` | Viewer-scoped outcome counts, backlog, dead-letter ages, retention policy and cleanup counters |
+| `update_webhook_retention_policy` | Admin-only `patch: {expectedRevision, receiptRetentionDays, replayRetentionDays}`; future terminal dispositions only |
+
+Update patches require `expectedRevision`. Connector auth uses **references**,
+never plaintext: GitHub `{mode:"github-hmac-sha256",secretRef}` or ADO
+`{mode:"ado-basic",usernameRef,passwordRef}`. External GitHub delivery verifies
+the exact raw bytes; ADO uses native Basic authentication over HTTPS, not HMAC.
+Templates cannot accept arbitrary credentials, tools, filesystem paths or
+payload-selected ownership. Coalescing is explicit policy, never inferred.
+
+Treat a minted URL as a secret, not ordinary transcript content. `queued` is
+not `consumed`; a prompt's consumed receipt means orchestration dispatch, not
+model success. Dry runs check persisted policy, not current host/model
+admission. Neither these tools nor connector creation registers provider hooks,
+starts tunnels, triggers CI, or changes cloud resources. See
+[webhook ingress](../../../docs/developer/building/webhooks.md).
+
+Terminal history and failed-delivery replay default to 30 days. Retention
+durations are 1-3650 whole days; replay cannot outlive history. Read the current
+revision through `get_webhook_metrics`. Receipt metadata shows replay/history
+deadlines and payload availability. Expired replay returns
+`WEBHOOK_REPLAY_EXPIRED` (410), even if physical cleanup is delayed. Active
+work, queued signals, delivery deduplication and creation tombstones are not
+aged out. Endpoint expiry/revocation does not cancel an indefinite signal wait.
 
 ### Session Groups
 
@@ -418,6 +487,7 @@ with `get_capabilities` to see the shape of this server.
 |------|-------------|
 | `debug_session` | The agent-tuner's diagnostic surface as one tool — `include: [info, status, latest_response, events, summary, tokens_by_model, tree_stats, skill_usage, retrieval_usage, facts_stats, orchestration_stats, execution_history, child_outcomes, graph_node_usage, graph_edge_search_usage, graph_searches]`, per-axis error isolation |
 | `get_session_metrics` | Per-session/tree metrics — `include: [summary, tokens_by_model, skill_usage, retrieval_usage, facts_stats, orchestration_stats]` |
+| `get_session_signals` | Authorized pending signal wait, interruption flag, and buffered metadata; never inline signal payloads |
 | `get_fleet_overview` | Fleet aggregates — `include: [stats, skill_usage, retrieval_usage, graph_node_usage, user_stats, top_emitters, shared_facts, tombstones]` |
 | `list_child_outcomes` | What each sub-agent concluded, without transcript dumps |
 | `get_execution_history` | Raw duroxide execution events (orchestration forensics) |

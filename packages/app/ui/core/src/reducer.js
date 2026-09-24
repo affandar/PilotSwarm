@@ -1,6 +1,8 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
 import { retainSessionWarnings } from "./session-errors.js";
+import { isSignalWaiting, reconcileSignalWaitSnapshot } from "./session-signals.js";
+import { reduceWebhookUi } from "./webhook-state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
 import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
@@ -372,9 +374,11 @@ function shouldPreserveSessionStatus(previousSession, nextSession) {
 const SESSION_STATUS_FIELDS = new Set([
     "status", "statusVersion", "updatedAt", "orchestrationStatus",
     "pendingQuestion", "waitReason", "pauseState", "error", "result",
+    "signalWait", "signalWaitInterrupted", "waitStartedAt", "waitSeconds",
 ]);
 
-function mergeDefinedSessionFields(previousSession = {}, nextSession = {}) {
+function mergeDefinedSessionFields(previousSession = {}, nextSession = {}, { snapshot = false } = {}) {
+    if (snapshot) nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession);
     let merged = previousSession || {};
     const preserveStatus = shouldPreserveSessionStatus(previousSession, nextSession);
     const previousVersion = sessionStatusVersion(previousSession);
@@ -419,6 +423,7 @@ function computeRawSessionVisualStatus(session) {
     if (dormant && normalizeSessionPause(session)) {
         return "budget_paused";
     }
+    if (isSignalWaiting(session)) return "waiting";
     if (session.cronActive === true && dormant) {
         return "cron_waiting";
     }
@@ -845,7 +850,7 @@ export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
     if (sessionId && contentUpdate && state.sessions?.goneIds?.includes(sessionId)) return state;
-    const next = baseReducer(state, action);
+    const next = reduceWebhookUi(state, baseReducer(state, action), action);
     if (next === state) return next;
     return reconcileSessionView(state, reconcileSessionSort(state, next, action), action);
 }
@@ -1666,7 +1671,7 @@ function baseReducer(state, action) {
             }
             for (const session of action.sessions) {
                 const previous = state.sessions.byId[session.sessionId];
-                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session),
+                byId[session.sessionId] = retainSessionWarnings(previous, mergeDefinedSessionFields(previous, session, { snapshot: true }),
                     state.history.bySessionId.get(session.sessionId)?.events, nowMs);
             }
             if (
@@ -3006,7 +3011,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "webhooks", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
         case "admin/features":

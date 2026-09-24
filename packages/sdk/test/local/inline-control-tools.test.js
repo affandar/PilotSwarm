@@ -82,6 +82,98 @@ class FakeCopilotSession {
 }
 
 describe("inline control tool execution", () => {
+    it("mints an own-session webhook through the trusted bridge and redacts its capability from durable output", async () => {
+        const token = `pswh_${"x".repeat(43)}`;
+        const endpoint = { endpointId: "fixture-endpoint", token, url: `https://hooks.example.invalid/hooks/s/${token}` };
+        const bridge = vi.fn(async () => endpoint);
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [{ name: "create_signal_webhook", args: { signal_name: "ready", max_uses: 1 } }];
+        fake.assistantContent = `Created ${endpoint.url}`;
+        const visible = [];
+        const result = await new ManagedSession("webhook-tool", fake, {}).runTurn("Create a webhook", {
+            durableSignals: true, webhookEndpoints: true,
+            controlToolBridge: { createSignalWebhook: bridge }, onEvent: event => visible.push(event),
+        });
+        expect(bridge).toHaveBeenCalledWith({ signal_name: "ready", max_uses: 1 });
+        expect(JSON.stringify(visible)).not.toContain(token);
+        expect(JSON.stringify(result)).not.toContain(token);
+        expect(result.content).toContain("[webhook capability redacted]");
+        expect(ManagedSession.systemToolDefs({ durableSignals: true }).some(tool => tool.name === "create_signal_webhook")).toBe(false);
+        const spec = ManagedSession.systemToolDefs({ webhookEndpoints: true }).find(tool => tool.name === "create_signal_webhook");
+        expect(fake.registeredTools.find(tool => tool.name === "create_signal_webhook").parameters).toEqual(spec.parameters);
+    });
+
+    it("redacts rehydrated capabilities in messages, reasoning and split-token streams without minting again", async () => {
+        const token = `pswh_${"y".repeat(43)}`;
+        const fake = new FakeCopilotSession();
+        fake.scriptedSends = [{
+            assistantDeltas: [...`Remember https://hooks.example.invalid/hooks/s/${token}`],
+            assistantContent: `Remember ${token}`,
+            events: [...token].map(deltaContent => ({ type: "assistant.reasoning_delta", data: { deltaContent } })),
+        }];
+        const events = [], deltas = [];
+        const result = await new ManagedSession("rehydrated-webhook", fake, {}).runTurn("Recall the previous webhook", {
+            onEvent: event => events.push(event), onDelta: delta => deltas.push(delta),
+        });
+        expect(JSON.stringify(events)).not.toContain("yyyyy");
+        expect(JSON.stringify(result)).not.toContain("yyyyy");
+        expect(deltas.join("")).toBe("Remember https://hooks.example.invalid/hooks/s/");
+        expect(result.content).toBe("Remember [webhook capability redacted]");
+
+        const ordinary = new FakeCopilotSession();
+        ordinary.scriptedSends = [{ assistantDeltas: ["hel", "p"], assistantContent: "help" }];
+        const ordinaryDeltas = [];
+        await new ManagedSession("ordinary-stream", ordinary, {}).runTurn("Help", { onDelta: delta => ordinaryDeltas.push(delta) });
+        expect(ordinaryDeltas.join("")).toBe("help");
+    });
+
+    it("declares and executes wait_for_any on the same contract as wait_for_signal", async () => {
+        expect(ManagedSession.systemToolDefs().some(tool => tool.name === "wait_for_any")).toBe(false);
+        const declaration = ManagedSession.systemToolDefs({ durableSignals: true })
+            .find(tool => tool.name === "wait_for_any");
+        expect(declaration).toBeDefined();
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [{ name: "wait_for_any", args: { names: ["ready"], timeout_seconds: 120 } }];
+        const result = await new ManagedSession("race-tools", fake, {}).runTurn("Race", {
+            durableSignals: true,
+        });
+        expect(result).toMatchObject({ type: "signal-wait", action: "wait", waitMode: "any", names: ["ready"], timeoutSeconds: 120 });
+        expect(fake.registeredTools.find(tool => tool.name === "wait_for_any").parameters).toEqual(declaration.parameters);
+        const legacy = new FakeCopilotSession();
+        await new ManagedSession("legacy-tools", legacy, {}).runTurn("Hello");
+        expect(legacy.registeredTools.some(tool => tool.name === "wait_for_any")).toBe(false);
+    });
+
+    it("keeps signal-wait declarations and handlers gated to the new activity contract", async () => {
+        expect(ManagedSession.systemToolDefs().some(tool => tool.name === "wait_for_signal")).toBe(false);
+        const declaration = ManagedSession.systemToolDefs({ durableSignals: true }).find(tool => tool.name === "wait_for_signal");
+        expect(declaration).toBeDefined();
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [{ name: "wait_for_signal", args: { names: ["ready"] } }];
+        const managed = new ManagedSession("signal-tools", fake, {});
+        const result = await managed.runTurn("Wait for ready", { durableSignals: true });
+        expect(result).toMatchObject({ type: "signal-wait", action: "wait", names: ["ready"] });
+        expect(result).not.toHaveProperty("timeoutSeconds");
+        expect(fake.registeredTools.find(tool => tool.name === "wait_for_signal").parameters).toEqual(declaration.parameters);
+        expect(fake.sentPrompts).toHaveLength(1);
+        const legacy = new FakeCopilotSession();
+        await new ManagedSession("legacy-tools", legacy, {}).runTurn("Hi");
+        expect(legacy.registeredTools.some(tool => tool.name === "wait_for_signal")).toBe(false);
+    });
+
+    it("returns a clear signal-wait validation failure and queues explicit cancellation inline", async () => {
+        const fake = new FakeCopilotSession();
+        fake.scriptedToolCalls = [
+            { name: "wait_for_signal", args: { names: ["ready"], timeout_seconds: -1 } },
+            { name: "wait_for_signal", args: { action: "cancel" } },
+        ];
+        const result = await new ManagedSession("signal-validation", fake, {}).runTurn("Cancel the wait", { durableSignals: true });
+        expect(result.type).toBe("completed");
+        expect(result.queuedActions).toEqual([{ type: "signal-wait", action: "cancel" }]);
+        expect(result.events.some(event => event.eventType === "tool.execution_complete"
+            && JSON.stringify(event.data).includes("timeout_seconds"))).toBe(true);
+    });
+
     it("fails before the model turn when a required tool handler is unavailable", async () => {
         const fakeSession = new FakeCopilotSession();
         const managed = new ManagedSession("required-tool-unavailable", fakeSession, {});

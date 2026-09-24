@@ -22,7 +22,17 @@ import type {
 } from "./types.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
-import { normalizeMessageSender } from "./message-sender.js";
+import { messageSenderKey, normalizeMessageSender } from "./message-sender.js";
+import {
+    createSessionSignal,
+    supportsSignalOrchestration,
+    SignalValidationError,
+    SIGNAL_MIN_ORCHESTRATION_VERSION,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+    type SessionSignalV1,
+    type JsonValue,
+} from "./session-signals.js";
 import type { FactStore } from "./facts-store.js";
 import { resolveStorageConfig } from "./storage-config.js";
 import { getDuroxideStorageProvider, getRuntimeStorageProvider } from "./storage-providers.js";
@@ -112,6 +122,18 @@ export function projectSerializableSessionConfig(
     };
 }
 
+/** @internal Signals must never reach an execution with the legacy message decoder. */
+export async function requireSignalExecution(duroxideClient: any, sessionId: string): Promise<any> {
+    const info = await duroxideClient.getInstanceInfo(`session-${sessionId}`);
+    if (!supportsSignalOrchestration(info?.orchestrationVersion)) {
+        throw Object.assign(new Error(
+            `Session ${sessionId} does not support durable signals (orchestration version ${info?.orchestrationVersion ?? "unknown"}). `
+            + `Use a new session on workers supporting orchestration ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later; existing executions are not upgraded by raising a signal.`,
+        ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+    }
+    return info;
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -157,10 +179,23 @@ export class PilotSwarmClient {
         };
     }
 
+    /** @internal Borrow an already-open runtime; the owning management client closes it. */
+    static _fromRuntime(options: PilotSwarmClientOptions, catalog: SessionCatalog, duroxideClient: any): PilotSwarmClient {
+        const client = new PilotSwarmClient(options);
+        client._catalog = catalog;
+        client.duroxideClient = duroxideClient;
+        client.started = true;
+        return client;
+    }
+
     // ─── Session Management ──────────────────────────────────
 
     async createSession(config?: ManagedSessionConfig & {
         sessionId?: string;
+        /** Trusted direct-mode stable creation key; retries never overwrite or resurrect a session. */
+        idempotencyKey?: string;
+        /** @internal Named-agent metadata persisted atomically with an idempotent create. */
+        initialMetadata?: { title?: string; splash?: string; splashMobile?: string };
         onUserInputRequest?: UserInputHandler;
         /** Names of tools registered on the worker via worker.registerTools(). */
         toolNames?: string[];
@@ -205,6 +240,15 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
+        const previousConfig = this.sessionConfigs.get(sessionId);
+        if (config?.idempotencyKey !== undefined && (!this._catalog.webhooks
+            || typeof config.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(config.sessionId)
+            || typeof config.idempotencyKey !== "string" || !config.idempotencyKey.trim()
+            || Buffer.byteLength(config.idempotencyKey) > 256 || /[\u0000-\u001f\u007f]/.test(config.idempotencyKey)
+            || !config.owner?.provider || !config.owner.subject || config.parentSessionId || config.groupId)) {
+            throw Object.assign(new Error("Idempotent creation requires a direct-mode catalog, reserved session ID, owner, and a top-level ungrouped session."),
+                { code: "INVALID_REQUEST", status: 400 });
+        }
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const resolvedConfig = {
             ...(config ?? {}),
@@ -245,7 +289,7 @@ export class PilotSwarmClient {
         // in-memory map above only covers the process that ran this create.
         // JSON round-trip strips undefined fields for clean JSONB.
         const configForRow = this.sessionConfigs.get(sessionId);
-        await this._catalog.createSession(sessionId, {
+        const creationOptions = {
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
             contextTier: resolvedConfig.contextTier ?? undefined,
@@ -261,8 +305,29 @@ export class PilotSwarmClient {
                     ...(config?.nestingLevel !== undefined ? { bootstrapNestingLevel: config.nestingLevel } : {}),
                 }
                 : null,
-        });
-        if (resolved) {
+        };
+        let created = true;
+        if (config?.idempotencyKey !== undefined) {
+            try {
+                created = await this._catalog.webhooks!.createSessionOnce({
+                    sessionId, key: config.idempotencyKey, owner: config.owner!, agentId,
+                    config: creationOptions.creationConfig ?? {},
+                    metadata: {
+                        visibility: config.visibility ?? "private",
+                        modelResolutionSource: resolved?.source,
+                        ...config.initialMetadata,
+                    },
+                });
+            } catch (error) {
+                if (previousConfig) this.sessionConfigs.set(sessionId, previousConfig);
+                else this.sessionConfigs.delete(sessionId);
+                throw error;
+            }
+            if (!created) this.sessionConfigs.delete(sessionId);
+        } else {
+            await this._catalog.createSession(sessionId, creationOptions);
+        }
+        if (resolved && created) {
             await this._catalog.recordEvents(sessionId, [{
                 eventType: "session.model_resolved",
                 data: { model: resolved.model, source: resolved.source },
@@ -295,6 +360,9 @@ export class PilotSwarmClient {
      * @throws If the agent is not found, is a system agent, or policy rejects it.
      */
     async createSessionForAgent(agentName: string, opts?: {
+        /** Trusted direct-mode reserved identity, for durable webhook routing. */
+        sessionId?: string;
+        idempotencyKey?: string;
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         contextTier?: ManagedSessionConfig["contextTier"];
@@ -308,6 +376,10 @@ export class PilotSwarmClient {
         groupId?: string | null;
         visibility?: SessionVisibility | null;
     }): Promise<PilotSwarmSession> {
+        if ((opts?.sessionId !== undefined) !== (opts?.idempotencyKey !== undefined)) {
+            throw Object.assign(new Error("Reserved named-session IDs require an idempotencyKey, and vice versa."),
+                { code: "INVALID_REQUEST", status: 400 });
+        }
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
         if (!allowed.includes(agentName)) {
@@ -316,7 +388,13 @@ export class PilotSwarmClient {
             );
         }
 
+        const reservedId = opts?.sessionId ?? crypto.randomUUID();
+        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
+        const title = `${agentTitle}: ${reservedId.slice(0, 8)}`;
         const session = await this.createSession({
+            sessionId: reservedId,
+            idempotencyKey: opts?.idempotencyKey,
+            initialMetadata: { title, splash: opts?.splash, splashMobile: opts?.splashMobile },
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
@@ -331,14 +409,14 @@ export class PilotSwarmClient {
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
-        const shortId = session.sessionId.slice(0, 8);
-        const agentTitle = opts?.title || (agentName.charAt(0).toUpperCase() + agentName.slice(1));
-        await this._catalog.updateSession(session.sessionId, {
-            agentId: agentName,
-            title: `${agentTitle}: ${shortId}`,
-            ...(opts?.splash ? { splash: opts.splash } : {}),
-            ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
-        });
+        if (!opts?.idempotencyKey) {
+            await this._catalog.updateSession(session.sessionId, {
+                agentId: agentName,
+                title,
+                ...(opts?.splash ? { splash: opts.splash } : {}),
+                ...(opts?.splashMobile ? { splashMobile: opts.splashMobile } : {}),
+            });
+        }
 
         if (opts?.initialPrompt) {
             // Stamp the kickoff as a SYSTEM sender. It is the agent
@@ -349,6 +427,7 @@ export class PilotSwarmClient {
             // appeared in the transcript under "You:".
             await session.send(opts.initialPrompt, {
                 bootstrap: true,
+                ...(opts.idempotencyKey ? { clientMessageIds: [opts.idempotencyKey] } : {}),
                 sender: { kind: "system", display: `${agentName} kickoff`, origin: "api" },
             });
         }
@@ -730,12 +809,8 @@ export class PilotSwarmClient {
         return { parentSessionId, nestingLevel };
     }
 
-    /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
-    private async _ensureOrchestrationAndSend(
-        sessionId: string,
-        prompt: string,
-        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
-    ): Promise<string> {
+    /** Start from the persisted creation contract without fabricating a user turn. */
+    private async _ensureOrchestration(sessionId: string): Promise<string> {
         if (!this.duroxideClient) throw new Error("Not started.");
         const _trace = this.config.traceWriter ?? (() => {});
         const startedAt = Date.now();
@@ -768,7 +843,7 @@ export class PilotSwarmClient {
         let serializableConfig: SerializableSessionConfig | undefined;
         let bootstrapNestingLevel: unknown;
 
-        trace(`[client] ensureOrchestrationAndSend start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
+        trace(`[client] ensureOrchestration start session=${sessionId} active=${this.activeOrchestrations.has(sessionId)}`);
 
         const cmsRow = await this._catalog.getSession(sessionId);
         {
@@ -870,7 +945,18 @@ export class PilotSwarmClient {
             trace(`[client] startOrchestrationVersioned done (${Date.now() - startAt}ms)`);
         }
 
-        // CMS: update state + orchestration ID
+        return orchestrationId;
+    }
+
+    /** @internal — ensure orchestration exists, update CMS, enqueue prompt. */
+    private async _ensureOrchestrationAndSend(
+        sessionId: string,
+        prompt: string,
+        opts?: { bootstrap?: boolean; requiredTool?: string; clientMessageIds?: string[]; sender?: MessageSender; attachments?: PromptAttachmentRef[] },
+    ): Promise<string> {
+        const orchestrationId = await this._ensureOrchestration(sessionId);
+        const trace = this.config.traceWriter ?? (() => {});
+        // Only prompt sends mark a turn running. Signal arrival is not a turn.
         const updateAt = Date.now();
         await this._catalog.updateSession(sessionId, {
             orchestrationId,
@@ -906,6 +992,120 @@ export class PilotSwarmClient {
         trace("[client] ensureOrchestrationAndSend complete");
 
         return orchestrationId;
+    }
+
+    /** @internal Start-aware webhook prompts must not land on a removed or terminal execution. */
+    async _enqueueWebhookPrompt(sessionId: string, prompt: string, messageId: string, bootstrap = false): Promise<void> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const row = await this._catalog.getSession(sessionId);
+        if (!row || row.deletedAt || row.isSystem || row.serviceKind
+            || ["completed", "cancelled", "failed", "error"].includes(row.state)) {
+            throw Object.assign(new Error("The webhook destination is not an active session."),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        const orchestrationId = `session-${sessionId}`;
+        const status = await this.duroxideClient.getStatus(orchestrationId);
+        if (!["Running", "NotFound"].includes(status?.status)
+            || (status.status === "NotFound" && (row.state !== "pending" || row.orchestrationId))) {
+            throw Object.assign(new Error("The webhook destination has no live or startable execution."),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        if (status.status === "Running") {
+            const info = await this.duroxideClient.getInstanceInfo(orchestrationId);
+            if (!supportsSignalOrchestration(info?.orchestrationVersion)) {
+                throw Object.assign(new Error(`Webhook prompt routing requires orchestration ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later.`),
+                    { code: "WEBHOOK_SESSION_VERSION_UNSUPPORTED", status: 409 });
+            }
+            this.activeOrchestrations.set(sessionId, orchestrationId);
+        } else this.activeOrchestrations.delete(sessionId);
+        await this._ensureOrchestrationAndSend(sessionId, prompt, {
+            ...(bootstrap ? { bootstrap: true } : {}),
+            clientMessageIds: [messageId],
+            sender: { kind: "system", display: "Webhook event", origin: "api" },
+        });
+    }
+
+    /** @internal The sender is trusted transport metadata, separate from caller-controlled options. */
+    async _raiseSignal(
+        sessionId: string,
+        name: string,
+        options: RaiseSignalOptions = {},
+        sender?: MessageSender,
+        trustedSource?: SessionSignalV1["source"],
+    ): Promise<RaiseSignalResult> {
+        if (!this.duroxideClient) throw new Error("Not started.");
+        const normalizedSender = normalizeMessageSender(sender);
+        const actorId = messageSenderKey(normalizedSender);
+        let signal;
+        try {
+            signal = createSessionSignal(name, options, trustedSource ?? {
+                kind: normalizedSender?.kind === "agent" ? "session"
+                    : normalizedSender?.kind === "system" ? "system" : "api",
+                ...(actorId ? { actorId } : {}),
+            }, { signalId: crypto.randomUUID(), raisedAt: new Date().toISOString() });
+        } catch (error) {
+            if (error instanceof SignalValidationError) {
+                Object.assign(error, { status: error.code === "SIGNAL_TOO_LARGE" ? 413 : 400 });
+            }
+            throw error;
+        }
+
+        const row = await this._catalog.getSession(sessionId);
+        if (!row || row.deletedAt) {
+            throw Object.assign(new Error(`Session ${sessionId} was not found.`), { code: "NOT_FOUND", status: 404 });
+        }
+        if (row.serviceKind || ["completed", "cancelled", "failed", "error"].includes(row.state)) {
+            throw Object.assign(new Error(`Session ${sessionId} is terminal or a service session and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+
+        const orchestrationId = `session-${sessionId}`;
+        let status = await this.duroxideClient.getStatus(orchestrationId);
+        if (status?.status === "NotFound") {
+            if ((row.orchestrationId && row.orchestrationId !== orchestrationId)
+                || row.state !== "pending" || !supportsSignalOrchestration(DURABLE_SESSION_LATEST_VERSION)) {
+                throw Object.assign(new Error(
+                    `Session ${sessionId} has no compatible orchestration. Create a new session on workers supporting ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later.`,
+                ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+            }
+            if (!row.orchestrationId) {
+                await this._ensureOrchestration(sessionId);
+                await this._catalog.updateSession(sessionId, { orchestrationId });
+            }
+            // A start is queued work, not an already-materialized execution.
+            // Wait on the existing status channel before checking its version;
+            // never assume our start won against another API process.
+            status = await this.duroxideClient.getStatus(orchestrationId);
+            if (status?.status === "NotFound") {
+                try {
+                    status = await this.duroxideClient.waitForStatusChange(orchestrationId, 0, 1_000, WAIT_POLL_SLICE_MS);
+                } catch (error) {
+                    if (!/timed out|timeout/i.test(String((error as Error)?.message))) throw error;
+                    throw Object.assign(new Error(
+                        `Session ${sessionId} has not initialized a compatible execution yet. No signal was queued. `
+                        + `Ensure upgraded workers are running, then retry the signal.`,
+                    ), { code: "SIGNALS_UNSUPPORTED", status: 409 });
+                }
+            }
+        }
+        if (!status?.status || status.status === "Unknown" || status.status === "NotFound") {
+            throw Object.assign(new Error(`Cannot confirm durable signal support for session ${sessionId}; no signal was queued.`),
+                { code: "SIGNALS_UNSUPPORTED", status: 409 });
+        }
+        if (["Completed", "Failed", "Terminated"].includes(status.status)) {
+            throw Object.assign(new Error(`Session ${sessionId} is a terminal orchestration and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+
+        // Check the actual execution even after a start: another process may
+        // have won the first-start race with a different orchestration version.
+        const info = await requireSignalExecution(this.duroxideClient, sessionId);
+        if (["Completed", "Failed", "Terminated"].includes(info.status)) {
+            throw Object.assign(new Error(`Session ${sessionId} is a terminal orchestration and cannot accept signals.`),
+                { code: "SESSION_NOT_ACTIVE", status: 409 });
+        }
+        await this.duroxideClient.enqueueEvent(orchestrationId, "messages", JSON.stringify({ signal }));
+        return { signalId: signal.signalId, name: signal.name, raisedAt: signal.raisedAt, status: "queued" };
     }
 
     /** @internal */
@@ -1116,6 +1316,7 @@ export class PilotSwarmClient {
             : latestResponse?.type === "completed" ? latestResponse : undefined;
         const resultSource = completedResponse ? "response"
             : orchStatus.status === "Completed" ? "orchestration" : undefined;
+        const terminalOrchestration = ["Completed", "Failed", "Terminated"].includes(orchStatus.status);
 
         return {
             sessionId,
@@ -1136,6 +1337,8 @@ export class PilotSwarmClient {
                 ? new Date(Date.now() + customStatus.waitSeconds * 1000)
                 : undefined,
             waitReason: customStatus.waitReason,
+            signalWait: terminalOrchestration ? undefined : customStatus.signalWait,
+            signalWaitInterrupted: terminalOrchestration ? undefined : customStatus.signalWaitInterrupted,
             cronActive,
             cronInterval,
             cronKind,
@@ -1451,16 +1654,13 @@ export class PilotSwarmSession {
         };
     }
 
+    async raiseSignal(name: string, options: RaiseSignalOptions = {}, sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this.client._raiseSignal(this.sessionId, name, options, sender);
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
     async sendEvent(eventName: string, data: unknown): Promise<void> {
-        const duroxideClient = this.client._getDuroxideClient();
-        const orchestrationId = this.lastOrchestrationId ?? `session-${this.sessionId}`;
-        if (duroxideClient) {
-            await duroxideClient.enqueueEvent(
-                orchestrationId,
-                "messages",
-                JSON.stringify(data),
-            );
-        }
+        await this.raiseSignal(eventName, { data: data as JsonValue });
     }
 
     /**

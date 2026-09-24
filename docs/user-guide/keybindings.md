@@ -18,12 +18,17 @@ These keys work whenever focus is not in the prompt editor.
 | `Shift+N` | Pick model/reasoning first, then choose generic or a named agent |
 | `r` | Refresh sessions and visible data |
 | `a` | Open the linked-item picker for current chat artifacts and visible URLs |
-| `Shift+A` | Open or close the Admin Console (model providers, defaults, agent packages, and workers) |
+| `Shift+A` | Open or close the Admin Console (model providers, defaults, agent packages, webhooks, and workers) |
 | `m` | Cycle inspector tab (`sequence` → `logs` → `nodes` → `history` → `files` → `stats`) |
 | `[` / `]` | Resize the main split |
 | `c` | Cancel the selected session |
 | `d` | Mark the selected session done |
 | `Shift+D` | Delete the selected session |
+
+`Ctrl+X` (or `Ctrl+Esc` where supported by the terminal) stops the current turn
+or cancels a parked signal wait without ending the session. It also works in
+the prompt editor. Ordinary timers, cron waits, and provider-budget waits are
+not signal-wait Stop targets.
 
 ## Sessions Pane
 
@@ -146,6 +151,7 @@ The Admin Console takes over the workspace until you press `Esc` to close it. Wh
 | `m` | Show My Providers |
 | `M` | Show Shared Providers (administrators only) |
 | `a` | Show Agent Packages |
+| `h` | Show Webhooks (server-scoped owner/admin management, also available to ordinary users) |
 | `w` | Show Workers (administrators only) |
 | `e` | Add a personal provider |
 | `U` | Update the selected personal provider's credential (input is masked) |
@@ -175,3 +181,38 @@ Personal-provider system use permits PilotSwarm's system machinery to use that
 credential. It never exposes the provider to another user and is not a cluster
 use grant. Per-agent override changes use a durable model switch; restart the
 system session separately when a fresh session is required.
+
+### Webhooks
+
+`Shift+A`, then `h`, opens the shared webhook management pages. The portal
+exposes the same operations through Settings/Admin → Webhooks. See
+[Webhook management](webhook-management.md) for policy, authentication references
+and receipt semantics.
+
+| Key | Action |
+|-----|--------|
+| `1`–`6` | Connectors / Bindings / Approved templates / Session signals / Receipts / Health |
+| `Tab` / `Shift+Tab`, `←` / `→` | Previous/next webhook page |
+| `j` / `k`, `↓` / `↑` | Select resource |
+| `Ctrl+U` / `Ctrl+D`, PageUp/PageDown | Scroll details (also scrolls the one-time capability view) |
+| `n` / `e` | Create / edit; `e` on Health edits retention policy (admin-only, captured revision required) |
+| Connectors: `c` | Copy the selected public delivery URL, or the clearly labeled relative path when bootstrap supplies no public origin; no URL is opened or fetched |
+| `d` | Confirm revocation of the selected resource, **not** the session |
+| `t` | Binding dry run against persisted policy; no external delivery |
+| `s` | Choose a session or enter an exact authorized ID |
+| `u` | Manually raise a signal on the Session signals page |
+| `f` | Edit receipt filters |
+| `[` / `]` | Newer / older receipt page, retaining filters |
+| `p` | Request confirmed receipt replay |
+| `o` | Select the receipt's session through authorized navigation |
+| `v` | Open related connector/endpoint/session receipts |
+| `r` / `m` / `Esc` | Refresh / My Providers / close |
+| Form: `Tab` / `Shift+Tab` | Next / previous labeled field |
+| Form: `↑` / `↓` | Cycle enum or visible-session suggestions |
+| Form: type, `←` / `→`, Home/End, Backspace | Edit plain text or JSON; keys such as `q` are text, not workspace shortcuts |
+| Form: `Ctrl+J` / `Enter` / `Esc` | JSON newline / submit / cancel |
+| One-time capability: `c` / `Esc` | Copy capability URL on this gesture / close and erase |
+
+Confirmations use `Enter`/`y` to confirm and `Esc`/`n` to cancel. The capability
+is never recovered by listing endpoints. Closing or navigating clears it from
+the UI, not from terminal scrollback, screenshots or the clipboard.

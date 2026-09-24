@@ -143,6 +143,15 @@ list. If the user has no stored selection/expansion profile yet, the main
 PilotSwarm system session is selected and all expandable group/parent rows start
 collapsed.
 
+Durable signal waits retain their shared metadata through CMS-only list
+refreshes: `updatedAt` alone is not evidence that a wait ended. A rich detail
+read, valid `statusVersion`, or explicit signal metadata (including `null`)
+establishes authority; freshness checks still prevent stale reads from erasing
+or reviving a wait. Preserve an interrupting provider-budget wait's own
+status/reason/timer alongside the saved signal wait. Shared Stop eligibility
+includes running turns and valid, non-interrupted signal waits with status
+`waiting`; ordinary timers and cron waits do not become Stop targets.
+
 ### Admin model-provider flow
 
 ```text
@@ -172,6 +181,44 @@ Provider credentials are write-only. Neither provider/default reads nor shared
 view models carry saved credentials. The browser keeps a password draft local
 to the create/update sheet; the native wizard masks its draft and removes it
 from shared state before awaiting either call. Cancel and completion clear both.
+
+### Webhook management flow
+
+Settings/Admin → Webhooks uses `state.admin.webhooks`, the shared
+`webhook-controller.js` commands, `webhook-forms.js` field schemas and
+`webhook-validation.js` JSON/config validation. `selectWebhookConsole` supplies
+both hosts with resource capabilities, read/pending/errors, selected revisions,
+receipt paging/timelines and viewer-scoped health. Native `webhook-input.js`
+translates keys only; `webhook-tui.js` and `webhook-panel.js` render the same
+semantic view. The browser's ordinary Tab focus traversal remains browser-native.
+
+Every update captures `expectedRevision`; a stale write refreshes and requires
+explicit re-edit, never retry. The existing confirmation flow owns revoke and
+receipt replay (`{confirmed:true}` only after confirmation). Neither action
+terminates a session. Read visibility and mutation authorization remain server
+decisions, including on auth-disabled deployments; profile admission is not an
+implicit admin grant.
+
+The Health page uses `getWebhookMetrics().retention` and the canonical
+`updateWebhookRetentionPolicy` operation. Its shared field editor captures a
+revision; no UI timer deletes data or extends a replay deadline. Receipt replay
+uses server availability plus the client-visible absolute deadline and is
+rechecked at confirmation. Expired/revoked/exhausted endpoint warnings preserve
+the independent signal-wait lifecycle.
+
+One-time endpoint capabilities are private controller memory, **not** store
+actions, selectors, persisted preferences or general statuses. Only the mounted
+capability view can read them. Reducer navigation/identity invalidation and
+controller disposal erase the reference and reject late responses. Native
+rendering does not register those lines in the pointer-selection cache; explicit
+copy is a separate user gesture. Only numeric wrapping/scroll limits cross back
+from the terminal renderer.
+
+Connector delivery addresses are different: they contain a public connector ID,
+not a capability, and belong in the shared read-only view model. Compose them
+only from bootstrap `webhooks.publicOrigin` plus `/hooks/c/<encoded-id>`, or
+show a labeled relative path when no origin is supplied. Both hosts use the
+same explicit clipboard flow, without opening or fetching the address.
 
 ### Chat/history flow
 

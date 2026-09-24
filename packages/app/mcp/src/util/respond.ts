@@ -31,6 +31,13 @@ export function errorResult(message: string, extra?: Record<string, unknown>): T
 export function errorToResult(err: unknown): ToolResult {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as any)?.status ?? (err as any)?.statusCode;
+    const code = (err as any)?.code;
+    if (typeof code === "string" && /^WEBHOOK[A-Z_]*$/.test(code)) {
+        return errorResult(status >= 500 ? "Webhook service is unavailable." : message, { code, ...(status ? { status } : {}) });
+    }
+    if (["INVALID_SIGNAL", "SIGNAL_TOO_LARGE", "SIGNALS_UNSUPPORTED", "SESSION_NOT_ACTIVE"].includes(code)) {
+        return errorResult(message, { code, ...(status ? { status } : {}) });
+    }
     if ((err as any)?.code === "MODEL_AMBIGUOUS") {
         return errorResult(message, {
             code: "MODEL_AMBIGUOUS",

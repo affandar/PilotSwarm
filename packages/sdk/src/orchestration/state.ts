@@ -9,12 +9,14 @@ import type {
     TurnAction,
 } from "../types.js";
 import { cloneContextUsage } from "./utils.js";
+import { SIGNAL_DEDUP_LIMIT, type PendingSignalWait, type SignalRaceOutcome } from "../session-signals.js";
 
 export interface ActiveTimer {
     deadlineMs: number;
     originalDurationMs: number;
     reason: string;
-    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace";
+    type: "wait" | "cron" | "cron_at" | "idle" | "agent-poll" | "input-grace" | "signal-timeout";
+    signalWaitId?: string;
     shouldRehydrate?: boolean;
     waitPlan?: { shouldDehydrate: boolean; resetAffinityOnDehydrate: boolean; preserveAffinityOnHydrate: boolean };
     content?: string;
@@ -102,6 +104,12 @@ export interface DurableSessionState {
 
     activeTimer: ActiveTimer | null;
     pendingInputQuestion: PendingInputQuestion | null;
+    pendingSignalWait: PendingSignalWait | null;
+    signalWaitInterrupted: boolean;
+    recentSignalIds: string[];
+    lastSignalRaceOutcome?: SignalRaceOutcome;
+    /** A full bounded drain has not yet established the race's input boundary. */
+    raceDrainPending: boolean;
     waitingForAgentIds: string[] | null;
     interruptedWaitTimer: InterruptedWaitTimer | null;
     /**
@@ -281,7 +289,7 @@ export function touchRecentClientMessageIds(state: DurableSessionState, ids: str
 }
 
 export function createInitialState(input: OrchestrationInput, options: DurableSessionOptions): DurableSessionState {
-    const config = { ...input.config };
+    const config = { ...input.config, durableSignals: true };
     if (input.taskContext) {
         const base = typeof options.baseSystemMessage === "string"
             ? options.baseSystemMessage ?? ""
@@ -331,6 +339,11 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
 
         activeTimer: null,
         pendingInputQuestion: input.pendingInputQuestion ?? null,
+        pendingSignalWait: input.pendingSignalWait ? { ...input.pendingSignalWait, names: [...input.pendingSignalWait.names] } : null,
+        signalWaitInterrupted: input.signalWaitInterrupted ?? false,
+        recentSignalIds: [...(input.recentSignalIds ?? [])].slice(-SIGNAL_DEDUP_LIMIT),
+        lastSignalRaceOutcome: input.lastSignalRaceOutcome,
+        raceDrainPending: false,
         waitingForAgentIds: input.waitingForAgentIds ?? null,
         interruptedWaitTimer: input.interruptedWaitTimer ?? null,
         budgetStash: input.budgetStash ?? null,

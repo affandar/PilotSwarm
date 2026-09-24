@@ -71,6 +71,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "read_session_info",
     "read_session_metric_summary",
     "read_session_retrieval_usage",
+    "read_session_signals",
     "read_session_skill_usage",
     "read_session_tokens_by_model",
     "read_session_tree_facts_stats",
@@ -83,6 +84,12 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "set_agent_package_enabled",
     "stage_agent_package_edit",
     "store_fact",
+    "wait_for_signal",
+    "wait_for_any",
+    "create_signal_webhook",
+    "read_webhook_receipts",
+    "read_webhook_receipt",
+    "read_webhook_metrics",
 ] as const;
 
 /** Complete platform namespace, including tools gated by role or store. */

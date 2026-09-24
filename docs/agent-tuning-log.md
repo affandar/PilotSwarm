@@ -6,6 +6,24 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## Durable races and webhook builder guidance
+
+- **Agent:** distributable `pilotswarm-sdk-builder`, version `1.7.0` -> `1.8.0`,
+  and its matching skill. Runtime control-tool descriptions also cover
+  `wait_for_any` and opt-in `create_signal_webhook`.
+- **Prior guidance:** correctly described only Phase 1, so it would now omit
+  available race and webhook APIs or leave builders implementing their own
+  ingress. This is a documentation/prompt-contract update, not an observed
+  model-specific failure.
+- **Expected behavior:** prefer typed durable waits over polling; use approved
+  server-owned bindings/templates and secret references; distinguish durable
+  acceptance from consumption/model success; request separate authorization
+  before registering hooks, triggering CI, exposing tunnels or deploying.
+- **Models and evidence:** no new live model test or compatibility sweep.
+  Local SDK/MCP/HTTP/PostgreSQL/native-Duroxide fixtures exercise the tool and
+  transport contracts, including capability redaction after hydration. Real
+  provider delivery and model behavior remain operator-run validation.
+
 ## 2026-09-08 — Durable versus native filesystem boundary
 
 - **Agent:** framework base prompt and native delegation overlay.

@@ -1,5 +1,69 @@
 /** Typed surface for pilotswarm-sdk/api (implementation is plain ESM JS). */
 
+/**
+ * Wire-only declarations must not import SDK dist: SDK source consumes this API
+ * during its own declaration emit. The type-contract test checks structural parity.
+ */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface RaiseSignalOptions {
+    data?: JsonValue;
+    payloadRef?: string;
+    signalId?: string;
+    wake?: boolean;
+}
+
+export interface RaiseSignalResult {
+    signalId: string;
+    name: string;
+    raisedAt: string;
+    status: "queued";
+}
+
+export interface PendingSignalWait {
+    waitId: string;
+    names: string[];
+    reason: string;
+    startedAt: string;
+    deadline?: string;
+    mode?: "any";
+}
+
+export interface SignalRaceOutcome {
+    version: 1;
+    waitId: string;
+    completedAt: string;
+    waitDurationMs: number;
+    winner:
+        | { kind: "signal"; signalId: string; name: string; payloadRef?: string }
+        | { kind: "user"; inputId: string; inputKind: "prompt" | "answer" }
+        | { kind: "timeout"; deadline: string }
+        | { kind: "stop" }
+        | { kind: "cancel"; disposition: "cancelled" | "replaced" | "session_terminated" };
+    losers: {
+        unconsumedSignals: "buffered";
+        otherUserInput: "queued";
+        timer: "not_scheduled" | "elapsed" | "tombstoned";
+    };
+}
+
+export interface SessionSignalState {
+    version: 1;
+    pendingWait?: PendingSignalWait;
+    interrupted: boolean;
+    lastRaceOutcome?: SignalRaceOutcome;
+    buffered: Array<{
+        version: 1;
+        signalId: string;
+        name: string;
+        source: { kind: "api" | "webhook" | "session" | "system"; receiptId?: string; actorId?: string };
+        raisedAt: string;
+        payloadRef?: string;
+        wake: boolean;
+        dataBytes?: number;
+    }>;
+}
+
 export declare const API_PREFIX: string;
 export declare const API_VERSION: number;
 export declare const WS_PATH: string;
@@ -125,6 +189,10 @@ export declare class HttpApiTransport {
     start(): Promise<void>;
     stop(): Promise<void>;
     getLive(sessionId: string, topics?: string[]): Promise<LiveStateRow[]>;
+    raiseSignal(sessionId: string, name: string, options?: RaiseSignalOptions): Promise<RaiseSignalResult>;
+    getSessionSignalState(sessionId: string): Promise<SessionSignalState>;
+    /** @deprecated Use raiseSignal. */
+    sendSessionEvent(sessionId: string, eventName: string, data: unknown): Promise<void>;
     [method: string]: any;
 }
 

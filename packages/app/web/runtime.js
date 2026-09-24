@@ -141,6 +141,14 @@ const BREAK_GLASS_AUDITED = {
 // stay comfortably below that ceiling. A role that CHANGED bypasses this
 // entirely and writes at once.
 const SIGNIN_ROLE_REFRESH_MS = 5 * 60 * 1000;
+const WEBHOOK_METHODS = new Set([
+    "createSignalEndpoint", "listSignalEndpoints", "revokeSignalEndpoint",
+    "createWebhookConnector", "listWebhookConnectors", "updateWebhookConnector", "revokeWebhookConnector",
+    "createWebhookBinding", "listWebhookBindings", "updateWebhookBinding", "revokeWebhookBinding",
+    "createWebhookSessionTemplate", "listWebhookSessionTemplates", "updateWebhookSessionTemplate", "revokeWebhookSessionTemplate",
+    "testWebhookBinding", "listWebhookReceipts", "getWebhookReceipt", "replayWebhookReceipt", "getWebhookMetrics",
+    "updateWebhookRetentionPolicy",
+]);
 
 
 function coerceShareSlot(raw) {
@@ -603,6 +611,11 @@ export class PortalRuntime {
         }
     }
 
+    async getWebhookRuntime() {
+        await this.start();
+        return this.transport.getWebhookRuntime();
+    }
+
     async resolveSessionGroupOwner(input = {}, authOwner = null) {
         // Groups belong to the authenticated creator. Ownership is never
         // inferred from selected sessions, and never null: no-auth
@@ -641,6 +654,9 @@ export class PortalRuntime {
             sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
                 ? this.transport.getSessionCreationPolicy()
                 : null,
+            webhooks: this.transport.webhookConfig
+                ? { enabled: this.transport.webhookConfig.enabled, publicOrigin: this.transport.webhookConfig.publicOrigin ?? null }
+                : { enabled: false, publicOrigin: null },
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
@@ -670,6 +686,19 @@ export class PortalRuntime {
         // Ownership/visibility gate — the single enforcement point for both
         // the generated /api/v1 routes and the legacy /api/rpc dispatcher.
         const gate = await this._authorizeCall(method, safeParams, authContext, { owner, isAdmin });
+        if (WEBHOOK_METHODS.has(method)) {
+            const role = authContext?.authorization?.role;
+            const principal = owner ?? (role === "anonymous" ? { provider: "none", subject: "unknown" } : null);
+            if (!principal || !["admin", "user", "anonymous"].includes(role)) {
+                throw forbiddenError("An admitted principal is required for webhook management.");
+            }
+            // These persistent routing policies need the current, authenticated
+            // role committed before creation. A fire-and-forget sign-in is insufficient.
+            await this.transport.recordUserRole(principal, role);
+            return this._callWebhook(method, safeParams, {
+                principal, isAdmin, adminScope: this.authz.adminScope ?? "unrestricted",
+            });
+        }
         const listViewer = this._listViewer(owner, isAdmin);
         switch (method) {
             case "listSessions":
@@ -1075,6 +1104,7 @@ export class PortalRuntime {
                         throw forbiddenError("Canvas actions are accepted only from people who can write this session. Use the chat box, or ask the owner.");
                     }
                 }
+
                 return this.transport.sendMessage(safeParams.sessionId, safeParams.prompt, {
                     ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),
                     // Server-stamped; a client-supplied options.sender is overwritten.
@@ -1086,8 +1116,18 @@ export class PortalRuntime {
                     ...(safeParams.options?.expectedQuestion !== undefined ? { expectedQuestion: safeParams.options.expectedQuestion } : {}),
                     sender: this._buildSender(authContext, gate.snapshot, { isAdmin }),
                 });
+            case "raiseSignal":
+                return this.transport.mgmt.raiseSignal(safeParams.sessionId, safeParams.name, {
+                    ...(safeParams.data !== undefined ? { data: safeParams.data } : {}),
+                    ...(safeParams.payloadRef !== undefined ? { payloadRef: safeParams.payloadRef } : {}),
+                    ...(safeParams.signalId !== undefined ? { signalId: safeParams.signalId } : {}),
+                    ...(safeParams.wake !== undefined ? { wake: safeParams.wake } : {}),
+                }, this._buildSender(authContext, gate.snapshot, { isAdmin }));
+            case "getSessionSignalState":
+                return this.transport.mgmt.getSessionSignalState(safeParams.sessionId);
             case "sendSessionEvent":
-                return this.transport.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data);
+                return this.transport.mgmt.sendSessionEvent(safeParams.sessionId, safeParams.eventName, safeParams.data,
+                    this._buildSender(authContext, gate.snapshot, { isAdmin }));
 
             // ── Session sharing (security model) ────────────────────────
             case "getSessionAccess": {
@@ -1513,6 +1553,34 @@ export class PortalRuntime {
             const status = PROVIDER_ERROR_STATUS[error?.code];
             if (status) error.status = status;
             throw error;
+        }
+    }
+
+    async _callWebhook(method, params, viewer) {
+        const mgmt = this.transport.mgmt;
+        switch (method) {
+            case "createSignalEndpoint": return mgmt.createSignalEndpoint(params.sessionId, params.signalName, params.options ?? {}, viewer);
+            case "listSignalEndpoints": return mgmt.listSignalEndpoints(params.sessionId, viewer);
+            case "revokeSignalEndpoint": return mgmt.revokeSignalEndpoint(params.endpointId, viewer);
+            case "createWebhookConnector": return mgmt.createWebhookConnector(params.input, viewer);
+            case "listWebhookConnectors": return mgmt.listWebhookConnectors(viewer);
+            case "updateWebhookConnector": return mgmt.updateWebhookConnector(params.connectorId, params.patch, viewer);
+            case "revokeWebhookConnector": return mgmt.revokeWebhookConnector(params.connectorId, viewer);
+            case "createWebhookBinding": return mgmt.createWebhookBinding(params.input, viewer);
+            case "listWebhookBindings": return mgmt.listWebhookBindings(viewer);
+            case "updateWebhookBinding": return mgmt.updateWebhookBinding(params.bindingId, params.patch, viewer);
+            case "revokeWebhookBinding": return mgmt.revokeWebhookBinding(params.bindingId, viewer);
+            case "createWebhookSessionTemplate": return mgmt.createWebhookSessionTemplate(params.input, viewer);
+            case "listWebhookSessionTemplates": return mgmt.listWebhookSessionTemplates(viewer);
+            case "updateWebhookSessionTemplate": return mgmt.updateWebhookSessionTemplate(params.templateId, params.patch, viewer);
+            case "revokeWebhookSessionTemplate": return mgmt.revokeWebhookSessionTemplate(params.templateId, viewer);
+            case "testWebhookBinding": return mgmt.testWebhookBinding(params.bindingId, { event: params.event }, viewer);
+            case "listWebhookReceipts": return mgmt.listWebhookReceipts(params.query ?? {}, viewer);
+            case "getWebhookReceipt": return mgmt.getWebhookReceipt(params.receiptId, viewer);
+            case "replayWebhookReceipt": return mgmt.replayWebhookReceipt(params.receiptId, { confirmed: params.confirmed }, viewer);
+            case "getWebhookMetrics": return mgmt.getWebhookMetrics(viewer);
+            case "updateWebhookRetentionPolicy": return mgmt.updateWebhookRetentionPolicy(params.patch, viewer);
+            default: throw new Error("Unknown webhook management operation");
         }
     }
 

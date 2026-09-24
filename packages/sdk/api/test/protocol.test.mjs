@@ -115,3 +115,25 @@ test("getOperation returns the table entry", () => {
     assert.equal(getOperation("listSessions").method, "GET");
     assert.equal(getOperation("missing"), null);
 });
+
+test("durable signals have named write routes, authorized read routes and no caller identity fields", () => {
+    const request = buildOperationRequest("raiseSignal", {
+        sessionId: "s/1", name: "build_ready",
+        data: { prompt: "not a message", type: "cmd" },
+        payloadRef: "artifact:build.json", signalId: "build-7", wake: false,
+        source: { kind: "system" }, raisedAt: "forged", owner: "forged", model: "forged",
+    });
+    assert.equal(request.method, "POST");
+    assert.equal(request.path, `${API_PREFIX}/sessions/s%2F1/signals/build_ready`);
+    assert.deepEqual(request.body, {
+        data: { prompt: "not a message", type: "cmd" },
+        payloadRef: "artifact:build.json", signalId: "build-7", wake: false,
+    });
+    assert.equal(getOperation("raiseSignal").access, "session:write");
+    const read = buildOperationRequest("getSessionSignalState", { sessionId: "s1" });
+    assert.equal(read.path, `${API_PREFIX}/sessions/s1/signals`);
+    assert.equal(read.method, "GET");
+    assert.equal(read.body, null);
+    assert.equal(getOperation("getSessionSignalState").access, "session:read");
+    assert.equal(getOperation("sendSessionEvent").access, "session:write");
+});

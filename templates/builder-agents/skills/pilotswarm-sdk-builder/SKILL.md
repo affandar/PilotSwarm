@@ -12,6 +12,8 @@ Build layered SDK-first applications on top of PilotSwarm.
 - Starter Docker quickstart: `https://github.com/affandar/pilotswarm/blob/main/docs/quickstart/docker.md`
 - SDK guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-apps.md`
 - SDK agent guide: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/sdk-agents.md`
+- Durable signals: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/durable-signals.md`
+- Webhook ingress: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/webhooks.md`
 - Plugin architecture: `https://github.com/affandar/pilotswarm/blob/main/docs/developer/building/plugins.md`
 - DevOps sample: `https://github.com/affandar/pilotswarm/tree/main/examples/devops-command-center`
 
@@ -86,6 +88,53 @@ Do not guess these answers when the user has not provided them. Offer the standa
   demos, tests, and cleanup scripts.
 - Facts/graph access for clients goes through the Web API data-plane
   (`createWebFactStore` / `createWebGraphStore`).
+
+## External-Event Coordination
+
+When a trusted producer can send completion events, use the built-in
+`wait_for_signal` instead of generating a polling loop. Names match
+`[a-z0-9_-]{1,64}`; omit `timeout_seconds` for an indefinite wait or set a
+1-86,400-second timeout. User input interrupts for one turn and preserves the
+original deadline. `wait_for_signal({action:"cancel"})` cancels the wait.
+
+Producers use the public `raiseSignal` method on the session or management
+client, with a stable delivery `signalId`. Default `wake:false` buffers for a
+matching waiter; `wake:true` requests a runtime-attributed turn. A queued result
+is not proof of consumption. Inspect `getSessionSignalState` and lifecycle
+events. The buffer is capped at 32 with audited oldest-first overflow, and
+deduplication covers buffered IDs plus the last 128 accepted IDs.
+
+Keep inline JSON at or below 32 KiB; upload larger payloads as artifacts and
+pass `payloadRef`. Never use payload fields as privileged session configuration
+or interpolate raw external bodies into instructions. Signals, `wait_for_any`
+and approved webhook prompt dispatch all require orchestration 1.0.80+.
+Reject an unsupported target rather than using raw queue writes.
+
+Use `wait_for_any` only when user input should end the race rather than
+interrupt/re-arm it. It records one typed winner; losing signals stay buffered,
+other user input stays queued, and the losing timer is tombstoned.
+
+For external webhooks, use the SDK management endpoint/connector/binding/template
+methods and shipped host, not ad-hoc unauthenticated routes. Ingress is opt-in
+via `PILOTSWARM_WEBHOOKS_ENABLED`; production requires an authenticated portal,
+HTTPS and explicitly trusted TLS proxy peers. Capability tokens are returned
+once. GitHub verifies native HMAC-SHA256 over exact raw bytes; ADO uses native
+Basic auth over HTTPS, not an invented HMAC scheme. Store only approved secret
+references and configure values in the trusted host's secret store/environment.
+
+Ask the operator to approve source scope, owner, template/agent/namespace,
+model policy and explicit coalescing action. Tools, repository permissions,
+budgets and lifecycle constraints remain the approved agent/deployment policy;
+payload fields cannot override them. Build/PR events are supported, not push.
+Receipt/outbox acceptance is not model success. Explain queued versus consumed,
+inspect redacted receipts and require confirmation before replay or revocation.
+Document the persisted 30-day terminal-history/replay defaults and the
+administrator's revision-guarded `updateWebhookRetentionPolicy` operation.
+Cleanup never ages out pending/queued work or deduplication/creation identities.
+Do not couple indefinite waits to endpoint expiry or revocation; show the
+unavailable producer and encourage an explicit timeout for finite CI work.
+Never register provider hooks, start a tunnel, trigger CI or deploy just because
+a local connector was configured; those are separate authorized operations.
 
 ## Env File Guidance
 

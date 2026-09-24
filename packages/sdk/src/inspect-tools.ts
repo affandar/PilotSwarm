@@ -51,6 +51,7 @@ import { projectUserAccounting, projectFleetAccounting } from "../api/src/admin-
 // MANAGER_AGENT_IDS lives there so the declaration and the per-turn handler
 // in managed-session gate on the SAME list.
 import { createAgentManagerTools, MANAGER_AGENT_IDS } from "./agent-manager-tools.js";
+import { PilotSwarmManagementClient } from "./management-client.js";
 
 /**
  * Agent ids that hold the manager bundle.
@@ -1422,7 +1423,77 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         ...factsTools,
     ];
 
+    if (catalog.webhooks) {
+        // These are receipt-owned reads, not reads of the destination session.
+        // Management applies the current receipt-owner/admin scope, including
+        // when a former destination is no longer readable.
+        const reader = PilotSwarmManagementClient._webhookTools(catalog);
+        const webhookViewer = async () => {
+            const viewer = await viewerFor();
+            if (viewer === NO_VIEWER) throw new Error("An authenticated inspect viewer is required.");
+            return {
+                principal: { provider: viewer.provider, subject: viewer.subject },
+                isAdmin: viewer.isSystemPrincipal || viewer.isAdmin,
+                adminScope: viewer.isSystemPrincipal ? "unrestricted" as const : viewer.adminScope,
+            };
+        };
+        const read = async (run: () => Promise<unknown>) => {
+            try { return await run(); }
+            catch (error) {
+                return { error: error instanceof Error ? error.message : "Webhook inspection failed",
+                    ...(typeof (error as { code?: unknown })?.code === "string" ? { code: (error as { code: string }).code } : {}) };
+            }
+        };
+        tools.push(
+            defineTool("read_webhook_receipts", {
+                description: "Read viewer-authorized redacted webhook receipts, delivery disposition and session correlation. Never returns raw bodies, capability URLs or credentials.",
+                parameters: { type: "object", properties: {
+                    session_id: { type: "string" }, connector_id: { type: "string" }, endpoint_id: { type: "string" },
+                    status: { type: "string" }, before: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 },
+                } },
+                handler: async (args: { session_id?: string; connector_id?: string; endpoint_id?: string; status?: import("./webhook-types.js").WebhookReceiptStatus; before?: string; limit?: number }) =>
+                    read(async () => reader.listWebhookReceipts({
+                        sessionId: args.session_id, connectorId: args.connector_id, endpointId: args.endpoint_id,
+                        status: args.status, before: args.before, limit: args.limit,
+                    }, await webhookViewer())),
+            }),
+            defineTool("read_webhook_receipt", {
+                description: "Read one authorized webhook receipt's redacted routing timeline, retries, duplicate count and final disposition.",
+                parameters: { type: "object", properties: { receipt_id: { type: "string" } }, required: ["receipt_id"] },
+                handler: async (args: { receipt_id: string }) => read(async () => reader.getWebhookReceipt(args.receipt_id, await webhookViewer())),
+            }),
+            defineTool("read_webhook_metrics", {
+                description: "Read viewer-scoped webhook outcome counts, pending delivery backlog, dead-letter ages, retention policy, cleanup timestamps and deletion counters.",
+                parameters: { type: "object", properties: {} },
+                handler: async () => read(async () => reader.getWebhookMetrics(await webhookViewer())),
+            }),
+        );
+    }
+
     if (duroxideClient) {
+        const signalReader = PilotSwarmManagementClient._signalReader(catalog, duroxideClient);
+        const readSessionSignalsTool = defineTool("read_session_signals", {
+            description:
+                "Read the pending durable signal wait, interruption flag, and buffered signal metadata for a session. "
+                + "Inline payloads are omitted. Use read_agent_events for session.signal_* lifecycle history. "
+                + "Legacy or unstarted executions report unsupported rather than an empty signal state.",
+            parameters: {
+                type: "object" as const,
+                properties: { session_id: { type: "string" } },
+                required: ["session_id"],
+            },
+            handler: async (args: { session_id: string }) => {
+                const id = normalizeSessionId(args.session_id);
+                const denied = await ensureVisible("read_session_signals", id);
+                if (denied) return denied;
+                try {
+                    return await signalReader.getSessionSignalState(id);
+                } catch (err: any) {
+                    return { error: `read_session_signals: ${err?.message || String(err)}`, ...(err?.code ? { code: err.code } : {}) };
+                }
+            },
+        });
+
         const readOrchestrationStatsTool = defineTool("read_orchestration_stats", {
             description:
                 "Read duroxide runtime stats for the orchestration backing a session: " +
@@ -1566,7 +1637,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
             },
         });
 
-        tools.push(readOrchestrationStatsTool, readExecutionHistoryTool, listOrchestrationsByStatusTool);
+        tools.push(readSessionSignalsTool, readOrchestrationStatsTool, readExecutionHistoryTool, listOrchestrationsByStatusTool);
     }
 
     // ── The WRITE bundle ─────────────────────────────────────────────────

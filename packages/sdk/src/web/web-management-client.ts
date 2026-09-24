@@ -6,6 +6,15 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import type { MessageSender } from "../message-sender.js";
+import type * as Webhooks from "../webhook-types.js";
+import {
+    validateSignalName,
+    validateRaiseSignalOptions,
+    type RaiseSignalOptions,
+    type RaiseSignalResult,
+    type SessionSignalState,
+} from "../session-signals.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -115,6 +124,73 @@ export class WebPilotSwarmManagementClient {
 
     async restartSystemSession(agentIdOrSessionId: string, options: object): Promise<any> {
         return this._api.call("restartSystemSession", { agentIdOrSessionId, options });
+    }
+
+    createWebhookRuntime(): never {
+        throw webModeUnsupported("createWebhookRuntime", "public ingress and outbox routing belong to the trusted server process");
+    }
+    async createSignalEndpoint(sessionId: string, signalName: string, options: Webhooks.CreateSignalEndpointOptions = {}, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.CreatedSignalEndpoint> {
+        return this._api.call("createSignalEndpoint", { sessionId, signalName, options });
+    }
+    async listSignalEndpoints(sessionId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.SignalEndpoint[]> {
+        return this._api.call("listSignalEndpoints", { sessionId });
+    }
+    async revokeSignalEndpoint(endpointId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.SignalEndpoint> {
+        return this._api.call("revokeSignalEndpoint", { endpointId });
+    }
+    async createWebhookConnector(input: Webhooks.CreateWebhookConnectorInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._api.call("createWebhookConnector", { input });
+    }
+    async listWebhookConnectors(_viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector[]> {
+        return this._api.call("listWebhookConnectors");
+    }
+    async updateWebhookConnector(connectorId: string, patch: Webhooks.UpdateWebhookConnectorInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._api.call("updateWebhookConnector", { connectorId, patch });
+    }
+    async revokeWebhookConnector(connectorId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookConnector> {
+        return this._api.call("revokeWebhookConnector", { connectorId });
+    }
+    async createWebhookBinding(input: Webhooks.CreateWebhookBindingInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._api.call("createWebhookBinding", { input });
+    }
+    async listWebhookBindings(_viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding[]> {
+        return this._api.call("listWebhookBindings");
+    }
+    async updateWebhookBinding(bindingId: string, patch: Webhooks.UpdateWebhookBindingInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._api.call("updateWebhookBinding", { bindingId, patch });
+    }
+    async revokeWebhookBinding(bindingId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBinding> {
+        return this._api.call("revokeWebhookBinding", { bindingId });
+    }
+    async createWebhookSessionTemplate(input: Webhooks.CreateWebhookSessionTemplateInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._api.call("createWebhookSessionTemplate", { input });
+    }
+    async listWebhookSessionTemplates(_viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate[]> {
+        return this._api.call("listWebhookSessionTemplates");
+    }
+    async updateWebhookSessionTemplate(templateId: string, patch: Webhooks.UpdateWebhookSessionTemplateInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._api.call("updateWebhookSessionTemplate", { templateId, patch });
+    }
+    async revokeWebhookSessionTemplate(templateId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookSessionTemplate> {
+        return this._api.call("revokeWebhookSessionTemplate", { templateId });
+    }
+    async testWebhookBinding(bindingId: string, input: { event: Webhooks.WebhookEvent }, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookBindingTest> {
+        return this._api.call("testWebhookBinding", { bindingId, event: input.event });
+    }
+    async listWebhookReceipts(query: Webhooks.WebhookReceiptQuery = {}, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt[]> {
+        return this._api.call("listWebhookReceipts", { query });
+    }
+    async getWebhookReceipt(receiptId: string, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt> {
+        return this._api.call("getWebhookReceipt", { receiptId });
+    }
+    async replayWebhookReceipt(receiptId: string, input: { confirmed: true }, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookReceipt> {
+        return this._api.call("replayWebhookReceipt", { receiptId, confirmed: input.confirmed });
+    }
+    async getWebhookMetrics(_viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookMetrics> {
+        return this._api.call("getWebhookMetrics");
+    }
+    async updateWebhookRetentionPolicy(patch: Webhooks.UpdateWebhookRetentionPolicyInput, _viewer?: Webhooks.WebhookViewer): Promise<Webhooks.WebhookRetentionPolicy> {
+        return this._api.call("updateWebhookRetentionPolicy", { patch });
     }
 
     // ── Session groups ──────────────────────────────────────────────────
@@ -302,6 +378,23 @@ export class WebPilotSwarmManagementClient {
 
     async sendAnswer(sessionId: string, answer: string, options?: { expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         await this._api.call("sendAnswer", { sessionId, answer, options });
+    }
+
+    async raiseSignal(sessionId: string, name: string, options: RaiseSignalOptions = {}, _sender?: MessageSender): Promise<RaiseSignalResult> {
+        return this._api.call("raiseSignal", {
+            sessionId,
+            name: validateSignalName(name),
+            ...validateRaiseSignalOptions(options),
+        });
+    }
+
+    /** @deprecated Use raiseSignal. The payload is signal data, never a command or prompt. */
+    async sendSessionEvent(sessionId: string, eventName: string, data: unknown, _sender?: MessageSender): Promise<void> {
+        await this.raiseSignal(sessionId, eventName, validateRaiseSignalOptions({ data }));
+    }
+
+    async getSessionSignalState(sessionId: string): Promise<SessionSignalState> {
+        return this._api.call("getSessionSignalState", { sessionId });
     }
 
     async cancelPendingMessage(sessionId: string, clientMessageIds: string[]): Promise<void> {

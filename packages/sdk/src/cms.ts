@@ -13,6 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
+import { WebhookStore } from "./webhook-store.js";
 import type { SessionOwnerInfo, SessionSummaryState } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -958,6 +959,8 @@ export interface SessionCatalog {
      * See provider-store.ts.
      */
     readonly providers?: ProviderStore;
+    /** Durable webhook ingress, routing and bounded retention (migrations 0081-0082). */
+    readonly webhooks?: WebhookStore;
     readonly features?: FeatureStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
@@ -1564,12 +1567,14 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    readonly webhooks: WebhookStore;
 
     private constructor(pool: any, schema: string) {
         this.pool = pool;
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
+        this.webhooks = new WebhookStore(pool, schema);
     }
 
     /**
@@ -1626,6 +1631,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this.initialized) return;
         await runCmsMigrations(this.pool, this.sql.schema);
         this.initialized = true;
+        this.webhooks.startRetention();
     }
 
     // ── Writes ───────────────────────────────────────────────
@@ -3780,6 +3786,7 @@ export class PgSessionCatalog implements SessionCatalog {
     }
 
     async close(): Promise<void> {
+        await this.webhooks.stopRetention();
         if (this.pool) {
             await this.pool.end();
             this.pool = null;

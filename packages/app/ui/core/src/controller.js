@@ -17,6 +17,8 @@ import {
 import { applySessionUsageEvent, cloneContextUsageSnapshot } from "./context-usage.js";
 import { validateCanvasAction, formatCanvasActionPrompt, createCanvasActionLimiter } from "./canvas-actions.js";
 import { shouldKeepSessionWarning } from "./session-errors.js";
+import { reconcileSignalWaitSnapshot } from "./session-signals.js";
+import { disposeWebhookController, initializeWebhookController, webhookControllerMethods } from "./webhook-controller.js";
 import {
     computeLegacyLayout,
     getBaseSessionPaneHeight,
@@ -36,6 +38,7 @@ import {
 } from "./layout.js";
 import { parseTerminalMarkupRuns } from "./formatting.js";
 import {
+    canStopSessionTurn,
     selectActiveArtifactLinks,
     selectActiveHttpLinks,
     selectActivityPane,
@@ -451,6 +454,8 @@ function shouldPreserveStaleCronVisual(previousSession, nextSession) {
 
 function buildSessionMergePatch(previousSession, nextSession) {
     if (!nextSession?.sessionId) return null;
+    // This path receives getSession detail, not a CMS-only catalog row.
+    nextSession = reconcileSignalWaitSnapshot(previousSession, nextSession, { authoritative: true });
 
     const patch = { sessionId: nextSession.sessionId };
     let changed = false;
@@ -1680,6 +1685,7 @@ export class PilotSwarmUiController {
         this.promptReferenceSyncVersion = 0;
         this.chatTopHistoryLoadArmed = false;
         this.chatTopHistoryLoadSessionId = null;
+        initializeWebhookController(this);
     }
 
     getState() {
@@ -2576,6 +2582,7 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        disposeWebhookController(this);
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -3311,6 +3318,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
         if (this.getState().admin?.section === "features") void this.refreshFeatureFlags();
+        if (this.getState().admin?.section === "webhooks") void this.refreshAdminWebhooks();
         void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
     }
@@ -3781,6 +3789,7 @@ export class PilotSwarmUiController {
 
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
+        if (section === "webhooks") void this.refreshAdminWebhooks();
         if (section === "features") void this.refreshFeatureFlags();
         if (section === "providers") {
             const providers = this.getState().admin?.modelProviders;
@@ -8711,6 +8720,10 @@ export class PilotSwarmUiController {
             return;
         }
         if (modal.type === "confirm") {
+            if (modal.action === "webhookRevoke" || modal.action === "webhookReplay") {
+                await this.confirmWebhookAction(modal);
+                return;
+            }
             const previousFocus = modal.previousFocus;
             this.dispatch({ type: "ui/modal", modal: null });
             if (previousFocus) this.setFocus(previousFocus);
@@ -10472,9 +10485,9 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Stop the active session's in-flight LLM turn without touching session
-     * lifecycle. Applies to user AND system sessions; only group/container
-     * rows are rejected. No confirmation modal — the action is non-destructive
+     * Stop the active session's in-flight LLM turn or parked signal wait
+     * without touching session lifecycle. Applies to user AND system sessions;
+     * only group/container rows are rejected. No confirmation modal — the action is non-destructive
      * (the session returns to idle and accepts the next prompt).
      */
     async stopActiveSessionTurn() {
@@ -10493,19 +10506,21 @@ export class PilotSwarmUiController {
         if (!this._stopTurnInFlight) this._stopTurnInFlight = new Set();
         if (this._stopTurnInFlight.has(sessionId)) return;
         this._stopTurnInFlight.add(sessionId);
-        this.dispatch({ type: "ui/status", text: `Stopping turn for ${sessionId.slice(0, 8)}…` });
+        const target = session.status === "waiting" && canStopSessionTurn(session)
+            ? (session.signalWait?.mode === "any" ? "event race" : "signal wait") : "turn";
+        this.dispatch({ type: "ui/status", text: `Stopping ${target} for ${sessionId.slice(0, 8)}…` });
         try {
             const result = await this.transport.stopSessionTurn(sessionId, { reason: "Stopped by user" });
             const outcome = result?.outcome || "stopped";
             if (outcome === "no_active_turn") {
-                this.dispatch({ type: "ui/status", text: "No active turn to stop" });
+                this.dispatch({ type: "ui/status", text: "No active turn or signal wait to stop" });
             } else if (outcome === "timeout") {
-                this.dispatch({ type: "ui/status", text: "Stop requested — waiting for the turn to unwind" });
+                this.dispatch({ type: "ui/status", text: `Stop requested — waiting for the ${target} to ${target === "turn" ? "unwind" : "cancel"}` });
             } else {
-                this.dispatch({ type: "ui/status", text: `Stopped turn for ${sessionId.slice(0, 8)}` });
+                this.dispatch({ type: "ui/status", text: `Stopped ${target} for ${sessionId.slice(0, 8)}` });
             }
         } catch (err) {
-            this.dispatch({ type: "ui/status", text: `Stop turn failed: ${err?.message || err}` });
+            this.dispatch({ type: "ui/status", text: `Stop ${target} failed: ${err?.message || err}` });
         } finally {
             this._stopTurnInFlight.delete(sessionId);
         }
@@ -11176,3 +11191,7 @@ export class PilotSwarmUiController {
         }
     }
 }
+
+// Keep webhook product behavior shared without growing the session controller's
+// already-large implementation or importing either host into ui-core.
+Object.assign(PilotSwarmUiController.prototype, webhookControllerMethods);

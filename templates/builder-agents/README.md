@@ -60,6 +60,16 @@ Every generated app `.agent.md` should include `schemaVersion: 1` and a `version
 
 Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval recurring work and `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules. Do not teach agents to wake every N minutes just to check whether a calendar time has arrived. For long-running child sessions, include `contract.wakeOn` guidance so watcher children default to `material_change` instead of waking parents for no-op heartbeats. Qualifying child updates wake the parent automatically; do not generate a parent timer whose only action is `check_agents`.
 
+For external-event coordination, use `wait_for_signal` with authenticated
+`raiseSignal` producers rather than a polling loop. The SDK builder skill
+covers optional deadlines, stable delivery IDs, bounded buffering, untrusted
+payloads, and the shared 1.0.80 gate for signals and `wait_for_any` races. Opt-in
+[webhooks](../../docs/developer/building/webhooks.md) provide fixed-target
+capabilities, GitHub/ADO connectors and approved templates. Keep secret
+references and owner/agent/model policy server-owned; never scaffold automatic
+provider registration without explicit operator permission. See
+[durable signals](../../docs/developer/building/durable-signals.md).
+
 Artifact workflows should assume the consolidated `write_artifact` / `read_artifact` / `list_artifacts` surface. Files that already exist on the worker (builds, archives, binaries) upload via `write_artifact({fromFile})` and download via `read_artifact({toFile})` — bytes stream server-side and every result carries a `sha256` plus the `artifact://` link. Reserve inline `content` (with `contentType` + base64 for small binaries) for text the agent is authoring, and explain that the browser portal downloads binary artifacts rather than previewing them inline.
 
 The CLI builder template also assumes runnable scaffolds should:

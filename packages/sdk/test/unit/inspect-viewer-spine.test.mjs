@@ -82,6 +82,35 @@ const asUser = (u) => ({ ...u, isAdmin: false, isSystemPrincipal: false });
 const asAdmin = (u) => ({ ...u, isAdmin: true, isSystemPrincipal: false });
 const asSystem = () => ({ provider: "system", subject: "system", isAdmin: false, isSystemPrincipal: true });
 
+test("signal inspection is tuner-only, owner-scoped, redacted, and uses the management signal read", async () => {
+    const catalog = fakeCatalog();
+    const reads = [];
+    const duroxideClient = {
+        getStatus: async () => ({ status: "Running" }),
+        getInstanceInfo: async () => ({ orchestrationVersion: "1.0.80" }),
+        getValue: async (id, key) => {
+            reads.push([id, key]);
+            return JSON.stringify({ version: 1, interrupted: false, buffered: [] });
+        },
+    };
+    const opts = { catalog, duroxideClient, resolveViewer: () => asUser(ALICE) };
+    const ordinary = createInspectTools({ ...opts, agentIdentity: "analyst" });
+    assert.equal(ordinary.some(tool => tool.name === "read_session_signals"), false);
+    const tools = createInspectTools({ ...opts, agentIdentity: "agent-tuner" });
+    const tool = tools.find(tool => tool.name === "read_session_signals");
+    assert.ok(tool);
+    const forbidden = await tool.handler({ session_id: "bob-private" });
+    assert.match(forbidden.error, /not found/i);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(await tool.handler({ session_id: "session-alice-own" }),
+        { version: 1, interrupted: false, buffered: [] });
+    assert.deepEqual(reads, [["session-alice-own", "signals.state.v1"]]);
+    duroxideClient.getInstanceInfo = async () => ({ orchestrationVersion: "1.0.79" });
+    const legacy = await tool.handler({ session_id: "bob-shared" });
+    assert.equal(legacy.code, "SIGNALS_UNSUPPORTED");
+    assert.equal(reads.length, 1);
+});
+
 // ── RULE 1: lists are scoped ──────────────────────────────────────
 
 test("list_all_sessions returns only what the viewer may read", async () => {
@@ -223,6 +252,13 @@ test("no session-touching tool bypasses all three rules", () => {
     for (let i = 0; i < marks.length; i += 1) {
         const body = source.slice(marks[i].at, marks[i + 1]?.at ?? source.length);
         if (!body.includes("session_id")) continue;          // not session-scoped
+        if (marks[i].name === "read_webhook_receipts") {
+            // session_id only filters receipt metadata. The management API
+            // authorizes the receipt owner, not current destination access.
+            assert.match(body, /reader\.listWebhookReceipts\(\{[\s\S]*?\}, await webhookViewer\(\)\)/,
+                "receipt reads must use the canonical management API with a freshly resolved viewer");
+            continue;
+        }
         if (!RULES.some((rule) => body.includes(rule))) ungated.push(marks[i].name);
     }
 

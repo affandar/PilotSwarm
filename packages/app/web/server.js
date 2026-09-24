@@ -10,6 +10,8 @@ import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
 import { createApiRouter } from "./api/router.js";
+import { createWebhookRouter } from "./api/webhooks.js";
+import { loadAuthorizationPolicy, resolveAuthProviderId } from "./auth/config.js";
 import { attachWebSockets } from "./api/ws.js";
 import { createCanvasPlane } from "./api/canvas-plane.js";
 import { createLivePlane } from "./api/live-plane.js";
@@ -44,6 +46,10 @@ function createPortalServer({ app }) {
 
 const LEGACY_RPC_STATUS_BY_CODE = {
     INVALID_REQUEST: 400,
+    INVALID_SIGNAL: 400,
+    SIGNAL_TOO_LARGE: 413,
+    SIGNALS_UNSUPPORTED: 409,
+    SESSION_NOT_ACTIVE: 409,
     MODEL_AMBIGUOUS: 400,
     MODEL_UNRESOLVED: 400,
     VALIDATION_FAILED: 400,
@@ -115,6 +121,12 @@ export async function startServer(opts = {}) {
 
     const app = express();
     app.set("trust proxy", true);
+    const webhookConfig = runtime.transport.webhookConfig;
+    if (webhookConfig.enabled && !["127.0.0.1", "::1", "localhost"].includes(host)
+        && (resolveAuthProviderId({ env: process.env }) === "none" || loadAuthorizationPolicy().allowUnauthenticated)) {
+        throw new Error("Public webhook hosts require portal authentication. Bind the development lab to loopback instead.");
+    }
+    app.use("/hooks", createWebhookRouter({ runtime, config: webhookConfig }));
     // Artifact uploads carry base64 image bodies (image attachments: up to
     // 4 MB decoded ≈ 5.4 MB base64) — give ONLY that route an 8 MB envelope.
     // Everything else keeps the 2 MB cap. Mounted first so the path-scoped
@@ -382,6 +394,13 @@ export async function startServer(opts = {}) {
         });
     });
     console.log(`[portal] PilotSwarm Web at ${protocol}://localhost:${port}`);
+    if (webhookConfig.enabled) {
+        try { await runtime.start(); }
+        catch (error) {
+            await shutdown();
+            throw error;
+        }
+    }
 
     // Test/embedder handle: stops the runtime and closes the server.
     server.stopPortal = shutdown;

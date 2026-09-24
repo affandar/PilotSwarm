@@ -18,6 +18,10 @@ import { getPublicAuthContext } from "../auth/authz/engine.js";
 
 const ERROR_STATUS_BY_CODE = {
     INVALID_REQUEST: 400,
+    INVALID_SIGNAL: 400,
+    SIGNAL_TOO_LARGE: 413,
+    SIGNALS_UNSUPPORTED: 409,
+    SESSION_NOT_ACTIVE: 409,
     MODEL_AMBIGUOUS: 400,
     MODEL_UNRESOLVED: 400,
     REGENERATE_UNSUPPORTED: 409,
@@ -93,6 +97,7 @@ function sendError(res, error, fallbackStatus) {
 const ID_PARAM_KEYS = new Set([
     "sessionId", "parentSessionId", "childSessionId", "agentIdOrSessionId", "groupId",
     "fromSessionId", "toSessionId",
+    "endpointId", "connectorId", "bindingId", "templateId", "receiptId",
 ]);
 const SAFE_ID = /^[\w:.-]{1,200}$/;
 

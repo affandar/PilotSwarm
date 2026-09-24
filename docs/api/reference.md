@@ -110,7 +110,9 @@ sessions return not-found to avoid an existence oracle.
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
 | sendAnswer | `POST /api/v1/sessions/:sessionId/answers` | sessionId (path), answer (body), options (body) | Answer a pending question. `options.expectedQuestion: { question, iteration? }` binds to the observed `pendingQuestion`; omitted options bind to the current question when enqueued. A stale binding preserves the text as an ordinary message. |
-| sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Send a custom event into the session. |
+| raiseSignal | `POST /api/v1/sessions/:sessionId/signals/:name` | sessionId/name (path), data/payloadRef/signalId/wake (body, optional) | Queue a typed durable signal; starts a new pending session without a prompt. Requires session write access. |
+| getSessionSignalState | `GET /api/v1/sessions/:sessionId/signals` | sessionId (path) | Read pending wait, interruption flag, and buffered metadata, never inline payloads. Requires session read access. |
+| sendSessionEvent | `POST /api/v1/sessions/:sessionId/events` | sessionId (path), eventName (body), data (body) | Deprecated wrapper for `raiseSignal(eventName, { data })`, with `wake: false`; not a raw prompt/command channel. |
 | cancelPendingMessage | `POST /api/v1/sessions/:sessionId/cancel-pending` | sessionId (path), clientMessageIds (body) | Cancel queued messages by client message ids. |
 
 Session DTOs (`listSessions`, `getSession`, paged management listings) carry
@@ -119,6 +121,134 @@ session's tree root (`null`/absent on child rows and when the caller has not
 placed the tree). The former `groupId` field is **gone** from session DTOs:
 group membership is per-viewer state, not a property of the session. See
 [Management: session groups](#management-session-groups).
+
+### Durable signals
+
+```typescript
+const receipt = await management.raiseSignal(sessionId, "build_ready", {
+    data: { build: 7, succeeded: true },
+    signalId: "build-7", // reuse for delivery retries
+    wake: false,
+});
+// { signalId, name, raisedAt, status: "queued" }
+const state = await management.getSessionSignalState(sessionId);
+// { version: 1, pendingWait?, interrupted: boolean, buffered: [...] }
+```
+
+The same write is available as `session.raiseSignal(name, options)` in direct
+and Web SDK modes, and as MCP `raise_signal`. The HTTP body is the options
+object itself, not `{ options: ... }`.
+
+- Names match `[a-z0-9_-]{1,64}`. Inline `data` must be JSON and at most
+  **32 KiB in UTF-8** (bounded nesting/field count also applies).
+- `payloadRef` is an opaque non-empty reference of at most 1,024
+  **JSON-encoded UTF-8 bytes**, including quotes and escapes, without control
+  characters. It is **never automatically fetched**.
+- Optional `signalId` is 1–128 characters matching
+  `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; otherwise the server generates an ID.
+  Source/actor identity and `raisedAt` come from the trusted server context,
+  never request fields. Signal data cannot alter the session's owner, tools,
+  model, or other creation configuration.
+- `wake` defaults to `false`. Pre-arrival signals can start a pending session's
+  orchestration without a prompt or model turn. A matching durable wait
+  consumes a signal; `wake: true` requests an attributed turn even without a
+  matching wait. Waits can be indefinite or timed. Initial sends wait up to
+  ten seconds for a worker to initialize the execution so its actual version
+  can be verified; on timeout no signal is queued. Start may still complete,
+  so retry the same signal after upgraded workers are available.
+- A queued receipt confirms **enqueue**, not consumption or uniqueness.
+  Buffering is bounded to 32 signals; deduplication covers buffered signals
+  and the last 128 accepted IDs, not an unlimited exactly-once guarantee.
+  Inspect `session.signal_*` events through the existing event APIs for
+  lifecycle outcomes.
+- Writes refuse deleted, terminal, and service sessions. An execution older
+  than **1.0.80**, or one whose version cannot be confirmed, is not a signal
+  target: `SIGNALS_UNSUPPORTED` (`409`). Create a new session on upgraded
+  workers rather than attempting to feed the legacy decoder.
+- Validation failures are `INVALID_SIGNAL` (`400`) or `SIGNAL_TOO_LARGE`
+  (`413`); terminal/service conflicts are `SESSION_NOT_ACTIVE` (`409`).
+
+`getSessionSignalState` returns only metadata: `pendingWait` contains
+`waitId`, `names`, `reason`, `startedAt`, and an optional absolute `deadline`;
+buffered envelopes replace inline `data` with `dataBytes`. Missing state on
+a confirmed compatible execution means an empty buffer and no wait.
+Unstarted/unknown/legacy executions instead return `SIGNALS_UNSUPPORTED`.
+`getSession` and live custom-status reads also expose `signalWait` and
+`signalWaitInterrupted`.
+
+Stop cancels a parked signal wait using the **observed wait ID**; a replaced
+or already-consumed wait is a no-op. During an active interrupted model turn,
+Stop keeps its existing turn-scoped behavior. `StopTurnResult` is unchanged.
+
+Compatibility `session.sendEvent`, `management.sendSessionEvent`, HTTP
+`/events`, and MCP `send_session_event` wrap the entire payload as signal
+data. A payload such as `{ prompt: "...", type: "cmd", answer: "yes" }` does
+not invoke any of those operations. Use `sendMessage`, `sendAnswer`, or
+the appropriate management method instead.
+
+On orchestration 1.0.80+, `wait_for_any` exposes `pendingWait.mode: "any"` and
+`lastRaceOutcome`: one typed winner (`signal`, `user`, `timeout`, `stop`,
+`cancel`) plus durable loser dispositions. See
+[durable races](../developer/building/durable-signals.md#race-signals-against-user-input).
+
+### Webhook management
+
+These operations are typed `PilotSwarmManagementClient` methods in direct and
+Web API modes. The server stamps the viewer from authentication; never send a
+viewer or credential value in the body. An administrator must approve connector
+credentials and session-template configuration. Other reads/mutations are
+owner-scoped, subject to the configured administrator scope and current grants.
+
+| Operation | Route | Body/query |
+|---|---|---|
+| createSignalEndpoint | `POST /api/v1/sessions/:sessionId/signal-endpoints/:signalName` | `{ options: { label?, expiresAt?, maxUses?, wake?, hmacSecretRef?, rateLimitPerMinute? } }` |
+| listSignalEndpoints | `GET /api/v1/sessions/:sessionId/signal-endpoints` | None; metadata only |
+| revokeSignalEndpoint | `DELETE /api/v1/signal-endpoints/:endpointId` | None |
+| createWebhookConnector / listWebhookConnectors | `POST` / `GET /api/v1/webhooks/connectors` | Create: `{ input }` |
+| updateWebhookConnector / revokeWebhookConnector | `PATCH` / `DELETE /api/v1/webhooks/connectors/:connectorId` | Update: `{ patch: { expectedRevision, ... } }` |
+| createWebhookBinding / listWebhookBindings | `POST` / `GET /api/v1/webhooks/bindings` | Create: `{ input }` |
+| updateWebhookBinding / revokeWebhookBinding | `PATCH` / `DELETE /api/v1/webhooks/bindings/:bindingId` | Update: `{ patch: { expectedRevision, ... } }` |
+| createWebhookSessionTemplate / listWebhookSessionTemplates | `POST` / `GET /api/v1/webhooks/templates` | Create: `{ input }` |
+| updateWebhookSessionTemplate / revokeWebhookSessionTemplate | `PATCH` / `DELETE /api/v1/webhooks/templates/:templateId` | Update: `{ patch: { expectedRevision, ... } }` |
+| testWebhookBinding | `POST /api/v1/webhooks/bindings/:bindingId/test` | `{ event: <normalized-event> }` |
+| listWebhookReceipts | `GET /api/v1/webhooks/receipts` | `query=<URL-encoded JSON>` with `connectorId?`, `endpointId?`, `sessionId?`, `status?`, `before?`, `limit?` |
+| getWebhookReceipt | `GET /api/v1/webhooks/receipts/:receiptId` | None |
+| replayWebhookReceipt | `POST /api/v1/webhooks/receipts/:receiptId/replay` | `{ confirmed: true }`; explicit confirmation required |
+| getWebhookMetrics | `GET /api/v1/webhooks/metrics` | None |
+| updateWebhookRetentionPolicy | `PATCH /api/v1/webhooks/retention` | Admin-only `{ patch: { expectedRevision, receiptRetentionDays, replayRetentionDays } }` |
+
+Endpoint creation returns the capability URL/token **once**. Metadata reads
+never return them. Connector auth accepts approved references only:
+`{mode:"github-hmac-sha256",secretRef}` or
+`{mode:"ado-basic",usernameRef,passwordRef}`. Updates carry `expectedRevision`;
+conflicts refuse instead of overwriting newer policy. Payloads cannot select
+owners, models, agents, namespaces, tools or routing destinations.
+
+External delivery uses separate opt-in `POST /hooks/s/:token` and
+`POST /hooks/c/:connectorId` routes, outside portal sign-in but authenticated
+by capability/HMAC or provider credentials over trusted HTTPS. Their body is
+raw JSON, not the management wrapper above. A `202 {accepted:true}` response
+means durable receipt/outbox acceptance, not consumption or model success.
+Receipts expose redacted timelines, attempts, duplicate counts and correlation.
+Signal and approved prompt consumption both require 1.0.80+. Prompt consumption
+means dispatch into a turn, not successful model completion.
+
+See [webhook ingress](../developer/building/webhooks.md) for source scopes,
+approved templates, coalescing, bounded normalization, secret rotation, rates,
+revocation, dead letters and local verification. Configuring these resources
+does not register a GitHub/ADO hook or deploy infrastructure.
+
+Retention defaults to 30 days for terminal receipt history and 30 days for the
+first terminal failure's replay window. Durations are 1-3650 whole days, with
+replay no longer than history. Read policy/revision through
+`getWebhookMetrics().retention.policy`; updates apply to future terminal
+dispositions and do not extend existing replay deadlines. The `retention`
+snapshot also contains cleanup timestamps and viewer-scoped deletion counters.
+Receipt reads include `settledAt`, `receiptExpiresAt`, `replayExpiresAt`,
+`payloadRetained`, and `replayAvailable`. Replay reauthorizes even when
+`replayAvailable` is true. An expired replay returns `WEBHOOK_REPLAY_EXPIRED`
+(410); purged history/cursors return not-found. Cleanup preserves pending work,
+queued signals, delivery deduplication and session-creation tombstones.
 
 ### Session sharing
 
@@ -152,7 +282,7 @@ group membership is per-viewer state, not a property of the session. See
 | renameSession | `PATCH /api/v1/management/sessions/:sessionId` | sessionId (path), title (body) | Rename a session. |
 | cancelSession | `POST /api/v1/management/sessions/:sessionId/cancel` | sessionId (path) | Cancel a session. |
 | completeSession | `POST /api/v1/management/sessions/:sessionId/complete` | sessionId (path), reason (body) | Mark a session completed. |
-| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn. |
+| stopSessionTurn | `POST /api/v1/management/sessions/:sessionId/stop-turn` | sessionId (path), options (body) | Abort the in-flight turn or cancel the observed parked signal wait without cancelling the session. |
 | setSessionModel | `POST /api/v1/management/sessions/:sessionId/model` | sessionId (path), options (body) | Switch the session model ({ model, reasoningEffort? }). |
 | restartSystemSession | `POST /api/v1/management/sessions/:agentIdOrSessionId/restart-system` | agentIdOrSessionId (path), options (body) | Restart a system session (complete \| terminate \| hard_delete). |
 | exportExecutionHistory | `POST /api/v1/management/sessions/:sessionId/export-execution-history` | sessionId (path) | Export execution history to an artifact; returns artifact meta. |

@@ -38,6 +38,7 @@ import {
 } from "pilotswarm/ui-core";
 import { useUiPlatform } from "./platform.js";
 import { useControllerSelector } from "./use-controller-state.js";
+import { WebhookTuiPanel } from "./webhook-tui.js";
 
 const PANE_GAP_X = 0;
 const PANE_GAP_Y = 0;
@@ -2181,6 +2182,7 @@ function buildAdminModelProviderLines(view) {
 
 function buildAdminConsoleLines(view) {
     const lines = [];
+    lines.push([{ text: `m My Providers · a Packages · ${view.isAdmin ? "M Shared Providers · w Workers · " : ""}h Webhooks · Esc close`, color: "cyan" }]);
     if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
     lines.push([
         { text: "Signed in as ", color: "gray" },
@@ -2260,7 +2262,8 @@ function buildAdminConsoleLines(view) {
 function AdminConsolePanel({ controller, width, height, frame }) {
     const platform = useUiPlatform();
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
-    const lines = React.useMemo(() => buildAdminConsoleLines(view), [view]);
+    const lines = React.useMemo(() => view.section === "webhooks" ? [] : buildAdminConsoleLines(view), [view]);
+    if (view.section === "webhooks") return React.createElement(WebhookTuiPanel, { controller, width, height, frame });
     return React.createElement(platform.Panel, {
         title: "Admin Console",
         color: "cyan",
