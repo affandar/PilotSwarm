@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, SIGNAL_RACE_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -692,8 +692,7 @@ export function createSessionProxy(
             turnIndex?: number,
             turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[] },
         ) {
-            const turnRoutingContract = config.durableSignalRaces === true ? "signals-v2"
-                : config.durableSignals === true ? "signals-v1" : routingContract;
+            const turnRoutingContract = config.durableSignals === true ? "signals-v1" : routingContract;
             return routeHandoffActivity(ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
@@ -805,7 +804,6 @@ export function buildRunTurnConfig(
     hostname: string,
     fallbackAgentIdentity?: string,
     durableSignals = false,
-    durableSignalRaces = false,
 ): SerializableSessionConfig {
     const runConfig: SerializableSessionConfig = {
         ...inputConfig,
@@ -816,9 +814,7 @@ export function buildRunTurnConfig(
     };
     if (durableSignals) runConfig.durableSignals = true;
     else delete runConfig.durableSignals;
-    if (durableSignalRaces) runConfig.durableSignalRaces = true;
-    else delete runConfig.durableSignalRaces;
-    if (durableSignalRaces && ["true", "1"].includes(process.env.PILOTSWARM_WEBHOOKS_ENABLED ?? "")) {
+    if (durableSignals && ["true", "1"].includes(process.env.PILOTSWARM_WEBHOOKS_ENABLED ?? "")) {
         runConfig.webhookEndpoints = true;
     } else delete runConfig.webhookEndpoints;
 
@@ -1199,7 +1195,6 @@ export function registerActivities(
             /** First turn of a fresh epoch (runTurn2): conditional epoch init. */
             epochStart?: boolean;
             durableSignals?: boolean;
-            durableSignalRaces?: boolean;
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -1261,8 +1256,7 @@ export function registerActivities(
             }
         }
 
-        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity,
-            input.durableSignals === true, input.durableSignalRaces === true);
+        const runConfig = buildRunTurnConfig(input.config, hostname, fallbackAgentIdentity, input.durableSignals === true);
         if (catalogSessionRow?.model) {
             const staleConfiguredModel = String(input.config.model || "").trim();
             if (staleConfiguredModel && staleConfiguredModel !== catalogSessionRow.model) {
@@ -3596,7 +3590,6 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     turnIndex: input.turnIndex,
                     controlToolBridge,
                     ...(input.durableSignals ? { durableSignals: true } : {}),
-                    ...(input.durableSignalRaces ? { durableSignalRaces: true } : {}),
                     ...(runConfig.webhookEndpoints ? { webhookEndpoints: true } : {}),
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
                 });
@@ -4046,13 +4039,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
     const runSignalTurnHandler = (ctx: any, input: Parameters<typeof runTurnHandler>[1]) =>
-        runTurnHandler(ctx, { ...input, durableSignals: true, durableSignalRaces: false });
+        runTurnHandler(ctx, { ...input, durableSignals: true });
     runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn, runSignalTurnHandler);
     runtime.registerActivity(SIGNAL_ACTIVITY_NAMES.runTurn2, runSignalTurnHandler);
-    const runSignalRaceTurnHandler = (ctx: any, input: Parameters<typeof runTurnHandler>[1]) =>
-        runTurnHandler(ctx, { ...input, durableSignals: true, durableSignalRaces: true });
-    runtime.registerActivity(SIGNAL_RACE_ACTIVITY_NAMES.runTurn, runSignalRaceTurnHandler);
-    runtime.registerActivity(SIGNAL_RACE_ACTIVITY_NAMES.runTurn2, runSignalRaceTurnHandler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it

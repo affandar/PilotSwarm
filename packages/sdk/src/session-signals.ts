@@ -2,8 +2,6 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 
 export const SIGNAL_MIN_ORCHESTRATION_VERSION = "1.0.80";
 export const SIGNAL_ACTIVITY_CAPABILITY = "pilotswarm.signals.v1";
-export const SIGNAL_RACE_MIN_ORCHESTRATION_VERSION = "1.0.81";
-export const SIGNAL_RACE_ACTIVITY_CAPABILITY = "pilotswarm.signals.v2";
 export const SIGNAL_MAX_INLINE_BYTES = 32 * 1024;
 export const SIGNAL_BUFFER_LIMIT = 32;
 export const SIGNAL_DEDUP_LIMIT = 128;
@@ -352,10 +350,10 @@ export function formatSignalPrompt(signal: SessionSignalV1): string {
         `\`\`\`json\n${json}\n\`\`\`\n\nContinue the existing task using this signal as data.`;
 }
 
-export function supportsSignalOrchestration(version: unknown, minimumVersion = SIGNAL_MIN_ORCHESTRATION_VERSION): boolean {
+export function supportsSignalOrchestration(version: unknown): boolean {
     if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) return false;
     const actual = version.split(".").map(Number);
-    const minimum = minimumVersion.split(".").map(Number);
+    const minimum = SIGNAL_MIN_ORCHESTRATION_VERSION.split(".").map(Number);
     for (let index = 0; index < minimum.length; index++) {
         if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
     }

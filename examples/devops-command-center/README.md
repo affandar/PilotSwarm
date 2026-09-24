@@ -160,7 +160,7 @@ For provider-driven build/PR flows, opt into the shared
 [webhook host](../../docs/developer/building/webhooks.md). A fixed-target
 signal binding can resume an existing Builder session; an administrator-approved
 template can start a named workflow with its normal tools, repository access
-and budget policy. Use `wait_for_any` on 1.0.81+ if user input should end the
+and budget policy. Use `wait_for_any` on 1.0.80+ if user input should end the
 wait instead of temporarily interrupting it. GitHub uses exact-body HMAC;
 ADO uses Basic auth over HTTPS. The sample does not register hooks, expose a
 public endpoint, or trigger provider workflows automatically.

@@ -28,7 +28,6 @@ import {
     supportsSignalOrchestration,
     SignalValidationError,
     SIGNAL_MIN_ORCHESTRATION_VERSION,
-    SIGNAL_RACE_MIN_ORCHESTRATION_VERSION,
     type RaiseSignalOptions,
     type RaiseSignalResult,
     type SessionSignalV1,
@@ -1013,8 +1012,8 @@ export class PilotSwarmClient {
         }
         if (status.status === "Running") {
             const info = await this.duroxideClient.getInstanceInfo(orchestrationId);
-            if (!supportsSignalOrchestration(info?.orchestrationVersion, SIGNAL_RACE_MIN_ORCHESTRATION_VERSION)) {
-                throw Object.assign(new Error("Webhook prompt routing requires orchestration 1.0.81 or later."),
+            if (!supportsSignalOrchestration(info?.orchestrationVersion)) {
+                throw Object.assign(new Error(`Webhook prompt routing requires orchestration ${SIGNAL_MIN_ORCHESTRATION_VERSION} or later.`),
                     { code: "WEBHOOK_SESSION_VERSION_UNSUPPORTED", status: 409 });
             }
             this.activeOrchestrations.set(sessionId, orchestrationId);

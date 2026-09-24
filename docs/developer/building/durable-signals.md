@@ -54,8 +54,8 @@ behavior.
 
 ## Race signals against user input
 
-Orchestration **1.0.81+** adds `wait_for_any` using capability-routed
-`pilotswarm.signals.v2` turns. It accepts the same 1-8 names, optional timeout,
+Orchestration **1.0.80+** includes `wait_for_any` on the same capability-routed
+`pilotswarm.signals.v1` turns as `wait_for_signal`. It accepts the same 1-8 names, optional timeout,
 and reason as `wait_for_signal`, but the first winner ends the wait:
 
 ```js
@@ -160,7 +160,7 @@ supported boundary. They are not injected into an in-flight call. At dispatch,
 queued interactive input precedes matching signals, and a matching signal is
 checked before a queued timeout. Timeout records are bound to wait IDs so stale
 timers cannot complete a replacement wait. The explicit typed race result and
-full loser-disposition contract are provided by `wait_for_any` on 1.0.81+.
+full loser-disposition contract are provided by `wait_for_any` on 1.0.80+.
 
 Payload fields never choose the owner, destination session, agent, model,
 provider, namespace, tools, or credentials. Signal turns are runtime-attributed,
@@ -205,14 +205,16 @@ older decoder fails explicitly rather than disappearing into its queue.
 Signal-aware run-turn and epoch-start activities require
 `pilotswarm.signals.v1`, so an old worker cannot claim them. Older run-turn
 activities retain their original names, payloads, and tool declarations.
-The Phase 1 1.0.80 handler is also frozen; its workers do not receive the
-`wait_for_any` tool. Race-aware 1.0.81 turns use separate activity names and the
-`pilotswarm.signals.v2` capability.
+All signals, explicit races and webhook prompt dispatch ship together in the
+single new 1.0.80 handler under `orchestration/`. The only new frozen directory
+is upstream's `orchestration_1_0_79/`; there is no intermediate signal-only
+snapshot or separate race release.
 
-An earlier, unmerged draft of this feature used 1.0.79 before main independently
-assigned that version to different behavior. Draft-test histories from that
-implementation are not main's 1.0.79 histories: use a fresh isolated test
-database when moving those experiments to the corrected 1.0.80 build.
+Earlier unmerged drafts used 1.0.79 for signals, then signal-only 1.0.80 and a
+separate 1.0.81 race handler. Those draft-test histories are not supported by
+this consolidated release. Use a fresh isolated test database for the new
+build; do not reset an ordinary upstream deployment or reuse the old draft lab.
+Upstream's actual 1.0.79 histories remain supported by their unchanged freeze.
 
 `durable-signals.test.js` covers envelopes, limits, FIFO, deduplication,
 interrupt/re-arm, timeout and Stop/replacement semantics. The native-runtime

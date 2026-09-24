@@ -89,8 +89,6 @@ export interface CapturedEvent {
 export interface TurnOptions {
     /** @internal Enabled only by the capability-routed signal-aware activity. */
     durableSignals?: boolean;
-    /** @internal Enabled only by the version-2 signal activity. */
-    durableSignalRaces?: boolean;
     /** @internal Trusted worker gate for capability endpoint tools. */
     webhookEndpoints?: boolean;
     onDelta?: (delta: string) => void;
@@ -192,8 +190,6 @@ export interface TurnOptions {
 export interface SerializableSessionConfig {
     /** @internal Worker-owned declaration gate; never trusted from session creation input. */
     durableSignals?: boolean;
-    /** @internal Worker-owned declaration gate for wait_for_any. */
-    durableSignalRaces?: boolean;
     /** @internal Never enabled by caller-supplied session configuration. */
     webhookEndpoints?: boolean;
     model?: string;

@@ -289,7 +289,7 @@ export function touchRecentClientMessageIds(state: DurableSessionState, ids: str
 }
 
 export function createInitialState(input: OrchestrationInput, options: DurableSessionOptions): DurableSessionState {
-    const config = { ...input.config, durableSignals: true, durableSignalRaces: true };
+    const config = { ...input.config, durableSignals: true };
     if (input.taskContext) {
         const base = typeof options.baseSystemMessage === "string"
             ? options.baseSystemMessage ?? ""

@@ -161,8 +161,9 @@ Preserve a signal wait's ID and absolute deadline through user interruption and
 continue-as-new. Payloads stay in bounded durable slots, while status and audit
 events expose metadata only. Keep public clients, API/MCP, tuner inspection,
 shared UI, and the [signal guide](../docs/developer/building/durable-signals.md)
-in parity. Phase 1's 1.0.80 handler is frozen; 1.0.81 uses separate
-`pilotswarm.signals.v2` turns for `wait_for_any`. Preserve one typed race winner,
+in parity. Signals, `wait_for_any` and webhook prompt dispatch share the single
+1.0.80 release; preserve upstream's non-signal 1.0.79 freeze without retaining
+intermediate draft handlers. Preserve one typed race winner,
 Stop/cancel > accepted input > matching signal > timeout precedence, and explicit
 loser disposition across replay and continue-as-new.
 The existing Stop action also cancels parked, non-interrupted signal waits,
@@ -175,7 +176,7 @@ keep capability URLs out of logs/traces. Credentials are operator-owned secret
 references. Use the canonical management methods and durable receipt/outbox
 procedures; payloads must never choose owner/agent/model/namespace/tools or
 targets. Reauthorize on routing/replay; admin break-glass does not authorize an
-automated target. Prompt consumption means dispatch into a 1.0.81+ turn, not
+automated target. Prompt consumption means dispatch into a 1.0.80+ turn, not
 model success. Keep [the webhook guide](../docs/developer/building/webhooks.md),
 MCP, shared UI and tuner reads in parity. Provider registration, CI runs, tunnels
 and deployments require separate explicit operator permission.

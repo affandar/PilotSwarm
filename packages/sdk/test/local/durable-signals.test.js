@@ -1,14 +1,13 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
 import { computeCronAtNextFire } from "../../src/cron-at.ts";
 import { MAX_DRAIN_PER_TURN, MAX_ITERATIONS_PER_EXECUTION } from "../../src/orchestration/state.ts";
 import { createSessionProxy } from "../../src/session-proxy.ts";
-import { AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_NAMES, SIGNAL_RACE_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
 import { commandResponseKey } from "../../src/types.ts";
 import {
     SIGNAL_ACTIVITY_CAPABILITY,
-    SIGNAL_RACE_ACTIVITY_CAPABILITY,
     SIGNAL_BUFFER_LIMIT,
     SIGNAL_DEDUP_LIMIT,
     SIGNAL_MAX_INLINE_BYTES,
@@ -73,7 +72,7 @@ class Driver {
             continueAsNewVersioned: (nextInput, version) => ({ kind: "continue", input: nextInput, version }),
         };
         this.input = { sessionId: "signal-session", config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, ...input };
-        this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.input);
+        this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.input);
     }
 
     enqueue(value, queue = "messages") {
@@ -109,9 +108,9 @@ class Driver {
             }
             case "activity":
                 switch (effect.name) {
-                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn:
-                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn2: {
-                        expect(effect.tag).toBe(SIGNAL_RACE_ACTIVITY_CAPABILITY);
+                    case SIGNAL_ACTIVITY_NAMES.runTurn:
+                    case SIGNAL_ACTIVITY_NAMES.runTurn2: {
+                        expect(effect.tag).toBe(SIGNAL_ACTIVITY_CAPABILITY);
                         this.turns.push(effect.input);
                         const result = this.turnResults.shift() ?? completed;
                         return typeof result === "function" ? result(this, effect.input) : result;
@@ -141,8 +140,8 @@ class Driver {
             if (this.pending) {
                 if (this.pending.kind === "continue") {
                     this.continues.push(structuredClone(this.pending.input));
-                    expect(this.pending.version).toBe("1.0.81");
-                    this.gen = durableSessionOrchestration_1_0_81(this.ctx, this.pending.input);
+                    expect(this.pending.version).toBe("1.0.80");
+                    this.gen = durableSessionOrchestration_1_0_80(this.ctx, this.pending.input);
                     this.pending = null;
                     continue;
                 }

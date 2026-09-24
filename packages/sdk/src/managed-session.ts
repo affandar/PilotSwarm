@@ -772,7 +772,7 @@ export class ManagedSession {
      * Manager agents and nobody else. Omitting it declares the tools every
      * session gets.
      */
-    static systemToolDefs(opts?: { agentIdentity?: string | null; durableSignals?: boolean; durableSignalRaces?: boolean; webhookEndpoints?: boolean }): Tool<any>[] {
+    static systemToolDefs(opts?: { agentIdentity?: string | null; durableSignals?: boolean; webhookEndpoints?: boolean }): Tool<any>[] {
         const waitTool = defineTool("wait", {
             // Defensive override: the Copilot SDK ships built-in tools named
             // `wait` in some configurations (e.g. the desktop-automation MCP
@@ -1061,7 +1061,7 @@ export class ManagedSession {
 
         return [waitTool, waitOnWorkerTool,
             ...(opts?.durableSignals ? [defineTool("wait_for_signal", { ...WAIT_FOR_SIGNAL_TOOL_SPEC, handler: async () => "stub" })] : []),
-            ...(opts?.durableSignalRaces ? [defineTool("wait_for_any", { ...WAIT_FOR_ANY_TOOL_SPEC, handler: async () => "stub" })] : []),
+            ...(opts?.durableSignals ? [defineTool("wait_for_any", { ...WAIT_FOR_ANY_TOOL_SPEC, handler: async () => "stub" })] : []),
             ...(opts?.webhookEndpoints ? [defineTool("create_signal_webhook", { ...CREATE_SIGNAL_WEBHOOK_TOOL_SPEC, handler: async () => "stub" })] : []),
             cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : [])];
@@ -2666,7 +2666,7 @@ export class ManagedSession {
             waitTool,
             waitOnWorkerTool,
             ...(opts?.durableSignals ? [waitForSignalTool] : []),
-            ...(opts?.durableSignalRaces ? [waitForAnyTool] : []),
+            ...(opts?.durableSignals ? [waitForAnyTool] : []),
             ...(opts?.webhookEndpoints ? [createSignalWebhookTool] : []),
             cronTool,
             cronAtTool,

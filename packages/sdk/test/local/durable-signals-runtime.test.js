@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
-import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
-import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration_1_0_80/index.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
 import { durableSessionOrchestration_1_0_79 } from "../../src/orchestration_1_0_79/index.ts";
 import { durableSessionOrchestration_1_0_78 } from "../../src/orchestration_1_0_78/index.ts";
 import { PilotSwarmClient } from "../../src/client.ts";
 import { commandResponseKey } from "../../src/types.ts";
-import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES, SIGNAL_RACE_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
-import { SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_RACE_ACTIVITY_CAPABILITY, SIGNAL_MAX_INLINE_BYTES, SIGNAL_STATE_KEY, createSessionSignal } from "../../src/session-signals.ts";
+import { AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES, SIGNAL_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_MAX_INLINE_BYTES, SIGNAL_STATE_KEY, createSessionSignal } from "../../src/session-signals.ts";
 
 const { SqliteProvider, Runtime, Client } = createRequire(import.meta.url)("duroxide");
 const NAME = "durable-session-v2";
@@ -37,7 +36,7 @@ async function withRuntimeTest(body) {
         const runtime = new Runtime(provider, {
             workerTagFilter: { defaultAnd: [
                 AGENT_HANDOFF_CAPABILITY,
-                ...(supportsSignals ? [SIGNAL_ACTIVITY_CAPABILITY, SIGNAL_RACE_ACTIVITY_CAPABILITY] : []),
+                ...(supportsSignals ? [SIGNAL_ACTIVITY_CAPABILITY] : []),
             ] },
             workerNodeId: `${dir.split("/").at(-1)}-${label}`,
             orchestrationConcurrency: 4,
@@ -49,11 +48,10 @@ async function withRuntimeTest(body) {
         runtime.registerOrchestrationVersioned(NAME, "1.0.78", durableSessionOrchestration_1_0_78);
         runtime.registerOrchestrationVersioned(NAME, "1.0.79", durableSessionOrchestration_1_0_79);
         runtime.registerOrchestrationVersioned(NAME, "1.0.80", durableSessionOrchestration_1_0_80);
-        runtime.registerOrchestrationVersioned(NAME, "1.0.81", durableSessionOrchestration_1_0_81);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
             "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions,
             HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn2,
-            ...Object.values(SIGNAL_ACTIVITY_NAMES), ...Object.values(SIGNAL_RACE_ACTIVITY_NAMES)]) {
+            ...Object.values(SIGNAL_ACTIVITY_NAMES)]) {
             runtime.registerActivity(name, async (ctx, input) => {
                 switch (name) {
                     case "recordSessionEvent":
@@ -70,8 +68,6 @@ async function withRuntimeTest(body) {
                     case HANDOFF_ACTIVITY_NAMES.runTurn2:
                     case SIGNAL_ACTIVITY_NAMES.runTurn:
                     case SIGNAL_ACTIVITY_NAMES.runTurn2:
-                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn:
-                    case SIGNAL_RACE_ACTIVITY_NAMES.runTurn2:
                         turns.push({ worker: label, name, tag: ctx.tag(), affinity: ctx.sessionId, ...input });
                         if (turnResults.length) return { snapshotVersion: turns.length, ...turnResults.shift() };
                         if (input.prompt === "Wait for ready") return {
@@ -127,7 +123,7 @@ async function withRuntimeTest(body) {
         signal: createSessionSignal(name, options, { kind: "api", actorId: "fixture-operator" },
             { signalId: id, raisedAt: new Date().toISOString() }),
     });
-    const start = (client, input = {}, version = "1.0.81") => client.startOrchestrationVersioned(IID, NAME, {
+    const start = (client, input = {}, version = "1.0.80") => client.startOrchestrationVersioned(IID, NAME, {
         sessionId: SID, config: {}, isSystem: true, blobEnabled: true, idleTimeout: -1, prompt: "Wait for ready", ...input,
     }, version);
     try {
@@ -147,7 +143,7 @@ async function withRuntimeTest(body) {
 }
 
 describe.concurrent("durable signals on the native runtime", () => {
-    it("replays main's 1.0.79 unchanged, rejects signals there, then upgrades at CAN to 1.0.81", { timeout: 60_000 }, async () => {
+    it("replays main's 1.0.79 unchanged, rejects signals there, then upgrades at CAN to 1.0.80", { timeout: 60_000 }, async () => {
         await withRuntimeTest(async ({ createWorker, stop, statusUntil, start, turns, forceCan, instanceId, sessionId }) => {
             const original = await createWorker("main", false);
             await start(original.client, { prompt: "Ordinary request", blobEnabled: false }, "1.0.79");
@@ -166,14 +162,14 @@ describe.concurrent("durable signals on the native runtime", () => {
             // This ordinary legacy turn kept its affinity: a different worker
             // must wait for the native ownership lease (about 30 seconds).
             await statusUntil(upgraded.client, async status => status?.status === "idle"
-                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.81", 45_000);
+                && (await upgraded.client.getInstanceInfo(instanceId)).orchestrationVersion === "1.0.80", 45_000);
             expect(turns.map(turn => turn.name)).toEqual([HANDOFF_ACTIVITY_NAMES.runTurn, HANDOFF_ACTIVITY_NAMES.runTurn]);
             expect(turns.every(turn => !turn.config.durableSignals)).toBe(true);
             const receipt = await api._raiseSignal(sessionId, "ready", { signalId: "upgraded-wake", wake: true });
             expect(receipt.status).toBe("queued");
             await statusUntil(upgraded.client, status => status?.status === "idle" && status.responseVersion >= 3);
             expect(turns).toHaveLength(3);
-            expect(turns[2]).toMatchObject({ name: SIGNAL_RACE_ACTIVITY_NAMES.runTurn, tag: SIGNAL_RACE_ACTIVITY_CAPABILITY });
+            expect(turns[2]).toMatchObject({ name: SIGNAL_ACTIVITY_NAMES.runTurn, tag: SIGNAL_ACTIVITY_CAPABILITY });
             expect(turns[2].prompt).toContain('"signalId": "upgraded-wake"');
         });
     });
@@ -291,7 +287,7 @@ describe.concurrent("durable signals on the native runtime", () => {
             })));
             expect(resumed).toHaveLength(1);
             expect(resumed[0].prompt).toContain('"signalId": "consume-once"');
-            expect(resumed[0].tag).toBe(SIGNAL_RACE_ACTIVITY_CAPABILITY);
+            expect(resumed[0].tag).toBe(SIGNAL_ACTIVITY_CAPABILITY);
             expect(JSON.parse(await replacement.client.getValue(IID, "signalbuf.0")).data).toEqual(bufferedData);
             await enqueueSignal(replacement.client, "consume-once", "ready", { wake: true });
             await eventUntil(event => event.eventType === "session.signal_duplicate" && event.data.signalId === "consume-once");
@@ -315,9 +311,9 @@ describe.concurrent("durable signals on the native runtime", () => {
             await statusUntil(upgraded.client, status => status?.status === "waiting" && status.signalWait);
             await enqueueSignal(upgraded.client, "mixed", "ready");
             await statusUntil(upgraded.client, status => status?.responseVersion >= 1 && !status.signalWait);
-            const signalTurns = turns.filter(turn => Object.values(SIGNAL_RACE_ACTIVITY_NAMES).includes(turn.name));
+            const signalTurns = turns.filter(turn => Object.values(SIGNAL_ACTIVITY_NAMES).includes(turn.name));
             expect(signalTurns).toHaveLength(2);
-            expect(signalTurns.every(turn => turn.worker === "upgraded" && turn.tag === SIGNAL_RACE_ACTIVITY_CAPABILITY)).toBe(true);
+            expect(signalTurns.every(turn => turn.worker === "upgraded" && turn.tag === SIGNAL_ACTIVITY_CAPABILITY)).toBe(true);
         });
     });
 
@@ -373,15 +369,15 @@ describe.concurrent("durable signals on the native runtime", () => {
         });
     });
 
-    it("keeps a Phase 1 signal wait replayable when a race-capable worker takes over", { timeout: 45_000 }, async () => {
+    it("preserves an ordinary signal wait across worker replacement without turning it into a race", { timeout: 45_000 }, async () => {
         await withRuntimeTest(async ({ createWorker, start, stop, statusUntil, enqueueSignal, turns }) => {
-            const old = await createWorker("signal-v1");
+            const old = await createWorker("signal-first");
             await start(old.client, {}, "1.0.80");
             const pending = await statusUntil(old.client, status => status?.signalWait && status.status === "waiting");
             expect(pending.signalWait.mode).toBeUndefined();
             expect(turns[0].name).toBe(SIGNAL_ACTIVITY_NAMES.runTurn);
             await stop(old.runtime);
-            const next = await createWorker("signal-v2");
+            const next = await createWorker("signal-replacement");
             await enqueueSignal(next.client, "old-wait-result", "ready");
             await statusUntil(next.client, status => !status?.signalWait && status?.responseVersion >= 1);
             expect(turns).toHaveLength(2);

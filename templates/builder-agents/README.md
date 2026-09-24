@@ -63,7 +63,7 @@ Generated agents should use `cron(seconds=N, reason="...")` for fixed-interval r
 For external-event coordination, use `wait_for_signal` with authenticated
 `raiseSignal` producers rather than a polling loop. The SDK builder skill
 covers optional deadlines, stable delivery IDs, bounded buffering, untrusted
-payloads, the 1.0.80 signal gate and 1.0.81 `wait_for_any` races. Opt-in
+payloads, and the shared 1.0.80 gate for signals and `wait_for_any` races. Opt-in
 [webhooks](../../docs/developer/building/webhooks.md) provide fixed-target
 capabilities, GitHub/ADO connectors and approved templates. Keep secret
 references and owner/agent/model policy server-owned; never scaffold automatic

@@ -61,7 +61,7 @@ metadata only. The endpoint table holds a SHA-256 digest, not the token or live
 URL. A token has the recognizable `pswh_` prefix plus 256 random bits encoded
 as 43 base64url characters; the prefix does not reduce its entropy.
 
-On enabled, race-capable workers (orchestration 1.0.81+), an ordinary agent can
+On enabled, signal-capable workers (orchestration 1.0.80+), an ordinary agent can
 call `create_signal_webhook({signal_name, label?, expires_at?, max_uses?, wake?})`.
 The worker binds it to that agent's own authorized session. It does not register
 anything with a provider; any external registration remains a separate,
@@ -322,11 +322,11 @@ Other dispositions include `duplicate`, `unmatched`, `rejected`, `rate_limited`,
 `dropped`. Duplicates increment a counter and append a timeline entry without
 overwriting the original outcome. `queued` means the durable queue accepted the
 work. A correlated signal disposition marks it consumed/dropped. An approved
-prompt reaches `consumed` only when orchestration 1.0.81+ dispatches its exact
+prompt reaches `consumed` only when orchestration 1.0.80+ dispatches its exact
 `webhook:<receipt-id>` message into a turn, not merely when ingress queues it.
 This does **not** prove the model completed successfully: budget deferral,
 worker recovery and ordinary model errors remain separate session outcomes.
-Prompt routes refuse older running decoders; ordinary signals support 1.0.80+.
+Signal and prompt routes both refuse running decoders older than 1.0.80.
 
 Use:
 

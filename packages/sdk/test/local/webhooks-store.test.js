@@ -12,9 +12,9 @@ import { WebhookRuntime } from "../../src/webhook-runtime.ts";
 import { createInspectTools } from "../../src/inspect-tools.ts";
 import { webhookHash } from "../../src/webhook-validation.ts";
 import { assert } from "../helpers/assertions.js";
-import { durableSessionOrchestration_1_0_81 } from "../../src/orchestration/index.ts";
-import { SIGNAL_RACE_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
-import { SIGNAL_RACE_ACTIVITY_CAPABILITY } from "../../src/session-signals.ts";
+import { durableSessionOrchestration_1_0_80 } from "../../src/orchestration/index.ts";
+import { SIGNAL_ACTIVITY_NAMES, AGENT_HANDOFF_CAPABILITY, HANDOFF_ACTIVITY_NAMES } from "../../src/activity-routing.ts";
+import { SIGNAL_ACTIVITY_CAPABILITY } from "../../src/session-signals.ts";
 import { createWebhookRouter } from "../../../app/web/api/webhooks.js";
 
 const url = process.env.PS_TEST_DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -54,7 +54,7 @@ async function fixture(run) {
         const queued = [];
         const native = {
             getStatus: async id => ({ status: starts.has(id) ? "Running" : "NotFound", customStatusVersion: 0 }),
-            getInstanceInfo: async id => ({ status: starts.has(id) ? "Running" : "Unknown", orchestrationVersion: "1.0.81" }),
+            getInstanceInfo: async id => ({ status: starts.has(id) ? "Running" : "Unknown", orchestrationVersion: "1.0.80" }),
             startOrchestrationVersioned: async (id, _name, input, version) => { starts.set(id, { input, version }); },
             enqueueEvent: async (id, queue, payload) => { queued.push({ id, queue, payload: JSON.parse(payload) }); },
         };
@@ -103,19 +103,19 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
         const provider = await SqliteProvider.inMemory();
         const native = new Client(provider);
         const runtime = new Runtime(provider, { workerNodeId: f.target, dispatcherPollIntervalMs: 10, logLevel: "error",
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_RACE_ACTIVITY_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, SIGNAL_ACTIVITY_CAPABILITY] },
             orchestrationConcurrency: 4, workerConcurrency: 4 });
         const turns = [];
-        runtime.registerOrchestrationVersioned("durable-session-v2", "1.0.81", durableSessionOrchestration_1_0_81);
+        runtime.registerOrchestrationVersioned("durable-session-v2", "1.0.80", durableSessionOrchestration_1_0_80);
         for (const name of ["recordSessionEvent", "updateCmsState", "loadKnowledgeIndex", "getWorkerSessionPolicy",
-            "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions, ...Object.values(SIGNAL_RACE_ACTIVITY_NAMES)]) {
+            "getOrchestrationStats", HANDOFF_ACTIVITY_NAMES.listChildSessions, ...Object.values(SIGNAL_ACTIVITY_NAMES)]) {
             runtime.registerActivity(name, async (_ctx, input) => {
                 if (name === "recordSessionEvent") { await f.catalog.recordEvents(input.sessionId, input.events); return null; }
                 if (name === "updateCmsState") { await f.catalog.updateSession(input.sessionId, { state: input.state }); return null; }
                 if (name === "getWorkerSessionPolicy") return { policy: null, allowedAgentNames: [] };
                 if (name === "getOrchestrationStats") return { historySizeBytes: 0 };
                 if (name === HANDOFF_ACTIVITY_NAMES.listChildSessions) return [];
-                if (Object.values(SIGNAL_RACE_ACTIVITY_NAMES).includes(name)) {
+                if (Object.values(SIGNAL_ACTIVITY_NAMES).includes(name)) {
                     turns.push(input);
                     return turns.length === 1
                         ? { type: "signal-wait", action: "wait", names: ["pr_ready"], reason: "Native webhook test", snapshotVersion: 1 }
@@ -158,7 +158,7 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
             await runtime.start();
             await native.startOrchestrationVersioned(instance, "durable-session-v2", {
                 sessionId: f.target, config: {}, isSystem: true, blobEnabled: false, idleTimeout: -1, prompt: "Wait for a PR",
-            }, "1.0.81");
+            }, "1.0.80");
             await waitFor(status => status.status === "waiting" && status.signalWait);
             await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
             const delivery = capability
@@ -571,6 +571,21 @@ describe.concurrent("durable webhook PostgreSQL and public SDK backend", () => {
         await f.runtime.runOnce();
         expect((await f.management.listWebhookReceipts({}, alice))[0].status).toBe("target_terminal");
         expect(f.queued).toHaveLength(0);
+    }));
+
+    it("requires the same 1.0.80 floor for both webhook signals and approved prompts", () => fixture(async f => {
+        f.native.getStatus = async () => ({ status: "Running" });
+        f.native.getInstanceInfo = async () => ({ status: "Running", orchestrationVersion: "1.0.79" });
+        await expect(f.client._raiseSignal(f.target, "ready")).rejects.toMatchObject({ code: "SIGNALS_UNSUPPORTED" });
+        await expect(f.client._enqueueWebhookPrompt(f.target, "Approved prompt", "webhook:test"))
+            .rejects.toMatchObject({ code: "WEBHOOK_SESSION_VERSION_UNSUPPORTED" });
+        expect(f.queued).toHaveLength(0);
+        f.native.getInstanceInfo = async () => ({ status: "Running", orchestrationVersion: "1.0.80" });
+        await f.client._raiseSignal(f.target, "ready");
+        await f.client._enqueueWebhookPrompt(f.target, "Approved prompt", "webhook:test");
+        expect(f.queued).toHaveLength(2);
+        expect(f.queued[0].payload.signal.name).toBe("ready");
+        expect(f.queued[1].payload.prompt).toBe("Approved prompt");
     }));
 
     it("fails closed after destination ownership changes even if the prior owner retains a write share", () => fixture(async f => {

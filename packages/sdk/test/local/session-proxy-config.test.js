@@ -7,6 +7,25 @@ import { bootstrapTurnOptions, buildRunTurnConfig, childModelCreationOptions, cr
 import { assertEqual, assertIncludes } from "../helpers/assertions.js";
 
 describe("runTurn config backfill", () => {
+    it("gates all signal tools by the activity contract and webhook minting by the worker opt-in", () => {
+        const original = process.env.PILOTSWARM_WEBHOOKS_ENABLED;
+        try {
+            process.env.PILOTSWARM_WEBHOOKS_ENABLED = "true";
+            const legacy = buildRunTurnConfig({ durableSignals: true, webhookEndpoints: true }, "host");
+            expect(legacy).not.toHaveProperty("durableSignals");
+            expect(legacy).not.toHaveProperty("webhookEndpoints");
+            const enabled = buildRunTurnConfig({}, "host", undefined, true);
+            expect(enabled).toMatchObject({ durableSignals: true, webhookEndpoints: true });
+            process.env.PILOTSWARM_WEBHOOKS_ENABLED = "false";
+            const disabled = buildRunTurnConfig({ webhookEndpoints: true }, "host", undefined, true);
+            expect(disabled.durableSignals).toBe(true);
+            expect(disabled).not.toHaveProperty("webhookEndpoints");
+        } finally {
+            if (original === undefined) delete process.env.PILOTSWARM_WEBHOOKS_ENABLED;
+            else process.env.PILOTSWARM_WEBHOOKS_ENABLED = original;
+        }
+    });
+
     it("backfills missing agentIdentity from catalog metadata", () => {
         const config = buildRunTurnConfig(
             {

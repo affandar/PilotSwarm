@@ -91,14 +91,14 @@ describe("inline control tool execution", () => {
         fake.assistantContent = `Created ${endpoint.url}`;
         const visible = [];
         const result = await new ManagedSession("webhook-tool", fake, {}).runTurn("Create a webhook", {
-            durableSignals: true, durableSignalRaces: true, webhookEndpoints: true,
+            durableSignals: true, webhookEndpoints: true,
             controlToolBridge: { createSignalWebhook: bridge }, onEvent: event => visible.push(event),
         });
         expect(bridge).toHaveBeenCalledWith({ signal_name: "ready", max_uses: 1 });
         expect(JSON.stringify(visible)).not.toContain(token);
         expect(JSON.stringify(result)).not.toContain(token);
         expect(result.content).toContain("[webhook capability redacted]");
-        expect(ManagedSession.systemToolDefs({ durableSignalRaces: true }).some(tool => tool.name === "create_signal_webhook")).toBe(false);
+        expect(ManagedSession.systemToolDefs({ durableSignals: true }).some(tool => tool.name === "create_signal_webhook")).toBe(false);
         const spec = ManagedSession.systemToolDefs({ webhookEndpoints: true }).find(tool => tool.name === "create_signal_webhook");
         expect(fake.registeredTools.find(tool => tool.name === "create_signal_webhook").parameters).toEqual(spec.parameters);
     });
@@ -127,20 +127,20 @@ describe("inline control tool execution", () => {
         expect(ordinaryDeltas.join("")).toBe("help");
     });
 
-    it("declares and executes wait_for_any only on the new signal-race contract", async () => {
-        expect(ManagedSession.systemToolDefs({ durableSignals: true }).some(tool => tool.name === "wait_for_any")).toBe(false);
-        const declaration = ManagedSession.systemToolDefs({ durableSignals: true, durableSignalRaces: true })
+    it("declares and executes wait_for_any on the same contract as wait_for_signal", async () => {
+        expect(ManagedSession.systemToolDefs().some(tool => tool.name === "wait_for_any")).toBe(false);
+        const declaration = ManagedSession.systemToolDefs({ durableSignals: true })
             .find(tool => tool.name === "wait_for_any");
         expect(declaration).toBeDefined();
         const fake = new FakeCopilotSession();
         fake.scriptedToolCalls = [{ name: "wait_for_any", args: { names: ["ready"], timeout_seconds: 120 } }];
         const result = await new ManagedSession("race-tools", fake, {}).runTurn("Race", {
-            durableSignals: true, durableSignalRaces: true,
+            durableSignals: true,
         });
         expect(result).toMatchObject({ type: "signal-wait", action: "wait", waitMode: "any", names: ["ready"], timeoutSeconds: 120 });
         expect(fake.registeredTools.find(tool => tool.name === "wait_for_any").parameters).toEqual(declaration.parameters);
         const legacy = new FakeCopilotSession();
-        await new ManagedSession("signal-v1-tools", legacy, {}).runTurn("Hello", { durableSignals: true });
+        await new ManagedSession("legacy-tools", legacy, {}).runTurn("Hello");
         expect(legacy.registeredTools.some(tool => tool.name === "wait_for_any")).toBe(false);
     });
 

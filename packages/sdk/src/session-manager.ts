@@ -1710,7 +1710,6 @@ export class SessionManager {
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             durableSignals: effectiveSerializableConfig.durableSignals === true,
-            durableSignalRaces: effectiveSerializableConfig.durableSignalRaces === true,
             webhookEndpoints: effectiveSerializableConfig.webhookEndpoints === true,
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
@@ -2382,7 +2381,6 @@ export class SessionManager {
                             const copilotSession = await client.resumeSession(sessionId, {
                                 tools: [...ManagedSession.systemToolDefs({
                                     durableSignals: config.durableSignals === true,
-                                    durableSignalRaces: config.durableSignalRaces === true,
                                     webhookEndpoints: config.webhookEndpoints === true,
                                 }), ...ManagedSession.subAgentToolDefs()],
                                 onPermissionRequest: approvePermissionForSession,

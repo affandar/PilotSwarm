@@ -148,7 +148,7 @@ call `PilotSwarmSession.raiseSignal` or
 commands. Signals can arrive before the wait. User interruption preserves the
 original deadline, and payloads are untrusted data.
 
-Use `wait_for_any` on 1.0.81+ when accepted user input should win the race
+Use `wait_for_any` on 1.0.80+ when accepted user input should win the race
 instead of interrupting and re-arming a signal wait. See
 [Durable signals](./durable-signals.md) for typed winners, limits and
 mixed-version requirements. [Webhook ingress](./webhooks.md) adds opt-in

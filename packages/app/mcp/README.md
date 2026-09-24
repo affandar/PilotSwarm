@@ -415,7 +415,7 @@ Use `get_session_signals` and `get_session_events` (`session.signal_*`) to
 inspect state and lifecycle outcomes. Unsupported/unknown older executions
 return `SIGNALS_UNSUPPORTED`; oversized payloads return `SIGNAL_TOO_LARGE`.
 The legacy event wrapper is not an escape hatch for prompts, answers, or
-commands: use their dedicated tools. On 1.0.81+, `get_session_signals` also
+commands: use their dedicated tools. On 1.0.80+, `get_session_signals` also
 reports an explicit `wait_for_any` race's mode and `lastRaceOutcome`.
 
 ### Webhook Management

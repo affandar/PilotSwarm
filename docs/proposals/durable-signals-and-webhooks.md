@@ -5,9 +5,11 @@
 This proposal is tracked by [#79](https://github.com/affandar/PilotSwarm/issues/79).
 The [durable signals guide](../developer/building/durable-signals.md) and
 [webhook guide](../developer/building/webhooks.md) document the implemented
-contract. Phase 1 remains frozen at orchestration 1.0.80; Phase 2 races use
-1.0.81 and distinct V2 activities. Phases 3/4 add opt-in generic capabilities,
-authenticated GitHub/ADO ingress and approved bindings/templates.
+contract. All phases ship in one new orchestration, 1.0.80, preserving upstream's
+existing 1.0.79 handler in its frozen directory. Signals and explicit races use
+the same capability-routed turns; Phases 3/4 add opt-in generic capabilities,
+authenticated GitHub/ADO ingress and approved bindings/templates. No
+intermediate draft orchestration is retained.
 The original design and rationale are retained below; canonical guides and
 migration 0081 take precedence over the initial schema sketch.
 
@@ -169,7 +171,7 @@ CREATE TABLE copilot_sessions.signal_endpoints (
 
 Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSignalEndpoint` / `listSignalEndpoints`, access `session:write`):
 
-- **The agent itself** via `create_signal_webhook` on enabled 1.0.81+ workers. It mints only for its own authorized session and returns the management DTO (`url`, `token`, `endpointId`, `expiresAt`, metadata). External registration is a separate authorized tool operation, never implicit. The private SDK context can retain the result; public event/history projections redact capabilities even after hydration.
+- **The agent itself** via `create_signal_webhook` on enabled 1.0.80+ workers. It mints only for its own authorized session and returns the management DTO (`url`, `token`, `endpointId`, `expiresAt`, metadata). External registration is a separate authorized tool operation, never implicit. The private SDK context can retain the result; public event/history projections redact capabilities even after hydration.
 - **MCP tools** for operators (`create_signal_endpoint`, `revoke_signal_endpoint`, `list_signal_endpoints` — list shows metadata only, never tokens).
 - **Web API** for scripting.
 
@@ -195,7 +197,7 @@ Minting/revoking, three ways to the same op (`createSignalEndpoint` / `revokeSig
 | Management/session/web clients, Web API, MCP | `raiseSignal`, redacted state reads, compatibility event wrappers, target authorization and version checks |
 | Tuner / shared UI | `read_session_signals`, pending names/deadlines, Activity and sequence lifecycle entries |
 | CMS/ingress | Migration 0081, fixed-target capability URLs, exact-byte GitHub HMAC / ADO HTTPS Basic authentication, approved bindings/templates and durable routing |
-| Mixed-version behavior | Ordinary signals require 1.0.80 / `pilotswarm.signals.v1`; explicit races and approved prompt dispatch require 1.0.81 / `pilotswarm.signals.v2`. Frozen declarations/yield sequences remain unchanged. |
+| Mixed-version behavior | Signals, explicit races and approved prompt dispatch require 1.0.80 / `pilotswarm.signals.v1`. Upstream's frozen declarations/yield sequences remain unchanged. |
 
 ## Coverage and later testing
 

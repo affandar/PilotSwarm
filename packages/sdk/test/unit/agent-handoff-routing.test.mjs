@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { createSessionManagerProxy, createSessionProxy } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY } from "../../dist/activity-routing.js";
@@ -48,9 +48,13 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
     });
 }
 
-test("registry retains 1.0.74 through 1.0.80 separately and activates 1.0.81", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.81");
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
+test("registry preserves upstream versions and introduces only the complete 1.0.80 release", () => {
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.80");
+    assert.deepEqual(DURABLE_SESSION_ORCHESTRATION_REGISTRY.filter(r => Number(r.version.split(".")[2]) > 79)
+        .map(r => ({ version: r.version, handler: r.handler.name })),
+    [{ version: "1.0.80", handler: "durableSessionOrchestration_1_0_80" }]);
+    assert.equal(existsSync(new URL("../../src/orchestration_1_0_80/index.ts", import.meta.url)), false,
+        "there must be no intermediate signal-only snapshot");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.78").handler.name, "durableSessionOrchestration_1_0_78");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.77").handler.name, "durableSessionOrchestration_1_0_77");
@@ -73,25 +77,6 @@ const main79Hashes = {
 for (const [name, hash] of Object.entries(main79Hashes)) {
     test(`main's frozen 1.0.79 ${name} remains unchanged`, () => {
         const bytes = readFileSync(new URL(`../../src/orchestration_1_0_79/${name}`, import.meta.url));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
-    });
-}
-
-// The tested Phase 1 commit ab9d31b2 remains replayable after explicit races.
-const signal80Hashes = {
-    "agents.ts": "04385760ff1d9e465d23b6430217de858579edbeea716fe1ceda984016d5f4d2",
-    "index.ts": "3c52e0ed2a995c3034c669f498e0d0445bf3ddf25491eba9b5cd5c68d3749664",
-    "lifecycle.ts": "0b604e8f938b5687cbb2eea556a7fcbf223ceed083233636bdd4bcae7b7d540b",
-    "queue.ts": "16556d5e378fdb156451483eaf81ad4716bbe14cb1d0ee8ee6be0560bda9cf34",
-    "runtime.ts": "54d2a23f7abdb8e3c6ac3d3af68f79dc9bed5e8db76c3d5a8df7de9f41755c63",
-    "signals.ts": "094d85e352b9f4e406066519f6f1b491909e243ac19732b24b7635e8f1742c0b",
-    "state.ts": "492a4d206e7a8188cd11ca85b95936dbbbca09cee74a6b9ac345d0169be66bac",
-    "turn.ts": "3808cc6e441e48b6a42a3acb61f0ea329ad1caa2b8e5e40f342be5a81ada1ec6",
-    "utils.ts": "4d1cbe7be647e10f728e2c6e29cfea68ec92181e934924c90f7da62114b577e7",
-};
-for (const [name, hash] of Object.entries(signal80Hashes)) {
-    test(`Phase 1's frozen 1.0.80 ${name} remains unchanged`, () => {
-        const bytes = readFileSync(new URL(`../../src/orchestration_1_0_80/${name}`, import.meta.url));
         assert.equal(createHash("sha256").update(bytes).digest("hex"), hash);
     });
 }
