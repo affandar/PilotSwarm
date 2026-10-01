@@ -1,5 +1,12 @@
 # PilotSwarm
 
+> [!WARNING]
+> **Deprecated: PilotSwarm has moved and is now a Microsoft project.**
+>
+> The actively maintained repository is **[microsoft/PilotSwarm](https://github.com/microsoft/PilotSwarm)**. Please use that repository for source code, releases, documentation, issues, and contributions.
+>
+> This personal repository is archived and retained for historical reference only. It will no longer receive updates.
+
 > **Experimental** — This project is under active development and not yet ready for production use. APIs may change without notice.
 
 > **Latest release: v0.5.79** — Drag and reshape MoA panes, clearer pane boundaries, simpler controls, and automatic cleanup of deleted sessions.
