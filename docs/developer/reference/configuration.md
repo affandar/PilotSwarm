@@ -46,6 +46,7 @@ AZURE_STORAGE_CONTAINER=copilot-sessions
 # PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 # PILOTSWARM_WORKER_CONCURRENCY=2
 # PILOTSWARM_TURN_TIMEOUT_MS=1200000
+# PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS=300000
 ```
 
 > **Provider types and models** are declared in `.model_providers.json`, usually
@@ -216,6 +217,11 @@ Duroxide runtime concurrency, and process-wide worker limits.
   Sets the wall-clock cap for one Copilot turn across the worker deployment.
   Default: `1200000` (20 minutes). Set `0` to disable the cap. An explicit
   `PilotSwarmWorker({ turnTimeoutMs })` option takes precedence over the env var.
+- `PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS`
+  Sets the maximum time a turn may emit no subprocess events before the worker
+  treats it as a retryable transport loss. Default: `300000` (5 minutes). Set
+  `0` to disable the watchdog. An explicit
+  `PilotSwarmWorker({ turnInactivityTimeoutMs })` option takes precedence.
 
 Example:
 
@@ -226,6 +232,7 @@ PILOTSWARM_FACTS_PG_POOL_MAX=3
 PILOTSWARM_ORCHESTRATION_CONCURRENCY=2
 PILOTSWARM_WORKER_CONCURRENCY=2
 PILOTSWARM_TURN_TIMEOUT_MS=1200000
+PILOTSWARM_TURN_INACTIVITY_TIMEOUT_MS=300000
 ```
 
 ### Local Development
@@ -361,6 +368,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
+    turnInactivityTimeoutMs: 300_000, // silent-turn watchdog; 0 disables it
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -374,8 +382,9 @@ new PilotSwarmWorker({
 
   PostgreSQL pool sizing and Duroxide concurrency are intentionally **not** part
   of `PilotSwarmWorkerOptions`; configure them with the env vars above. Turn
-  timeout supports both layers: the explicit constructor option wins, then
-  `PILOTSWARM_TURN_TIMEOUT_MS`, then the 20-minute SDK default.
+  timeout settings support both layers: each explicit constructor option wins,
+  then its corresponding environment variable, then the SDK default (20
+  minutes for the wall-clock cap and 5 minutes for the inactivity watchdog).
 
 ## Enhanced Facts & Knowledge Graph (optional)
 
