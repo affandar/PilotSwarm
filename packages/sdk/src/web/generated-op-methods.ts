@@ -5,6 +5,8 @@
 // complete Web API operation surface, wire-shaped. Exposed by the web
 // management client as `client.ops`. See contract test: web-client-op-coverage.
 
+import { normalizeRuntimeModels, type RuntimeModel } from "../model-catalog.js";
+
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
     "adoptLegacySystemGitHubCopilotKey",
@@ -1066,7 +1068,7 @@ export interface ManagementOps {
      * Viewer-usable runtime provider instances (`catalogKind=runtime_provider`). Direct PilotSwarmManagementClient.listModels() is the provider-type template catalog (`catalogKind=provider_type`); use listRuntimeModels(viewer) for direct parity.
      * @remarks `GET /models` — access: `authed`
      */
-    listModels(params?: Record<string, never>): Promise<any>;
+    listModels(params?: Record<string, never>): Promise<RuntimeModel[]>;
 
     /**
      * Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own.
@@ -1828,7 +1830,7 @@ export function createManagementOps(
         listFeatureFlagUsers: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagUsers", params),
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
-        listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
+        listModels: async (params: Record<string, unknown> = {}) => normalizeRuntimeModels(await callOp("listModels", params)),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
         listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
