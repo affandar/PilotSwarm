@@ -18,7 +18,7 @@
  */
 import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
-    ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
+    ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType, resolveAzureProviderConfig,
 } from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
 import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
@@ -426,11 +426,12 @@ export function resolveProviderCredential(
         type: type.type,
         modelName,
         ...(workloadIdentity ? { usesWorkloadIdentity: true } : {}),
-        sdkProvider: {
+        sdkProvider: resolveAzureProviderConfig({
             type: sdkType,
-            baseUrl: sdkType === "azure" ? `${baseUrl.replace(/\/$/, "")}/deployments/${modelName}` : baseUrl,
+            baseUrl,
+            ...(type.wireApi ? { wireApi: type.wireApi } : {}),
             ...(workloadIdentity ? {} : { apiKey }),
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
-        },
+        }, modelName, true),
     } as ResolvedProvider;
 }

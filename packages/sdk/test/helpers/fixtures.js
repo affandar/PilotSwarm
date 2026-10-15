@@ -5,6 +5,7 @@
 import { defineTool, loadModelProviders } from "../../src/index.ts";
 import * as fsForSnapshots from "node:fs";
 import * as pathForSnapshots from "node:path";
+import { firstConfiguredModel } from "./fixture-models.js";
 
 const FORCED_TEST_MODEL = process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL || "";
 
@@ -111,14 +112,9 @@ export const WAIT_CONFIG = {
 
 const modelRegistry = loadModelProviders();
 
-function firstKnownModel(candidates) {
+function firstKnownModel(candidates, modelPrefix) {
     if (FORCED_TEST_MODEL) return FORCED_TEST_MODEL;
-    if (!modelRegistry) return candidates[0];
-    for (const candidate of candidates) {
-        const normalized = modelRegistry.normalize(candidate);
-        if (normalized) return candidate;
-    }
-    return candidates[0];
+    return firstConfiguredModel(modelRegistry, candidates, modelPrefix);
 }
 
 export const TEST_GPT_MODEL = firstKnownModel([
@@ -126,7 +122,7 @@ export const TEST_GPT_MODEL = firstKnownModel([
     "gpt-5.1",
     "gpt-4.1",
     "gpt-4o",
-]);
+], "gpt-");
 
 export const TEST_CLAUDE_MODEL = firstKnownModel([
     "claude-sonnet-5",
@@ -134,7 +130,7 @@ export const TEST_CLAUDE_MODEL = firstKnownModel([
     "claude-opus-4.8",
     "claude-sonnet-4.6",
     "claude-opus-4.6",
-]);
+], "claude-");
 
 /**
  * Resolve a session's snapshot tar in a filesystem store dir. The lifecycle

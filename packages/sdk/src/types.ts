@@ -904,7 +904,9 @@ export interface PilotSwarmWorkerOptions {
         baseUrl: string;
         /** API key. Optional for local providers like Ollama. */
         apiKey?: string;
-        /** Azure-specific options. */
+        /** Wire protocol. Explicit Azure Responses omits legacy deployment/version routing. */
+        wireApi?: "completions" | "responses";
+        /** Azure-specific options (completions only). */
         azure?: { apiVersion?: string };
     };
 

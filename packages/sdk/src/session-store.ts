@@ -480,14 +480,23 @@ async function extractSessionArchive(
     codec: SnapshotCodec = "gzip",
 ): Promise<void> {
     fs.mkdirSync(sessionStateDir, { recursive: true });
-    const input = fs.createReadStream(tarPath);
-    const tar = spawn("tar", ["-xf", "-", "-C", sessionStateDir]);
-    const [pipeResult, procResult] = await Promise.allSettled([
-        pipeline(input, makeDecompressor(codec), tar.stdin!),
-        awaitProcess(tar, "tar extract"),
-    ]);
-    if (procResult.status === "rejected") throw procResult.reason;
-    if (pipeResult.status === "rejected") throw pipeResult.reason;
+    const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-extract-"));
+    try {
+        const decodedTar = path.join(stagingDir, "snapshot.tar");
+        // tar can exit at its logical EOF before a stdin pipeline finishes.
+        // Validate the complete compressed stream first, without changing tar's EOF semantics.
+        await pipeline(
+            fs.createReadStream(tarPath),
+            makeDecompressor(codec),
+            fs.createWriteStream(decodedTar, { flags: "wx", mode: 0o600 }),
+        );
+        const tar = spawn("tar", ["-xf", decodedTar, "-C", sessionStateDir], {
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        await awaitProcess(tar, "tar extract");
+    } finally {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+    }
 }
 
 const LEGACY_SESSION_FILES = ["events.jsonl", "workspace.yaml"];

@@ -220,7 +220,6 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
     await withClient(env, {}, async (client) => {
         const fromModel = TEST_GPT_MODEL;
         const session = await client.createSession({ model: fromModel });
-        await session.sendAndWait("Say hello", TIMEOUT);
 
         const mgmt = new PilotSwarmManagementClient({
             store: env.store,
@@ -238,12 +237,12 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
                 ? findSameProviderModel(mgmt, fromQ)
                 : findCrossProviderModel(mgmt, fromQ);
             if (!targetQ) {
-                console.warn(`  ⚠️  SKIP ${initiator}/${relationship}: no ${relationship}-provider target configured for ${fromQ}. ` +
-                    `Configure a second provider in .model_providers.json to exercise this case end-to-end.`);
-                return;
+                throw new Error(`Model-switch test prerequisite missing: no ${relationship}-provider target configured for ${fromQ}. ` +
+                    "This case requires a distinct configured target; its switch assertions did not run.");
             }
             const crossProvider = providerOf(fromQ) !== providerOf(targetQ);
             assertEqual(crossProvider, relationship === "cross", `relationship from ${fromQ} to ${targetQ}`);
+            await session.sendAndWait("Say hello", TIMEOUT);
             console.log(`  ${initiator.toUpperCase()} ${relationship}-provider switch: ${fromQ} -> ${targetQ}`);
 
             const before = await catalog.getSessionEvents(session.sessionId);

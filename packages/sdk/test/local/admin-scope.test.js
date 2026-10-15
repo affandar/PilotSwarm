@@ -6,6 +6,7 @@ import { createInspectTools } from "../../dist/inspect-tools.js";
 import { createAgentManagerTools } from "../../dist/agent-manager-tools.js";
 import { createProviderTools } from "../../dist/provider-tools.js";
 import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 import express from "express";
 import { createApiRouter } from "../../../app/web/api/router.js";
 import { authenticateToken } from "../../../app/web/auth/index.js";
@@ -34,7 +35,13 @@ describe("admin-scope catalog and portal integration", () => {
     const call = (method, params = {}, who = ADMIN, role = "admin") => runtime.call(method, params, auth(who, role));
     beforeAll(async () => {
         env = createTestEnv("admin_scope");
+        const modelProvidersPath = join(env.baseDir, "model-providers.json");
+        writeFileSync(modelProvidersPath, JSON.stringify({
+            providers: [{ id: "github-copilot", type: "github", models: ["scope-fixture"] }],
+            defaultModel: "github-copilot:scope-fixture",
+        }));
         for (const [key, value] of Object.entries({
+            PS_MODEL_PROVIDERS_PATH: modelProvidersPath,
             PILOTSWARM_CMS_SCHEMA: env.cmsSchema, PILOTSWARM_DUROXIDE_SCHEMA: env.duroxideSchema,
             PILOTSWARM_FACTS_SCHEMA: env.factsSchema, HORIZON_FACTS_SCHEMA: env.factsSchema,
             ARTIFACT_DIR: join(env.baseDir, "artifacts"), AZURE_STORAGE_CONNECTION_STRING: null,

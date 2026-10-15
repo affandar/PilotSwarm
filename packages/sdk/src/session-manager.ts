@@ -13,7 +13,7 @@ import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { SESSION_STATE_MISSING_PREFIX, type AbortTurnResult, type ManagedSessionConfig, type SerializableSessionConfig } from "./types.js";
 import type { ModelProviderRegistry } from "./model-providers.js";
-import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity } from "./model-providers.js";
+import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity, resolveAzureProviderConfig } from "./model-providers.js";
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
@@ -291,6 +291,7 @@ export interface WorkerDefaults {
         type?: "openai" | "azure" | "anthropic";
         baseUrl: string;
         apiKey?: string;
+        wireApi?: "completions" | "responses";
         azure?: { apiVersion?: string };
     };
     /** Multi-provider model registry. Takes precedence over `provider`. */
@@ -2759,16 +2760,8 @@ export class SessionManager {
         const p = this.workerDefaults.provider;
         if (!p) return {};
 
-        // For Azure, dynamically construct deployment URL
-        if (p.type === "azure" && model && !p.baseUrl.includes("/deployments/")) {
-            return {
-                provider: {
-                    ...p,
-                    baseUrl: `${p.baseUrl.replace(/\/+$/, "")}/deployments/${model}`,
-                },
-            };
-        }
-        return { provider: p };
+        // Responses keeps the v1 endpoint and omits legacy Azure API options.
+        return { provider: resolveAzureProviderConfig(p, model) };
     }
 
     /**

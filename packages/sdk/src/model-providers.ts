@@ -153,7 +153,9 @@ export interface ModelProviderConfig {
     baseUrl?: string;
     /** API key. Supports `env:VAR_NAME` syntax. */
     apiKey?: string;
-    /** Azure API version (type=azure only). Defaults to "2024-10-21". */
+    /** Wire protocol. Azure Responses uses the unversioned /openai v1 endpoint. */
+    wireApi?: "completions" | "responses";
+    /** Azure completions API version. Ignored for explicit Azure Responses. Defaults to "2024-10-21". */
     apiVersion?: string;
     /** Available models. Can be plain strings (legacy) or ModelEntry objects with descriptions. */
     models: (string | ModelEntry)[];
@@ -225,8 +227,35 @@ export interface ResolvedProvider {
         type: "openai" | "azure" | "anthropic";
         baseUrl: string;
         apiKey?: string;
+        wireApi?: "completions" | "responses";
         azure?: { apiVersion?: string };
     };
+}
+
+/**
+ * Azure Responses uses the SDK v1 route: no deployment suffix or dated API
+ * version. Keep the original endpoint and never mutate a cached provider.
+ * The catalog historically appends deployments unconditionally for completions;
+ * its explicit flag preserves that behavior while legacy/registry paths guard it.
+ */
+export function resolveAzureProviderConfig<T extends {
+    type?: string;
+    baseUrl: string;
+    wireApi?: "completions" | "responses";
+    azure?: { apiVersion?: string };
+}>(provider: T, modelName?: string, alwaysAppendDeployment = false): Omit<T, "azure"> & { azure?: { apiVersion?: string } } {
+    if (provider.type !== "azure") return provider;
+    if (provider.wireApi === "responses") {
+        const { azure: _legacyAzure, ...responses } = provider;
+        return responses;
+    }
+    if (modelName && (alwaysAppendDeployment || !provider.baseUrl.includes("/deployments/"))) {
+        return {
+            ...provider,
+            baseUrl: `${provider.baseUrl.replace(alwaysAppendDeployment ? /\/$/ : /\/+$/, "")}/deployments/${modelName}`,
+        };
+    }
+    return provider;
 }
 
 // ─── Registry ────────────────────────────────────────────────────
@@ -390,10 +419,6 @@ export class ModelProviderRegistry {
         const baseUrl = provider.baseUrl;
         if (!baseUrl) return undefined;
 
-        const resolvedUrl = provider.type === "azure" && !baseUrl.includes("/deployments/")
-            ? `${baseUrl.replace(/\/+$/, "")}/deployments/${desc.modelName}`
-            : baseUrl;
-
         // `openai-proxy` and `anthropic-wif` are PilotSwarm-only distinctions.
         // The Copilot SDK's provider union is openai | azure | anthropic, so
         // they are mapped back right here and never reach the SDK. The
@@ -407,9 +432,10 @@ export class ModelProviderRegistry {
             type: provider.type,
             modelName: desc.modelName,
             ...(usesWorkloadIdentity ? { usesWorkloadIdentity: true } : {}),
-            sdkProvider: {
+            sdkProvider: resolveAzureProviderConfig({
                 type: sdkProviderType,
-                baseUrl: resolvedUrl,
+                baseUrl,
+                ...(provider.wireApi ? { wireApi: provider.wireApi } : {}),
                 // Omitted rather than undefined for a workload-identity
                 // provider: an `apiKey` key present with no value reads as a
                 // broken credential to everything downstream that tests it.
@@ -417,7 +443,7 @@ export class ModelProviderRegistry {
                 ...(provider.type === "azure" && {
                     azure: { apiVersion: provider.apiVersion || "2024-10-21" },
                 }),
-            },
+            }, desc.modelName),
         };
     }
 
